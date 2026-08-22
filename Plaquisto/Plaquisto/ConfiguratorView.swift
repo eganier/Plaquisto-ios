@@ -11,7 +11,9 @@ struct ConfiguratorView: View {
     @State private var insulation = 5.0
     @State private var supportID = ""
     @State private var boardID = ""
+    @State private var suspensionID = ""
     @State private var layers = 1
+    @State private var vaporBarrier = false
     @State private var parallel = false
     @State private var waterResistant = false
     @State private var fireRated = false
@@ -19,6 +21,21 @@ struct ConfiguratorView: View {
     private let stepNames = ["Dimensions", "Support", "Isolation", "Parement", "Options", "Résultat"]
     private var supports: [ReferenceRecord] { store.records.filter { $0.kind == "support" } }
     private var boards: [ReferenceRecord] { store.records.filter { $0.kind == "board" } }
+    private var suspensions: [ReferenceRecord] { store.records.filter { $0.kind == "suspension" } }
+    private var selectedSupport: ReferenceRecord? { supports.first { $0.id == supportID } }
+    private var isWoodSupport: Bool { supportID == "SUP-BOIS-SOLIVAGE" }
+    private var compatibleSuspensions: [ReferenceRecord] {
+        guard isWoodSupport else { return [] }
+        let height = plenum * 10
+        return suspensions.filter { suspension in
+            guard suspension.data["support"]?.string == "Bois" else { return false }
+            if let minimum = suspension.data["reglage_min_mm"]?.number,
+               let maximum = suspension.data["reglage_max_mm"]?.number { return height >= minimum && height <= maximum }
+            if let values = suspension.data["reglages_mm"]?.array?.compactMap({ $0.string.flatMap(Double.init) }) { return values.contains { abs($0-height) < 0.1 } }
+            if suspension.id == "SUSP-CAVALIER" { return height > 20 }
+            return false
+        }
+    }
     private var area: Double { length * width }
     private var spacing: Double? {
         guard insulation <= 15 else { return nil }
@@ -72,8 +89,13 @@ struct ConfiguratorView: View {
             Section("Dimensions de la pièce") { MeasureField(label:"Longueur",value:$length,unit:"m"); MeasureField(label:"Largeur",value:$width,unit:"m") }
             Section { LabeledContent("Surface",value:"\(area.formatted(.number.precision(.fractionLength(2)))) m²") } footer:{Text("La surface sert de base au calcul des fournitures.")}
         case 1:
-            Section("Support du plafond") { Picker("Type de support",selection:$supportID){Text("Sélectionner").tag("");ForEach(supports){Text($0.title).tag($0.id)}};MeasureField(label:"Hauteur du plénum",value:$plenum,unit:"cm") }
-            if let support=supports.first(where:{$0.id==supportID}) { Section("Solution proposée") { Text(support.summary); Label("Source : page \(support.sourcePage)",systemImage:"doc.text").font(.caption).foregroundStyle(.secondary) } }
+            Section("Support du plafond") { Picker("Type de support",selection:$supportID){Text("Sélectionner").tag("");ForEach(supports){Text($0.title).tag($0.id)}}.onChange(of:supportID){_,_ in suspensionID=""};MeasureField(label:"Hauteur du plénum",value:$plenum,unit:"cm");Toggle("Prévoir la pose d’un pare-vapeur",isOn:$vaporBarrier) }
+            if isWoodSupport {
+                Section {
+                    if compatibleSuspensions.isEmpty { Label("Aucune suspente compatible avec cette hauteur.",systemImage:"exclamationmark.triangle.fill").foregroundStyle(.orange) }
+                    else { Picker("Suspente",selection:$suspensionID){Text("Sélectionner").tag("");ForEach(compatibleSuspensions){Text($0.title).tag($0.id)}};if let suspension=suspensions.first(where:{$0.id==suspensionID}){Text(suspension.summary).font(.subheadline);LabeledContent("Fixation",value:suspension.data["fixation"]?.string ?? "—");LabeledContent("Entraxe",value:"1,20 m")} }
+                } header:{Text("Choix de la suspente")} footer:{Text("La liste est filtrée selon le support et la hauteur du plénum enregistrés dans Plaquisto Admin.")}
+            } else if let support=selectedSupport { Section("Fixation compatible") { Text(support.summary);Label("Source : page \(support.sourcePage)",systemImage:"doc.text").font(.caption).foregroundStyle(.secondary) } }
         case 2:
             Section("Isolation") { MeasureField(label:"Poids de l’isolant",value:$insulation,unit:"kg/m²") }
             Section { if let spacing { LabeledContent("Entraxe maximal",value:"\(Int(spacing*100)) cm") } else { Label("Au-delà de 15 kg/m², cette configuration n’est pas couverte.",systemImage:"exclamationmark.triangle.fill").foregroundStyle(.orange) } } footer:{Text("À 6 kg/m², la règle 6 à moins de 10 s’applique. À 10 kg/m², la règle 10 à 15 s’applique.")}
@@ -89,7 +111,7 @@ struct ConfiguratorView: View {
         }
     }
 
-    private var canContinue: Bool { switch step { case 0:return length>0 && width>0;case 1:return !supportID.isEmpty && plenum>0;case 2:return insulation>=0 && insulation<=15;case 3:return !boardID.isEmpty;default:return true } }
+    private var canContinue: Bool { switch step { case 0:return length>0 && width>0;case 1:return !supportID.isEmpty && plenum>0 && (!isWoodSupport || !suspensionID.isEmpty);case 2:return insulation>=0 && insulation<=15;case 3:return !boardID.isEmpty;default:return true } }
     private func prepareDefaults(){if supportID.isEmpty{supportID=supports.first?.id ?? ""};if boardID.isEmpty{boardID=boards.first?.id ?? ""}}
     private func rounded(_ value:Double,_ unit:String)->String { unit=="u" ? String(Int(ceil(value))) : value.formatted(.number.precision(.fractionLength(2))) }
 }

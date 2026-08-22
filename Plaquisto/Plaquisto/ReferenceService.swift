@@ -29,6 +29,7 @@ enum JSONValue: Decodable {
 
     var number: Double? { if case let .number(value) = self { value } else { nil } }
     var string: String? { if case let .string(value) = self { value } else { nil } }
+    var array: [JSONValue]? { if case let .array(value) = self { value } else { nil } }
 }
 
 @MainActor
