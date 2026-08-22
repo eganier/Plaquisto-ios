@@ -111,7 +111,7 @@ struct ConfiguratorView: View {
         }
     }
 
-    private var canContinue: Bool { switch step { case 0:return length>0 && width>0;case 1:return !supportID.isEmpty && plenum>0 && (!isWoodSupport || !suspensionID.isEmpty);case 2:return insulation>=0 && insulation<=15;case 3:return !boardID.isEmpty;default:return true } }
+    private var canContinue: Bool { switch step { case 0:return length>0 && width>0;case 1:return !supportID.isEmpty && plenum>0 && (!isWoodSupport || compatibleSuspensions.contains(where:{$0.id==suspensionID}));case 2:return insulation>=0 && insulation<=15;case 3:return !boardID.isEmpty;default:return true } }
     private func prepareDefaults(){if supportID.isEmpty{supportID=supports.first?.id ?? ""};if boardID.isEmpty{boardID=boards.first?.id ?? ""}}
     private func rounded(_ value:Double,_ unit:String)->String { unit=="u" ? String(Int(ceil(value))) : value.formatted(.number.precision(.fractionLength(2))) }
 }
