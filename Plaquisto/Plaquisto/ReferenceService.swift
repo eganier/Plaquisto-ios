@@ -37,9 +37,11 @@ final class ReferenceStore: ObservableObject {
     @Published var records: [ReferenceRecord] = []
     @Published var isLoading = true
     @Published var error: String?
+    @Published var isUsingOfflineData = false
 
     private let endpoint = URL(string: "https://omqnenxlliavmyramdux.supabase.co/rest/v1/reference_records?select=*&status=eq.Publi%C3%A9")!
     private let publicKey = "sb_publishable_LU4mBYJms4_0Ja8WodyfWg_RVBuRaPm"
+    private let cacheKey = "plaquisto.reference-records.v1"
 
     func load() async {
         isLoading = true; error = nil
@@ -50,8 +52,17 @@ final class ReferenceStore: ObservableObject {
             guard let http = response as? HTTPURLResponse, http.statusCode == 200 else { throw URLError(.badServerResponse) }
             records = try JSONDecoder().decode([ReferenceRecord].self, from: data)
             if records.isEmpty { throw URLError(.zeroByteResource) }
+            UserDefaults.standard.set(data, forKey: cacheKey)
+            isUsingOfflineData = false
         } catch {
-            self.error = "Impossible de charger le référentiel Plaquisto Admin. Vérifiez votre connexion Internet."
+            if let cachedData = UserDefaults.standard.data(forKey: cacheKey),
+               let cachedRecords = try? JSONDecoder().decode([ReferenceRecord].self, from: cachedData),
+               !cachedRecords.isEmpty {
+                records = cachedRecords
+                isUsingOfflineData = true
+            } else {
+                self.error = "Impossible de charger le référentiel Plaquisto Admin. Une première connexion Internet est nécessaire."
+            }
         }
         isLoading = false
     }
