@@ -1,0 +1,24 @@
+// !$*UTF8*$!
+{ archiveVersion = 1; classes = {}; objectVersion = 56; objects = {
+AA01 = {isa = PBXBuildFile; fileRef = BB01; };
+AA02 = {isa = PBXBuildFile; fileRef = BB02; };
+AA03 = {isa = PBXBuildFile; fileRef = BB03; };
+BB01 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlaquistoApp.swift; sourceTree = "<group>"; };
+BB02 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConfiguratorView.swift; sourceTree = "<group>"; };
+BB03 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReferenceService.swift; sourceTree = "<group>"; };
+BB04 = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Plaquisto.app; sourceTree = BUILT_PRODUCTS_DIR; };
+CC01 = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+CC02 = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (AA01,AA02,AA03); runOnlyForDeploymentPostprocessing = 0; };
+CC03 = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+DD01 = {isa = PBXGroup; children = (DD02,DD03); sourceTree = "<group>"; };
+DD02 = {isa = PBXGroup; children = (BB01,BB02,BB03); path = Plaquisto; sourceTree = "<group>"; };
+DD03 = {isa = PBXGroup; children = (BB04); name = Products; sourceTree = "<group>"; };
+EE01 = {isa = PBXNativeTarget; buildConfigurationList = GG02; buildPhases = (CC02,CC01,CC03); buildRules = (); dependencies = (); name = Plaquisto; productName = Plaquisto; productReference = BB04; productType = "com.apple.product-type.application"; };
+FF01 = {isa = PBXProject; attributes = {BuildIndependentTargetsInParallel = 1; LastSwiftUpdateCheck = 2600; LastUpgradeCheck = 2600; TargetAttributes = {EE01 = {CreatedOnToolsVersion = 26.0;};};}; buildConfigurationList = GG01; compatibilityVersion = "Xcode 14.0"; developmentRegion = fr; hasScannedForEncodings = 0; knownRegions = (fr,en,Base); mainGroup = DD01; productRefGroup = DD03; projectDirPath = ""; projectRoot = ""; targets = (EE01); };
+GG01 = {isa = XCConfigurationList; buildConfigurations = (HH01,HH02); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
+GG02 = {isa = XCConfigurationList; buildConfigurations = (HH03,HH04); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
+HH01 = {isa = XCBuildConfiguration; buildSettings = {ALWAYS_SEARCH_USER_PATHS = NO; CLANG_ENABLE_MODULES = YES; CLANG_ENABLE_OBJC_ARC = YES; IPHONEOS_DEPLOYMENT_TARGET = 17.0; SDKROOT = iphoneos; SWIFT_VERSION = 5.0;}; name = Debug; };
+HH02 = {isa = XCBuildConfiguration; buildSettings = {ALWAYS_SEARCH_USER_PATHS = NO; CLANG_ENABLE_MODULES = YES; CLANG_ENABLE_OBJC_ARC = YES; IPHONEOS_DEPLOYMENT_TARGET = 17.0; SDKROOT = iphoneos; SWIFT_COMPILATION_MODE = wholemodule; SWIFT_OPTIMIZATION_LEVEL = "-O"; SWIFT_VERSION = 5.0;}; name = Release; };
+HH03 = {isa = XCBuildConfiguration; buildSettings = {CODE_SIGN_STYLE = Automatic; CURRENT_PROJECT_VERSION = 1; DEVELOPMENT_TEAM = ""; GENERATE_INFOPLIST_FILE = YES; INFOPLIST_KEY_CFBundleDisplayName = Plaquisto; INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.productivity"; INFOPLIST_KEY_UILaunchScreen_Generation = YES; IPHONEOS_DEPLOYMENT_TARGET = 17.0; MARKETING_VERSION = 0.1; PRODUCT_BUNDLE_IDENTIFIER = fr.plaquisto.app; PRODUCT_NAME = "$(TARGET_NAME)"; SUPPORTED_PLATFORMS = "iphoneos iphonesimulator"; SWIFT_EMIT_LOC_STRINGS = YES; SWIFT_VERSION = 5.0; TARGETED_DEVICE_FAMILY = 1;}; name = Debug; };
+HH04 = {isa = XCBuildConfiguration; buildSettings = {CODE_SIGN_STYLE = Automatic; CURRENT_PROJECT_VERSION = 1; DEVELOPMENT_TEAM = ""; GENERATE_INFOPLIST_FILE = YES; INFOPLIST_KEY_CFBundleDisplayName = Plaquisto; INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.productivity"; INFOPLIST_KEY_UILaunchScreen_Generation = YES; IPHONEOS_DEPLOYMENT_TARGET = 17.0; MARKETING_VERSION = 0.1; PRODUCT_BUNDLE_IDENTIFIER = fr.plaquisto.app; PRODUCT_NAME = "$(TARGET_NAME)"; SUPPORTED_PLATFORMS = "iphoneos iphonesimulator"; SWIFT_EMIT_LOC_STRINGS = YES; SWIFT_VERSION = 5.0; TARGETED_DEVICE_FAMILY = 1;}; name = Release; };
+}; rootObject = FF01; }
