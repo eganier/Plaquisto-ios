@@ -1,202 +1,382 @@
 import SwiftUI
 
-struct Supply: Identifiable { let id: String; let name: String; let quantity: Double; let unit: String }
+struct Supply: Identifiable {
+    let id: String
+    let name: String
+    let quantity: Double
+    let unit: String
+}
+
+private struct InsulationPoint: Identifiable {
+    let thickness: Double
+    let maxWeight: Double
+    var id: Double { thickness }
+}
+
+private struct FixingComponent: Identifiable {
+    let name: String
+    let quantity: Double
+    let unit: String
+    let calculation: String
+    var id: String { "\(name)-\(unit)-\(calculation)" }
+}
 
 struct ConfiguratorView: View {
     @StateObject private var store = ReferenceStore()
     @State private var step = 0
     @State private var length = 5.0
     @State private var width = 4.0
+    @State private var support = ""
     @State private var plenum = 20.0
-    @State private var insulation = 5.0
-    @State private var supportID = ""
-    @State private var boardID = ""
-    @State private var modelID = ""
-    @State private var commercialReferenceID = ""
-    @State private var layers = 1
     @State private var vaporBarrier = false
-    @State private var parallel = false
-    @State private var waterResistant = false
-    @State private var fireRated = false
+    @State private var insulationID = ""
+    @State private var insulationThickness = 0.0
+    @State private var fixingSystemID = ""
+    @State private var layers = 1
 
-    private let stepNames = ["Dimensions", "Support", "Isolation", "Parement", "Options", "Résultat"]
-    private var supports: [ReferenceRecord] { store.records.filter { $0.kind == "support" } }
-    private var boards: [ReferenceRecord] { store.records.filter { $0.kind == "board" } }
-    private var products: [ReferenceRecord] { store.records.filter { $0.kind == "product" } }
-    private var models: [ReferenceRecord] { store.records.filter { $0.kind == "product_model" } }
-    private var commercialReferences: [ReferenceRecord] { store.records.filter { $0.kind == "commercial_reference" } }
-    private var compatibleProducts: [ReferenceRecord] {
-        guard !supportID.isEmpty else { return [] }
-        let height = plenum * 10
-        return products.filter { product in
-            guard technicalValue("support_id", for: product)?.string == supportID else { return false }
-            return coversHeight(height: height, values: { technicalValue($0, for: product) })
-        }
+    private let stepNames = ["Dimensions", "Support", "Isolation", "Fixation", "Parement", "Résultat"]
+
+    private var catalogue: CataloguePayload? { store.catalogue }
+    private var workTitle: String { catalogue?.ouvrage?.title ?? "Plafond sur fourrures horizontal" }
+    private var insulationSeries: [ReferenceRecord] { catalogue?.isolation ?? [] }
+    private var fixingSystems: [ReferenceRecord] { catalogue?.systemesFixation ?? [] }
+    private var quantityItems: [ReferenceRecord] { catalogue?.quantitatifs ?? [] }
+    private var supports: [String] {
+        Array(Set(fixingSystems.compactMap { $0.data["support"]?.string })).sorted()
     }
-    private var compatibleModels: [ReferenceRecord] {
-        let productIDs = Set(compatibleProducts.map(\.id))
-        let height = plenum * 10
-        return models.filter { model in
-            guard let productID = model.data["product_id"]?.string, productIDs.contains(productID) else { return false }
-            let hasOwnRange = model.data["reglage_min_mm"] != nil || model.data["reglage_max_mm"] != nil || model.data["reglages_mm"] != nil
-            return !hasOwnRange || coversHeight(height: height, values: { model.data[$0] })
-        }
+    private var selectedInsulation: ReferenceRecord? { insulationSeries.first { $0.id == insulationID } }
+    private var insulationPoints: [InsulationPoint] {
+        selectedInsulation?.data["values"]?.array?.compactMap { value in
+            guard let object = value.object,
+                  let thickness = object["thickness_mm"]?.number,
+                  let weight = object["max_weight_kg_m2"]?.number else { return nil }
+            return InsulationPoint(thickness: thickness, maxWeight: weight)
+        }.sorted { $0.thickness < $1.thickness } ?? []
     }
-    private var selectedModel: ReferenceRecord? { models.first { $0.id == modelID } }
-    private var selectedProduct: ReferenceRecord? {
-        guard let productID = selectedModel?.data["product_id"]?.string else { return nil }
-        return products.first { $0.id == productID }
+    private var selectedInsulationPoint: InsulationPoint? {
+        insulationPoints.first { abs($0.thickness - insulationThickness) < 0.01 }
     }
-    private var selectedCommercialReferences: [ReferenceRecord] { commercialReferences.filter { $0.data["model_id"]?.string == modelID } }
-    private var selectedCommercialReference: ReferenceRecord? { selectedCommercialReferences.first { $0.id == commercialReferenceID } }
-    private var area: Double { length * width }
+    private var insulationWeight: Double { selectedInsulationPoint?.maxWeight ?? 0 }
     private var spacing: Double? {
-        guard insulation <= 15 else { return nil }
-        if parallel || waterResistant || insulation >= 10 { return 0.4 }
-        return insulation >= 6 ? 0.5 : 0.6
+        guard insulationWeight <= 15 else { return nil }
+        if insulationWeight >= 10 { return 0.4 }
+        if insulationWeight >= 6 { return 0.5 }
+        return 0.6
     }
-    private var profile: ReferenceRecord? {
+    private var compatibleSystems: [ReferenceRecord] {
+        let plenumMM = plenum * 10
+        return fixingSystems.filter { system in
+            guard system.data["support"]?.string == support,
+                  let minimum = system.data["plenum_min_mm"]?.number,
+                  let maximum = system.data["plenum_max_mm"]?.number,
+                  plenumMM >= minimum, plenumMM <= maximum else { return false }
+            let dedicatedToVaporBarrier = system.data["pare_vapeur_compatible"]?.bool == true
+            if support == "Plancher bois horizontal" {
+                return vaporBarrier ? dedicatedToVaporBarrier : !dedicatedToVaporBarrier
+            }
+            return true
+        }
+    }
+    private var selectedFixingSystem: ReferenceRecord? {
+        compatibleSystems.first { $0.id == fixingSystemID }
+    }
+    private var selectedComponents: [FixingComponent] {
+        components(for: selectedFixingSystem)
+    }
+    private var area: Double { length * width }
+    private var quantityConfigurationKey: String? {
         guard let spacing else { return nil }
-        return store.records.first { $0.kind == "quantity" && $0.data["peaux"]?.number == Double(layers) && $0.data["entraxe_fourrures_m"]?.number == spacing }
+        let prefix = layers == 1 ? "simple" : "double"
+        return "\(prefix)_0\(Int((spacing * 100).rounded()))"
+    }
+    private var fixingSystemCount: Double {
+        guard let key = quantityConfigurationKey,
+              let row = quantityItems.first(where: { $0.id == "QTY-FIXATION" }),
+              let ratio = row.data["values"]?.object?[key]?.number else { return 0 }
+        return ratio * area
     }
     private var supplies: [Supply] {
-        guard let data = profile?.data else { return [] }
-        let definitions = [("plaque_m2","Plaques de plâtre","m²"),("fourrure_f530_ml","Fourrures Stil® F 530","ml"),("rail_f530_ml","Rails Stil® F 530","ml"),("suspente_unite","Suspentes compatibles","u"),("eclisse_unite","Éclisses Stil® F 530","u"),("vis_premiere_peau_unite","Vis — première peau","u"),("vis_deuxieme_peau_unite","Vis — deuxième peau","u"),("bande_joint_ml","Bande à joint","ml"),("enduit_poudre_kg","Enduit en poudre","kg")]
-        return definitions.compactMap { key,name,unit in
-            guard let ratio = data[key]?.number else { return nil }
-            let resolvedName = key == "suspente_unite" ? selectedSuspensionName : name
-            return Supply(id:key,name:resolvedName,quantity:ratio*area,unit:unit)
+        guard let key = quantityConfigurationKey else { return [] }
+        var result: [Supply] = []
+
+        for item in quantityItems where item.id != "QTY-FIXATION" {
+            guard let ratio = item.data["values"]?.object?[key]?.number,
+                  ratio > 0,
+                  let unit = item.data["unit"]?.string else { continue }
+            result.append(Supply(id: item.id, name: item.title, quantity: ratio * area, unit: unit))
         }
-    }
-    private var selectedSuspensionName: String {
-        guard let model = selectedModel else { return "Suspentes" }
-        let productName = selectedProduct?.title ?? "Suspente"
-        return "\(productName) · \(modelDisplayName(model))"
+
+        for (index, component) in selectedComponents.enumerated() {
+            var quantity = fixingSystemCount * component.quantity
+            if component.calculation == "plenum_m" { quantity *= plenum / 100 }
+            result.append(Supply(
+                id: "FIX-\(index)-\(component.name)",
+                name: component.name,
+                quantity: quantity,
+                unit: component.unit
+            ))
+        }
+        return result
     }
 
     var body: some View {
         NavigationStack {
             Group {
-                if store.isLoading { ProgressView("Chargement de Plaquisto Admin…") }
-                else if let error = store.error { ContentUnavailableView("Référentiel indisponible", systemImage:"wifi.exclamationmark", description:Text(error)).overlay(alignment:.bottom){Button("Réessayer"){Task{await store.load()}}.buttonStyle(.borderedProminent).padding(.bottom,80)} }
-                else { configurator }
+                if store.isLoading {
+                    ProgressView("Synchronisation avec Plaquisto Admin…")
+                } else if let error = store.error {
+                    ContentUnavailableView(
+                        "Référentiel indisponible",
+                        systemImage: "wifi.exclamationmark",
+                        description: Text(error)
+                    )
+                    .overlay(alignment: .bottom) {
+                        Button("Réessayer") { Task { await store.load() } }
+                            .buttonStyle(.borderedProminent)
+                            .padding(.bottom, 80)
+                    }
+                } else {
+                    configurator
+                }
             }
-            .task { if store.records.isEmpty { await store.load() } }
+            .task { if store.catalogue == nil { await store.load() } }
         }
-        .tint(Color(red:0.12,green:0.38,blue:0.29))
+        .tint(Color(red: 0.12, green: 0.38, blue: 0.29))
     }
 
     private var configurator: some View {
-        VStack(spacing:0) {
-            VStack(alignment:.leading,spacing:10) {
+        VStack(spacing: 0) {
+            VStack(alignment: .leading, spacing: 10) {
                 Text("OUVRAGE").font(.caption2.weight(.bold)).foregroundStyle(.secondary)
-                Text("Plafond Placostil®\nsur fourrures Stil® F 530").font(.title2.bold())
-                if store.isUsingOfflineData { Label("Mode hors connexion · dernières données synchronisées", systemImage:"icloud.slash").font(.caption).foregroundStyle(.orange) }
-                ProgressView(value:Double(step+1),total:Double(stepNames.count))
-                Text("Étape \(step+1) sur \(stepNames.count) · \(stepNames[step])").font(.caption).foregroundStyle(.secondary)
-            }.padding()
+                Text(workTitle).font(.title2.bold())
+                if store.isUsingOfflineData {
+                    Label("Mode hors connexion · dernières données synchronisées", systemImage: "icloud.slash")
+                        .font(.caption).foregroundStyle(.orange)
+                } else {
+                    Label("Données synchronisées avec Plaquisto Admin", systemImage: "checkmark.icloud")
+                        .font(.caption).foregroundStyle(.green)
+                }
+                ProgressView(value: Double(step + 1), total: Double(stepNames.count))
+                Text("Étape \(step + 1) sur \(stepNames.count) · \(stepNames[step])")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            .padding()
+
             Divider()
             Form { stepContent }
+
             HStack {
-                if step > 0 { Button("Retour") { withAnimation { step -= 1 } }.buttonStyle(.bordered) }
+                if step > 0 {
+                    Button("Retour") { withAnimation { step -= 1 } }.buttonStyle(.bordered)
+                }
                 Spacer()
-                if step < stepNames.count-1 { Button("Continuer") { prepareDefaults(); withAnimation { step += 1 } }.buttonStyle(.borderedProminent).disabled(!canContinue) }
-                else { Button("Nouvel ouvrage") { withAnimation { step=0 } }.buttonStyle(.borderedProminent) }
-            }.padding().background(.bar)
-        }.navigationBarTitleDisplayMode(.inline)
+                if step < stepNames.count - 1 {
+                    Button("Continuer") {
+                        prepareDefaults()
+                        withAnimation { step += 1 }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(!canContinue)
+                } else {
+                    Button("Nouvel ouvrage") { reset() }.buttonStyle(.borderedProminent)
+                }
+            }
+            .padding()
+            .background(.bar)
+        }
+        .navigationBarTitleDisplayMode(.inline)
     }
 
-    @ViewBuilder private var stepContent: some View {
+    @ViewBuilder
+    private var stepContent: some View {
         switch step {
         case 0:
-            Section("Dimensions de la pièce") { MeasureField(label:"Longueur",value:$length,unit:"m"); MeasureField(label:"Largeur",value:$width,unit:"m") }
-            Section { LabeledContent("Surface",value:"\(area.formatted(.number.precision(.fractionLength(2)))) m²") } footer:{Text("La surface sert de base au calcul des fournitures.")}
-        case 1:
-            Section("Support du plafond") { Picker("Type de support",selection:$supportID){Text("Sélectionner").tag("");ForEach(supports){Text($0.title).tag($0.id)}}.onChange(of:supportID){_,_ in modelID="";commercialReferenceID=""};MeasureField(label:"Hauteur du plénum",value:$plenum,unit:"cm").onChange(of:plenum){_,_ in if !compatibleModels.contains(where:{$0.id==modelID}){modelID="";commercialReferenceID=""}};Toggle("Prévoir la pose d’un pare-vapeur",isOn:$vaporBarrier) }
-            if !supportID.isEmpty {
-                Section {
-                    if compatibleModels.isEmpty { Label("Aucun modèle de suspente publié n’est compatible avec cette hauteur.",systemImage:"exclamationmark.triangle.fill").foregroundStyle(.orange) }
-                    else { Picker("Modèle de suspente",selection:$modelID){Text("Sélectionner").tag("");ForEach(compatibleModels){Text(modelPickerName($0)).tag($0.id)}}.onChange(of:modelID){_,_ in commercialReferenceID=selectedCommercialReferences.first?.id ?? ""};if let product=selectedProduct,let model=selectedModel{Text(product.title).font(.subheadline.weight(.semibold));LabeledContent("Modèle",value:modelDisplayName(model));LabeledContent("Fixation",value:technicalValue("fixation",for:product)?.string ?? "—");LabeledContent("Entraxe",value:spacingDisplay(for:product))} }
-                } header:{Text("Choix de la suspente")} footer:{Text("Les produits et modèles sont filtrés selon le support et la hauteur du plénum enregistrés dans Plaquisto Admin.")}
+            Section("Dimensions de la pièce") {
+                MeasureField(label: "Longueur", value: $length, unit: "m")
+                MeasureField(label: "Largeur", value: $width, unit: "m")
             }
+            Section {
+                LabeledContent("Surface", value: "\(format(area)) m²")
+            } footer: {
+                Text("La surface sert de base au calcul de toutes les fournitures.")
+            }
+
+        case 1:
+            Section("Support du plafond") {
+                Picker("Type de support", selection: $support) {
+                    Text("Sélectionner").tag("")
+                    ForEach(supports, id: \.self) { Text($0).tag($0) }
+                }
+                .onChange(of: support) { _, _ in fixingSystemID = "" }
+                MeasureField(label: "Hauteur du plénum", value: $plenum, unit: "cm")
+                    .onChange(of: plenum) { _, _ in fixingSystemID = "" }
+                Toggle("Prévoir la pose d’un pare-vapeur", isOn: $vaporBarrier)
+                    .onChange(of: vaporBarrier) { _, _ in fixingSystemID = "" }
+            }
+            Section {
+                Text("Le support et la hauteur servent à trouver les systèmes de fixation compatibles.")
+                    .foregroundStyle(.secondary)
+            }
+
         case 2:
-            Section("Isolation") { MeasureField(label:"Poids de l’isolant",value:$insulation,unit:"kg/m²") }
-            Section { if let spacing { LabeledContent("Entraxe maximal",value:"\(Int(spacing*100)) cm") } else { Label("Au-delà de 15 kg/m², cette configuration n’est pas couverte.",systemImage:"exclamationmark.triangle.fill").foregroundStyle(.orange) } } footer:{Text("À 6 kg/m², la règle 6 à moins de 10 s’applique. À 10 kg/m², la règle 10 à 15 s’applique.")}
+            Section("Isolation") {
+                Picker("Type d’isolant", selection: $insulationID) {
+                    Text("Sans isolant").tag("")
+                    ForEach(insulationSeries) { Text($0.title).tag($0.id) }
+                }
+                .onChange(of: insulationID) { _, _ in
+                    insulationThickness = insulationPoints.first?.thickness ?? 0
+                    fixingSystemID = ""
+                }
+                if !insulationID.isEmpty {
+                    Picker("Épaisseur", selection: $insulationThickness) {
+                        ForEach(insulationPoints) { point in
+                            Text("\(Int(point.thickness)) mm").tag(point.thickness)
+                        }
+                    }
+                    LabeledContent("Poids maximal retenu", value: "\(format(insulationWeight)) kg/m²")
+                }
+            }
+            Section {
+                LabeledContent("Entraxe maximal des fourrures", value: spacing.map { "\(Int($0 * 100)) cm" } ?? "Non couvert")
+            } footer: {
+                Text("Pour une plage de poids, Plaquisto retient toujours la valeur la plus élevée.")
+            }
+
         case 3:
-            Section("Plaques de plâtre") { Picker("Plaque",selection:$boardID){Text("Sélectionner").tag("");ForEach(boards){Text($0.title).tag($0.id)}};Picker("Nombre de peaux",selection:$layers){Text("Simple peau").tag(1);Text("Double peau").tag(2)}.pickerStyle(.segmented) }
-        case 4:
-            Section("Conditions particulières") { Toggle("Plaques parallèles aux fourrures",isOn:$parallel);Toggle("Plaque hydrofugée",isOn:$waterResistant);Toggle("Exigence de résistance au feu",isOn:$fireRated) }
-            Section("Règle retenue") { LabeledContent("Entraxe des fourrures",value:spacing.map{"\(Int($0*100)) cm"} ?? "Non compatible");LabeledContent("Entraxe des suspentes",value:"120 cm");if fireRated{LabeledContent("Vis",value:"Tous les 15 cm")}else{LabeledContent("Vis",value:"Tous les 30 cm")} }
-        default:
-            Section { VStack(alignment:.leading,spacing:8){Label("Configuration cohérente",systemImage:"checkmark.seal.fill").font(.headline).foregroundStyle(.green);Text("\(area.formatted(.number.precision(.fractionLength(2)))) m² · \(layers == 1 ? "simple" : "double") peau · entraxe \(Int((spacing ?? 0)*100)) cm").font(.subheadline).foregroundStyle(.secondary)}.padding(.vertical,5) }
-            Section("Fournitures indicatives") { ForEach(supplies){item in LabeledContent(item.name,value:"\(rounded(item.quantity,item.unit)) \(item.unit)")};if fireRated,spacing == 0.6,let ratio=profile?.data["entretoise_stil_flam_unite"]?.number{LabeledContent("Entretoises Stil Flam",value:"\(Int(ceil(ratio*area))) u")} }
-            Section("Référence commerciale de la suspente") {
-                if selectedCommercialReferences.isEmpty { Text("Aucune référence commerciale publiée pour ce modèle.").foregroundStyle(.secondary) }
-                else {
-                    Picker("Conditionnement",selection:$commercialReferenceID){ForEach(selectedCommercialReferences){Text(commercialReferenceName($0)).tag($0.id)}}
-                    if let reference=selectedCommercialReference {
-                        LabeledContent("Référence fabricant",value:reference.data["reference_fabricant"]?.string ?? "—")
-                        LabeledContent("Conditionnement",value:reference.data["conditionnement"]?.string ?? "—")
-                        LabeledContent("Prix HT",value:priceDisplay(reference))
-                        if let estimate=packageEstimate(reference){LabeledContent("Besoin indicatif",value:estimate)}
+            Section("Système de fixation") {
+                if compatibleSystems.isEmpty {
+                    Label("Aucun système publié n’est compatible avec cette configuration.", systemImage: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.orange)
+                } else {
+                    Picker("Système", selection: $fixingSystemID) {
+                        Text("Sélectionner").tag("")
+                        ForEach(compatibleSystems) { Text($0.title).tag($0.id) }
                     }
                 }
             }
-            Section { Label("Enduit en poudre ou prêt à l’emploi : ne pas additionner les deux quantités.",systemImage:"info.circle") } footer:{Text("Quantités indicatives issues de Plaquisto Admin, pour une base fabricant de 8 × 10 m. Les conditionnements et les prix seront ajoutés depuis l’administration.")}
+            if let system = selectedFixingSystem {
+                Section {
+                    ForEach(selectedComponents) { component in
+                        LabeledContent(component.name, value: componentDescription(component))
+                    }
+                } header: {
+                    Text("Fournitures composant le système")
+                } footer: {
+                    Text(system.summary)
+                }
+            }
+
+        case 4:
+            Section("Parement") {
+                Picker("Nombre de plaques", selection: $layers) {
+                    Text("Simple peau").tag(1)
+                    Text("Double peau").tag(2)
+                }
+                .pickerStyle(.segmented)
+            }
+            Section("Configuration retenue") {
+                LabeledContent("Surface", value: "\(format(area)) m²")
+                LabeledContent("Entraxe des fourrures", value: spacing.map { "\(Int($0 * 100)) cm" } ?? "Non couvert")
+                LabeledContent("Système de fixation", value: selectedFixingSystem?.title ?? "—")
+                LabeledContent("Nombre indicatif de systèmes", value: String(Int(ceil(fixingSystemCount))))
+            }
+
+        default:
+            Section {
+                VStack(alignment: .leading, spacing: 8) {
+                    Label("Quantitatif calculé", systemImage: "checkmark.seal.fill")
+                        .font(.headline).foregroundStyle(.green)
+                    Text("\(format(area)) m² · \(layers == 1 ? "simple" : "double") peau · entraxe \(Int((spacing ?? 0) * 100)) cm")
+                        .font(.subheadline).foregroundStyle(.secondary)
+                }
+                .padding(.vertical, 5)
+            }
+            Section("Système de fixation") {
+                LabeledContent("Solution", value: selectedFixingSystem?.title ?? "—")
+                LabeledContent("Nombre de systèmes", value: String(Int(ceil(fixingSystemCount))))
+            }
+            Section("Fournitures indicatives") {
+                ForEach(supplies) { supply in
+                    LabeledContent(supply.name, value: "\(formattedQuantity(supply.quantity, unit: supply.unit)) \(supply.unit)")
+                }
+            }
+            Section {
+                Label("Choisir l’enduit en poudre ou l’enduit en pâte : les deux quantités ne doivent pas être additionnées.", systemImage: "info.circle")
+                Text("Les quantités sont indicatives et proviennent des tableaux publiés dans Plaquisto Admin.")
+                    .foregroundStyle(.secondary)
+            }
         }
     }
 
-    private var canContinue: Bool { switch step { case 0:return length>0 && width>0;case 1:return !supportID.isEmpty && plenum>0 && compatibleModels.contains(where:{$0.id==modelID});case 2:return insulation>=0 && insulation<=15;case 3:return !boardID.isEmpty;default:return true } }
-    private func prepareDefaults(){if supportID.isEmpty{supportID=supports.first?.id ?? ""};if boardID.isEmpty{boardID=boards.first?.id ?? ""}}
-    private func rounded(_ value:Double,_ unit:String)->String { unit=="u" ? String(Int(ceil(value))) : value.formatted(.number.precision(.fractionLength(2))) }
-    private func technicalValue(_ key:String,for product:ReferenceRecord)->JSONValue? {
-        if let value=product.data[key]{return value}
-        guard let technicalID=product.data["technical_record_id"]?.string else{return nil}
-        return store.records.first{$0.id==technicalID}?.data[key]
-    }
-    private func coversHeight(height:Double,values:(String)->JSONValue?)->Bool {
-        if values("reglage_mode")?.string=="valeurs_discretes",let choices=values("reglages_mm")?.array?.compactMap({$0.number ?? $0.string.flatMap(Double.init)}){return choices.contains{abs($0-height)<0.1}}
-        if let minimum=values("reglage_min_mm")?.number,let maximum=values("reglage_max_mm")?.number{return height>=minimum && height<=maximum}
-        if let choices=values("reglages_mm")?.array?.compactMap({$0.number ?? $0.string.flatMap(Double.init)}){return choices.contains{abs($0-height)<0.1}}
-        if let minimum=values("reglage_min_exclu_mm")?.number{return height>minimum}
-        return false
-    }
-    private func modelDisplayName(_ model:ReferenceRecord)->String {
-        if let minimum=model.data["reglage_min_mm"]?.number,let maximum=model.data["reglage_max_mm"]?.number{
-            if minimum==maximum{return "réglage \(minimum.formatted(.number.precision(.fractionLength(0)))) mm"}
-            return "réglage \(minimum.formatted(.number.precision(.fractionLength(0)))) à \(maximum.formatted(.number.precision(.fractionLength(0)))) mm"
+    private var canContinue: Bool {
+        switch step {
+        case 0: return length > 0 && width > 0
+        case 1: return !support.isEmpty && plenum > 0
+        case 2: return insulationID.isEmpty || selectedInsulationPoint != nil
+        case 3: return selectedFixingSystem != nil
+        case 4: return spacing != nil
+        default: return true
         }
-        return model.title
     }
-    private func modelPickerName(_ model:ReferenceRecord)->String {
-        let productName=products.first{$0.id==model.data["product_id"]?.string}?.title ?? "Produit"
-        return "\(productName) · \(modelDisplayName(model))"
+
+    private func prepareDefaults() {
+        if support.isEmpty { support = supports.first ?? "" }
+        if fixingSystemID.isEmpty { fixingSystemID = compatibleSystems.first?.id ?? "" }
     }
-    private func spacingDisplay(for product:ReferenceRecord)->String {
-        guard let spacing=technicalValue("entraxe_suspentes_m",for:product)?.number else{return "—"}
-        return "\((spacing*100).formatted(.number.precision(.fractionLength(0)))) cm"
+
+    private func reset() {
+        withAnimation {
+            step = 0
+            support = ""
+            plenum = 20
+            vaporBarrier = false
+            insulationID = ""
+            insulationThickness = 0
+            fixingSystemID = ""
+            layers = 1
+        }
     }
-    private func commercialReferenceName(_ reference:ReferenceRecord)->String {
-        let code=reference.data["reference_fabricant"]?.string ?? reference.title
-        let packaging=reference.data["conditionnement"]?.string ?? "Conditionnement à renseigner"
-        return "\(code) · \(packaging)"
+
+    private func components(for system: ReferenceRecord?) -> [FixingComponent] {
+        system?.data["components"]?.array?.compactMap { value in
+            guard let object = value.object,
+                  let name = object["name"]?.string,
+                  let quantity = object["quantity"]?.number,
+                  let unit = object["unit"]?.string,
+                  let calculation = object["calculation"]?.string else { return nil }
+            return FixingComponent(name: name, quantity: quantity, unit: unit, calculation: calculation)
+        } ?? []
     }
-    private func priceDisplay(_ reference:ReferenceRecord)->String {
-        guard let price=reference.data["prix_ht"]?.number else{return "À renseigner"}
-        return "\(price.formatted(.number.precision(.fractionLength(2)))) € HT"
+
+    private func componentDescription(_ component: FixingComponent) -> String {
+        if component.calculation == "plenum_m" { return "selon le plénum · ml" }
+        return "\(format(component.quantity)) \(component.unit) par système"
     }
-    private func packageEstimate(_ reference:ReferenceRecord)->String? {
-        guard let required=supplies.first(where:{$0.id=="suspente_unite"})?.quantity,
-              let packagingText=reference.data["conditionnement"]?.string else{return nil}
-        let digits=packagingText.components(separatedBy:CharacterSet.decimalDigits.inverted).joined()
-        guard let packageSize=Double(digits),packageSize>0 else{return nil}
-        let packages=Int(ceil(required/packageSize))
-        guard let price=reference.data["prix_ht"]?.number else{return "\(packages) conditionnement(s)"}
-        return "\(packages) conditionnement(s) · \((Double(packages)*price).formatted(.number.precision(.fractionLength(2)))) € HT"
+
+    private func format(_ value: Double) -> String {
+        value.formatted(.number.precision(.fractionLength(0...2)))
+    }
+
+    private func formattedQuantity(_ value: Double, unit: String) -> String {
+        unit == "unité" ? String(Int(ceil(value))) : format(value)
     }
 }
 
 private struct MeasureField: View {
-    let label:String; @Binding var value:Double; let unit:String
-    var body:some View { HStack { Text(label); Spacer(); TextField("0",value:$value,format:.number).keyboardType(.decimalPad).multilineTextAlignment(.trailing).frame(width:90);Text(unit).foregroundStyle(.secondary) } }
+    let label: String
+    @Binding var value: Double
+    let unit: String
+
+    var body: some View {
+        HStack {
+            Text(label)
+            Spacer()
+            TextField("0", value: $value, format: .number)
+                .keyboardType(.decimalPad)
+                .multilineTextAlignment(.trailing)
+                .frame(width: 90)
+            Text(unit).foregroundStyle(.secondary)
+        }
+    }
 }
