@@ -162,8 +162,11 @@ struct ConfiguratorView: View {
         return false
     }
     private func modelDisplayName(_ model:ReferenceRecord)->String {
-        guard let dimension=model.data["dimension_mm"]?.number else{return model.title}
-        return "\(dimension.formatted(.number.precision(.fractionLength(0)))) mm"
+        if let minimum=model.data["reglage_min_mm"]?.number,let maximum=model.data["reglage_max_mm"]?.number{
+            if minimum==maximum{return "réglage \(minimum.formatted(.number.precision(.fractionLength(0)))) mm"}
+            return "réglage \(minimum.formatted(.number.precision(.fractionLength(0)))) à \(maximum.formatted(.number.precision(.fractionLength(0)))) mm"
+        }
+        return model.title
     }
     private func modelPickerName(_ model:ReferenceRecord)->String {
         let productName=products.first{$0.id==model.data["product_id"]?.string}?.title ?? "Produit"
