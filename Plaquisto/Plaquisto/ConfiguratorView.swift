@@ -55,7 +55,7 @@ struct ConfiguratorView: View {
     @State private var jointTreatment = true
     @State private var compoundChoice = "poudre"
 
-    private let stepNames = ["Dimensions", "Support", "Isolation", "Entraxe", "Fixation", "Parements", "Bandes à joint", "Résultat"]
+    private let stepNames = ["Dimensions", "Support", "Isolation et entraxe", "Fixation", "Parements", "Bandes à joint", "Résultat"]
     private let spacingChoices = [0.4, 0.5, 0.6]
 
     private var catalogue: CataloguePayload? { store.catalogue }
@@ -229,36 +229,41 @@ struct ConfiguratorView: View {
                 MeasureField(label: "Hauteur du plénum", value: $plenum, unit: "cm")
                     .onChange(of: plenum) { _, _ in fixingSystemID = "" }
                 Toggle("Prévoir la pose d’un pare-vapeur", isOn: $vaporBarrier)
-                    .onChange(of: vaporBarrier) { _, _ in fixingSystemID = "" }
             }
             Section {
                 Label("Le plénum correspond à l’espace vide situé entre le faux plafond, ou plafond suspendu, et la dalle du plancher.", systemImage: "info.circle")
-                Text("Le support et la hauteur servent à trouver les systèmes de fixation compatibles.")
-                    .foregroundStyle(.secondary)
+                if vaporBarrier {
+                    Text("Le pare-vapeur sera pris en compte dans le quantitatif dès que son tableau sera publié dans Plaquisto Admin.")
+                        .foregroundStyle(.secondary)
+                }
             }
 
         case 2:
-            Section("Isolation") {
+            Section {
                 Picker("Type d’isolant", selection: $insulationID) {
                     Text("Sans isolant").tag("")
                     ForEach(insulationSeries) { Text($0.title).tag($0.id) }
                 }
                 .onChange(of: insulationID) { _, _ in
                     insulationThickness = insulationPoints.first?.thickness ?? 0
+                    selectedSpacing = maximumSpacing ?? 0.4
                     fixingSystemID = ""
                 }
                 if !insulationID.isEmpty {
                     Picker("Épaisseur", selection: $insulationThickness) {
                         ForEach(insulationPoints) { point in Text("\(Int(point.thickness)) mm").tag(point.thickness) }
                     }
+                    .onChange(of: insulationThickness) { _, _ in
+                        selectedSpacing = maximumSpacing ?? 0.4
+                        fixingSystemID = ""
+                    }
                     LabeledContent("Poids maximal retenu", value: "\(format(insulationWeight)) kg/m²")
                 }
-            }
-            Section { LabeledContent("Entraxe maximal recommandé", value: maximumSpacing.map { "\(Int($0 * 100)) cm" } ?? "Non couvert") } footer: {
+            } header: {
+                Text("Isolation")
+            } footer: {
                 Text("Pour une plage de poids, Plaquisto retient toujours la valeur la plus élevée.")
             }
-
-        case 3:
             Section("Entraxe des fourrures") {
                 Picker("Entraxe", selection: $selectedSpacing) {
                     ForEach(spacingChoices, id: \.self) { spacing in Text("\(Int(spacing * 100)) cm").tag(spacing) }
@@ -273,7 +278,7 @@ struct ConfiguratorView: View {
                 }
             }
 
-        case 4:
+        case 3:
             Section("Système de fixation") {
                 if compatibleSystems.isEmpty {
                     Label("Aucun système publié n’est compatible avec cette configuration.", systemImage: "exclamationmark.triangle.fill")
@@ -297,7 +302,7 @@ struct ConfiguratorView: View {
                 }
             }
 
-        case 5:
+        case 4:
             Section("Nombre de peaux") {
                 Picker("Parement", selection: $layers) {
                     Text("Simple peau").tag(1)
@@ -309,7 +314,7 @@ struct ConfiguratorView: View {
             allocationSection(title: "Première peau", allocations: $firstSkin)
             if layers == 2 { allocationSection(title: "Deuxième peau", allocations: $secondSkin) }
 
-        case 6:
+        case 5:
             Section("Traitement des bandes à joint") {
                 Toggle("Prévoir le traitement des bandes", isOn: $jointTreatment)
                 if jointTreatment {
@@ -345,6 +350,13 @@ struct ConfiguratorView: View {
             Section("Parements utilisés") {
                 ForEach(facingSupplies) { supply in
                     LabeledContent(supply.name, value: "\(Int(supply.quantity)) \(supply.unit)")
+                }
+            }
+            Section("Pare-vapeur") {
+                LabeledContent("Pose prévue", value: vaporBarrier ? "Oui" : "Non")
+                if vaporBarrier {
+                    Text("Les fournitures seront ajoutées lorsque le tableau pare-vapeur sera publié dans Plaquisto Admin.")
+                        .foregroundStyle(.secondary)
                 }
             }
             Section("Traitement des joints") {
@@ -403,17 +415,16 @@ struct ConfiguratorView: View {
         switch step {
         case 0: return length > 0 && width > 0
         case 1: return !support.isEmpty && plenum > 0
-        case 2: return maximumSpacing != nil && (insulationID.isEmpty || selectedInsulationPoint != nil)
-        case 3: return spacingChoices.contains(selectedSpacing)
-        case 4: return selectedFixingSystem != nil
-        case 5: return allocationsAreValid(firstSkin) && (layers == 1 || allocationsAreValid(secondSkin))
-        case 6: return !jointTreatment || ["poudre", "pate"].contains(compoundChoice)
+        case 2: return maximumSpacing != nil && (insulationID.isEmpty || selectedInsulationPoint != nil) && spacingChoices.contains(selectedSpacing)
+        case 3: return selectedFixingSystem != nil
+        case 4: return allocationsAreValid(firstSkin) && (layers == 1 || allocationsAreValid(secondSkin))
+        case 5: return !jointTreatment || ["poudre", "pate"].contains(compoundChoice)
         default: return true
         }
     }
 
     private func advance() {
-        if step == 3 && spacingIsAboveRecommendation { showSpacingWarning = true }
+        if step == 2 && spacingIsAboveRecommendation { showSpacingWarning = true }
         else { completeAdvance() }
     }
 
@@ -424,9 +435,8 @@ struct ConfiguratorView: View {
 
     private func prepareDefaults() {
         if step == 0 && support.isEmpty { support = supports.first ?? "" }
-        if step == 2 { selectedSpacing = maximumSpacing ?? 0.4 }
-        if step == 3 && fixingSystemID.isEmpty { fixingSystemID = compatibleSystems.first?.id ?? "" }
-        if step == 4 { ensureFacingAllocations() }
+        if step == 2 && fixingSystemID.isEmpty { fixingSystemID = compatibleSystems.first?.id ?? "" }
+        if step == 3 { ensureFacingAllocations() }
     }
 
     private func ensureFacingAllocations() {
