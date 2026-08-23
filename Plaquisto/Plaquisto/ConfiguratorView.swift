@@ -21,6 +21,15 @@ private struct FixingComponent: Identifiable {
     var id: String { "\(name)-\(unit)-\(calculation)" }
 }
 
+private struct VaporBarrierComponent: Identifiable {
+    let name: String
+    let quantity: Double
+    let unit: String
+    let calculation: String
+    let excludeWhenSystemHandlesVaporBarrier: Bool
+    var id: String { "\(name)-\(unit)-\(calculation)" }
+}
+
 private struct FacingDimension: Identifiable, Hashable {
     let width: Double
     let length: Double
@@ -64,6 +73,7 @@ struct ConfiguratorView: View {
     private var fixingSystems: [ReferenceRecord] { catalogue?.systemesFixation ?? [] }
     private var facings: [ReferenceRecord] { catalogue?.parements ?? [] }
     private var quantityItems: [ReferenceRecord] { catalogue?.quantitatifs ?? [] }
+    private var vaporBarrierRecords: [ReferenceRecord] { catalogue?.pareVapeur ?? [] }
     private var supports: [String] {
         Array(Set(fixingSystems.compactMap { $0.data["support"]?.string })).sorted()
     }
@@ -97,10 +107,6 @@ struct ConfiguratorView: View {
                   let minimum = system.data["plenum_min_mm"]?.number,
                   let maximum = system.data["plenum_max_mm"]?.number,
                   plenumMM >= minimum, plenumMM <= maximum else { return false }
-            let dedicatedToVaporBarrier = system.data["pare_vapeur_compatible"]?.bool == true
-            if support == "Plancher bois horizontal" {
-                return vaporBarrier ? dedicatedToVaporBarrier : !dedicatedToVaporBarrier
-            }
             return true
         }
     }
@@ -140,6 +146,22 @@ struct ConfiguratorView: View {
     }
     private var facingSupplies: [Supply] {
         suppliesForSkin(firstSkin, name: "Première peau") + (layers == 2 ? suppliesForSkin(secondSkin, name: "Deuxième peau") : [])
+    }
+    private var vaporBarrierSupplies: [Supply] {
+        guard vaporBarrier else { return [] }
+        let systemHandlesVaporBarrier = selectedFixingSystem?.data["pare_vapeur_compatible"]?.bool == true
+        let fourrureRatio = quantityItems.first(where: { $0.id == "QTY-FOURRURE" })?.data["values"]?.object?[quantityConfigurationKey]?.number ?? 0
+
+        return vaporBarrierRecords.flatMap { record in
+            vaporBarrierComponents(for: record).compactMap { component in
+                if component.excludeWhenSystemHandlesVaporBarrier && systemHandlesVaporBarrier { return nil }
+                let quantity = component.calculation == "fourrure_ml"
+                    ? component.quantity * fourrureRatio * area
+                    : component.quantity * area
+                guard quantity > 0 else { return nil }
+                return Supply(id: "\(record.id)-\(component.id)", name: component.name, quantity: quantity, unit: component.unit)
+            }
+        }
     }
 
     var body: some View {
@@ -233,7 +255,7 @@ struct ConfiguratorView: View {
             Section {
                 Label("Le plénum correspond à l’espace vide situé entre le faux plafond, ou plafond suspendu, et la dalle du plancher.", systemImage: "info.circle")
                 if vaporBarrier {
-                    Text("Le pare-vapeur sera pris en compte dans le quantitatif dès que son tableau sera publié dans Plaquisto Admin.")
+                    Text("Les fournitures nécessaires au pare-vapeur seront ajoutées au quantitatif.")
                         .foregroundStyle(.secondary)
                 }
             }
@@ -347,16 +369,17 @@ struct ConfiguratorView: View {
                 LabeledContent("Solution", value: selectedFixingSystem?.title ?? "—")
                 LabeledContent("Nombre de systèmes", value: String(Int(ceil(fixingSystemCount))))
             }
-            Section("Parements utilisés") {
-                ForEach(facingSupplies) { supply in
-                    LabeledContent(supply.name, value: "\(Int(supply.quantity)) \(supply.unit)")
-                }
-            }
             Section("Pare-vapeur") {
                 LabeledContent("Pose prévue", value: vaporBarrier ? "Oui" : "Non")
                 if vaporBarrier {
-                    Text("Les fournitures seront ajoutées lorsque le tableau pare-vapeur sera publié dans Plaquisto Admin.")
-                        .foregroundStyle(.secondary)
+                    ForEach(vaporBarrierSupplies) { supply in
+                        LabeledContent(supply.name, value: "\(formattedQuantity(supply.quantity, unit: supply.unit)) \(supply.unit)")
+                    }
+                }
+            }
+            Section("Parements utilisés") {
+                ForEach(facingSupplies) { supply in
+                    LabeledContent(supply.name, value: "\(Int(supply.quantity)) \(supply.unit)")
                 }
             }
             Section("Traitement des joints") {
@@ -503,6 +526,23 @@ struct ConfiguratorView: View {
                   let unit = object["unit"]?.string,
                   let calculation = object["calculation"]?.string else { return nil }
             return FixingComponent(name: name, quantity: quantity, unit: unit, calculation: calculation)
+        } ?? []
+    }
+
+    private func vaporBarrierComponents(for record: ReferenceRecord) -> [VaporBarrierComponent] {
+        record.data["components"]?.array?.compactMap { value in
+            guard let object = value.object,
+                  let name = object["name"]?.string,
+                  let quantity = object["quantity"]?.number,
+                  let unit = object["unit"]?.string,
+                  let calculation = object["calculation"]?.string else { return nil }
+            return VaporBarrierComponent(
+                name: name,
+                quantity: quantity,
+                unit: unit,
+                calculation: calculation,
+                excludeWhenSystemHandlesVaporBarrier: object["exclude_when_system_handles_vapor_barrier"]?.bool == true
+            )
         } ?? []
     }
 

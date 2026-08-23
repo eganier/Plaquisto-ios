@@ -17,10 +17,11 @@ struct CataloguePayload: Codable {
     let systemesFixation: [ReferenceRecord]
     let parements: [ReferenceRecord]
     let quantitatifs: [ReferenceRecord]
+    let pareVapeur: [ReferenceRecord]?
     let regles: [ReferenceRecord]
 
     var records: [ReferenceRecord] {
-        (ouvrage.map { [$0] } ?? []) + isolation + systemesFixation + parements + quantitatifs + regles
+        (ouvrage.map { [$0] } ?? []) + isolation + systemesFixation + parements + quantitatifs + (pareVapeur ?? []) + regles
     }
 }
 
