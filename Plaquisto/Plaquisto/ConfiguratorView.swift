@@ -21,6 +21,21 @@ private struct FixingComponent: Identifiable {
     var id: String { "\(name)-\(unit)-\(calculation)" }
 }
 
+private struct FacingDimension: Identifiable, Hashable {
+    let width: Double
+    let length: Double
+    var id: String { "\(Int(width))x\(Int(length))" }
+    var label: String { "\(Int(width)) × \(Int(length)) mm" }
+    var area: Double { width * length / 1_000_000 }
+}
+
+private struct FacingAllocation: Identifiable {
+    let id = UUID()
+    var facingID: String
+    var dimensionID: String
+    var area: Double
+}
+
 struct ConfiguratorView: View {
     @StateObject private var store = ReferenceStore()
     @State private var step = 0
@@ -31,15 +46,23 @@ struct ConfiguratorView: View {
     @State private var vaporBarrier = false
     @State private var insulationID = ""
     @State private var insulationThickness = 0.0
+    @State private var selectedSpacing = 0.6
+    @State private var showSpacingWarning = false
     @State private var fixingSystemID = ""
     @State private var layers = 1
+    @State private var firstSkin: [FacingAllocation] = []
+    @State private var secondSkin: [FacingAllocation] = []
+    @State private var jointTreatment = true
+    @State private var compoundChoice = "poudre"
 
-    private let stepNames = ["Dimensions", "Support", "Isolation", "Fixation", "Parement", "Résultat"]
+    private let stepNames = ["Dimensions", "Support", "Isolation", "Entraxe", "Fixation", "Parements", "Bandes à joint", "Résultat"]
+    private let spacingChoices = [0.4, 0.5, 0.6]
 
     private var catalogue: CataloguePayload? { store.catalogue }
     private var workTitle: String { catalogue?.ouvrage?.title ?? "Plafond sur fourrures horizontal" }
     private var insulationSeries: [ReferenceRecord] { catalogue?.isolation ?? [] }
     private var fixingSystems: [ReferenceRecord] { catalogue?.systemesFixation ?? [] }
+    private var facings: [ReferenceRecord] { catalogue?.parements ?? [] }
     private var quantityItems: [ReferenceRecord] { catalogue?.quantitatifs ?? [] }
     private var supports: [String] {
         Array(Set(fixingSystems.compactMap { $0.data["support"]?.string })).sorted()
@@ -57,11 +80,15 @@ struct ConfiguratorView: View {
         insulationPoints.first { abs($0.thickness - insulationThickness) < 0.01 }
     }
     private var insulationWeight: Double { selectedInsulationPoint?.maxWeight ?? 0 }
-    private var spacing: Double? {
+    private var maximumSpacing: Double? {
         guard insulationWeight <= 15 else { return nil }
         if insulationWeight >= 10 { return 0.4 }
         if insulationWeight >= 6 { return 0.5 }
         return 0.6
+    }
+    private var spacingIsAboveRecommendation: Bool {
+        guard let maximumSpacing else { return false }
+        return selectedSpacing > maximumSpacing
     }
     private var compatibleSystems: [ReferenceRecord] {
         let plenumMM = plenum * 10
@@ -80,27 +107,25 @@ struct ConfiguratorView: View {
     private var selectedFixingSystem: ReferenceRecord? {
         compatibleSystems.first { $0.id == fixingSystemID }
     }
-    private var selectedComponents: [FixingComponent] {
-        components(for: selectedFixingSystem)
-    }
+    private var selectedComponents: [FixingComponent] { components(for: selectedFixingSystem) }
     private var area: Double { length * width }
-    private var quantityConfigurationKey: String? {
-        guard let spacing else { return nil }
+    private var quantityConfigurationKey: String {
         let prefix = layers == 1 ? "simple" : "double"
-        return "\(prefix)_0\(Int((spacing * 100).rounded()))"
+        return "\(prefix)_0\(Int((selectedSpacing * 100).rounded()))"
     }
     private var fixingSystemCount: Double {
-        guard let key = quantityConfigurationKey,
-              let row = quantityItems.first(where: { $0.id == "QTY-FIXATION" }),
-              let ratio = row.data["values"]?.object?[key]?.number else { return 0 }
+        guard let row = quantityItems.first(where: { $0.id == "QTY-FIXATION" }),
+              let ratio = row.data["values"]?.object?[quantityConfigurationKey]?.number else { return 0 }
         return ratio * area
     }
-    private var supplies: [Supply] {
-        guard let key = quantityConfigurationKey else { return [] }
+    private var otherSupplies: [Supply] {
         var result: [Supply] = []
 
-        for item in quantityItems where item.id != "QTY-FIXATION" {
-            guard let ratio = item.data["values"]?.object?[key]?.number,
+        for item in quantityItems where !["QTY-FIXATION", "QTY-PLAQUE"].contains(item.id) {
+            if !jointTreatment && ["QTY-BANDE", "QTY-ENDUIT-POUDRE", "QTY-ENDUIT-PATE"].contains(item.id) { continue }
+            if jointTreatment && compoundChoice == "poudre" && item.id == "QTY-ENDUIT-PATE" { continue }
+            if jointTreatment && compoundChoice == "pate" && item.id == "QTY-ENDUIT-POUDRE" { continue }
+            guard let ratio = item.data["values"]?.object?[quantityConfigurationKey]?.number,
                   ratio > 0,
                   let unit = item.data["unit"]?.string else { continue }
             result.append(Supply(id: item.id, name: item.title, quantity: ratio * area, unit: unit))
@@ -109,14 +134,12 @@ struct ConfiguratorView: View {
         for (index, component) in selectedComponents.enumerated() {
             var quantity = fixingSystemCount * component.quantity
             if component.calculation == "plenum_m" { quantity *= plenum / 100 }
-            result.append(Supply(
-                id: "FIX-\(index)-\(component.name)",
-                name: component.name,
-                quantity: quantity,
-                unit: component.unit
-            ))
+            result.append(Supply(id: "FIX-\(index)-\(component.name)", name: component.name, quantity: quantity, unit: component.unit))
         }
         return result
+    }
+    private var facingSupplies: [Supply] {
+        suppliesForSkin(firstSkin, name: "Première peau") + (layers == 2 ? suppliesForSkin(secondSkin, name: "Deuxième peau") : [])
     }
 
     var body: some View {
@@ -125,16 +148,12 @@ struct ConfiguratorView: View {
                 if store.isLoading {
                     ProgressView("Synchronisation avec Plaquisto Admin…")
                 } else if let error = store.error {
-                    ContentUnavailableView(
-                        "Référentiel indisponible",
-                        systemImage: "wifi.exclamationmark",
-                        description: Text(error)
-                    )
-                    .overlay(alignment: .bottom) {
-                        Button("Réessayer") { Task { await store.load() } }
-                            .buttonStyle(.borderedProminent)
-                            .padding(.bottom, 80)
-                    }
+                    ContentUnavailableView("Référentiel indisponible", systemImage: "wifi.exclamationmark", description: Text(error))
+                        .overlay(alignment: .bottom) {
+                            Button("Réessayer") { Task { await store.load() } }
+                                .buttonStyle(.borderedProminent)
+                                .padding(.bottom, 80)
+                        }
                 } else {
                     configurator
                 }
@@ -166,17 +185,12 @@ struct ConfiguratorView: View {
             Form { stepContent }
 
             HStack {
-                if step > 0 {
-                    Button("Retour") { withAnimation { step -= 1 } }.buttonStyle(.bordered)
-                }
+                if step > 0 { Button("Retour") { withAnimation { step -= 1 } }.buttonStyle(.bordered) }
                 Spacer()
                 if step < stepNames.count - 1 {
-                    Button("Continuer") {
-                        prepareDefaults()
-                        withAnimation { step += 1 }
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(!canContinue)
+                    Button("Continuer") { advance() }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(!canContinue)
                 } else {
                     Button("Nouvel ouvrage") { reset() }.buttonStyle(.borderedProminent)
                 }
@@ -185,6 +199,12 @@ struct ConfiguratorView: View {
             .background(.bar)
         }
         .navigationBarTitleDisplayMode(.inline)
+        .alert("Entraxe supérieur à la valeur recommandée", isPresented: $showSpacingWarning) {
+            Button("Modifier l’entraxe", role: .cancel) {}
+            Button("Poursuivre malgré l’avertissement") { completeAdvance() }
+        } message: {
+            Text("L’entraxe choisi de \(Int(selectedSpacing * 100)) cm dépasse la valeur maximale recommandée de \(Int((maximumSpacing ?? 0) * 100)) cm pour le poids d’isolant retenu. Cette configuration peut ne pas respecter les règles techniques applicables. Souhaitez-vous néanmoins poursuivre ?")
+        }
     }
 
     @ViewBuilder
@@ -195,9 +215,7 @@ struct ConfiguratorView: View {
                 MeasureField(label: "Longueur", value: $length, unit: "m")
                 MeasureField(label: "Largeur", value: $width, unit: "m")
             }
-            Section {
-                LabeledContent("Surface", value: "\(format(area)) m²")
-            } footer: {
+            Section { LabeledContent("Surface", value: "\(format(area)) m²") } footer: {
                 Text("La surface sert de base au calcul de toutes les fournitures.")
             }
 
@@ -214,6 +232,7 @@ struct ConfiguratorView: View {
                     .onChange(of: vaporBarrier) { _, _ in fixingSystemID = "" }
             }
             Section {
+                Label("Le plénum correspond à l’espace vide situé entre le faux plafond, ou plafond suspendu, et la dalle du plancher.", systemImage: "info.circle")
                 Text("Le support et la hauteur servent à trouver les systèmes de fixation compatibles.")
                     .foregroundStyle(.secondary)
             }
@@ -230,20 +249,31 @@ struct ConfiguratorView: View {
                 }
                 if !insulationID.isEmpty {
                     Picker("Épaisseur", selection: $insulationThickness) {
-                        ForEach(insulationPoints) { point in
-                            Text("\(Int(point.thickness)) mm").tag(point.thickness)
-                        }
+                        ForEach(insulationPoints) { point in Text("\(Int(point.thickness)) mm").tag(point.thickness) }
                     }
                     LabeledContent("Poids maximal retenu", value: "\(format(insulationWeight)) kg/m²")
                 }
             }
-            Section {
-                LabeledContent("Entraxe maximal des fourrures", value: spacing.map { "\(Int($0 * 100)) cm" } ?? "Non couvert")
-            } footer: {
+            Section { LabeledContent("Entraxe maximal recommandé", value: maximumSpacing.map { "\(Int($0 * 100)) cm" } ?? "Non couvert") } footer: {
                 Text("Pour une plage de poids, Plaquisto retient toujours la valeur la plus élevée.")
             }
 
         case 3:
+            Section("Entraxe des fourrures") {
+                Picker("Entraxe", selection: $selectedSpacing) {
+                    ForEach(spacingChoices, id: \.self) { spacing in Text("\(Int(spacing * 100)) cm").tag(spacing) }
+                }
+                .pickerStyle(.segmented)
+                LabeledContent("Maximum recommandé", value: maximumSpacing.map { "\(Int($0 * 100)) cm" } ?? "Non couvert")
+            }
+            if spacingIsAboveRecommendation {
+                Section {
+                    Label("L’entraxe choisi dépasse la valeur maximale recommandée pour cette configuration.", systemImage: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.orange)
+                }
+            }
+
+        case 4:
             Section("Système de fixation") {
                 if compatibleSystems.isEmpty {
                     Label("Aucun système publié n’est compatible avec cette configuration.", systemImage: "exclamationmark.triangle.fill")
@@ -261,25 +291,41 @@ struct ConfiguratorView: View {
                         LabeledContent(component.name, value: componentDescription(component))
                     }
                 } header: {
-                    Text("Fournitures composant le système")
+                    Text("Fournitures composant le système de fixation")
                 } footer: {
                     Text(system.summary)
                 }
             }
 
-        case 4:
-            Section("Parement") {
-                Picker("Nombre de plaques", selection: $layers) {
+        case 5:
+            Section("Nombre de peaux") {
+                Picker("Parement", selection: $layers) {
                     Text("Simple peau").tag(1)
                     Text("Double peau").tag(2)
                 }
                 .pickerStyle(.segmented)
+                .onChange(of: layers) { _, _ in ensureFacingAllocations() }
             }
-            Section("Configuration retenue") {
-                LabeledContent("Surface", value: "\(format(area)) m²")
-                LabeledContent("Entraxe des fourrures", value: spacing.map { "\(Int($0 * 100)) cm" } ?? "Non couvert")
-                LabeledContent("Système de fixation", value: selectedFixingSystem?.title ?? "—")
-                LabeledContent("Nombre indicatif de systèmes", value: String(Int(ceil(fixingSystemCount))))
+            allocationSection(title: "Première peau", allocations: $firstSkin)
+            if layers == 2 { allocationSection(title: "Deuxième peau", allocations: $secondSkin) }
+
+        case 6:
+            Section("Traitement des bandes à joint") {
+                Toggle("Prévoir le traitement des bandes", isOn: $jointTreatment)
+                if jointTreatment {
+                    Picker("Type d’enduit", selection: $compoundChoice) {
+                        Text("Enduit en poudre").tag("poudre")
+                        Text("Enduit en pâte").tag("pate")
+                    }
+                }
+            }
+            Section {
+                if jointTreatment {
+                    Label("La bande à joint et l’enduit choisi seront ajoutés au quantitatif.", systemImage: "checkmark.circle")
+                } else {
+                    Text("Aucune bande à joint ni aucun enduit ne sera ajouté au quantitatif.")
+                        .foregroundStyle(.secondary)
+                }
             }
 
         default:
@@ -287,7 +333,7 @@ struct ConfiguratorView: View {
                 VStack(alignment: .leading, spacing: 8) {
                     Label("Quantitatif calculé", systemImage: "checkmark.seal.fill")
                         .font(.headline).foregroundStyle(.green)
-                    Text("\(format(area)) m² · \(layers == 1 ? "simple" : "double") peau · entraxe \(Int((spacing ?? 0) * 100)) cm")
+                    Text("\(format(area)) m² · \(layers == 1 ? "simple" : "double") peau · entraxe \(Int(selectedSpacing * 100)) cm")
                         .font(.subheadline).foregroundStyle(.secondary)
                 }
                 .padding(.vertical, 5)
@@ -296,16 +342,60 @@ struct ConfiguratorView: View {
                 LabeledContent("Solution", value: selectedFixingSystem?.title ?? "—")
                 LabeledContent("Nombre de systèmes", value: String(Int(ceil(fixingSystemCount))))
             }
-            Section("Fournitures indicatives") {
-                ForEach(supplies) { supply in
+            Section("Parements utilisés") {
+                ForEach(facingSupplies) { supply in
+                    LabeledContent(supply.name, value: "\(Int(supply.quantity)) \(supply.unit)")
+                }
+            }
+            Section("Traitement des joints") {
+                LabeledContent("Bandes à joint", value: jointTreatment ? "Oui" : "Non")
+                if jointTreatment { LabeledContent("Enduit retenu", value: compoundChoice == "poudre" ? "Enduit en poudre" : "Enduit en pâte") }
+            }
+            Section("Autres fournitures indicatives") {
+                ForEach(otherSupplies) { supply in
                     LabeledContent(supply.name, value: "\(formattedQuantity(supply.quantity, unit: supply.unit)) \(supply.unit)")
                 }
             }
             Section {
-                Label("Choisir l’enduit en poudre ou l’enduit en pâte : les deux quantités ne doivent pas être additionnées.", systemImage: "info.circle")
                 Text("Les quantités sont indicatives et proviennent des tableaux publiés dans Plaquisto Admin.")
                     .foregroundStyle(.secondary)
             }
+        }
+    }
+
+    @ViewBuilder
+    private func allocationSection(title: String, allocations: Binding<[FacingAllocation]>) -> some View {
+        Section {
+            ForEach(allocations) { $allocation in
+                VStack(alignment: .leading, spacing: 12) {
+                    Picker("Type de parement", selection: $allocation.facingID) {
+                        ForEach(facings) { Text($0.title).tag($0.id) }
+                    }
+                    .onChange(of: allocation.facingID) { _, _ in
+                        allocation.dimensionID = dimensions(for: allocation.facingID).first?.id ?? ""
+                    }
+                    Picker("Dimension", selection: $allocation.dimensionID) {
+                        ForEach(dimensions(for: allocation.facingID)) { dimension in Text(dimension.label).tag(dimension.id) }
+                    }
+                    MeasureField(label: "Surface attribuée", value: $allocation.area, unit: "m²")
+                    if allocations.wrappedValue.count > 1 {
+                        Button("Retirer ce parement", role: .destructive) {
+                            allocations.wrappedValue.removeAll { $0.id == allocation.id }
+                        }
+                    }
+                }
+                .padding(.vertical, 4)
+            }
+            Button("Ajouter un autre type de parement") {
+                allocations.wrappedValue.append(defaultAllocation(area: 0))
+            }
+        } header: {
+            Text(title)
+        } footer: {
+            let total = allocations.wrappedValue.reduce(0) { $0 + $1.area }
+            let difference = area - total
+            Text(abs(difference) < 0.01 ? "Répartition complète : \(format(total)) m²." : difference > 0 ? "Il reste \(format(difference)) m² à répartir." : "La répartition dépasse la surface de \(format(-difference)) m².")
+                .foregroundStyle(abs(difference) < 0.01 ? .green : .orange)
         }
     }
 
@@ -313,16 +403,68 @@ struct ConfiguratorView: View {
         switch step {
         case 0: return length > 0 && width > 0
         case 1: return !support.isEmpty && plenum > 0
-        case 2: return insulationID.isEmpty || selectedInsulationPoint != nil
-        case 3: return selectedFixingSystem != nil
-        case 4: return spacing != nil
+        case 2: return maximumSpacing != nil && (insulationID.isEmpty || selectedInsulationPoint != nil)
+        case 3: return spacingChoices.contains(selectedSpacing)
+        case 4: return selectedFixingSystem != nil
+        case 5: return allocationsAreValid(firstSkin) && (layers == 1 || allocationsAreValid(secondSkin))
+        case 6: return !jointTreatment || ["poudre", "pate"].contains(compoundChoice)
         default: return true
         }
     }
 
+    private func advance() {
+        if step == 3 && spacingIsAboveRecommendation { showSpacingWarning = true }
+        else { completeAdvance() }
+    }
+
+    private func completeAdvance() {
+        prepareDefaults()
+        withAnimation { step += 1 }
+    }
+
     private func prepareDefaults() {
-        if support.isEmpty { support = supports.first ?? "" }
-        if fixingSystemID.isEmpty { fixingSystemID = compatibleSystems.first?.id ?? "" }
+        if step == 0 && support.isEmpty { support = supports.first ?? "" }
+        if step == 2 { selectedSpacing = maximumSpacing ?? 0.4 }
+        if step == 3 && fixingSystemID.isEmpty { fixingSystemID = compatibleSystems.first?.id ?? "" }
+        if step == 4 { ensureFacingAllocations() }
+    }
+
+    private func ensureFacingAllocations() {
+        if firstSkin.isEmpty { firstSkin = [defaultAllocation(area: area)] }
+        if layers == 2 && secondSkin.isEmpty { secondSkin = [defaultAllocation(area: area)] }
+    }
+
+    private func defaultAllocation(area allocationArea: Double) -> FacingAllocation {
+        let facingID = facings.first?.id ?? ""
+        return FacingAllocation(facingID: facingID, dimensionID: dimensions(for: facingID).first?.id ?? "", area: allocationArea)
+    }
+
+    private func allocationsAreValid(_ allocations: [FacingAllocation]) -> Bool {
+        !allocations.isEmpty && abs(allocations.reduce(0) { $0 + $1.area } - area) < 0.01 && allocations.allSatisfy { !$0.facingID.isEmpty && !$0.dimensionID.isEmpty && $0.area > 0 }
+    }
+
+    private func dimensions(for facingID: String) -> [FacingDimension] {
+        facings.first(where: { $0.id == facingID })?.data["dimensions"]?.array?.compactMap { value in
+            guard let object = value.object,
+                  let width = object["width_mm"]?.number,
+                  let length = object["length_mm"]?.number else { return nil }
+            return FacingDimension(width: width, length: length)
+        } ?? []
+    }
+
+    private func suppliesForSkin(_ allocations: [FacingAllocation], name skinName: String) -> [Supply] {
+        allocations.compactMap { allocation in
+            guard let facing = facings.first(where: { $0.id == allocation.facingID }),
+                  let dimension = dimensions(for: allocation.facingID).first(where: { $0.id == allocation.dimensionID }),
+                  dimension.area > 0 else { return nil }
+            let boardCount = ceil(allocation.area * 1.05 / dimension.area)
+            return Supply(
+                id: "\(skinName)-\(allocation.id)",
+                name: "\(skinName) · \(facing.title) · \(dimension.label) · \(format(allocation.area)) m² posés",
+                quantity: boardCount,
+                unit: "plaque(s)"
+            )
+        }
     }
 
     private func reset() {
@@ -333,8 +475,13 @@ struct ConfiguratorView: View {
             vaporBarrier = false
             insulationID = ""
             insulationThickness = 0
+            selectedSpacing = 0.6
             fixingSystemID = ""
             layers = 1
+            firstSkin = []
+            secondSkin = []
+            jointTreatment = true
+            compoundChoice = "poudre"
         }
     }
 
@@ -350,8 +497,7 @@ struct ConfiguratorView: View {
     }
 
     private func componentDescription(_ component: FixingComponent) -> String {
-        if component.calculation == "plenum_m" { return "selon le plénum · ml" }
-        return "\(format(component.quantity)) \(component.unit) par système"
+        component.calculation == "plenum_m" ? "selon le plénum · ml" : "\(format(component.quantity)) \(component.unit) par système"
     }
 
     private func format(_ value: Double) -> String {
