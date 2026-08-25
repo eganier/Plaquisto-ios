@@ -38,34 +38,55 @@ private struct FacingDimension: Identifiable, Hashable {
     var area: Double { width * length / 1_000_000 }
 }
 
-private struct FacingAllocation: Identifiable {
-    let id = UUID()
-    var facingID: String
-    var dimensionID: String
-    var area: Double
-}
+private typealias FacingAllocation = FacingSelection
 
 struct ConfiguratorView: View {
     @StateObject private var store = ReferenceStore()
-    @State private var step = 0
-    @State private var length = 5.0
-    @State private var width = 4.0
-    @State private var support = ""
-    @State private var plenum = 20.0
-    @State private var vaporBarrier = false
-    @State private var insulationID = ""
-    @State private var insulationThickness = 0.0
-    @State private var selectedSpacing = 0.6
+    @State private var step: Int
+    @State private var length: Double
+    @State private var width: Double
+    @State private var support: String
+    @State private var plenum: Double
+    @State private var vaporBarrier: Bool
+    @State private var insulationID: String
+    @State private var insulationThickness: Double
+    @State private var selectedSpacing: Double
     @State private var showSpacingWarning = false
-    @State private var fixingSystemID = ""
-    @State private var layers = 1
-    @State private var firstSkin: [FacingAllocation] = []
-    @State private var secondSkin: [FacingAllocation] = []
-    @State private var jointTreatment = true
-    @State private var compoundChoice = "poudre"
+    @State private var fixingSystemID: String
+    @State private var layers: Int
+    @State private var firstSkin: [FacingAllocation]
+    @State private var secondSkin: [FacingAllocation]
+    @State private var jointTreatment: Bool
+    @State private var compoundChoice: String
+    @State private var showingSavedResult: Bool
+    private let onSave: (CeilingConfiguration) -> Void
 
     private let stepNames = ["Dimensions", "Support", "Isolation et entraxe", "Fixation", "Parements", "Bandes à joint", "Résultat"]
     private let spacingChoices = [0.4, 0.5, 0.6]
+
+    init(
+        initialConfiguration: CeilingConfiguration = CeilingConfiguration(),
+        startsAtResult: Bool = false,
+        onSave: @escaping (CeilingConfiguration) -> Void = { _ in }
+    ) {
+        _step = State(initialValue: startsAtResult ? 6 : 0)
+        _length = State(initialValue: initialConfiguration.length)
+        _width = State(initialValue: initialConfiguration.width)
+        _support = State(initialValue: initialConfiguration.support)
+        _plenum = State(initialValue: initialConfiguration.plenum)
+        _vaporBarrier = State(initialValue: initialConfiguration.vaporBarrier)
+        _insulationID = State(initialValue: initialConfiguration.insulationID)
+        _insulationThickness = State(initialValue: initialConfiguration.insulationThickness)
+        _selectedSpacing = State(initialValue: initialConfiguration.selectedSpacing)
+        _fixingSystemID = State(initialValue: initialConfiguration.fixingSystemID)
+        _layers = State(initialValue: initialConfiguration.layers)
+        _firstSkin = State(initialValue: initialConfiguration.firstSkin)
+        _secondSkin = State(initialValue: initialConfiguration.secondSkin)
+        _jointTreatment = State(initialValue: initialConfiguration.jointTreatment)
+        _compoundChoice = State(initialValue: initialConfiguration.compoundChoice)
+        _showingSavedResult = State(initialValue: startsAtResult)
+        self.onSave = onSave
+    }
 
     private var catalogue: CataloguePayload? { store.catalogue }
     private var workTitle: String { catalogue?.ouvrage?.title ?? "Plafond sur fourrures horizontal" }
@@ -165,23 +186,21 @@ struct ConfiguratorView: View {
     }
 
     var body: some View {
-        NavigationStack {
-            Group {
-                if store.isLoading {
-                    ProgressView("Synchronisation avec Plaquisto Admin…")
-                } else if let error = store.error {
-                    ContentUnavailableView("Référentiel indisponible", systemImage: "wifi.exclamationmark", description: Text(error))
-                        .overlay(alignment: .bottom) {
-                            Button("Réessayer") { Task { await store.load() } }
-                                .buttonStyle(.borderedProminent)
-                                .padding(.bottom, 80)
-                        }
-                } else {
-                    configurator
-                }
+        Group {
+            if store.isLoading {
+                ProgressView("Synchronisation avec Plaquisto Admin…")
+            } else if let error = store.error {
+                ContentUnavailableView("Référentiel indisponible", systemImage: "wifi.exclamationmark", description: Text(error))
+                    .overlay(alignment: .bottom) {
+                        Button("Réessayer") { Task { await store.load() } }
+                            .buttonStyle(.borderedProminent)
+                            .padding(.bottom, 80)
+                    }
+            } else {
+                configurator
             }
-            .task { if store.catalogue == nil { await store.load() } }
         }
+        .task { if store.catalogue == nil { await store.load() } }
         .tint(Color(red: 0.12, green: 0.38, blue: 0.29))
     }
 
@@ -214,7 +233,19 @@ struct ConfiguratorView: View {
                         .buttonStyle(.borderedProminent)
                         .disabled(!canContinue)
                 } else {
-                    Button("Nouvel ouvrage") { reset() }.buttonStyle(.borderedProminent)
+                    if showingSavedResult {
+                        Button("Modifier l’ouvrage") {
+                            showingSavedResult = false
+                            withAnimation { step = 0 }
+                        }
+                        .buttonStyle(.borderedProminent)
+                    } else {
+                        Button("Enregistrer l’ouvrage") {
+                            onSave(configuration)
+                            showingSavedResult = true
+                        }
+                        .buttonStyle(.borderedProminent)
+                    }
                 }
             }
             .padding()
@@ -472,6 +503,25 @@ struct ConfiguratorView: View {
         return FacingAllocation(facingID: facingID, dimensionID: dimensions(for: facingID).first?.id ?? "", area: allocationArea)
     }
 
+    private var configuration: CeilingConfiguration {
+        CeilingConfiguration(
+            length: length,
+            width: width,
+            support: support,
+            plenum: plenum,
+            vaporBarrier: vaporBarrier,
+            insulationID: insulationID,
+            insulationThickness: insulationThickness,
+            selectedSpacing: selectedSpacing,
+            fixingSystemID: fixingSystemID,
+            layers: layers,
+            firstSkin: firstSkin,
+            secondSkin: secondSkin,
+            jointTreatment: jointTreatment,
+            compoundChoice: compoundChoice
+        )
+    }
+
     private func allocationsAreValid(_ allocations: [FacingAllocation]) -> Bool {
         !allocations.isEmpty && abs(allocations.reduce(0) { $0 + $1.area } - area) < 0.01 && allocations.allSatisfy { !$0.facingID.isEmpty && !$0.dimensionID.isEmpty && $0.area > 0 }
     }
@@ -497,24 +547,6 @@ struct ConfiguratorView: View {
                 quantity: boardCount,
                 unit: "plaque(s)"
             )
-        }
-    }
-
-    private func reset() {
-        withAnimation {
-            step = 0
-            support = ""
-            plenum = 20
-            vaporBarrier = false
-            insulationID = ""
-            insulationThickness = 0
-            selectedSpacing = 0.6
-            fixingSystemID = ""
-            layers = 1
-            firstSkin = []
-            secondSkin = []
-            jointTreatment = true
-            compoundChoice = "poudre"
         }
     }
 

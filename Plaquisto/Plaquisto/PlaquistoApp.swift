@@ -2,7 +2,12 @@ import SwiftUI
 
 @main
 struct PlaquistoApp: App {
+    @StateObject private var projectStore = ProjectStore()
+
     var body: some Scene {
-        WindowGroup { ConfiguratorView() }
+        WindowGroup {
+            ProjectsHomeView()
+                .environmentObject(projectStore)
+        }
     }
 }
