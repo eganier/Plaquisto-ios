@@ -70,6 +70,28 @@ final class ProjectStore: ObservableObject {
         try commit(next)
     }
 
+    @discardableResult
+    func duplicateWork(projectID: UUID, workID: UUID) throws -> UUID {
+        var next = projects
+        guard let projectIndex = next.firstIndex(where: { $0.id == projectID }),
+              let workIndex = next[projectIndex].works.firstIndex(where: { $0.id == workID }) else { throw StoreError.workNotFound }
+        let source = next[projectIndex].works[workIndex]
+        let existingNames = Set(next[projectIndex].works.map(\.name))
+        let baseName = "\(source.name) – copie"
+        var copyName = baseName
+        var number = 2
+        while existingNames.contains(copyName) {
+            copyName = "\(baseName) \(number)"
+            number += 1
+        }
+        let now = Date()
+        let copy = WorkItem(id: UUID(), projectID: projectID, name: copyName, type: source.type, configuration: source.configuration, createdAt: now, updatedAt: now)
+        next[projectIndex].works.insert(copy, at: workIndex + 1)
+        next[projectIndex].updatedAt = now
+        try commit(next)
+        return copy.id
+    }
+
     func deleteWork(projectID: UUID, workID: UUID) throws {
         var next = projects
         guard let projectIndex = next.firstIndex(where: { $0.id == projectID }) else { throw StoreError.projectNotFound }

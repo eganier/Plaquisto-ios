@@ -37,4 +37,39 @@ final class ProjectStoreTests: XCTestCase {
         XCTAssertEqual(works.first?.id, workID)
         XCTAssertEqual(works.first?.configuration.length, 12)
     }
+
+    func testDuplicatingAWorkCopiesItsConfigurationWithANewIdentity() throws {
+        let fileURL = FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: fileURL) }
+        let store = ProjectStore(fileURL: fileURL)
+        let projectID = try store.createProject(name: "Test", client: "", address: "", notes: "")
+        var configuration = CeilingConfiguration()
+        configuration.width = 7.5
+        let originalID = try store.createWork(projectID: projectID, name: "Séjour", type: .ceilingOnFurring, configuration: configuration)
+
+        let copyID = try store.duplicateWork(projectID: projectID, workID: originalID)
+
+        let works = try XCTUnwrap(store.project(id: projectID)?.works)
+        XCTAssertEqual(works.count, 2)
+        XCTAssertNotEqual(copyID, originalID)
+        XCTAssertEqual(works.first(where: { $0.id == copyID })?.name, "Séjour – copie")
+        XCTAssertEqual(works.first(where: { $0.id == copyID })?.configuration, configuration)
+    }
+
+    func testCombinedQuantityAddsTheSelectedWorks() throws {
+        let projectID = UUID()
+        let now = Date()
+        let first = WorkItem(id: UUID(), projectID: projectID, name: "A", type: .ceilingOnFurring, configuration: CeilingConfiguration(length: 5, width: 4), createdAt: now, updatedAt: now)
+        let second = WorkItem(id: UUID(), projectID: projectID, name: "B", type: .ceilingOnFurring, configuration: CeilingConfiguration(length: 3, width: 2), createdAt: now, updatedAt: now)
+        let fourrure = ReferenceRecord(id: "QTY-FOURRURE", kind: "quantity_item", title: "Fourrure F45", summary: "", sourcePage: 0, status: "Publié", data: [
+            "unit": .string("ml"),
+            "values": .object(["simple_060": .number(2)])
+        ])
+        let catalogue = CataloguePayload(version: "test", ouvrage: nil, isolation: [], systemesFixation: [], parements: [], quantitatifs: [fourrure], pareVapeur: [], regles: [])
+
+        let result = CombinedQuantityCalculator.calculate(works: [first, second], catalogue: catalogue)
+
+        XCTAssertEqual(result.totalArea, 26)
+        XCTAssertEqual(result.supplies.first(where: { $0.name == "Fourrure F45" })?.quantity, 52)
+    }
 }

@@ -76,11 +76,28 @@ private struct ProjectDetailView: View {
                                     }
                                 }
                                 .swipeActions {
-                                    Button("Supprimer", role: .destructive) { workToDelete = work }
+                                    Button { workToDelete = work } label: { Label("Supprimer", systemImage: "trash") }
+                                        .tint(.red)
+                                    Button { duplicateWork(work) } label: { Label("Dupliquer", systemImage: "plus.square.on.square") }
+                                        .tint(.blue)
                                 }
                             }
                         }
                         Button { showingNewWork = true } label: { Label("Ajouter un ouvrage", systemImage: "plus.circle.fill") }
+                    }
+                    if !project.works.isEmpty {
+                        Section("Quantitatifs regroupés") {
+                            NavigationLink {
+                                CombinedQuantityView(works: project.works, title: "Quantitatif total")
+                            } label: {
+                                Label("Afficher le quantitatif total", systemImage: "sum")
+                            }
+                            NavigationLink {
+                                WorkSelectionView(works: project.works)
+                            } label: {
+                                Label("Sélectionner des ouvrages", systemImage: "checklist")
+                            }
+                        }
                     }
                     Section { Button("Supprimer le chantier", role: .destructive) { confirmingDelete = true } }
                 }
@@ -106,6 +123,7 @@ private struct ProjectDetailView: View {
     private var errorBinding: Binding<Bool> { Binding(get: { !errorMessage.isEmpty }, set: { if !$0 { errorMessage = "" } }) }
     private func deleteProject() { do { try store.deleteProject(id: projectID); dismiss() } catch { errorMessage = "Le chantier n’a pas pu être supprimé." } }
     private func deleteWork(_ work: WorkItem) { do { try store.deleteWork(projectID: projectID, workID: work.id); workToDelete = nil } catch { errorMessage = "L’ouvrage n’a pas pu être supprimé." } }
+    private func duplicateWork(_ work: WorkItem) { do { try store.duplicateWork(projectID: projectID, workID: work.id) } catch { errorMessage = "L’ouvrage n’a pas pu être dupliqué." } }
 }
 
 private struct ProjectFormView: View {
