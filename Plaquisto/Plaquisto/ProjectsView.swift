@@ -3,6 +3,8 @@ import SwiftUI
 struct ProjectsHomeView: View {
     @EnvironmentObject private var store: ProjectStore
     @State private var showingNewProject = false
+    @State private var projectToDelete: ProjectItem?
+    @State private var errorMessage = ""
 
     var body: some View {
         NavigationStack {
@@ -25,6 +27,12 @@ struct ProjectsHomeView: View {
                             }
                             .padding(.vertical, 4)
                         }
+                        .swipeActions {
+                            Button { projectToDelete = project } label: { Label("Supprimer", systemImage: "trash") }
+                                .tint(.red)
+                            Button { duplicateProject(project) } label: { Label("Dupliquer", systemImage: "plus.square.on.square") }
+                                .tint(.blue)
+                        }
                     }
                 }
             }
@@ -36,8 +44,25 @@ struct ProjectsHomeView: View {
             }
             .navigationDestination(for: UUID.self) { ProjectDetailView(projectID: $0) }
             .sheet(isPresented: $showingNewProject) { ProjectFormView() }
+            .confirmationDialog("Supprimer ce chantier et tous ses ouvrages ?", isPresented: Binding(get: { projectToDelete != nil }, set: { if !$0 { projectToDelete = nil } }), titleVisibility: .visible) {
+                Button("Supprimer définitivement", role: .destructive) { if let projectToDelete { deleteProject(projectToDelete) } }
+                Button("Annuler", role: .cancel) { projectToDelete = nil }
+            }
+            .alert("Action impossible", isPresented: Binding(get: { !errorMessage.isEmpty }, set: { if !$0 { errorMessage = "" } })) {
+                Button("OK") { errorMessage = "" }
+            } message: { Text(errorMessage) }
         }
         .tint(Color(red: 0.12, green: 0.38, blue: 0.29))
+    }
+
+    private func duplicateProject(_ project: ProjectItem) {
+        do { try store.duplicateProject(id: project.id) }
+        catch { errorMessage = "Le chantier n’a pas pu être dupliqué." }
+    }
+
+    private func deleteProject(_ project: ProjectItem) {
+        do { try store.deleteProject(id: project.id); projectToDelete = nil }
+        catch { errorMessage = "Le chantier n’a pas pu être supprimé." }
     }
 }
 

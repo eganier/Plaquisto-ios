@@ -72,4 +72,23 @@ final class ProjectStoreTests: XCTestCase {
         XCTAssertEqual(result.totalArea, 26)
         XCTAssertEqual(result.supplies.first(where: { $0.name == "Fourrure F45" })?.quantity, 52)
     }
+
+    func testDuplicatingAProjectCopiesItsWorksWithNewIdentities() throws {
+        let fileURL = FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: fileURL) }
+        let store = ProjectStore(fileURL: fileURL)
+        let originalProjectID = try store.createProject(name: "Maison", client: "Martin", address: "Paris", notes: "Test")
+        let originalWorkID = try store.createWork(projectID: originalProjectID, name: "Séjour", type: .ceilingOnFurring, configuration: CeilingConfiguration(length: 6, width: 4))
+
+        let copyID = try store.duplicateProject(id: originalProjectID)
+
+        let copy = try XCTUnwrap(store.project(id: copyID))
+        XCTAssertEqual(store.projects.count, 2)
+        XCTAssertEqual(copy.name, "Maison – copie")
+        XCTAssertEqual(copy.client, "Martin")
+        XCTAssertEqual(copy.works.count, 1)
+        XCTAssertNotEqual(copy.works.first?.id, originalWorkID)
+        XCTAssertEqual(copy.works.first?.projectID, copyID)
+        XCTAssertEqual(copy.works.first?.configuration.length, 6)
+    }
 }
