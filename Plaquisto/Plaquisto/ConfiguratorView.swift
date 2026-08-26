@@ -45,6 +45,7 @@ struct ConfiguratorView: View {
     @State private var step: Int
     @State private var length: Double
     @State private var width: Double
+    @State private var enteredArea: Double
     @State private var support: String
     @State private var plenum: Double
     @State private var vaporBarrier: Bool
@@ -52,6 +53,7 @@ struct ConfiguratorView: View {
     @State private var insulationThickness: Double
     @State private var selectedSpacing: Double
     @State private var showSpacingWarning = false
+    @State private var showDimensionsWarning = false
     @State private var fixingSystemID: String
     @State private var layers: Int
     @State private var firstSkin: [FacingAllocation]
@@ -72,6 +74,7 @@ struct ConfiguratorView: View {
         _step = State(initialValue: startsAtResult ? 6 : 0)
         _length = State(initialValue: initialConfiguration.length)
         _width = State(initialValue: initialConfiguration.width)
+        _enteredArea = State(initialValue: initialConfiguration.length * initialConfiguration.width)
         _support = State(initialValue: initialConfiguration.support)
         _plenum = State(initialValue: initialConfiguration.plenum)
         _vaporBarrier = State(initialValue: initialConfiguration.vaporBarrier)
@@ -135,7 +138,7 @@ struct ConfiguratorView: View {
         compatibleSystems.first { $0.id == fixingSystemID }
     }
     private var selectedComponents: [FixingComponent] { components(for: selectedFixingSystem) }
-    private var area: Double { length * width }
+    private var area: Double { enteredArea }
     private var quantityConfigurationKey: String {
         let prefix = layers == 1 ? "simple" : "double"
         return "\(prefix)_0\(Int((selectedSpacing * 100).rounded()))"
@@ -258,18 +261,38 @@ struct ConfiguratorView: View {
         } message: {
             Text("L’entraxe choisi de \(Int(selectedSpacing * 100)) cm dépasse la valeur maximale recommandée de \(Int((maximumSpacing ?? 0) * 100)) cm pour le poids d’isolant retenu. Cette configuration peut ne pas respecter les règles techniques applicables. Souhaitez-vous néanmoins poursuivre ?")
         }
+        .alert("Dimensions non renseignées", isPresented: $showDimensionsWarning) {
+            Button("Renseigner les dimensions", role: .cancel) {}
+            Button("Continuer avec une estimation") {
+                let side = sqrt(enteredArea)
+                length = side
+                width = side
+                completeAdvance()
+            }
+        } message: {
+            Text("Les calculs seront plus précis si la longueur et la largeur de l’ouvrage sont renseignées. Souhaitez-vous vraiment continuer ? Plaquisto estimera les dimensions en considérant une forme carrée.")
+        }
     }
 
     @ViewBuilder
     private var stepContent: some View {
         switch step {
         case 0:
-            Section("Dimensions de la pièce") {
-                MeasureField(label: "Longueur", value: $length, unit: "m")
-                MeasureField(label: "Largeur", value: $width, unit: "m")
+            Section("Dimensions de l’ouvrage") {
+                MeasureField(label: "Surface", value: $enteredArea, unit: "m²")
+                    .onChange(of: enteredArea) { oldValue, newValue in
+                        guard abs(newValue - oldValue) > 0.0001, length > 0, width > 0, abs(newValue - length * width) > 0.01 else { return }
+                        length = 0
+                        width = 0
+                    }
             }
-            Section { LabeledContent("Surface", value: "\(format(area)) m²") } footer: {
-                Text("La surface sert de base au calcul de toutes les fournitures.")
+            Section {
+                MeasureField(label: "Longueur", value: $length, unit: "m")
+                    .onChange(of: length) { _, _ in updateAreaFromDimensions() }
+                MeasureField(label: "Largeur", value: $width, unit: "m")
+                    .onChange(of: width) { _, _ in updateAreaFromDimensions() }
+            } footer: {
+                Text("La longueur et la largeur améliorent la précision des calculs. Si elles sont toutes les deux renseignées, la surface est calculée automatiquement.")
             }
 
         case 1:
@@ -467,7 +490,7 @@ struct ConfiguratorView: View {
 
     private var canContinue: Bool {
         switch step {
-        case 0: return length > 0 && width > 0
+        case 0: return enteredArea > 0
         case 1: return !support.isEmpty && plenum > 0
         case 2: return maximumSpacing != nil && (insulationID.isEmpty || selectedInsulationPoint != nil) && spacingChoices.contains(selectedSpacing)
         case 3: return selectedFixingSystem != nil
@@ -478,8 +501,13 @@ struct ConfiguratorView: View {
     }
 
     private func advance() {
-        if step == 2 && spacingIsAboveRecommendation { showSpacingWarning = true }
+        if step == 0 && (length <= 0 || width <= 0) { showDimensionsWarning = true }
+        else if step == 2 && spacingIsAboveRecommendation { showSpacingWarning = true }
         else { completeAdvance() }
+    }
+
+    private func updateAreaFromDimensions() {
+        if length > 0 && width > 0 { enteredArea = length * width }
     }
 
     private func completeAdvance() {

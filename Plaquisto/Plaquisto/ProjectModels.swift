@@ -15,8 +15,8 @@ struct FacingSelection: Identifiable, Codable, Equatable {
 }
 
 struct CeilingConfiguration: Codable, Equatable {
-    var length: Double = 5
-    var width: Double = 4
+    var length: Double = 0
+    var width: Double = 0
     var support: String = ""
     var plenum: Double = 20
     var vaporBarrier = false
