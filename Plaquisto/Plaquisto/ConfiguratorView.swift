@@ -382,16 +382,12 @@ struct ConfiguratorView: View {
             }
 
         case 4:
-            Section("Nombre de peaux") {
-                Picker("Parement", selection: $layers) {
-                    Text("Simple peau").tag(1)
-                    Text("Double peau").tag(2)
-                }
-                .pickerStyle(.segmented)
-                .onChange(of: layers) { _, _ in ensureFacingAllocations() }
+            Section {
+                ceilingFacingsStep
             }
-            allocationSection(title: "Première peau", allocations: $firstSkin)
-            if layers == 2 { allocationSection(title: "Deuxième peau", allocations: $secondSkin) }
+            .listRowInsets(EdgeInsets())
+            .listRowBackground(Color.clear)
+            .listRowSeparator(.hidden)
 
         case 5:
             Section("Traitement des bandes à joint") {
@@ -455,45 +451,93 @@ struct ConfiguratorView: View {
         }
     }
 
-    @ViewBuilder
-    private func allocationSection(title: String, allocations: Binding<[FacingAllocation]>) -> some View {
-        Section {
-            ForEach(allocations) { $allocation in
-                VStack(alignment: .leading, spacing: 12) {
-                    Picker("Type de plaque", selection: familyBinding($allocation)) {
-                        ForEach(facingFamilies, id: \.self) { Text($0).tag($0) }
-                    }
-                    Picker("Fonction", selection: $allocation.facingID) {
-                        ForEach(functionChoices(for: allocation)) { facing in
-                            Text(functionTitle(for: facing)).tag(facing.id)
-                        }
-                    }
-                    .onChange(of: allocation.facingID) { _, _ in
-                        allocation.dimensionID = dimensions(for: allocation.facingID).first?.id ?? ""
-                    }
-                    Picker("Dimension", selection: $allocation.dimensionID) {
-                        ForEach(dimensions(for: allocation.facingID)) { dimension in Text(dimension.label).tag(dimension.id) }
-                    }
-                    MeasureField(label: "Surface attribuée", value: $allocation.area, unit: "m²")
-                    if allocations.wrappedValue.count > 1 {
-                        Button("Retirer ce parement", role: .destructive) {
-                            allocations.wrappedValue.removeAll { $0.id == allocation.id }
-                        }
-                    }
+    private var ceilingFacingsStep: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            facingSectionTitle("Nombre de peaux")
+            facingCard {
+                Picker("Nombre de parements", selection: $layers) {
+                    Text("Simple peau").tag(1)
+                    Text("Double peau").tag(2)
                 }
-                .padding(.vertical, 4)
+                .pickerStyle(.segmented)
+                .onChange(of: layers) { _, _ in ensureFacingAllocations() }
             }
-            Button("Ajouter un autre type de parement") {
-                allocations.wrappedValue.append(defaultAllocation(area: 0))
+            facingSectionTitle("Première peau")
+            ForEach(firstSkin.indices, id: \.self) { index in
+                facingAllocationCard(allocation: $firstSkin[index], allocations: $firstSkin)
             }
-        } header: {
-            Text(title)
-        } footer: {
-            let total = allocations.wrappedValue.reduce(0) { $0 + $1.area }
-            let difference = area - total
-            Text(abs(difference) < 0.01 ? "Répartition complète : \(format(total)) m²." : difference > 0 ? "Il reste \(format(difference)) m² à répartir." : "La répartition dépasse la surface de \(format(-difference)) m².")
-                .foregroundStyle(abs(difference) < 0.01 ? .green : .orange)
+            facingAddButton(allocations: $firstSkin)
+            facingAllocationStatus(firstSkin)
+            if layers == 2 {
+                facingSectionTitle("Deuxième peau")
+                ForEach(secondSkin.indices, id: \.self) { index in
+                    facingAllocationCard(allocation: $secondSkin[index], allocations: $secondSkin)
+                }
+                facingAddButton(allocations: $secondSkin)
+                facingAllocationStatus(secondSkin)
+                Text("L’ordre des deux parements n’a aucune incidence.")
+                    .font(.footnote).foregroundStyle(.secondary).padding(.horizontal, 12)
+            }
         }
+        .padding(.vertical, 6)
+    }
+
+    private func facingAllocationCard(allocation: Binding<FacingAllocation>, allocations: Binding<[FacingAllocation]>) -> some View {
+        facingCard {
+            Picker("Type de plaque", selection: familyBinding(allocation)) {
+                ForEach(facingFamilies, id: \.self) { Text($0).tag($0) }
+            }
+            Divider()
+            Picker("Fonction", selection: allocation.facingID) {
+                ForEach(functionChoices(for: allocation.wrappedValue)) { facing in
+                    Text(functionTitle(for: facing)).tag(facing.id)
+                }
+            }
+            .onChange(of: allocation.wrappedValue.facingID) { _, _ in
+                allocation.wrappedValue.dimensionID = dimensions(for: allocation.wrappedValue.facingID).first?.id ?? ""
+            }
+            Divider()
+            Picker("Dimension", selection: allocation.dimensionID) {
+                ForEach(dimensions(for: allocation.wrappedValue.facingID)) { dimension in
+                    Text(dimension.label).tag(dimension.id)
+                }
+            }
+            Divider()
+            MeasureField(label: "Surface attribuée", value: allocation.area, unit: "m²")
+            if allocations.wrappedValue.count > 1 {
+                Divider()
+                Button("Supprimer ce type", role: .destructive) {
+                    allocations.wrappedValue.removeAll { $0.id == allocation.wrappedValue.id }
+                }
+            }
+        }
+    }
+
+    private func facingAddButton(allocations: Binding<[FacingAllocation]>) -> some View {
+        Button("Ajouter un autre type de parement") {
+            allocations.wrappedValue.append(defaultAllocation(area: 0))
+        }
+        .buttonStyle(.borderless).tint(.green).padding(.horizontal, 12)
+    }
+
+    private func facingAllocationStatus(_ allocations: [FacingAllocation]) -> some View {
+        let total = allocations.reduce(0) { $0 + $1.area }
+        let difference = area - total
+        return Text(abs(difference) < 0.01 ? "Répartition complète : \(format(total)) m²." : difference > 0 ? "Il reste \(format(difference)) m² à répartir." : "La répartition dépasse la surface de \(format(-difference)) m².")
+            .font(.footnote)
+            .foregroundStyle(abs(difference) < 0.01 ? .green : .orange)
+            .padding(.horizontal, 12)
+    }
+
+    private func facingSectionTitle(_ text: String) -> some View {
+        Text(text).font(.headline).foregroundStyle(.secondary).padding(.horizontal, 12)
+    }
+
+    private func facingCard<Content: View>(@ViewBuilder content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 14, content: content)
+            .padding(16)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(.background, in: RoundedRectangle(cornerRadius: 22))
     }
 
     private var canContinue: Bool {
