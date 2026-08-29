@@ -175,8 +175,12 @@ struct DoublageConfiguratorView: View {
 
     private func allocationCard(allocation: Binding<FacingAllocation>, secondLayer: Bool, canDelete: Bool) -> some View {
         card {
-            Picker("Type de parement", selection: facingBinding(allocation, secondLayer: secondLayer)) {
-                ForEach(availableChoices(for: allocation.wrappedValue.id, secondLayer: secondLayer)) { Text($0.title).tag($0.id) }
+            Picker("Type de plaque", selection: familyBinding(allocation, secondLayer: secondLayer)) {
+                ForEach(availableFamilies(for: allocation.wrappedValue.id, secondLayer: secondLayer), id: \.self) { Text($0).tag($0) }
+            }
+            Divider()
+            Picker("Fonction", selection: facingBinding(allocation, secondLayer: secondLayer)) {
+                ForEach(availableFunctions(for: allocation.wrappedValue, secondLayer: secondLayer)) { Text($0.functionTitle).tag($0.id) }
             }
             Divider()
             Picker("Dimension", selection: allocation.formatID) {
@@ -422,6 +426,22 @@ struct DoublageConfiguratorView: View {
         }
     }
 
+    private func availableFamilies(for allocationID: UUID?, secondLayer: Bool) -> [String] {
+        Array(Set(availableChoices(for: allocationID, secondLayer: secondLayer).map(\.mechanicalFamily)))
+            .sorted { (Int($0.dropFirst(2)) ?? 0) < (Int($1.dropFirst(2)) ?? 0) }
+    }
+
+    private func availableFunctions(for allocation: FacingAllocation, secondLayer: Bool) -> [LabFacingChoice] {
+        guard let selected = facing(for: allocation) else { return [] }
+        return availableChoices(for: allocation.id, secondLayer: secondLayer)
+            .filter { $0.mechanicalFamily == selected.mechanicalFamily }
+            .sorted { lhs, rhs in
+                if lhs.function == "standard" { return true }
+                if rhs.function == "standard" { return false }
+                return lhs.functionTitle < rhs.functionTitle
+            }
+    }
+
     private func availableFormats(for allocation: FacingAllocation, secondLayer: Bool) -> [LabFacingFormat] {
         guard let candidate = facing(for: allocation) else { return [] }
         let compatible = compatibleFormats(for: candidate, allocationID: allocation.id, secondLayer: secondLayer)
@@ -446,6 +466,19 @@ struct DoublageConfiguratorView: View {
             guard let candidate = facings.first(where: { $0.id == newID }) else { return }
             var next = allocation.wrappedValue
             next.facingID = newID
+            let formats = compatibleFormats(for: candidate, allocationID: next.id, secondLayer: secondLayer)
+            next.formatID = preferredFormat(in: formats.isEmpty ? candidate.formats : formats)?.id ?? ""
+            allocation.wrappedValue = next
+        })
+    }
+
+    private func familyBinding(_ allocation: Binding<FacingAllocation>, secondLayer: Bool) -> Binding<String> {
+        Binding(get: { facing(for: allocation.wrappedValue)?.mechanicalFamily ?? "" }, set: { family in
+            let choices = availableChoices(for: allocation.wrappedValue.id, secondLayer: secondLayer)
+                .filter { $0.mechanicalFamily == family }
+            guard let candidate = choices.first(where: { $0.function == "standard" }) ?? choices.first else { return }
+            var next = allocation.wrappedValue
+            next.facingID = candidate.id
             let formats = compatibleFormats(for: candidate, allocationID: next.id, secondLayer: secondLayer)
             next.formatID = preferredFormat(in: formats.isEmpty ? candidate.formats : formats)?.id ?? ""
             allocation.wrappedValue = next

@@ -80,6 +80,18 @@ struct LabFacingChoice: Identifiable, Hashable {
     let mechanicalFamily: String
     let function: String
     let formats: [LabFacingFormat]
+
+    var functionTitle: String {
+        switch function {
+        case "hydrofuge": "Hydrofuge H1"
+        case "incendie": "Protection incendie"
+        case "phonique": "Phonique"
+        case "haute_durete": "Haute dureté"
+        case "quatre_bords_amincis": "Quatre bords amincis"
+        case "tres_haute_resistance_eau": "Très haute résistance à l’eau"
+        default: "Standard"
+        }
+    }
 }
 
 struct LabSingleCompatibilityRule {

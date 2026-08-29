@@ -203,7 +203,10 @@ struct ConfiguratorView: View {
                 configurator
             }
         }
-        .task { if store.catalogue == nil { await store.load() } }
+        .task {
+            if store.catalogue == nil { await store.load() }
+            normalizeFacingAllocations()
+        }
         .tint(Color(red: 0.12, green: 0.38, blue: 0.29))
     }
 
@@ -457,8 +460,13 @@ struct ConfiguratorView: View {
         Section {
             ForEach(allocations) { $allocation in
                 VStack(alignment: .leading, spacing: 12) {
-                    Picker("Type de parement", selection: $allocation.facingID) {
-                        ForEach(facings) { Text($0.title).tag($0.id) }
+                    Picker("Type de plaque", selection: familyBinding($allocation)) {
+                        ForEach(facingFamilies, id: \.self) { Text($0).tag($0) }
+                    }
+                    Picker("Fonction", selection: $allocation.facingID) {
+                        ForEach(functionChoices(for: allocation)) { facing in
+                            Text(functionTitle(for: facing)).tag(facing.id)
+                        }
                     }
                     .onChange(of: allocation.facingID) { _, _ in
                         allocation.dimensionID = dimensions(for: allocation.facingID).first?.id ?? ""
@@ -527,8 +535,71 @@ struct ConfiguratorView: View {
     }
 
     private func defaultAllocation(area allocationArea: Double) -> FacingAllocation {
-        let facingID = facings.first?.id ?? ""
+        let facingID = defaultFacing?.id ?? ""
         return FacingAllocation(facingID: facingID, dimensionID: dimensions(for: facingID).first?.id ?? "", area: allocationArea)
+    }
+
+    private var defaultFacing: ReferenceRecord? {
+        facings.first {
+            $0.data["mechanical_family"]?.string == "BA13" && $0.data["function"]?.string == "standard"
+        } ?? facings.first
+    }
+
+    private var facingFamilies: [String] {
+        Array(Set(facings.compactMap { $0.data["mechanical_family"]?.string }))
+            .sorted { (Int($0.dropFirst(2)) ?? 0) < (Int($1.dropFirst(2)) ?? 0) }
+    }
+
+    private func facingFamily(for allocation: FacingAllocation) -> String {
+        facings.first(where: { $0.id == allocation.facingID })?.data["mechanical_family"]?.string ?? ""
+    }
+
+    private func functionChoices(for allocation: FacingAllocation) -> [ReferenceRecord] {
+        let family = facingFamily(for: allocation)
+        return facings.filter { $0.data["mechanical_family"]?.string == family }.sorted { lhs, rhs in
+            let left = lhs.data["function"]?.string ?? "standard"
+            let right = rhs.data["function"]?.string ?? "standard"
+            if left == "standard" { return true }
+            if right == "standard" { return false }
+            return functionTitle(for: lhs) < functionTitle(for: rhs)
+        }
+    }
+
+    private func functionTitle(for facing: ReferenceRecord) -> String {
+        switch facing.data["function"]?.string ?? "standard" {
+        case "hydrofuge": "Hydrofuge H1"
+        case "incendie": "Protection incendie"
+        case "phonique": "Phonique"
+        case "haute_durete": "Haute dureté"
+        case "quatre_bords_amincis": "Quatre bords amincis"
+        case "tres_haute_resistance_eau": "Très haute résistance à l’eau"
+        default: "Standard"
+        }
+    }
+
+    private func familyBinding(_ allocation: Binding<FacingAllocation>) -> Binding<String> {
+        Binding(get: { facingFamily(for: allocation.wrappedValue) }, set: { family in
+            let choices = facings.filter { $0.data["mechanical_family"]?.string == family }
+            guard let facing = choices.first(where: { $0.data["function"]?.string == "standard" }) ?? choices.first else { return }
+            allocation.wrappedValue.facingID = facing.id
+            allocation.wrappedValue.dimensionID = dimensions(for: facing.id).first?.id ?? ""
+        })
+    }
+
+    private func normalizeFacingAllocations() {
+        guard defaultFacing != nil else { return }
+        func normalized(_ values: [FacingAllocation]) -> [FacingAllocation] {
+            values.map { value in
+                var next = value
+                if !facings.contains(where: { $0.id == next.facingID }) { next.facingID = defaultFacing?.id ?? "" }
+                if !dimensions(for: next.facingID).contains(where: { $0.id == next.dimensionID }) {
+                    next.dimensionID = dimensions(for: next.facingID).first?.id ?? ""
+                }
+                return next
+            }
+        }
+        firstSkin = normalized(firstSkin)
+        secondSkin = normalized(secondSkin)
     }
 
     private var configuration: CeilingConfiguration {

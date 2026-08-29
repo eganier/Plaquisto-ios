@@ -70,7 +70,7 @@ final class ReferenceStore: ObservableObject {
     @Published var isUsingOfflineData = false
 
     private let endpoint = URL(string: "https://plaquisto-admin.vercel.app/api/ios/catalogue")!
-    private let cacheKey = "plaquisto.catalogue.v2"
+    private let cacheKey = "plaquisto.catalogue.v3"
 
     var records: [ReferenceRecord] { catalogue?.records ?? [] }
 
