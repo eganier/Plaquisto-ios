@@ -175,16 +175,31 @@ struct DoublageConfiguratorView: View {
 
     private func allocationCard(allocation: Binding<FacingAllocation>, secondLayer: Bool, canDelete: Bool) -> some View {
         card {
-            Picker("Type de plaque", selection: familyBinding(allocation, secondLayer: secondLayer)) {
-                ForEach(availableFamilies(for: allocation.wrappedValue.id, secondLayer: secondLayer), id: \.self) { Text($0).tag($0) }
+            HStack {
+                Text("Type de plaque")
+                Spacer()
+                Picker("Type de plaque", selection: familyBinding(allocation, secondLayer: secondLayer)) {
+                    ForEach(availableFamilies(for: allocation.wrappedValue.id, secondLayer: secondLayer), id: \.self) { Text($0).tag($0) }
+                }
+                .labelsHidden()
             }
             Divider()
-            Picker("Fonction", selection: facingBinding(allocation, secondLayer: secondLayer)) {
-                ForEach(availableFunctions(for: allocation.wrappedValue, secondLayer: secondLayer)) { Text($0.functionTitle).tag($0.id) }
+            HStack {
+                Text("Fonction")
+                Spacer()
+                Picker("Fonction", selection: facingBinding(allocation, secondLayer: secondLayer)) {
+                    ForEach(availableFunctions(for: allocation.wrappedValue, secondLayer: secondLayer)) { Text($0.functionTitle).tag($0.id) }
+                }
+                .labelsHidden()
             }
             Divider()
-            Picker("Dimension", selection: allocation.formatID) {
-                ForEach(availableFormats(for: allocation.wrappedValue, secondLayer: secondLayer)) { Text($0.title).tag($0.id) }
+            HStack {
+                Text("Dimension")
+                Spacer()
+                Picker("Dimension", selection: allocation.formatID) {
+                    ForEach(availableFormats(for: allocation.wrappedValue, secondLayer: secondLayer)) { Text($0.title).tag($0.id) }
+                }
+                .labelsHidden()
             }
             Divider()
             DecimalRow("Surface attribuée", value: allocation.surface, unit: "m²")
