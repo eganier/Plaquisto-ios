@@ -46,6 +46,7 @@ enum LabJSONValue: Codable {
 
     var string: String? { if case let .string(value) = self { value } else { nil } }
     var number: Double? { if case let .number(value) = self { value } else { nil } }
+    var bool: Bool? { if case let .bool(value) = self { value } else { nil } }
     var array: [LabJSONValue]? { if case let .array(value) = self { value } else { nil } }
     var object: [String: LabJSONValue]? { if case let .object(value) = self { value } else { nil } }
 }
@@ -66,6 +67,41 @@ struct LabPerformanceGroup: Identifiable {
     let values: [LabHeightValue]
 }
 
+struct LabFacingFormat: Identifiable, Hashable {
+    let widthMM: Int
+    let lengthMM: Int
+    var id: String { "\(widthMM)x\(lengthMM)" }
+    var title: String { "\(widthMM) × \(lengthMM) mm" }
+}
+
+struct LabFacingChoice: Identifiable, Hashable {
+    let id: String
+    let title: String
+    let mechanicalFamily: String
+    let function: String
+    let formats: [LabFacingFormat]
+}
+
+struct LabSingleCompatibilityRule {
+    let families: [String]
+    let widthsMM: [Int]
+    let performanceGroupID: String
+}
+
+struct LabDoubleCompatibilityRule {
+    let families: [String]
+    let widthsMM: [Int]
+    let performanceGroupID: String
+}
+
+struct LabFacingCompatibility {
+    let sameWidthRequired: Bool
+    let normalizeFamilies: [String: String]
+    let single: [LabSingleCompatibilityRule]
+    let exactDouble: [LabDoubleCompatibilityRule]
+    let setDouble: [LabDoubleCompatibilityRule]
+}
+
 struct LabQuantityTable {
     let coefficients: [String: Double]
     let ttpc25: [String: Double]
@@ -81,7 +117,51 @@ final class LabReferenceStore: ObservableObject {
     @Published var isUsingOfflineData = false
 
     private let endpoint = URL(string: "https://plaquisto-admin.vercel.app/api/ios/catalogue")!
-    private let cacheKey = "plaquisto.lab.catalogue.doublage.v1"
+    private let cacheKey = "plaquisto.lab.catalogue.doublage.v2"
+
+    var facings: [LabFacingChoice] {
+        (catalogue?.doublage?.parements ?? []).compactMap { record in
+            guard let family = record.data["mechanical_family"]?.string else { return nil }
+            let formats = record.data["dimensions"]?.array?.compactMap { value -> LabFacingFormat? in
+                guard let object = value.object,
+                      let width = object["width_mm"]?.number,
+                      let length = object["length_mm"]?.number else { return nil }
+                return LabFacingFormat(widthMM: Int(width), lengthMM: Int(length))
+            }.sorted { $0.widthMM == $1.widthMM ? $0.lengthMM < $1.lengthMM : $0.widthMM < $1.widthMM } ?? []
+            guard !formats.isEmpty else { return nil }
+            return LabFacingChoice(id: record.id, title: record.title, mechanicalFamily: family, function: record.data["function"]?.string ?? "standard", formats: formats)
+        }.sorted { lhs, rhs in
+            if lhs.mechanicalFamily == rhs.mechanicalFamily { return lhs.title < rhs.title }
+            let left = Int(lhs.mechanicalFamily.dropFirst(2)) ?? 0
+            let right = Int(rhs.mechanicalFamily.dropFirst(2)) ?? 0
+            return left < right
+        }
+    }
+
+    var compatibility: LabFacingCompatibility? {
+        guard let data = catalogue?.doublage?.performance?.data,
+              let object = data["compatibility"]?.object else { return nil }
+        func rule(_ value: LabJSONValue) -> LabDoubleCompatibilityRule? {
+            guard let item = value.object,
+                  let families = item["families"]?.array?.compactMap(\.string),
+                  let widths = item["widths_mm"]?.array?.compactMap(\.number).map({ Int($0) }),
+                  let group = item["performance_group_id"]?.string else { return nil }
+            return LabDoubleCompatibilityRule(families: families, widthsMM: widths, performanceGroupID: group)
+        }
+        let single = object["single"]?.array?.compactMap { value -> LabSingleCompatibilityRule? in
+            guard let parsed = rule(value) else { return nil }
+            return LabSingleCompatibilityRule(families: parsed.families, widthsMM: parsed.widthsMM, performanceGroupID: parsed.performanceGroupID)
+        } ?? []
+        let double = object["double"]?.object
+        let normalize = double?["normalize_families"]?.object?.compactMapValues(\.string) ?? [:]
+        return LabFacingCompatibility(
+            sameWidthRequired: object["same_width_required"]?.bool ?? true,
+            normalizeFamilies: normalize,
+            single: single,
+            exactDouble: double?["exact"]?.array?.compactMap(rule) ?? [],
+            setDouble: double?["sets"]?.array?.compactMap(rule) ?? []
+        )
+    }
 
     var groups: [LabPerformanceGroup] {
         guard let raw = catalogue?.doublage?.performance?.data["groups"]?.array else { return [] }

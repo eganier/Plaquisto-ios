@@ -6,33 +6,16 @@ struct DoublageConfiguratorView: View {
     enum StudMounting: String, CaseIterable, Identifiable { case simple = "Montants simples", double = "Montants doubles"; var id: Self { self } }
     enum Compound: String, CaseIterable, Identifiable { case powder = "Enduit en poudre", paste = "Enduit en pâte"; var id: Self { self } }
 
-    struct FacingChoice: Identifiable, Hashable {
-        let id: String
-        let title: String
-        let width: Double
-    }
-
     struct FacingAllocation: Identifiable, Hashable {
         let id: UUID
         var facingID: String
+        var formatID: String
         var surface: Double
-        var plateHeight: Double
 
-        init(id: UUID = UUID(), facingID: String, surface: Double = 0, plateHeight: Double = 0) {
-            self.id = id; self.facingID = facingID; self.surface = surface; self.plateHeight = plateHeight
+        init(id: UUID = UUID(), facingID: String = "", formatID: String = "", surface: Double = 0) {
+            self.id = id; self.facingID = facingID; self.formatID = formatID; self.surface = surface
         }
     }
-
-    private static let facings = [
-        FacingChoice(id: "ba13", title: "BA13 standard", width: 1.20),
-        FacingChoice(id: "ba13_hydro", title: "BA13 hydrofuge", width: 1.20),
-        FacingChoice(id: "ba13_fire", title: "BA13 feu", width: 1.20),
-        FacingChoice(id: "ba15", title: "BA15 standard", width: 1.20),
-        FacingChoice(id: "ba15_fire", title: "BA15 feu", width: 1.20),
-        FacingChoice(id: "ba18", title: "BA18 standard", width: 1.20),
-        FacingChoice(id: "ba18s", title: "BA18S standard · largeur 900 mm", width: 0.90),
-        FacingChoice(id: "ba25", title: "BA25 standard", width: 0.90),
-    ]
 
     @EnvironmentObject private var references: LabReferenceStore
     @State private var step = 1
@@ -41,8 +24,8 @@ struct DoublageConfiguratorView: View {
     @State private var enteredLength = 0.0
     @State private var enteredSurface = 0.0
     @State private var skinCount = SkinCount.single
-    @State private var firstSkin = [FacingAllocation(facingID: "ba13")]
-    @State private var secondSkin = [FacingAllocation(facingID: "ba13")]
+    @State private var firstSkin = [FacingAllocation()]
+    @State private var secondSkin = [FacingAllocation()]
     @State private var technique = "Rails et montants"
     @State private var frame = "R48 + M48"
     @State private var mounting = StudMounting.simple
@@ -54,11 +37,13 @@ struct DoublageConfiguratorView: View {
 
     private let stepNames = ["Dimensions", "Parements", "Technique et ossature", "Bandes à joint", "Résultat"]
     private var groups: [LabPerformanceGroup] { references.groups }
+    private var facings: [LabFacingChoice] { references.facings }
+    private var compatibility: LabFacingCompatibility? { references.compatibility }
     private var actualLength: Double { geometryMode == .length ? enteredLength : (height > 0 ? enteredSurface / height : 0) }
     private var actualArea: Double { geometryMode == .surface ? enteredSurface : enteredLength * height }
     private var performanceGroupIDs: [String] {
-        if skinCount == .single { return Array(Set(firstSkin.compactMap { groupID(first: $0.facingID, second: nil) })) }
-        return Array(Set(firstSkin.flatMap { first in secondSkin.compactMap { second in groupID(first: first.facingID, second: second.facingID) } }))
+        if skinCount == .single { return Array(Set(firstSkin.compactMap { groupID(first: $0, second: nil) })) }
+        return Array(Set(firstSkin.flatMap { first in secondSkin.compactMap { second in groupID(first: first, second: second) } }))
     }
     private var performanceGroups: [LabPerformanceGroup] { performanceGroupIDs.compactMap { id in groups.first(where: { $0.id == id }) } }
     private var frames: [String] { Array(Set(performanceGroups.first?.values.map(\.frame) ?? [])).sorted { frameNumber($0) < frameNumber($1) } }
@@ -84,7 +69,8 @@ struct DoublageConfiguratorView: View {
                 else { wizard }
             }
         }
-        .onChange(of: groups.count, initial: true) { _, _ in normalizeSelections() }
+        .onChange(of: groups.count, initial: true) { _, _ in initializeParementsIfNeeded(); normalizeSelections() }
+        .onChange(of: facings.count) { _, _ in initializeParementsIfNeeded(); normalizeSelections() }
         .onChange(of: skinCount) { _, _ in resetParementsForSkinCount() }
         .onChange(of: firstSkin) { _, _ in normalizeAfterFirstSkinChange() }
         .onChange(of: secondSkin) { _, _ in normalizeSelections() }
@@ -189,14 +175,16 @@ struct DoublageConfiguratorView: View {
 
     private func allocationCard(allocation: Binding<FacingAllocation>, secondLayer: Bool, canDelete: Bool) -> some View {
         card {
-            Picker("Type de parement", selection: allocation.facingID) {
+            Picker("Type de parement", selection: facingBinding(allocation, secondLayer: secondLayer)) {
                 ForEach(availableChoices(for: allocation.wrappedValue.id, secondLayer: secondLayer)) { Text($0.title).tag($0.id) }
             }
             Divider()
-            DecimalRow("Hauteur des plaques", value: allocation.plateHeight, unit: "m")
+            Picker("Dimension", selection: allocation.formatID) {
+                ForEach(availableFormats(for: allocation.wrappedValue, secondLayer: secondLayer)) { Text($0.title).tag($0.id) }
+            }
             Divider()
             DecimalRow("Surface attribuée", value: allocation.surface, unit: "m²")
-            if height > 0 && allocation.wrappedValue.plateHeight > 0 && allocation.wrappedValue.plateHeight < height {
+            if height > 0, let plateFormat = selectedFormat(allocation.wrappedValue), Double(plateFormat.lengthMM) / 1000 < height {
                 Label("Cette hauteur est inférieure à la hauteur sous plafond de \(format(height, "m")).", systemImage: "exclamationmark.triangle.fill")
                     .font(.footnote).foregroundStyle(.orange)
             }
@@ -317,33 +305,44 @@ struct DoublageConfiguratorView: View {
 
     private func allocationRows(_ allocations: [FacingAllocation], skinName: String) -> [(String, String)] {
         allocations.flatMap { allocation -> [(String, String)] in
-            guard let facing = Self.facings.first(where: { $0.id == allocation.facingID }) else { return [] }
+            guard let facing = facing(for: allocation), let plateFormat = selectedFormat(allocation) else { return [] }
             let suppliedArea = allocation.surface * 1.05
-            let plateCount = Int(ceil(suppliedArea / (facing.width * max(allocation.plateHeight, 0.01))))
+            let plateArea = Double(plateFormat.widthMM * plateFormat.lengthMM) / 1_000_000
+            let plateCount = Int(ceil(suppliedArea / max(plateArea, 0.01)))
             return [
                 ("Parement · \(skinName) · \(facing.title)", format(suppliedArea, "m²")),
-                ("Plaques · H. \(format(allocation.plateHeight, "m"))", "\(plateCount) unités"),
+                ("Plaques · \(plateFormat.title)", "\(plateCount) unités"),
             ]
         }
     }
 
-    private func groupID(first: String, second: String?) -> String? {
+    private func facing(for allocation: FacingAllocation) -> LabFacingChoice? {
+        facings.first(where: { $0.id == allocation.facingID })
+    }
+
+    private func selectedFormat(_ allocation: FacingAllocation) -> LabFacingFormat? {
+        facing(for: allocation)?.formats.first(where: { $0.id == allocation.formatID })
+    }
+
+    private func groupID(first: FacingAllocation, second: FacingAllocation?) -> String? {
+        guard let compatibility, let firstFacing = facing(for: first), let firstFormat = selectedFormat(first) else { return nil }
         if let second {
-            let pair = Set([first, second])
-            if pair.isSubset(of: Set(["ba13", "ba13_hydro"])) { return "DOUBLE_1200" }
-            if pair == Set(["ba13", "ba18"]) || pair == Set(["ba13_hydro", "ba18"]) { return "DOUBLE_1200" }
-            if first == "ba13_fire" && second == "ba13_fire" { return "DOUBLE_1200" }
-            if first == "ba15_fire" && second == "ba15_fire" { return "DOUBLE_1200" }
-            if pair == Set(["ba25", "ba13"]) || pair == Set(["ba25", "ba13_hydro"]) { return "BA25_MIX" }
-            if first == "ba18s" && second == "ba18s" { return "DOUBLE_900" }
-            if first == "ba25" && second == "ba25" { return "DOUBLE_900" }
+            guard let secondFacing = facing(for: second), let secondFormat = selectedFormat(second) else { return nil }
+            if compatibility.sameWidthRequired && firstFormat.widthMM != secondFormat.widthMM { return nil }
+            let width = firstFormat.widthMM
+            let rawFamilies = [firstFacing.mechanicalFamily, secondFacing.mechanicalFamily].sorted()
+            if let rule = compatibility.exactDouble.first(where: { $0.widthsMM.contains(width) && $0.families.sorted() == rawFamilies }) {
+                return rule.performanceGroupID
+            }
+            let normalized = rawFamilies.map { compatibility.normalizeFamilies[$0] ?? $0 }
+            if let rule = compatibility.setDouble.first(where: { $0.widthsMM.contains(width) && normalized.allSatisfy($0.families.contains) }) {
+                return rule.performanceGroupID
+            }
             return nil
         }
-        if ["ba13", "ba13_hydro", "ba15"].contains(first) { return "BA13_BA15" }
-        if first == "ba18" { return "BA18" }
-        if first == "ba18s" { return "BA18S" }
-        if first == "ba25" { return "BA25_MIX" }
-        return nil
+        return compatibility.single.first(where: {
+            $0.families.contains(firstFacing.mechanicalFamily) && $0.widthsMM.contains(firstFormat.widthMM)
+        })?.performanceGroupID
     }
 
     private func maximumHeight(frame candidate: String) -> Double {
@@ -360,24 +359,28 @@ struct DoublageConfiguratorView: View {
 
     private var allocationsAreComplete: Bool {
         func complete(_ allocations: [FacingAllocation]) -> Bool {
-            !allocations.isEmpty && allocations.allSatisfy { $0.surface > 0 && $0.plateHeight > 0 } && abs(allocations.reduce(0) { $0 + $1.surface } - actualArea) < 0.01
+            !allocations.isEmpty && allocations.allSatisfy { $0.surface > 0 && selectedFormat($0) != nil } && abs(allocations.reduce(0) { $0 + $1.surface } - actualArea) < 0.01
         }
         return complete(firstSkin) && (skinCount == .single || complete(secondSkin))
     }
 
     private var hasShortPlate: Bool {
-        firstSkin.contains(where: { $0.plateHeight < height }) || (skinCount == .double && secondSkin.contains(where: { $0.plateHeight < height }))
+        let isShort: (FacingAllocation) -> Bool = { allocation in
+            guard let plateFormat = selectedFormat(allocation) else { return false }
+            return Double(plateFormat.lengthMM) / 1000 < height
+        }
+        return firstSkin.contains(where: isShort) || (skinCount == .double && secondSkin.contains(where: isShort))
     }
 
-    private func configurationGroupIDs(firstIDs: [String], secondIDs: [String]) -> [String]? {
+    private func configurationGroupIDs(firstAllocations: [FacingAllocation], secondAllocations: [FacingAllocation]) -> [String]? {
         let ids: [String]
         if skinCount == .single {
-            let groups = firstIDs.map { groupID(first: $0, second: nil) }
+            let groups = firstAllocations.map { groupID(first: $0, second: nil) }
             guard groups.allSatisfy({ $0 != nil }) else { return nil }
             ids = groups.compactMap { $0 }
         } else {
-            let groups = firstIDs.flatMap { first in secondIDs.map { second in groupID(first: first, second: second) } }
-            guard !secondIDs.isEmpty, groups.allSatisfy({ $0 != nil }) else { return nil }
+            let groups = firstAllocations.flatMap { first in secondAllocations.map { second in groupID(first: first, second: second) } }
+            guard !secondAllocations.isEmpty, groups.allSatisfy({ $0 != nil }) else { return nil }
             ids = groups.compactMap { $0 }
         }
         let families = Set(ids.map(groupFamily))
@@ -385,33 +388,74 @@ struct DoublageConfiguratorView: View {
     }
 
     private func groupFamily(_ id: String) -> String {
-        ["BA13_BA15", "BA18", "DOUBLE_1200"].contains(id) ? "1200" : "900"
+        ["BA18_900", "BA25_900", "DOUBLE_900"].contains(id) ? "900" : "large"
     }
 
-    private func availableChoices(for allocationID: UUID?, secondLayer: Bool) -> [FacingChoice] {
+    private func arraysReplacing(_ candidate: FacingAllocation, allocationID: UUID?, secondLayer: Bool) -> ([FacingAllocation], [FacingAllocation]) {
+        var first = firstSkin
+        var second = secondSkin
+        if secondLayer {
+            if let allocationID, let index = second.firstIndex(where: { $0.id == allocationID }) { second[index] = candidate }
+            else { second.append(candidate) }
+        } else if let allocationID, let index = first.firstIndex(where: { $0.id == allocationID }) {
+            first[index] = candidate
+        } else {
+            first.append(candidate)
+        }
+        return (first, second)
+    }
+
+    private func compatibleFormats(for candidate: LabFacingChoice, allocationID: UUID?, secondLayer: Bool) -> [LabFacingFormat] {
+        candidate.formats.filter { plateFormat in
+            let allocation = FacingAllocation(id: allocationID ?? UUID(), facingID: candidate.id, formatID: plateFormat.id, surface: 1)
+            let arrays = arraysReplacing(allocation, allocationID: allocationID, secondLayer: secondLayer)
+            return configurationGroupIDs(firstAllocations: arrays.0, secondAllocations: arrays.1) != nil
+        }
+    }
+
+    private func availableChoices(for allocationID: UUID?, secondLayer: Bool) -> [LabFacingChoice] {
         let currentLayer = secondLayer ? secondSkin : firstSkin
         let used = Set(currentLayer.filter { $0.id != allocationID }.map(\.facingID))
-        return Self.facings.filter { candidate in
+        return facings.filter { candidate in
             guard !used.contains(candidate.id) else { return false }
-            if skinCount == .double && !secondLayer && allocationID != nil && firstSkin.count == 1 && secondSkin.count == 1 {
-                return Self.facings.contains { partner in groupID(first: candidate.id, second: partner.id) != nil }
-            }
-            var firstIDs = firstSkin.map(\.facingID)
-            var secondIDs = secondSkin.map(\.facingID)
-            if secondLayer {
-                if let index = secondSkin.firstIndex(where: { $0.id == allocationID }) { secondIDs[index] = candidate.id }
-                else { secondIDs.append(candidate.id) }
-            } else {
-                if let index = firstSkin.firstIndex(where: { $0.id == allocationID }) { firstIDs[index] = candidate.id }
-                else { firstIDs.append(candidate.id) }
-            }
-            return configurationGroupIDs(firstIDs: firstIDs, secondIDs: secondIDs) != nil
+            return !compatibleFormats(for: candidate, allocationID: allocationID, secondLayer: secondLayer).isEmpty
         }
+    }
+
+    private func availableFormats(for allocation: FacingAllocation, secondLayer: Bool) -> [LabFacingFormat] {
+        guard let candidate = facing(for: allocation) else { return [] }
+        let compatible = compatibleFormats(for: candidate, allocationID: allocation.id, secondLayer: secondLayer)
+        return compatible.isEmpty ? candidate.formats : compatible
+    }
+
+    private func preferredFormat(in formats: [LabFacingFormat]) -> LabFacingFormat? {
+        let shortest: (LabFacingFormat, LabFacingFormat) -> Bool = { lhs, rhs in
+            if lhs.lengthMM != rhs.lengthMM { return lhs.lengthMM < rhs.lengthMM }
+            return abs(lhs.widthMM - 1200) < abs(rhs.widthMM - 1200)
+        }
+        let fitting = formats.filter { Double($0.lengthMM) / 1000 >= height }.sorted(by: shortest)
+        if let first = fitting.first { return first }
+        return formats.sorted {
+            if $0.lengthMM != $1.lengthMM { return $0.lengthMM > $1.lengthMM }
+            return abs($0.widthMM - 1200) < abs($1.widthMM - 1200)
+        }.first
+    }
+
+    private func facingBinding(_ allocation: Binding<FacingAllocation>, secondLayer: Bool) -> Binding<String> {
+        Binding(get: { allocation.wrappedValue.facingID }, set: { newID in
+            guard let candidate = facings.first(where: { $0.id == newID }) else { return }
+            var next = allocation.wrappedValue
+            next.facingID = newID
+            let formats = compatibleFormats(for: candidate, allocationID: next.id, secondLayer: secondLayer)
+            next.formatID = preferredFormat(in: formats.isEmpty ? candidate.formats : formats)?.id ?? ""
+            allocation.wrappedValue = next
+        })
     }
 
     private func addAllocation(secondLayer: Bool) {
         guard let choice = availableChoices(for: nil, secondLayer: secondLayer).first else { return }
-        let allocation = FacingAllocation(facingID: choice.id, plateHeight: height)
+        let formats = compatibleFormats(for: choice, allocationID: nil, secondLayer: secondLayer)
+        let allocation = FacingAllocation(facingID: choice.id, formatID: preferredFormat(in: formats)?.id ?? "")
         if secondLayer { secondSkin.append(allocation) } else { firstSkin.append(allocation) }
     }
 
@@ -420,17 +464,35 @@ struct DoublageConfiguratorView: View {
     }
 
     private func resetParementsForSkinCount() {
-        if firstSkin.isEmpty { firstSkin = [FacingAllocation(facingID: "ba13", surface: actualArea, plateHeight: height)] }
-        if skinCount == .double { secondSkin = [FacingAllocation(facingID: "ba13", surface: actualArea, plateHeight: height)] }
+        initializeParementsIfNeeded()
+        if skinCount == .double, let choice = defaultFacing {
+            secondSkin = [FacingAllocation(facingID: choice.id, formatID: preferredFormat(in: choice.formats)?.id ?? "", surface: actualArea)]
+        }
         normalizeSelections()
     }
 
     private func normalizeAfterFirstSkinChange() {
-        if skinCount == .double && firstSkin.count == 1 && secondSkin.count == 1 && configurationGroupIDs(firstIDs: firstSkin.map(\.facingID), secondIDs: secondSkin.map(\.facingID)) == nil,
-           let partner = Self.facings.first(where: { groupID(first: firstSkin[0].facingID, second: $0.id) != nil }) {
+        if skinCount == .double && firstSkin.count == 1 && secondSkin.count == 1 && configurationGroupIDs(firstAllocations: firstSkin, secondAllocations: secondSkin) == nil,
+           let partner = availableChoices(for: secondSkin[0].id, secondLayer: true).first {
             secondSkin[0].facingID = partner.id
+            secondSkin[0].formatID = preferredFormat(in: compatibleFormats(for: partner, allocationID: secondSkin[0].id, secondLayer: true))?.id ?? ""
         }
         normalizeSelections()
+    }
+
+    private var defaultFacing: LabFacingChoice? {
+        facings.first(where: { $0.mechanicalFamily == "BA13" && $0.function == "standard" }) ?? facings.first
+    }
+
+    private func initializeParementsIfNeeded() {
+        guard let choice = defaultFacing else { return }
+        let formatID = preferredFormat(in: choice.formats)?.id ?? choice.formats.first?.id ?? ""
+        if firstSkin.isEmpty || facing(for: firstSkin[0]) == nil {
+            firstSkin = [FacingAllocation(facingID: choice.id, formatID: formatID, surface: actualArea)]
+        }
+        if secondSkin.isEmpty || facing(for: secondSkin[0]) == nil {
+            secondSkin = [FacingAllocation(facingID: choice.id, formatID: formatID, surface: actualArea)]
+        }
     }
 
     private func normalizeSelections() {
@@ -443,9 +505,10 @@ struct DoublageConfiguratorView: View {
 
     private func reset() {
         step = 1; geometryMode = .length; height = 0; enteredLength = 0; enteredSurface = 0
-        skinCount = .single; firstSkin = [FacingAllocation(facingID: "ba13")]; secondSkin = [FacingAllocation(facingID: "ba13")]
+        skinCount = .single; firstSkin = [FacingAllocation()]; secondSkin = [FacingAllocation()]
         technique = "Rails et montants"; frame = "R48 + M48"; mounting = .simple; spacing = 0.6
         intermediateSupports = false; jointTreatment = true; compound = .powder
+        initializeParementsIfNeeded()
         normalizeSelections()
     }
 
@@ -453,9 +516,9 @@ struct DoublageConfiguratorView: View {
         guard canContinue else { return }
         if step == 1 {
             if firstSkin.count == 1 && firstSkin[0].surface == 0 { firstSkin[0].surface = actualArea }
-            if firstSkin.count == 1 && firstSkin[0].plateHeight == 0 { firstSkin[0].plateHeight = height }
             if secondSkin.count == 1 && secondSkin[0].surface == 0 { secondSkin[0].surface = actualArea }
-            if secondSkin.count == 1 && secondSkin[0].plateHeight == 0 { secondSkin[0].plateHeight = height }
+            if let choice = facing(for: firstSkin[0]) { firstSkin[0].formatID = preferredFormat(in: choice.formats)?.id ?? firstSkin[0].formatID }
+            if let choice = facing(for: secondSkin[0]) { secondSkin[0].formatID = preferredFormat(in: choice.formats)?.id ?? secondSkin[0].formatID }
         }
         if step == 2 && hasShortPlate { showPlateHeightWarning = true }
         else { step += 1 }
