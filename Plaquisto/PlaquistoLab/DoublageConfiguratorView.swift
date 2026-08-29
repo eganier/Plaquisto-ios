@@ -175,32 +175,29 @@ struct DoublageConfiguratorView: View {
 
     private func allocationCard(allocation: Binding<FacingAllocation>, secondLayer: Bool, canDelete: Bool) -> some View {
         card {
-            HStack {
-                Text("Type de plaque")
-                Spacer()
+            LabeledContent("Type de plaque") {
                 Picker("Type de plaque", selection: familyBinding(allocation, secondLayer: secondLayer)) {
                     ForEach(availableFamilies(for: allocation.wrappedValue.id, secondLayer: secondLayer), id: \.self) { Text($0).tag($0) }
                 }
-                .labelsHidden()
+                .labelsHidden().fixedSize(horizontal: true, vertical: false)
             }
+            .frame(height: 28)
             Divider()
-            HStack {
-                Text("Fonction")
-                Spacer()
+            LabeledContent("Fonction") {
                 Picker("Fonction", selection: facingBinding(allocation, secondLayer: secondLayer)) {
                     ForEach(availableFunctions(for: allocation.wrappedValue, secondLayer: secondLayer)) { Text($0.functionTitle).tag($0.id) }
                 }
-                .labelsHidden()
+                .labelsHidden().fixedSize(horizontal: true, vertical: false)
             }
+            .frame(height: 28)
             Divider()
-            HStack {
-                Text("Dimension")
-                Spacer()
+            LabeledContent("Dimension") {
                 Picker("Dimension", selection: allocation.formatID) {
                     ForEach(availableFormats(for: allocation.wrappedValue, secondLayer: secondLayer)) { Text($0.title).tag($0.id) }
                 }
-                .labelsHidden()
+                .labelsHidden().fixedSize(horizontal: true, vertical: false)
             }
+            .frame(height: 28)
             Divider()
             DecimalRow("Surface attribuée", value: allocation.surface, unit: "m²")
             if height > 0, let plateFormat = selectedFormat(allocation.wrappedValue), Double(plateFormat.lengthMM) / 1000 < height {
@@ -211,7 +208,7 @@ struct DoublageConfiguratorView: View {
                 Divider()
                 Button("Supprimer ce type", role: .destructive) { removeAllocation(allocation.wrappedValue.id, secondLayer: secondLayer) }
             }
-        }
+        }.tint(Color(red: 0.12, green: 0.38, blue: 0.29))
     }
 
     private func allocationStatus(_ allocations: [FacingAllocation]) -> some View {
