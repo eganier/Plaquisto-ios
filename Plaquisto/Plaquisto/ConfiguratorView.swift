@@ -113,6 +113,17 @@ struct ConfiguratorView: View {
     private var selectedInsulationPoint: InsulationPoint? {
         insulationPoints.first { abs($0.thickness - insulationThickness) < 0.01 }
     }
+    private var insulationLambda: Double? {
+        if let value = selectedInsulation?.data["lambda_w_mk"]?.number { return value }
+        guard let text = selectedInsulation?.data["conductivity"]?.string,
+              let match = text.range(of: #"0[,.]\d+"#, options: .regularExpression),
+              let value = Double(text[match].replacingOccurrences(of: ",", with: ".")) else { return nil }
+        return value
+    }
+    private var insulationThermalResistance: Double? {
+        guard let lambda = insulationLambda, lambda > 0, insulationThickness > 0 else { return nil }
+        return (insulationThickness / 1000) / lambda
+    }
     private var insulationWeight: Double { selectedInsulationPoint?.maxWeight ?? 0 }
     private var maximumSpacing: Double? {
         guard insulationWeight <= 15 else { return nil }
@@ -330,13 +341,22 @@ struct ConfiguratorView: View {
                 }
                 if !insulationID.isEmpty {
                     Picker("Épaisseur", selection: $insulationThickness) {
-                        ForEach(insulationPoints) { point in Text("\(Int(point.thickness)) mm").tag(point.thickness) }
+                        ForEach(insulationPoints) { point in
+                            if let lambda = insulationLambda, lambda > 0 {
+                                Text("\(Int(point.thickness)) mm — R = \(((point.thickness / 1000) / lambda).formatted(.number.precision(.fractionLength(2))))").tag(point.thickness)
+                            } else {
+                                Text("\(Int(point.thickness)) mm").tag(point.thickness)
+                            }
+                        }
                     }
                     .onChange(of: insulationThickness) { _, _ in
                         selectedSpacing = maximumSpacing ?? 0.4
                         fixingSystemID = ""
                     }
                     LabeledContent("Poids maximal retenu", value: "\(format(insulationWeight)) kg/m²")
+                    if let insulationThermalResistance {
+                        LabeledContent("Résistance thermique", value: "R = \(insulationThermalResistance.formatted(.number.precision(.fractionLength(2)))) m²·K/W")
+                    }
                 }
             } header: {
                 Text("Isolation")
