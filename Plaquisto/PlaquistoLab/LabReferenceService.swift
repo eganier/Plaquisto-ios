@@ -17,6 +17,7 @@ struct LabDoublagePayload: Codable {
     let parements: [LabReferenceRecord]
     let performance: LabReferenceRecord?
     let quantitatif: LabReferenceRecord?
+    let isolants: [LabReferenceRecord]?
 }
 
 enum LabJSONValue: Codable {
@@ -121,6 +122,19 @@ struct LabQuantityTable {
     let trpf13: [String: Double]
 }
 
+struct LabInsulationLambda: Identifiable, Hashable {
+    let value: Double
+    let thicknessesMM: [Int]
+    var id: Double { value }
+}
+
+struct LabInsulationFamily: Identifiable, Hashable {
+    let id: String
+    let code: String
+    let title: String
+    let lambdas: [LabInsulationLambda]
+}
+
 @MainActor
 final class LabReferenceStore: ObservableObject {
     @Published var catalogue: LabCataloguePayload?
@@ -129,7 +143,21 @@ final class LabReferenceStore: ObservableObject {
     @Published var isUsingOfflineData = false
 
     private let endpoint = URL(string: "https://plaquisto-admin.vercel.app/api/ios/catalogue")!
-    private let cacheKey = "plaquisto.lab.catalogue.doublage.v2"
+    private let cacheKey = "plaquisto.lab.catalogue.doublage.v3"
+
+    var insulationFamilies: [LabInsulationFamily] {
+        (catalogue?.doublage?.isolants ?? []).compactMap { record in
+            let lambdas = record.data["lambdas"]?.array?.compactMap { value -> LabInsulationLambda? in
+                guard let object = value.object,
+                      let lambda = object["lambda_w_mk"]?.number else { return nil }
+                let thicknesses = object["thicknesses_mm"]?.array?.compactMap(\.number).map(Int.init).filter { $0 != 101 }.sorted() ?? []
+                guard !thicknesses.isEmpty else { return nil }
+                return LabInsulationLambda(value: lambda, thicknessesMM: thicknesses)
+            }.sorted { $0.value < $1.value } ?? []
+            guard !lambdas.isEmpty else { return nil }
+            return LabInsulationFamily(id: record.id, code: record.data["code"]?.string ?? record.id, title: record.title, lambdas: lambdas)
+        }.sorted { $0.title < $1.title }
+    }
 
     var facings: [LabFacingChoice] {
         (catalogue?.doublage?.parements ?? []).compactMap { record in

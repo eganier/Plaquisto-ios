@@ -5,6 +5,7 @@ struct DoublageConfiguratorView: View {
     enum SkinCount: String, CaseIterable, Identifiable { case single = "Simple peau", double = "Double peau"; var id: Self { self } }
     enum StudMounting: String, CaseIterable, Identifiable { case simple = "Montants simples", double = "Montants doubles"; var id: Self { self } }
     enum Compound: String, CaseIterable, Identifiable { case powder = "Enduit en poudre", paste = "Enduit en pâte"; var id: Self { self } }
+    enum InsulationLayerCount: String, CaseIterable, Identifiable { case single = "Simple épaisseur", double = "Double épaisseur"; var id: Self { self } }
 
     struct FacingAllocation: Identifiable, Hashable {
         let id: UUID
@@ -15,6 +16,12 @@ struct DoublageConfiguratorView: View {
         init(id: UUID = UUID(), facingID: String = "", formatID: String = "", surface: Double = 0) {
             self.id = id; self.facingID = facingID; self.formatID = formatID; self.surface = surface
         }
+    }
+
+    struct InsulationSelection: Hashable {
+        var familyID = ""
+        var lambda = 0.0
+        var thicknessMM = 0
     }
 
     @EnvironmentObject private var references: LabReferenceStore
@@ -31,14 +38,20 @@ struct DoublageConfiguratorView: View {
     @State private var mounting = StudMounting.simple
     @State private var spacing = 0.6
     @State private var intermediateSupports = false
+    @State private var insulationEnabled = true
+    @State private var insulationLayerCount = InsulationLayerCount.single
+    @State private var firstInsulation = InsulationSelection()
+    @State private var secondInsulation = InsulationSelection()
+    @State private var vaporBarrier = false
     @State private var jointTreatment = true
     @State private var compound = Compound.powder
     @State private var showPlateHeightWarning = false
 
-    private let stepNames = ["Dimensions", "Parements", "Technique et ossature", "Bandes à joint", "Résultat"]
+    private let stepNames = ["Dimensions", "Parements", "Technique et ossature", "Isolation", "Bandes à joint", "Résultat"]
     private var groups: [LabPerformanceGroup] { references.groups }
     private var facings: [LabFacingChoice] { references.facings }
     private var compatibility: LabFacingCompatibility? { references.compatibility }
+    private var insulationFamilies: [LabInsulationFamily] { references.insulationFamilies }
     private var actualLength: Double { geometryMode == .length ? enteredLength : (height > 0 ? enteredSurface / height : 0) }
     private var actualArea: Double { geometryMode == .surface ? enteredSurface : enteredLength * height }
     private var performanceGroupIDs: [String] {
@@ -57,6 +70,7 @@ struct DoublageConfiguratorView: View {
         case 1: return height > 0 && (geometryMode == .length ? enteredLength > 0 : enteredSurface > 0)
         case 2: return allocationsAreComplete && !performanceGroupIDs.isEmpty
         case 3: return frameIsAccepted
+        case 4: return !insulationEnabled || insulationSelectionIsComplete(firstInsulation) && (insulationLayerCount == .single || insulationSelectionIsComplete(secondInsulation))
         default: return true
         }
     }
@@ -74,6 +88,7 @@ struct DoublageConfiguratorView: View {
         .onChange(of: skinCount) { _, _ in resetParementsForSkinCount() }
         .onChange(of: firstSkin) { _, _ in normalizeAfterFirstSkinChange() }
         .onChange(of: secondSkin) { _, _ in normalizeSelections() }
+        .onChange(of: insulationFamilies.count, initial: true) { _, _ in initializeInsulationIfNeeded() }
         .alert("Hauteur de plaque insuffisante", isPresented: $showPlateHeightWarning) {
             Button("Revenir au choix", role: .cancel) {}
             Button("Continuer malgré tout") { step += 1 }
@@ -91,7 +106,8 @@ struct DoublageConfiguratorView: View {
                     case 1: dimensionsStep
                     case 2: facingsStep
                     case 3: framingStep
-                    case 4: jointsStep
+                    case 4: insulationStep
+                    case 5: jointsStep
                     default: resultStep
                     }
                 }
@@ -110,8 +126,8 @@ struct DoublageConfiguratorView: View {
             Text("Doublage périphérique").font(.title2.bold())
             Label(references.isUsingOfflineData ? "Données enregistrées hors connexion" : "Données synchronisées avec Plaquisto Admin", systemImage: references.isUsingOfflineData ? "icloud.slash" : "checkmark.icloud")
                 .font(.caption).foregroundStyle(references.isUsingOfflineData ? .orange : .green)
-            ProgressView(value: Double(step), total: 5).tint(.green)
-            Text("Étape \(step) sur 5 · \(stepNames[step - 1])").font(.caption).foregroundStyle(.secondary)
+            ProgressView(value: Double(step), total: 6).tint(.green)
+            Text("Étape \(step) sur 6 · \(stepNames[step - 1])").font(.caption).foregroundStyle(.secondary)
         }
         .padding(.horizontal, 20).padding(.top, 12).padding(.bottom, 14)
         .background(.background)
@@ -121,7 +137,7 @@ struct DoublageConfiguratorView: View {
         HStack {
             if step > 1 { Button("Retour") { step -= 1 }.buttonStyle(.bordered).tint(.green) }
             Spacer()
-            if step < 5 { Button("Continuer") { advance() }.buttonStyle(.borderedProminent).tint(.green).disabled(!canContinue) }
+            if step < 6 { Button("Continuer") { advance() }.buttonStyle(.borderedProminent).tint(.green).disabled(!canContinue) }
             else { Button("Recommencer") { reset() }.buttonStyle(.borderedProminent).tint(.green) }
         }
         .padding(.horizontal, 20).padding(.vertical, 12).background(.background)
@@ -257,6 +273,62 @@ struct DoublageConfiguratorView: View {
         }
     }
 
+    private var insulationStep: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            sectionTitle("Isolation du doublage")
+            card {
+                Toggle("Prévoir une isolation", isOn: $insulationEnabled)
+                if insulationEnabled {
+                    Divider()
+                    Picker("Nombre de couches", selection: $insulationLayerCount) {
+                        ForEach(InsulationLayerCount.allCases) { Text($0.rawValue).tag($0) }
+                    }.pickerStyle(.segmented)
+                }
+            }
+            if insulationEnabled {
+                sectionTitle("Première couche")
+                insulationCard(selection: $firstInsulation)
+                if insulationLayerCount == .double {
+                    sectionTitle("Deuxième couche")
+                    insulationCard(selection: $secondInsulation)
+                }
+                card {
+                    LabeledContent("Résistance thermique totale", value: "R = \(thermalResistanceTotal.formatted(.number.precision(.fractionLength(2)))) m²·K/W")
+                }
+            }
+            sectionTitle("Pare-vapeur")
+            card {
+                Toggle("Prévoir la pose d’un pare-vapeur", isOn: $vaporBarrier)
+            }
+        }
+    }
+
+    private func insulationCard(selection: Binding<InsulationSelection>) -> some View {
+        card {
+            LabeledContent("Type d’isolant") {
+                Picker("Type d’isolant", selection: insulationFamilyBinding(selection)) {
+                    ForEach(insulationFamilies) { Text($0.title).tag($0.id) }
+                }.labelsHidden().fixedSize(horizontal: true, vertical: false)
+            }
+            Divider()
+            LabeledContent("Lambda") {
+                Picker("Lambda", selection: insulationLambdaBinding(selection)) {
+                    ForEach(insulationLambdas(for: selection.wrappedValue)) { option in
+                        Text("λ \(option.value.formatted(.number.precision(.fractionLength(3)))) W/(m·K)").tag(option.value)
+                    }
+                }.labelsHidden().fixedSize(horizontal: true, vertical: false)
+            }
+            Divider()
+            LabeledContent("Épaisseur") {
+                Picker("Épaisseur", selection: selection.thicknessMM) {
+                    ForEach(insulationThicknesses(for: selection.wrappedValue), id: \.self) { thickness in
+                        Text("\(thickness) mm — R = \(thermalResistance(thicknessMM: thickness, lambda: selection.wrappedValue.lambda).formatted(.number.precision(.fractionLength(2))))").tag(thickness)
+                    }
+                }.labelsHidden().fixedSize(horizontal: true, vertical: false)
+            }
+        }.tint(Color(red: 0.12, green: 0.38, blue: 0.29))
+    }
+
     private var jointsStep: some View {
         VStack(alignment: .leading, spacing: 14) {
             sectionTitle("Traitement des bandes à joint")
@@ -276,6 +348,9 @@ struct DoublageConfiguratorView: View {
                 Divider(); LabeledContent("Ossature", value: frame)
                 Divider(); LabeledContent("Montage", value: mounting.rawValue)
                 Divider(); LabeledContent("Appuis intermédiaires", value: intermediateSupports ? "Oui" : "Non")
+                Divider(); LabeledContent("Isolation", value: insulationEnabled ? insulationLayerCount.rawValue : "Non")
+                if insulationEnabled { Divider(); LabeledContent("Résistance thermique totale", value: "R = \(thermalResistanceTotal.formatted(.number.precision(.fractionLength(2)))) m²·K/W") }
+                Divider(); LabeledContent("Pare-vapeur", value: vaporBarrier ? "Oui" : "Non")
             }
             sectionTitle("Quantitatif indicatif")
             card {
@@ -299,6 +374,16 @@ struct DoublageConfiguratorView: View {
             rows += allocationRows(secondSkin, skinName: "2e peau")
         }
         rows += [("Rails", format(rails, "ml")), ("Montants", format(studs, "ml"))]
+        if insulationEnabled {
+            rows.append(("Isolation · 1re couche · \(insulationDescription(firstInsulation))", format(actualArea * (table.coefficients["insulation_m2_m2"] ?? 1.1), "m²")))
+            if insulationLayerCount == .double {
+                rows.append(("Isolation · 2e couche · \(insulationDescription(secondInsulation))", format(actualArea * (table.coefficients["insulation_m2_m2"] ?? 1.1), "m²")))
+            }
+        }
+        if vaporBarrier {
+            rows.append(("Pare-vapeur", format(actualArea * (table.coefficients["vapor_barrier_m2_m2"] ?? 1.2), "m²")))
+            rows.append(("Scotch double-face", format(mounting == .simple ? studs : studs / 2, "ml")))
+        }
         let mountingKey = mounting == .simple ? "simple" : "double"
         if spacing == 0.4 || spacing == 0.6 {
             let key = String(format: "%.2f_%@", spacing, mountingKey)
@@ -548,12 +633,70 @@ struct DoublageConfiguratorView: View {
         if !choicesSpacing.contains(where: { abs($0 - spacing) < 0.001 }) { spacing = choicesSpacing.last ?? spacing }
     }
 
+    private func insulationFamily(_ selection: InsulationSelection) -> LabInsulationFamily? {
+        insulationFamilies.first(where: { $0.id == selection.familyID })
+    }
+
+    private func insulationLambdas(for selection: InsulationSelection) -> [LabInsulationLambda] {
+        insulationFamily(selection)?.lambdas ?? []
+    }
+
+    private func insulationThicknesses(for selection: InsulationSelection) -> [Int] {
+        insulationLambdas(for: selection).first(where: { abs($0.value - selection.lambda) < 0.000_001 })?.thicknessesMM ?? []
+    }
+
+    private func insulationFamilyBinding(_ selection: Binding<InsulationSelection>) -> Binding<String> {
+        Binding(get: { selection.wrappedValue.familyID }, set: { familyID in
+            guard let family = insulationFamilies.first(where: { $0.id == familyID }), let lambda = family.lambdas.first else { return }
+            selection.wrappedValue = InsulationSelection(familyID: familyID, lambda: lambda.value, thicknessMM: lambda.thicknessesMM.first ?? 0)
+        })
+    }
+
+    private func insulationLambdaBinding(_ selection: Binding<InsulationSelection>) -> Binding<Double> {
+        Binding(get: { selection.wrappedValue.lambda }, set: { lambda in
+            var next = selection.wrappedValue
+            next.lambda = lambda
+            next.thicknessMM = insulationLambdas(for: next).first(where: { abs($0.value - lambda) < 0.000_001 })?.thicknessesMM.first ?? 0
+            selection.wrappedValue = next
+        })
+    }
+
+    private func initializeInsulationIfNeeded() {
+        guard let family = insulationFamilies.first, let lambda = family.lambdas.first else { return }
+        let fallback = InsulationSelection(familyID: family.id, lambda: lambda.value, thicknessMM: lambda.thicknessesMM.first ?? 0)
+        if insulationFamily(firstInsulation) == nil { firstInsulation = fallback }
+        if insulationFamily(secondInsulation) == nil { secondInsulation = fallback }
+    }
+
+    private func insulationSelectionIsComplete(_ selection: InsulationSelection) -> Bool {
+        insulationFamily(selection) != nil && insulationThicknesses(for: selection).contains(selection.thicknessMM)
+    }
+
+    private func thermalResistance(thicknessMM: Int, lambda: Double) -> Double {
+        guard thicknessMM > 0, lambda > 0 else { return 0 }
+        return (Double(thicknessMM) / 1000) / lambda
+    }
+
+    private var thermalResistanceTotal: Double {
+        let first = thermalResistance(thicknessMM: firstInsulation.thicknessMM, lambda: firstInsulation.lambda)
+        let second = insulationLayerCount == .double ? thermalResistance(thicknessMM: secondInsulation.thicknessMM, lambda: secondInsulation.lambda) : 0
+        return first + second
+    }
+
+    private func insulationDescription(_ selection: InsulationSelection) -> String {
+        let name = insulationFamily(selection)?.title ?? "Isolant"
+        return "\(name), λ \(selection.lambda.formatted(.number.precision(.fractionLength(3)))), \(selection.thicknessMM) mm, R \(thermalResistance(thicknessMM: selection.thicknessMM, lambda: selection.lambda).formatted(.number.precision(.fractionLength(2))))"
+    }
+
     private func reset() {
         step = 1; geometryMode = .length; height = 0; enteredLength = 0; enteredSurface = 0
         skinCount = .single; firstSkin = [FacingAllocation()]; secondSkin = [FacingAllocation()]
         technique = "Rails et montants"; frame = "R48 + M48"; mounting = .simple; spacing = 0.6
-        intermediateSupports = false; jointTreatment = true; compound = .powder
+        intermediateSupports = false; insulationEnabled = true; insulationLayerCount = .single
+        firstInsulation = InsulationSelection(); secondInsulation = InsulationSelection(); vaporBarrier = false
+        jointTreatment = true; compound = .powder
         initializeParementsIfNeeded()
+        initializeInsulationIfNeeded()
         normalizeSelections()
     }
 
