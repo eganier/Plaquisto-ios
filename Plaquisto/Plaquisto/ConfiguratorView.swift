@@ -102,6 +102,30 @@ struct ConfiguratorView: View {
         Array(Set(fixingSystems.compactMap { $0.data["support"]?.string })).sorted()
     }
     private var selectedInsulation: ReferenceRecord? { insulationSeries.first { $0.id == insulationID } }
+    private var insulationTypes: [String] {
+        Array(Set(insulationSeries.compactMap { $0.data["material"]?.string })).sorted()
+    }
+    private var selectedInsulationType: String { selectedInsulation?.data["material"]?.string ?? "" }
+    private func insulationOptions(for material: String) -> [ReferenceRecord] {
+        insulationSeries.filter { $0.data["material"]?.string == material }.sorted {
+            (insulationLambda(for: $0) ?? .greatestFiniteMagnitude) < (insulationLambda(for: $1) ?? .greatestFiniteMagnitude)
+        }
+    }
+    private func insulationLambda(for record: ReferenceRecord?) -> Double? {
+        if let text = record?.data["conductivity"]?.string,
+           let match = text.range(of: #"0[,.]\d+"#, options: .regularExpression),
+           let value = Double(text[match].replacingOccurrences(of: ",", with: ".")) { return value }
+        return record?.data["lambda_w_mk"]?.number
+    }
+    private func insulationLambdaTitle(_ record: ReferenceRecord) -> String {
+        guard let lambda = insulationLambda(for: record) else { return "Lambda non renseigné" }
+        return "λ \(lambda.formatted(.number.precision(.fractionLength(3)))) W/(m·K)"
+    }
+    private var insulationTypeBinding: Binding<String> {
+        Binding(get: { selectedInsulationType }, set: { material in
+            insulationID = material.isEmpty ? "" : (insulationOptions(for: material).first?.id ?? "")
+        })
+    }
     private var insulationPoints: [InsulationPoint] {
         selectedInsulation?.data["values"]?.array?.compactMap { value in
             guard let object = value.object,
@@ -114,10 +138,7 @@ struct ConfiguratorView: View {
         insulationPoints.first { abs($0.thickness - insulationThickness) < 0.01 }
     }
     private var insulationLambda: Double? {
-        if let text = selectedInsulation?.data["conductivity"]?.string,
-           let match = text.range(of: #"0[,.]\d+"#, options: .regularExpression),
-           let value = Double(text[match].replacingOccurrences(of: ",", with: ".")) { return value }
-        return selectedInsulation?.data["lambda_w_mk"]?.number
+        insulationLambda(for: selectedInsulation)
     }
     private var insulationThermalResistance: Double? {
         guard let lambda = insulationLambda, lambda > 0, insulationThickness > 0 else { return nil }
@@ -329,9 +350,9 @@ struct ConfiguratorView: View {
 
         case 2:
             Section {
-                Picker("Type d’isolant", selection: $insulationID) {
+                Picker("Type d’isolant", selection: insulationTypeBinding) {
                     Text("Sans isolant").tag("")
-                    ForEach(insulationSeries) { Text($0.title).tag($0.id) }
+                    ForEach(insulationTypes, id: \.self) { Text($0).tag($0) }
                 }
                 .onChange(of: insulationID) { _, _ in
                     insulationThickness = insulationPoints.first?.thickness ?? 0
@@ -339,6 +360,11 @@ struct ConfiguratorView: View {
                     fixingSystemID = ""
                 }
                 if !insulationID.isEmpty {
+                    Picker("Lambda", selection: $insulationID) {
+                        ForEach(insulationOptions(for: selectedInsulationType)) { option in
+                            Text(insulationLambdaTitle(option)).tag(option.id)
+                        }
+                    }
                     Picker("Épaisseur", selection: $insulationThickness) {
                         ForEach(insulationPoints) { point in
                             if let lambda = insulationLambda, lambda > 0 {
