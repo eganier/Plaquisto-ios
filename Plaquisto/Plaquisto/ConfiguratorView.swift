@@ -114,11 +114,10 @@ struct ConfiguratorView: View {
         insulationPoints.first { abs($0.thickness - insulationThickness) < 0.01 }
     }
     private var insulationLambda: Double? {
-        if let value = selectedInsulation?.data["lambda_w_mk"]?.number { return value }
-        guard let text = selectedInsulation?.data["conductivity"]?.string,
-              let match = text.range(of: #"0[,.]\d+"#, options: .regularExpression),
-              let value = Double(text[match].replacingOccurrences(of: ",", with: ".")) else { return nil }
-        return value
+        if let text = selectedInsulation?.data["conductivity"]?.string,
+           let match = text.range(of: #"0[,.]\d+"#, options: .regularExpression),
+           let value = Double(text[match].replacingOccurrences(of: ",", with: ".")) { return value }
+        return selectedInsulation?.data["lambda_w_mk"]?.number
     }
     private var insulationThermalResistance: Double? {
         guard let lambda = insulationLambda, lambda > 0, insulationThickness > 0 else { return nil }
