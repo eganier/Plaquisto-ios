@@ -10,7 +10,7 @@ struct DoublageConfiguratorView: View {
     typealias FacingAllocation = DoublageFacingSelection
     typealias InsulationSelection = DoublageInsulationSelection
 
-    @EnvironmentObject private var references: LabReferenceStore
+    @EnvironmentObject private var references: DoublageReferenceStore
     private let onSave: ((DoublageConfiguration) -> Void)?
     private let onClose: (() -> Void)?
     @State private var step = 1
@@ -67,17 +67,17 @@ struct DoublageConfiguratorView: View {
     }
 
     private let stepNames = ["Dimensions", "Parements", "Technique et ossature", "Isolation", "Bandes à joint", "Résultat"]
-    private var groups: [LabPerformanceGroup] { references.groups }
-    private var facings: [LabFacingChoice] { references.facings }
-    private var compatibility: LabFacingCompatibility? { references.compatibility }
-    private var insulationFamilies: [LabInsulationFamily] { references.insulationFamilies }
+    private var groups: [DoublagePerformanceGroup] { references.groups }
+    private var facings: [DoublageFacingChoice] { references.facings }
+    private var compatibility: DoublageFacingCompatibility? { references.compatibility }
+    private var insulationFamilies: [DoublageInsulationFamily] { references.insulationFamilies }
     private var actualLength: Double { geometryMode == .length ? enteredLength : (height > 0 ? enteredSurface / height : 0) }
     private var actualArea: Double { geometryMode == .surface ? enteredSurface : enteredLength * height }
     private var performanceGroupIDs: [String] {
         if skinCount == .single { return Array(Set(firstSkin.compactMap { groupID(first: $0, second: nil) })) }
         return Array(Set(firstSkin.flatMap { first in secondSkin.compactMap { second in groupID(first: first, second: second) } }))
     }
-    private var performanceGroups: [LabPerformanceGroup] { performanceGroupIDs.compactMap { id in groups.first(where: { $0.id == id }) } }
+    private var performanceGroups: [DoublagePerformanceGroup] { performanceGroupIDs.compactMap { id in groups.first(where: { $0.id == id }) } }
     private var frames: [String] { Array(Set(performanceGroups.first?.values.map(\.frame) ?? [])).sorted { frameNumber($0) < frameNumber($1) } }
     private var spacings: [Double] { Array(Set(performanceGroups.first?.values.map(\.spacing) ?? [])).sorted() }
     private var maxHeight: Double { maximumHeight(frame: frame) }
@@ -443,11 +443,11 @@ struct DoublageConfiguratorView: View {
         }
     }
 
-    private func facing(for allocation: FacingAllocation) -> LabFacingChoice? {
+    private func facing(for allocation: FacingAllocation) -> DoublageFacingChoice? {
         facings.first(where: { $0.id == allocation.facingID })
     }
 
-    private func selectedFormat(_ allocation: FacingAllocation) -> LabFacingFormat? {
+    private func selectedFormat(_ allocation: FacingAllocation) -> DoublageFacingFormat? {
         facing(for: allocation)?.formats.first(where: { $0.id == allocation.formatID })
     }
 
@@ -532,7 +532,7 @@ struct DoublageConfiguratorView: View {
         return (first, second)
     }
 
-    private func compatibleFormats(for candidate: LabFacingChoice, allocationID: UUID?, secondLayer: Bool) -> [LabFacingFormat] {
+    private func compatibleFormats(for candidate: DoublageFacingChoice, allocationID: UUID?, secondLayer: Bool) -> [DoublageFacingFormat] {
         candidate.formats.filter { plateFormat in
             let allocation = FacingAllocation(id: allocationID ?? UUID(), facingID: candidate.id, formatID: plateFormat.id, surface: 1)
             let arrays = arraysReplacing(allocation, allocationID: allocationID, secondLayer: secondLayer)
@@ -540,7 +540,7 @@ struct DoublageConfiguratorView: View {
         }
     }
 
-    private func availableChoices(for allocationID: UUID?, secondLayer: Bool) -> [LabFacingChoice] {
+    private func availableChoices(for allocationID: UUID?, secondLayer: Bool) -> [DoublageFacingChoice] {
         let currentLayer = secondLayer ? secondSkin : firstSkin
         let used = Set(currentLayer.filter { $0.id != allocationID }.map(\.facingID))
         return facings.filter { candidate in
@@ -554,7 +554,7 @@ struct DoublageConfiguratorView: View {
             .sorted { (Int($0.dropFirst(2)) ?? 0) < (Int($1.dropFirst(2)) ?? 0) }
     }
 
-    private func availableFunctions(for allocation: FacingAllocation, secondLayer: Bool) -> [LabFacingChoice] {
+    private func availableFunctions(for allocation: FacingAllocation, secondLayer: Bool) -> [DoublageFacingChoice] {
         guard let selected = facing(for: allocation) else { return [] }
         return availableChoices(for: allocation.id, secondLayer: secondLayer)
             .filter { $0.mechanicalFamily == selected.mechanicalFamily }
@@ -565,14 +565,14 @@ struct DoublageConfiguratorView: View {
             }
     }
 
-    private func availableFormats(for allocation: FacingAllocation, secondLayer: Bool) -> [LabFacingFormat] {
+    private func availableFormats(for allocation: FacingAllocation, secondLayer: Bool) -> [DoublageFacingFormat] {
         guard let candidate = facing(for: allocation) else { return [] }
         let compatible = compatibleFormats(for: candidate, allocationID: allocation.id, secondLayer: secondLayer)
         return compatible.isEmpty ? candidate.formats : compatible
     }
 
-    private func preferredFormat(in formats: [LabFacingFormat]) -> LabFacingFormat? {
-        let shortest: (LabFacingFormat, LabFacingFormat) -> Bool = { lhs, rhs in
+    private func preferredFormat(in formats: [DoublageFacingFormat]) -> DoublageFacingFormat? {
+        let shortest: (DoublageFacingFormat, DoublageFacingFormat) -> Bool = { lhs, rhs in
             if lhs.lengthMM != rhs.lengthMM { return lhs.lengthMM < rhs.lengthMM }
             return abs(lhs.widthMM - 1200) < abs(rhs.widthMM - 1200)
         }
@@ -636,7 +636,7 @@ struct DoublageConfiguratorView: View {
         normalizeSelections()
     }
 
-    private var defaultFacing: LabFacingChoice? {
+    private var defaultFacing: DoublageFacingChoice? {
         facings.first(where: { $0.mechanicalFamily == "BA13" && $0.function == "standard" }) ?? facings.first
     }
 
@@ -659,11 +659,11 @@ struct DoublageConfiguratorView: View {
         if !choicesSpacing.contains(where: { abs($0 - spacing) < 0.001 }) { spacing = choicesSpacing.last ?? spacing }
     }
 
-    private func insulationFamily(_ selection: InsulationSelection) -> LabInsulationFamily? {
+    private func insulationFamily(_ selection: InsulationSelection) -> DoublageInsulationFamily? {
         insulationFamilies.first(where: { $0.id == selection.familyID })
     }
 
-    private func insulationLambdas(for selection: InsulationSelection) -> [LabInsulationLambda] {
+    private func insulationLambdas(for selection: InsulationSelection) -> [DoublageInsulationLambda] {
         insulationFamily(selection)?.lambdas ?? []
     }
 

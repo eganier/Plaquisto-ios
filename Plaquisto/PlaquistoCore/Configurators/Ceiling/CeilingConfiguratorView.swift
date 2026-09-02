@@ -40,8 +40,8 @@ private struct FacingDimension: Identifiable, Hashable {
 
 private typealias FacingAllocation = FacingSelection
 
-struct ConfiguratorView: View {
-    @StateObject private var store = ReferenceStore()
+struct CeilingConfiguratorView: View {
+    @StateObject private var store = CeilingReferenceStore()
     @State private var step: Int
     @State private var length: Double
     @State private var width: Double
@@ -91,33 +91,33 @@ struct ConfiguratorView: View {
         self.onSave = onSave
     }
 
-    private var catalogue: CataloguePayload? { store.catalogue }
+    private var catalogue: CeilingCataloguePayload? { store.catalogue }
     private var workTitle: String { catalogue?.ouvrage?.title ?? "Plafond sur fourrures horizontal" }
-    private var insulationSeries: [ReferenceRecord] { catalogue?.isolation ?? [] }
-    private var fixingSystems: [ReferenceRecord] { catalogue?.systemesFixation ?? [] }
-    private var facings: [ReferenceRecord] { catalogue?.parements ?? [] }
-    private var quantityItems: [ReferenceRecord] { catalogue?.quantitatifs ?? [] }
-    private var vaporBarrierRecords: [ReferenceRecord] { catalogue?.pareVapeur ?? [] }
+    private var insulationSeries: [CeilingReferenceRecord] { catalogue?.isolation ?? [] }
+    private var fixingSystems: [CeilingReferenceRecord] { catalogue?.systemesFixation ?? [] }
+    private var facings: [CeilingReferenceRecord] { catalogue?.parements ?? [] }
+    private var quantityItems: [CeilingReferenceRecord] { catalogue?.quantitatifs ?? [] }
+    private var vaporBarrierRecords: [CeilingReferenceRecord] { catalogue?.pareVapeur ?? [] }
     private var supports: [String] {
         Array(Set(fixingSystems.compactMap { $0.data["support"]?.string })).sorted()
     }
-    private var selectedInsulation: ReferenceRecord? { insulationSeries.first { $0.id == insulationID } }
+    private var selectedInsulation: CeilingReferenceRecord? { insulationSeries.first { $0.id == insulationID } }
     private var insulationTypes: [String] {
         Array(Set(insulationSeries.compactMap { $0.data["material"]?.string })).sorted()
     }
     private var selectedInsulationType: String { selectedInsulation?.data["material"]?.string ?? "" }
-    private func insulationOptions(for material: String) -> [ReferenceRecord] {
+    private func insulationOptions(for material: String) -> [CeilingReferenceRecord] {
         insulationSeries.filter { $0.data["material"]?.string == material }.sorted {
             (insulationLambda(for: $0) ?? .greatestFiniteMagnitude) < (insulationLambda(for: $1) ?? .greatestFiniteMagnitude)
         }
     }
-    private func insulationLambda(for record: ReferenceRecord?) -> Double? {
+    private func insulationLambda(for record: CeilingReferenceRecord?) -> Double? {
         if let text = record?.data["conductivity"]?.string,
            let match = text.range(of: #"0[,.]\d+"#, options: .regularExpression),
            let value = Double(text[match].replacingOccurrences(of: ",", with: ".")) { return value }
         return record?.data["lambda_w_mk"]?.number
     }
-    private func insulationLambdaTitle(_ record: ReferenceRecord) -> String {
+    private func insulationLambdaTitle(_ record: CeilingReferenceRecord) -> String {
         guard let lambda = insulationLambda(for: record) else { return "Lambda non renseigné" }
         return "λ \(lambda.formatted(.number.precision(.fractionLength(3)))) W/(m·K)"
     }
@@ -155,7 +155,7 @@ struct ConfiguratorView: View {
         guard let maximumSpacing else { return false }
         return selectedSpacing > maximumSpacing
     }
-    private var compatibleSystems: [ReferenceRecord] {
+    private var compatibleSystems: [CeilingReferenceRecord] {
         let plenumMM = plenum * 10
         return fixingSystems.filter { system in
             guard system.data["support"]?.string == support,
@@ -165,7 +165,7 @@ struct ConfiguratorView: View {
             return true
         }
     }
-    private var selectedFixingSystem: ReferenceRecord? {
+    private var selectedFixingSystem: CeilingReferenceRecord? {
         compatibleSystems.first { $0.id == fixingSystemID }
     }
     private var selectedComponents: [FixingComponent] { components(for: selectedFixingSystem) }
@@ -628,7 +628,7 @@ struct ConfiguratorView: View {
         return FacingAllocation(facingID: facingID, dimensionID: dimensions(for: facingID).first?.id ?? "", area: allocationArea)
     }
 
-    private var defaultFacing: ReferenceRecord? {
+    private var defaultFacing: CeilingReferenceRecord? {
         facings.first {
             $0.data["mechanical_family"]?.string == "BA13" && $0.data["function"]?.string == "standard"
         } ?? facings.first
@@ -643,7 +643,7 @@ struct ConfiguratorView: View {
         facings.first(where: { $0.id == allocation.facingID })?.data["mechanical_family"]?.string ?? ""
     }
 
-    private func functionChoices(for allocation: FacingAllocation) -> [ReferenceRecord] {
+    private func functionChoices(for allocation: FacingAllocation) -> [CeilingReferenceRecord] {
         let family = facingFamily(for: allocation)
         return facings.filter { $0.data["mechanical_family"]?.string == family }.sorted { lhs, rhs in
             let left = lhs.data["function"]?.string ?? "standard"
@@ -654,7 +654,7 @@ struct ConfiguratorView: View {
         }
     }
 
-    private func functionTitle(for facing: ReferenceRecord) -> String {
+    private func functionTitle(for facing: CeilingReferenceRecord) -> String {
         switch facing.data["function"]?.string ?? "standard" {
         case "hydrofuge": "Hydrofuge H1"
         case "incendie": "Protection incendie"
@@ -738,7 +738,7 @@ struct ConfiguratorView: View {
         }
     }
 
-    private func components(for system: ReferenceRecord?) -> [FixingComponent] {
+    private func components(for system: CeilingReferenceRecord?) -> [FixingComponent] {
         system?.data["components"]?.array?.compactMap { value in
             guard let object = value.object,
                   let name = object["name"]?.string,
@@ -749,7 +749,7 @@ struct ConfiguratorView: View {
         } ?? []
     }
 
-    private func vaporBarrierComponents(for record: ReferenceRecord) -> [VaporBarrierComponent] {
+    private func vaporBarrierComponents(for record: CeilingReferenceRecord) -> [VaporBarrierComponent] {
         record.data["components"]?.array?.compactMap { value in
             guard let object = value.object,
                   let name = object["name"]?.string,

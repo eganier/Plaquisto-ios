@@ -55,7 +55,7 @@ struct WorkSelectionView: View {
 }
 
 struct CombinedQuantityView: View {
-    @StateObject private var store = ReferenceStore()
+    @StateObject private var store = CeilingReferenceStore()
     let works: [WorkItem]
     let title: String
 
@@ -111,7 +111,7 @@ struct CombinedQuantitySummary {
 }
 
 enum CombinedQuantityCalculator {
-    static func calculate(works: [WorkItem], catalogue: CataloguePayload) -> CombinedQuantitySummary {
+    static func calculate(works: [WorkItem], catalogue: CeilingCataloguePayload) -> CombinedQuantitySummary {
         var totals: [String: CombinedSupply] = [:]
         var totalArea = 0.0
 
@@ -130,7 +130,7 @@ enum CombinedQuantityCalculator {
                 }
                 continue
             }
-            let configuration = work.configuration
+            guard let configuration = work.ceilingConfiguration else { continue }
             let area = configuration.length * configuration.width
             totalArea += area
             let prefix = configuration.layers == 1 ? "simple" : "double"
@@ -184,7 +184,7 @@ enum CombinedQuantityCalculator {
         return CombinedQuantitySummary(totalArea: totalArea, supplies: totals.values.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending })
     }
 
-    private static func addParements(_ selections: [FacingSelection], catalogue: CataloguePayload, add: (String, Double, String) -> Void) {
+    private static func addParements(_ selections: [FacingSelection], catalogue: CeilingCataloguePayload, add: (String, Double, String) -> Void) {
         for selection in selections {
             guard let facing = catalogue.parements.first(where: { $0.id == selection.facingID }),
                   let dimension = facing.data["dimensions"]?.array?.compactMap({ $0.object }).first(where: {
@@ -204,8 +204,10 @@ enum CombinedQuantityCalculator {
 private extension WorkItem {
     var area: Double {
         switch type {
-        case .ceilingOnFurring: configuration.length * configuration.width
-        case .peripheralLiningStuds: doublageConfiguration?.area ?? 0
+        case .ceilingOnFurring:
+            guard let configuration = ceilingConfiguration else { return 0 }
+            return configuration.length * configuration.width
+        case .peripheralLiningStuds: return doublageConfiguration?.area ?? 0
         }
     }
 }

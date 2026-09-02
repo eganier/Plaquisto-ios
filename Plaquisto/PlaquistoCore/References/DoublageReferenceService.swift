@@ -1,27 +1,27 @@
 import Foundation
 
-struct LabReferenceRecord: Codable, Identifiable {
+struct DoublageReferenceRecord: Codable, Identifiable {
     let id: String
     let title: String
     let summary: String
-    let data: [String: LabJSONValue]
+    let data: [String: DoublageJSONValue]
 }
 
-struct LabCataloguePayload: Codable {
+struct DoublageCataloguePayload: Codable {
     let version: String
-    let doublage: LabDoublagePayload?
+    let doublage: DoublagePayload?
 }
 
-struct LabDoublagePayload: Codable {
-    let ouvrage: LabReferenceRecord?
-    let parements: [LabReferenceRecord]
-    let performance: LabReferenceRecord?
-    let quantitatif: LabReferenceRecord?
-    let isolants: [LabReferenceRecord]?
+struct DoublagePayload: Codable {
+    let ouvrage: DoublageReferenceRecord?
+    let parements: [DoublageReferenceRecord]
+    let performance: DoublageReferenceRecord?
+    let quantitatif: DoublageReferenceRecord?
+    let isolants: [DoublageReferenceRecord]?
 }
 
-enum LabJSONValue: Codable {
-    case string(String), number(Double), bool(Bool), array([LabJSONValue]), object([String: LabJSONValue]), null
+enum DoublageJSONValue: Codable {
+    case string(String), number(Double), bool(Bool), array([DoublageJSONValue]), object([String: DoublageJSONValue]), null
 
     init(from decoder: Decoder) throws {
         let box = try decoder.singleValueContainer()
@@ -29,8 +29,8 @@ enum LabJSONValue: Codable {
         else if let value = try? box.decode(Bool.self) { self = .bool(value) }
         else if let value = try? box.decode(Double.self) { self = .number(value) }
         else if let value = try? box.decode(String.self) { self = .string(value) }
-        else if let value = try? box.decode([LabJSONValue].self) { self = .array(value) }
-        else { self = .object(try box.decode([String: LabJSONValue].self)) }
+        else if let value = try? box.decode([DoublageJSONValue].self) { self = .array(value) }
+        else { self = .object(try box.decode([String: DoublageJSONValue].self)) }
     }
 
     func encode(to encoder: Encoder) throws {
@@ -48,11 +48,11 @@ enum LabJSONValue: Codable {
     var string: String? { if case let .string(value) = self { value } else { nil } }
     var number: Double? { if case let .number(value) = self { value } else { nil } }
     var bool: Bool? { if case let .bool(value) = self { value } else { nil } }
-    var array: [LabJSONValue]? { if case let .array(value) = self { value } else { nil } }
-    var object: [String: LabJSONValue]? { if case let .object(value) = self { value } else { nil } }
+    var array: [DoublageJSONValue]? { if case let .array(value) = self { value } else { nil } }
+    var object: [String: DoublageJSONValue]? { if case let .object(value) = self { value } else { nil } }
 }
 
-struct LabHeightValue: Identifiable {
+struct DoublageHeightValue: Identifiable {
     let frame: String
     let spacing: Double
     let simple: Double
@@ -60,27 +60,27 @@ struct LabHeightValue: Identifiable {
     var id: String { "\(frame)-\(spacing)" }
 }
 
-struct LabPerformanceGroup: Identifiable {
+struct DoublagePerformanceGroup: Identifiable {
     let id: String
     let label: String
     let width: Double
     let alternatives: [String]
-    let values: [LabHeightValue]
+    let values: [DoublageHeightValue]
 }
 
-struct LabFacingFormat: Identifiable, Hashable {
+struct DoublageFacingFormat: Identifiable, Hashable {
     let widthMM: Int
     let lengthMM: Int
     var id: String { "\(widthMM)x\(lengthMM)" }
     var title: String { "\(widthMM) × \(lengthMM) mm" }
 }
 
-struct LabFacingChoice: Identifiable, Hashable {
+struct DoublageFacingChoice: Identifiable, Hashable {
     let id: String
     let title: String
     let mechanicalFamily: String
     let function: String
-    let formats: [LabFacingFormat]
+    let formats: [DoublageFacingFormat]
 
     var functionTitle: String {
         switch function {
@@ -95,81 +95,82 @@ struct LabFacingChoice: Identifiable, Hashable {
     }
 }
 
-struct LabSingleCompatibilityRule {
+struct DoublageSingleCompatibilityRule {
     let families: [String]
     let widthsMM: [Int]
     let performanceGroupID: String
 }
 
-struct LabDoubleCompatibilityRule {
+struct DoublageDoubleCompatibilityRule {
     let families: [String]
     let widthsMM: [Int]
     let performanceGroupID: String
 }
 
-struct LabFacingCompatibility {
+struct DoublageFacingCompatibility {
     let sameWidthRequired: Bool
     let normalizeFamilies: [String: String]
-    let single: [LabSingleCompatibilityRule]
-    let exactDouble: [LabDoubleCompatibilityRule]
-    let setDouble: [LabDoubleCompatibilityRule]
+    let single: [DoublageSingleCompatibilityRule]
+    let exactDouble: [DoublageDoubleCompatibilityRule]
+    let setDouble: [DoublageDoubleCompatibilityRule]
 }
 
-struct LabQuantityTable {
+struct DoublageQuantityTable {
     let coefficients: [String: Double]
     let ttpc25: [String: Double]
     let ttpc35: [String: Double]
     let trpf13: [String: Double]
 }
 
-struct LabInsulationLambda: Identifiable, Hashable {
+struct DoublageInsulationLambda: Identifiable, Hashable {
     let value: Double
     let thicknessesMM: [Int]
     var id: Double { value }
 }
 
-struct LabInsulationFamily: Identifiable, Hashable {
+struct DoublageInsulationFamily: Identifiable, Hashable {
     let id: String
     let code: String
     let title: String
-    let lambdas: [LabInsulationLambda]
+    let lambdas: [DoublageInsulationLambda]
 }
 
 @MainActor
-final class LabReferenceStore: ObservableObject {
-    @Published var catalogue: LabCataloguePayload?
+final class DoublageReferenceStore: ObservableObject {
+    @Published var catalogue: DoublageCataloguePayload?
     @Published var isLoading = true
     @Published var error: String?
     @Published var isUsingOfflineData = false
 
     private let endpoint = URL(string: "https://plaquisto-admin.vercel.app/api/ios/catalogue")!
-    private let cacheKey = "plaquisto.lab.catalogue.doublage.v3"
+    private let cacheKey = "plaquisto.catalogue.doublage.v3"
+    private let legacyCacheKey = "plaquisto.lab.catalogue.doublage.v3"
 
-    var insulationFamilies: [LabInsulationFamily] {
+    var insulationFamilies: [DoublageInsulationFamily] {
         (catalogue?.doublage?.isolants ?? []).compactMap { record in
-            let lambdas = record.data["lambdas"]?.array?.compactMap { value -> LabInsulationLambda? in
+            let lambdas = record.data["lambdas"]?.array?.compactMap { value -> DoublageInsulationLambda? in
                 guard let object = value.object,
                       let lambda = object["lambda_w_mk"]?.number else { return nil }
                 let thicknesses = object["thicknesses_mm"]?.array?.compactMap(\.number).map(Int.init).filter { $0 != 101 }.sorted() ?? []
                 guard !thicknesses.isEmpty else { return nil }
-                return LabInsulationLambda(value: lambda, thicknessesMM: thicknesses)
+                return DoublageInsulationLambda(value: lambda, thicknessesMM: thicknesses)
             }.sorted { $0.value < $1.value } ?? []
             guard !lambdas.isEmpty else { return nil }
-            return LabInsulationFamily(id: record.id, code: record.data["code"]?.string ?? record.id, title: record.title, lambdas: lambdas)
+            return DoublageInsulationFamily(id: record.id, code: record.data["code"]?.string ?? record.id, title: record.title, lambdas: lambdas)
         }.sorted { $0.title < $1.title }
     }
 
-    var facings: [LabFacingChoice] {
+    var facings: [DoublageFacingChoice] {
         (catalogue?.doublage?.parements ?? []).compactMap { record in
             guard let family = record.data["mechanical_family"]?.string else { return nil }
-            let formats = record.data["dimensions"]?.array?.compactMap { value -> LabFacingFormat? in
+            let formats = record.data["dimensions"]?.array?.compactMap { value -> DoublageFacingFormat? in
                 guard let object = value.object,
                       let width = object["width_mm"]?.number,
                       let length = object["length_mm"]?.number else { return nil }
-                return LabFacingFormat(widthMM: Int(width), lengthMM: Int(length))
+                return DoublageFacingFormat(widthMM: Int(width), lengthMM: Int(length))
             }.sorted { $0.widthMM == $1.widthMM ? $0.lengthMM < $1.lengthMM : $0.widthMM < $1.widthMM } ?? []
             guard !formats.isEmpty else { return nil }
-            return LabFacingChoice(id: record.id, title: record.title, mechanicalFamily: family, function: record.data["function"]?.string ?? "standard", formats: formats)
+            return DoublageFacingChoice(id: record.id, title: record.title, mechanicalFamily: family, function: record.data["function"]?.string ?? "standard", formats: formats)
         }.sorted { lhs, rhs in
             if lhs.mechanicalFamily == rhs.mechanicalFamily { return lhs.title < rhs.title }
             let left = Int(lhs.mechanicalFamily.dropFirst(2)) ?? 0
@@ -178,23 +179,23 @@ final class LabReferenceStore: ObservableObject {
         }
     }
 
-    var compatibility: LabFacingCompatibility? {
+    var compatibility: DoublageFacingCompatibility? {
         guard let data = catalogue?.doublage?.performance?.data,
               let object = data["compatibility"]?.object else { return nil }
-        func rule(_ value: LabJSONValue) -> LabDoubleCompatibilityRule? {
+        func rule(_ value: DoublageJSONValue) -> DoublageDoubleCompatibilityRule? {
             guard let item = value.object,
                   let families = item["families"]?.array?.compactMap(\.string),
                   let widths = item["widths_mm"]?.array?.compactMap(\.number).map({ Int($0) }),
                   let group = item["performance_group_id"]?.string else { return nil }
-            return LabDoubleCompatibilityRule(families: families, widthsMM: widths, performanceGroupID: group)
+            return DoublageDoubleCompatibilityRule(families: families, widthsMM: widths, performanceGroupID: group)
         }
-        let single = object["single"]?.array?.compactMap { value -> LabSingleCompatibilityRule? in
+        let single = object["single"]?.array?.compactMap { value -> DoublageSingleCompatibilityRule? in
             guard let parsed = rule(value) else { return nil }
-            return LabSingleCompatibilityRule(families: parsed.families, widthsMM: parsed.widthsMM, performanceGroupID: parsed.performanceGroupID)
+            return DoublageSingleCompatibilityRule(families: parsed.families, widthsMM: parsed.widthsMM, performanceGroupID: parsed.performanceGroupID)
         } ?? []
         let double = object["double"]?.object
         let normalize = double?["normalize_families"]?.object?.compactMapValues(\.string) ?? [:]
-        return LabFacingCompatibility(
+        return DoublageFacingCompatibility(
             sameWidthRequired: object["same_width_required"]?.bool ?? true,
             normalizeFamilies: normalize,
             single: single,
@@ -203,7 +204,7 @@ final class LabReferenceStore: ObservableObject {
         )
     }
 
-    var groups: [LabPerformanceGroup] {
+    var groups: [DoublagePerformanceGroup] {
         guard let raw = catalogue?.doublage?.performance?.data["groups"]?.array else { return [] }
         return raw.compactMap { item in
             guard let object = item.object,
@@ -211,22 +212,22 @@ final class LabReferenceStore: ObservableObject {
                   let label = object["label"]?.string,
                   let width = object["width_mm"]?.number else { return nil }
             let alternatives = object["alternatives"]?.array?.compactMap(\.string) ?? [label]
-            let values = object["values"]?.array?.compactMap { value -> LabHeightValue? in
+            let values = object["values"]?.array?.compactMap { value -> DoublageHeightValue? in
                 guard let row = value.object,
                       let frame = row["frame"]?.string,
                       let spacing = row["spacing_m"]?.number else { return nil }
-                return LabHeightValue(frame: frame, spacing: spacing, simple: row["simple_m"]?.number ?? 0, double: row["double_m"]?.number ?? 0)
+                return DoublageHeightValue(frame: frame, spacing: spacing, simple: row["simple_m"]?.number ?? 0, double: row["double_m"]?.number ?? 0)
             } ?? []
-            return LabPerformanceGroup(id: id, label: label, width: width, alternatives: alternatives, values: values)
+            return DoublagePerformanceGroup(id: id, label: label, width: width, alternatives: alternatives, values: values)
         }
     }
 
-    var quantityTable: LabQuantityTable? {
+    var quantityTable: DoublageQuantityTable? {
         guard let data = catalogue?.doublage?.quantitatif?.data else { return nil }
         func numbers(_ key: String) -> [String: Double] {
             data[key]?.object?.compactMapValues(\.number) ?? [:]
         }
-        return LabQuantityTable(coefficients: numbers("coefficients"), ttpc25: numbers("ttpc25_unit_m2"), ttpc35: numbers("ttpc35_unit_m2"), trpf13: numbers("trpf13_unit_m2"))
+        return DoublageQuantityTable(coefficients: numbers("coefficients"), ttpc25: numbers("ttpc25_unit_m2"), ttpc35: numbers("ttpc35_unit_m2"), trpf13: numbers("trpf13_unit_m2"))
     }
 
     func load() async {
@@ -237,14 +238,14 @@ final class LabReferenceStore: ObservableObject {
             request.cachePolicy = .reloadIgnoringLocalCacheData
             let (data, response) = try await URLSession.shared.data(for: request)
             guard let http = response as? HTTPURLResponse, http.statusCode == 200 else { throw URLError(.badServerResponse) }
-            let decoded = try JSONDecoder().decode(LabCataloguePayload.self, from: data)
+            let decoded = try JSONDecoder().decode(DoublageCataloguePayload.self, from: data)
             guard decoded.doublage?.ouvrage != nil else { throw URLError(.zeroByteResource) }
             catalogue = decoded
             UserDefaults.standard.set(data, forKey: cacheKey)
             isUsingOfflineData = false
         } catch {
-            if let data = UserDefaults.standard.data(forKey: cacheKey),
-               let decoded = try? JSONDecoder().decode(LabCataloguePayload.self, from: data) {
+            if let data = UserDefaults.standard.data(forKey: cacheKey) ?? UserDefaults.standard.data(forKey: legacyCacheKey),
+               let decoded = try? JSONDecoder().decode(DoublageCataloguePayload.self, from: data) {
                 catalogue = decoded
                 isUsingOfflineData = true
             } else {

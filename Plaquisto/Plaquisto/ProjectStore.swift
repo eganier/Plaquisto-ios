@@ -65,7 +65,7 @@ final class ProjectStore: ObservableObject {
         let projectID = UUID()
         let now = Date()
         let copiedWorks = source.works.map { work in
-            WorkItem(id: UUID(), projectID: projectID, name: work.name, type: work.type, configuration: work.configuration, doublageConfiguration: work.doublageConfiguration, createdAt: now, updatedAt: now)
+            WorkItem(id: UUID(), projectID: projectID, name: work.name, type: work.type, payload: work.payload, createdAt: now, updatedAt: now)
         }
         let copy = ProjectItem(id: projectID, name: copyName, client: source.client, address: source.address, notes: source.notes, works: copiedWorks, createdAt: now, updatedAt: now)
         next.insert(copy, at: projectIndex + 1)
@@ -93,7 +93,6 @@ final class ProjectStore: ObservableObject {
             projectID: projectID,
             name: name.trimmed,
             type: type,
-            configuration: CeilingConfiguration(),
             doublageConfiguration: doublageConfiguration,
             createdAt: now,
             updatedAt: now
@@ -108,7 +107,7 @@ final class ProjectStore: ObservableObject {
         var next = projects
         guard let projectIndex = next.firstIndex(where: { $0.id == work.projectID }),
               let workIndex = next[projectIndex].works.firstIndex(where: { $0.id == work.id }) else { throw StoreError.workNotFound }
-        next[projectIndex].works[workIndex].configuration = configuration
+        next[projectIndex].works[workIndex].payload = .ceiling(configuration)
         next[projectIndex].works[workIndex].updatedAt = Date()
         next[projectIndex].updatedAt = Date()
         try commit(next)
@@ -118,7 +117,7 @@ final class ProjectStore: ObservableObject {
         var next = projects
         guard let projectIndex = next.firstIndex(where: { $0.id == work.projectID }),
               let workIndex = next[projectIndex].works.firstIndex(where: { $0.id == work.id }) else { throw StoreError.workNotFound }
-        next[projectIndex].works[workIndex].doublageConfiguration = doublageConfiguration
+        next[projectIndex].works[workIndex].payload = .peripheralLining(doublageConfiguration)
         next[projectIndex].works[workIndex].updatedAt = Date()
         next[projectIndex].updatedAt = Date()
         try commit(next)
@@ -139,7 +138,7 @@ final class ProjectStore: ObservableObject {
             number += 1
         }
         let now = Date()
-        let copy = WorkItem(id: UUID(), projectID: projectID, name: copyName, type: source.type, configuration: source.configuration, doublageConfiguration: source.doublageConfiguration, createdAt: now, updatedAt: now)
+        let copy = WorkItem(id: UUID(), projectID: projectID, name: copyName, type: source.type, payload: source.payload, createdAt: now, updatedAt: now)
         next[projectIndex].works.insert(copy, at: workIndex + 1)
         next[projectIndex].updatedAt = now
         try commit(next)

@@ -17,7 +17,7 @@ final class ProjectStoreTests: XCTestCase {
         let reloadedProject = try XCTUnwrap(reloadedStore.project(id: projectID))
         let reloadedWork = try XCTUnwrap(reloadedProject.works.first { $0.id == workID })
         XCTAssertEqual(reloadedProject.name, "Maison Martin")
-        XCTAssertEqual(reloadedWork.configuration, configuration)
+        XCTAssertEqual(reloadedWork.ceilingConfiguration, configuration)
     }
 
     func testUpdatingAWorkDoesNotCreateADuplicate() throws {
@@ -27,7 +27,7 @@ final class ProjectStoreTests: XCTestCase {
         let projectID = try store.createProject(name: "Test", client: "", address: "", notes: "")
         let workID = try store.createWork(projectID: projectID, name: "Plafond", type: .ceilingOnFurring, configuration: CeilingConfiguration())
         let work = try XCTUnwrap(store.project(id: projectID)?.works.first)
-        var changed = work.configuration
+        var changed = try XCTUnwrap(work.ceilingConfiguration)
         changed.length = 12
 
         try store.updateWork(work, configuration: changed)
@@ -35,7 +35,7 @@ final class ProjectStoreTests: XCTestCase {
         let works = try XCTUnwrap(store.project(id: projectID)?.works)
         XCTAssertEqual(works.count, 1)
         XCTAssertEqual(works.first?.id, workID)
-        XCTAssertEqual(works.first?.configuration.length, 12)
+        XCTAssertEqual(works.first?.ceilingConfiguration?.length, 12)
     }
 
     func testDuplicatingAWorkCopiesItsConfigurationWithANewIdentity() throws {
@@ -53,7 +53,7 @@ final class ProjectStoreTests: XCTestCase {
         XCTAssertEqual(works.count, 2)
         XCTAssertNotEqual(copyID, originalID)
         XCTAssertEqual(works.first(where: { $0.id == copyID })?.name, "Séjour – copie")
-        XCTAssertEqual(works.first(where: { $0.id == copyID })?.configuration, configuration)
+        XCTAssertEqual(works.first(where: { $0.id == copyID })?.ceilingConfiguration, configuration)
     }
 
     func testCombinedQuantityAddsTheSelectedWorks() throws {
@@ -61,11 +61,11 @@ final class ProjectStoreTests: XCTestCase {
         let now = Date()
         let first = WorkItem(id: UUID(), projectID: projectID, name: "A", type: .ceilingOnFurring, configuration: CeilingConfiguration(length: 5, width: 4), createdAt: now, updatedAt: now)
         let second = WorkItem(id: UUID(), projectID: projectID, name: "B", type: .ceilingOnFurring, configuration: CeilingConfiguration(length: 3, width: 2), createdAt: now, updatedAt: now)
-        let fourrure = ReferenceRecord(id: "QTY-FOURRURE", kind: "quantity_item", title: "Fourrure F45", summary: "", sourcePage: 0, status: "Publié", data: [
+        let fourrure = CeilingReferenceRecord(id: "QTY-FOURRURE", kind: "quantity_item", title: "Fourrure F45", summary: "", sourcePage: 0, status: "Publié", data: [
             "unit": .string("ml"),
             "values": .object(["simple_060": .number(2)])
         ])
-        let catalogue = CataloguePayload(version: "test", ouvrage: nil, isolation: [], systemesFixation: [], parements: [], quantitatifs: [fourrure], pareVapeur: [], regles: [])
+        let catalogue = CeilingCataloguePayload(version: "test", ouvrage: nil, isolation: [], systemesFixation: [], parements: [], quantitatifs: [fourrure], pareVapeur: [], regles: [])
 
         let result = CombinedQuantityCalculator.calculate(works: [first, second], catalogue: catalogue)
 
@@ -89,7 +89,7 @@ final class ProjectStoreTests: XCTestCase {
         XCTAssertEqual(copy.works.count, 1)
         XCTAssertNotEqual(copy.works.first?.id, originalWorkID)
         XCTAssertEqual(copy.works.first?.projectID, copyID)
-        XCTAssertEqual(copy.works.first?.configuration.length, 6)
+        XCTAssertEqual(copy.works.first?.ceilingConfiguration?.length, 6)
     }
 
     func testDoublageSurvivesReloadAndDuplication() throws {
@@ -122,12 +122,79 @@ final class ProjectStoreTests: XCTestCase {
         let ceiling = WorkItem(id: UUID(), projectID: projectID, name: "Plafond", type: .ceilingOnFurring, configuration: CeilingConfiguration(length: 5, width: 4), createdAt: now, updatedAt: now)
         var doublageConfiguration = DoublageConfiguration(height: 2.5, enteredLength: 8)
         doublageConfiguration.quantities = [DoublageQuantity(name: "Rails", quantity: 16.8, unit: "ml")]
-        let doublage = WorkItem(id: UUID(), projectID: projectID, name: "Doublage", type: .peripheralLiningStuds, configuration: CeilingConfiguration(), doublageConfiguration: doublageConfiguration, createdAt: now, updatedAt: now)
-        let catalogue = CataloguePayload(version: "test", ouvrage: nil, isolation: [], systemesFixation: [], parements: [], quantitatifs: [], pareVapeur: [], regles: [])
+        let doublage = WorkItem(id: UUID(), projectID: projectID, name: "Doublage", type: .peripheralLiningStuds, doublageConfiguration: doublageConfiguration, createdAt: now, updatedAt: now)
+        let catalogue = CeilingCataloguePayload(version: "test", ouvrage: nil, isolation: [], systemesFixation: [], parements: [], quantitatifs: [], pareVapeur: [], regles: [])
 
         let result = CombinedQuantityCalculator.calculate(works: [ceiling, doublage], catalogue: catalogue)
 
         XCTAssertEqual(result.totalArea, 40)
         XCTAssertEqual(result.supplies.first(where: { $0.name == "Rails" })?.quantity, 16.8)
+    }
+
+    func testLegacyProjectsAreMigratedToTheNewConfigurationFormat() throws {
+        struct LegacyWork: Encodable {
+            let id: UUID
+            let projectID: UUID
+            let name: String
+            let type: WorkType
+            let configuration: CeilingConfiguration
+            let doublageConfiguration: DoublageConfiguration?
+            let createdAt: Date
+            let updatedAt: Date
+        }
+        struct LegacyProject: Encodable {
+            let id: UUID
+            let name: String
+            let client: String
+            let address: String
+            let notes: String
+            let works: [LegacyWork]
+            let createdAt: Date
+            let updatedAt: Date
+        }
+
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let fileURL = directory.appendingPathComponent("projects.json")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+
+        let now = Date()
+        let projectID = UUID()
+        let legacyWork = LegacyWork(
+            id: UUID(),
+            projectID: projectID,
+            name: "Ancien plafond",
+            type: .ceilingOnFurring,
+            configuration: CeilingConfiguration(length: 6, width: 4),
+            doublageConfiguration: nil,
+            createdAt: now,
+            updatedAt: now
+        )
+        let legacyDoublage = LegacyWork(
+            id: UUID(),
+            projectID: projectID,
+            name: "Ancien doublage",
+            type: .peripheralLiningStuds,
+            configuration: CeilingConfiguration(),
+            doublageConfiguration: DoublageConfiguration(height: 2.5, enteredLength: 8),
+            createdAt: now,
+            updatedAt: now
+        )
+        let legacyProject = LegacyProject(id: projectID, name: "Ancien chantier", client: "", address: "", notes: "", works: [legacyWork, legacyDoublage], createdAt: now, updatedAt: now)
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        try encoder.encode([legacyProject]).write(to: fileURL)
+
+        let store = ProjectStore(fileURL: fileURL)
+
+        XCTAssertEqual(store.project(id: projectID)?.works.first?.ceilingConfiguration?.length, 6)
+        XCTAssertEqual(store.project(id: projectID)?.works.last?.doublageConfiguration?.area, 20)
+        XCTAssertNil(store.lastError)
+    }
+
+    func testWorkTypesAreAssignedToTheirFutureCategories() {
+        XCTAssertEqual(WorkType.ceilingOnFurring.category, .ceilings)
+        XCTAssertEqual(WorkType.peripheralLiningStuds.category, .wallInsulation)
+        XCTAssertEqual(WorkCategory.allCases.count, 4)
     }
 }

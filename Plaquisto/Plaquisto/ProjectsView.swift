@@ -237,7 +237,7 @@ private struct SavedWorkView: View {
         Group {
             switch currentWork.type {
             case .ceilingOnFurring:
-                ConfiguratorView(initialConfiguration: currentWork.configuration, startsAtResult: true) { configuration in
+                CeilingConfiguratorView(initialConfiguration: currentWork.ceilingConfiguration ?? CeilingConfiguration(), startsAtResult: true) { configuration in
                     do { try store.updateWork(currentWork, configuration: configuration) }
                     catch { errorMessage = "Les modifications n’ont pas pu être enregistrées." }
                 }
@@ -267,7 +267,7 @@ private struct WorkConfiguratorContainer: View {
             Group {
                 switch workType {
                 case .ceilingOnFurring:
-                    ConfiguratorView { configuration in save(configuration: configuration) }
+                    CeilingConfiguratorView { configuration in save(configuration: configuration) }
                 case .peripheralLiningStuds:
                     DoublageConfiguratorHost { configuration in save(doublageConfiguration: configuration) }
                 }
@@ -299,7 +299,7 @@ private struct WorkConfiguratorContainer: View {
 
 private struct DoublageConfiguratorHost: View {
     @Environment(\.dismiss) private var dismiss
-    @StateObject private var references = LabReferenceStore()
+    @StateObject private var references = DoublageReferenceStore()
     let initialConfiguration: DoublageConfiguration?
     let startsAtResult: Bool
     let onSave: (DoublageConfiguration) -> Void
