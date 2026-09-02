@@ -7,24 +7,12 @@ struct DoublageConfiguratorView: View {
     enum Compound: String, CaseIterable, Identifiable { case powder = "Enduit en poudre", paste = "Enduit en pâte"; var id: Self { self } }
     enum InsulationLayerCount: String, CaseIterable, Identifiable { case single = "Simple épaisseur", double = "Double épaisseur"; var id: Self { self } }
 
-    struct FacingAllocation: Identifiable, Hashable {
-        let id: UUID
-        var facingID: String
-        var formatID: String
-        var surface: Double
-
-        init(id: UUID = UUID(), facingID: String = "", formatID: String = "", surface: Double = 0) {
-            self.id = id; self.facingID = facingID; self.formatID = formatID; self.surface = surface
-        }
-    }
-
-    struct InsulationSelection: Hashable {
-        var familyID = ""
-        var lambda = 0.0
-        var thicknessMM = 0
-    }
+    typealias FacingAllocation = DoublageFacingSelection
+    typealias InsulationSelection = DoublageInsulationSelection
 
     @EnvironmentObject private var references: LabReferenceStore
+    private let onSave: ((DoublageConfiguration) -> Void)?
+    private let onClose: (() -> Void)?
     @State private var step = 1
     @State private var geometryMode = GeometryMode.length
     @State private var height = 0.0
@@ -46,6 +34,37 @@ struct DoublageConfiguratorView: View {
     @State private var jointTreatment = true
     @State private var compound = Compound.powder
     @State private var showPlateHeightWarning = false
+
+    init(
+        initialConfiguration: DoublageConfiguration? = nil,
+        startsAtResult: Bool = false,
+        onSave: ((DoublageConfiguration) -> Void)? = nil,
+        onClose: (() -> Void)? = nil
+    ) {
+        let configuration = initialConfiguration ?? DoublageConfiguration()
+        self.onSave = onSave
+        self.onClose = onClose
+        _step = State(initialValue: startsAtResult ? 6 : 1)
+        _geometryMode = State(initialValue: configuration.geometryMode == "surface" ? .surface : .length)
+        _height = State(initialValue: configuration.height)
+        _enteredLength = State(initialValue: configuration.enteredLength)
+        _enteredSurface = State(initialValue: configuration.enteredSurface)
+        _skinCount = State(initialValue: configuration.layers == 2 ? .double : .single)
+        _firstSkin = State(initialValue: configuration.firstSkin.isEmpty ? [FacingAllocation()] : configuration.firstSkin)
+        _secondSkin = State(initialValue: configuration.secondSkin.isEmpty ? [FacingAllocation()] : configuration.secondSkin)
+        _technique = State(initialValue: configuration.technique)
+        _frame = State(initialValue: configuration.frame)
+        _mounting = State(initialValue: configuration.doubledStuds ? .double : .simple)
+        _spacing = State(initialValue: configuration.spacing)
+        _intermediateSupports = State(initialValue: configuration.intermediateSupports)
+        _insulationEnabled = State(initialValue: configuration.insulationEnabled)
+        _insulationLayerCount = State(initialValue: configuration.insulationLayers == 2 ? .double : .single)
+        _firstInsulation = State(initialValue: configuration.firstInsulation)
+        _secondInsulation = State(initialValue: configuration.secondInsulation)
+        _vaporBarrier = State(initialValue: configuration.vaporBarrier)
+        _jointTreatment = State(initialValue: configuration.jointTreatment)
+        _compound = State(initialValue: configuration.compoundChoice == "pate" ? .paste : .powder)
+    }
 
     private let stepNames = ["Dimensions", "Parements", "Technique et ossature", "Isolation", "Bandes à joint", "Résultat"]
     private var groups: [LabPerformanceGroup] { references.groups }
@@ -121,7 +140,10 @@ struct DoublageConfiguratorView: View {
 
     private var header: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Button("Fermer") { reset() }.buttonStyle(.bordered).tint(.green)
+            Button("Fermer") {
+                if let onClose { onClose() } else { reset() }
+            }
+            .buttonStyle(.bordered).tint(.green)
             Text("OUVRAGE").font(.caption.bold()).foregroundStyle(.secondary)
             Text("Doublage périphérique").font(.title2.bold())
             Label(references.isUsingOfflineData ? "Données enregistrées hors connexion" : "Données synchronisées avec Plaquisto Admin", systemImage: references.isUsingOfflineData ? "icloud.slash" : "checkmark.icloud")
@@ -138,7 +160,11 @@ struct DoublageConfiguratorView: View {
             if step > 1 { Button("Retour") { step -= 1 }.buttonStyle(.bordered).tint(.green) }
             Spacer()
             if step < 6 { Button("Continuer") { advance() }.buttonStyle(.borderedProminent).tint(.green).disabled(!canContinue) }
-            else { Button("Recommencer") { reset() }.buttonStyle(.borderedProminent).tint(.green) }
+            else if let onSave {
+                Button("Enregistrer") { onSave(configurationSnapshot()) }.buttonStyle(.borderedProminent).tint(.green)
+            } else {
+                Button("Recommencer") { reset() }.buttonStyle(.borderedProminent).tint(.green)
+            }
         }
         .padding(.horizontal, 20).padding(.vertical, 12).background(.background)
     }
@@ -686,6 +712,39 @@ struct DoublageConfiguratorView: View {
     private func insulationDescription(_ selection: InsulationSelection) -> String {
         let name = insulationFamily(selection)?.title ?? "Isolant"
         return "\(name), λ \(selection.lambda.formatted(.number.precision(.fractionLength(3)))), \(selection.thicknessMM) mm, R \(thermalResistance(thicknessMM: selection.thicknessMM, lambda: selection.lambda).formatted(.number.precision(.fractionLength(2))))"
+    }
+
+    private func configurationSnapshot() -> DoublageConfiguration {
+        DoublageConfiguration(
+            geometryMode: geometryMode == .surface ? "surface" : "length",
+            height: height,
+            enteredLength: enteredLength,
+            enteredSurface: enteredSurface,
+            layers: skinCount == .double ? 2 : 1,
+            firstSkin: firstSkin,
+            secondSkin: skinCount == .double ? secondSkin : [],
+            technique: technique,
+            frame: frame,
+            doubledStuds: mounting == .double,
+            spacing: spacing,
+            intermediateSupports: intermediateSupports,
+            insulationEnabled: insulationEnabled,
+            insulationLayers: insulationLayerCount == .double ? 2 : 1,
+            firstInsulation: firstInsulation,
+            secondInsulation: insulationLayerCount == .double ? secondInsulation : DoublageInsulationSelection(),
+            vaporBarrier: vaporBarrier,
+            jointTreatment: jointTreatment,
+            compoundChoice: compound == .paste ? "pate" : "poudre",
+            quantities: resultRows.compactMap { quantity(from: $0) }
+        )
+    }
+
+    private func quantity(from row: (String, String)) -> DoublageQuantity? {
+        let scanner = Scanner(string: row.1.replacingOccurrences(of: ",", with: "."))
+        guard let value = scanner.scanDouble() else { return nil }
+        let unit = String(row.1[scanner.currentIndex...]).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !unit.isEmpty else { return nil }
+        return DoublageQuantity(name: row.0, quantity: value, unit: unit)
     }
 
     private func reset() {

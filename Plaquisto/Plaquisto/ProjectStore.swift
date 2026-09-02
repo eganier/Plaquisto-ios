@@ -65,7 +65,7 @@ final class ProjectStore: ObservableObject {
         let projectID = UUID()
         let now = Date()
         let copiedWorks = source.works.map { work in
-            WorkItem(id: UUID(), projectID: projectID, name: work.name, type: work.type, configuration: work.configuration, createdAt: now, updatedAt: now)
+            WorkItem(id: UUID(), projectID: projectID, name: work.name, type: work.type, configuration: work.configuration, doublageConfiguration: work.doublageConfiguration, createdAt: now, updatedAt: now)
         }
         let copy = ProjectItem(id: projectID, name: copyName, client: source.client, address: source.address, notes: source.notes, works: copiedWorks, createdAt: now, updatedAt: now)
         next.insert(copy, at: projectIndex + 1)
@@ -84,11 +84,41 @@ final class ProjectStore: ObservableObject {
         return work.id
     }
 
+    func createWork(projectID: UUID, name: String, type: WorkType, doublageConfiguration: DoublageConfiguration) throws -> UUID {
+        var next = projects
+        guard let projectIndex = next.firstIndex(where: { $0.id == projectID }) else { throw StoreError.projectNotFound }
+        let now = Date()
+        let work = WorkItem(
+            id: UUID(),
+            projectID: projectID,
+            name: name.trimmed,
+            type: type,
+            configuration: CeilingConfiguration(),
+            doublageConfiguration: doublageConfiguration,
+            createdAt: now,
+            updatedAt: now
+        )
+        next[projectIndex].works.insert(work, at: 0)
+        next[projectIndex].updatedAt = now
+        try commit(next)
+        return work.id
+    }
+
     func updateWork(_ work: WorkItem, configuration: CeilingConfiguration) throws {
         var next = projects
         guard let projectIndex = next.firstIndex(where: { $0.id == work.projectID }),
               let workIndex = next[projectIndex].works.firstIndex(where: { $0.id == work.id }) else { throw StoreError.workNotFound }
         next[projectIndex].works[workIndex].configuration = configuration
+        next[projectIndex].works[workIndex].updatedAt = Date()
+        next[projectIndex].updatedAt = Date()
+        try commit(next)
+    }
+
+    func updateWork(_ work: WorkItem, doublageConfiguration: DoublageConfiguration) throws {
+        var next = projects
+        guard let projectIndex = next.firstIndex(where: { $0.id == work.projectID }),
+              let workIndex = next[projectIndex].works.firstIndex(where: { $0.id == work.id }) else { throw StoreError.workNotFound }
+        next[projectIndex].works[workIndex].doublageConfiguration = doublageConfiguration
         next[projectIndex].works[workIndex].updatedAt = Date()
         next[projectIndex].updatedAt = Date()
         try commit(next)
@@ -109,7 +139,7 @@ final class ProjectStore: ObservableObject {
             number += 1
         }
         let now = Date()
-        let copy = WorkItem(id: UUID(), projectID: projectID, name: copyName, type: source.type, configuration: source.configuration, createdAt: now, updatedAt: now)
+        let copy = WorkItem(id: UUID(), projectID: projectID, name: copyName, type: source.type, configuration: source.configuration, doublageConfiguration: source.doublageConfiguration, createdAt: now, updatedAt: now)
         next[projectIndex].works.insert(copy, at: workIndex + 1)
         next[projectIndex].updatedAt = now
         try commit(next)

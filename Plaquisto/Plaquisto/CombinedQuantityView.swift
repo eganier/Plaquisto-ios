@@ -72,7 +72,7 @@ struct CombinedQuantityView: View {
             } else if let summary {
                 List {
                     Section("Ouvrages inclus") {
-                        ForEach(works) { work in LabeledContent(work.name, value: format(work.configuration.length * work.configuration.width) + " m²") }
+                        ForEach(works) { work in LabeledContent(work.name, value: format(work.area) + " m²") }
                         LabeledContent("Surface totale", value: format(summary.totalArea) + " m²").fontWeight(.semibold)
                     }
                     Section("Fournitures totales indicatives") {
@@ -123,6 +123,13 @@ enum CombinedQuantityCalculator {
         }
 
         for work in works {
+            if work.type == .peripheralLiningStuds, let doublage = work.doublageConfiguration {
+                totalArea += doublage.area
+                for item in doublage.quantities {
+                    add(name: item.name, quantity: item.quantity, unit: item.unit)
+                }
+                continue
+            }
             let configuration = work.configuration
             let area = configuration.length * configuration.width
             totalArea += area
@@ -190,6 +197,15 @@ enum CombinedQuantityCalculator {
             guard boardArea > 0 else { continue }
             let quantity = ceil(selection.area * 1.05 / boardArea)
             add("\(facing.title) · \(Int(width)) × \(Int(length)) mm", quantity, "plaque(s)")
+        }
+    }
+}
+
+private extension WorkItem {
+    var area: Double {
+        switch type {
+        case .ceilingOnFurring: configuration.length * configuration.width
+        case .peripheralLiningStuds: doublageConfiguration?.area ?? 0
         }
     }
 }

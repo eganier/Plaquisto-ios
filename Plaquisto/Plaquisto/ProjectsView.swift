@@ -234,9 +234,19 @@ private struct SavedWorkView: View {
     private var currentWork: WorkItem { store.project(id: work.projectID)?.works.first(where: { $0.id == work.id }) ?? work }
 
     var body: some View {
-        ConfiguratorView(initialConfiguration: currentWork.configuration, startsAtResult: true) { configuration in
-            do { try store.updateWork(currentWork, configuration: configuration) }
-            catch { errorMessage = "Les modifications n’ont pas pu être enregistrées." }
+        Group {
+            switch currentWork.type {
+            case .ceilingOnFurring:
+                ConfiguratorView(initialConfiguration: currentWork.configuration, startsAtResult: true) { configuration in
+                    do { try store.updateWork(currentWork, configuration: configuration) }
+                    catch { errorMessage = "Les modifications n’ont pas pu être enregistrées." }
+                }
+            case .peripheralLiningStuds:
+                DoublageConfiguratorHost(initialConfiguration: currentWork.doublageConfiguration, startsAtResult: true) { configuration in
+                    do { try store.updateWork(currentWork, doublageConfiguration: configuration) }
+                    catch { errorMessage = "Les modifications n’ont pas pu être enregistrées." }
+                }
+            }
         }
         .navigationTitle(currentWork.name)
         .alert("Enregistrement impossible", isPresented: Binding(get: { !errorMessage.isEmpty }, set: { if !$0 { errorMessage = "" } })) { Button("OK") {} } message: { Text(errorMessage) }
@@ -254,16 +264,65 @@ private struct WorkConfiguratorContainer: View {
 
     var body: some View {
         NavigationStack {
-            ConfiguratorView { configuration in
-                do {
-                    _ = try store.createWork(projectID: projectID, name: workName, type: workType, configuration: configuration)
-                    dismiss()
-                    onFinished()
-                } catch { errorMessage = "L’ouvrage n’a pas pu être enregistré." }
+            Group {
+                switch workType {
+                case .ceilingOnFurring:
+                    ConfiguratorView { configuration in save(configuration: configuration) }
+                case .peripheralLiningStuds:
+                    DoublageConfiguratorHost { configuration in save(doublageConfiguration: configuration) }
+                }
             }
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Fermer") { dismiss() } } }
         }
         .alert("Enregistrement impossible", isPresented: Binding(get: { !errorMessage.isEmpty }, set: { if !$0 { errorMessage = "" } })) { Button("OK") {} } message: { Text(errorMessage) }
+    }
+
+    private func save(configuration: CeilingConfiguration) {
+        do {
+            _ = try store.createWork(projectID: projectID, name: workName, type: workType, configuration: configuration)
+            finish()
+        } catch { errorMessage = "L’ouvrage n’a pas pu être enregistré." }
+    }
+
+    private func save(doublageConfiguration: DoublageConfiguration) {
+        do {
+            _ = try store.createWork(projectID: projectID, name: workName, type: workType, doublageConfiguration: doublageConfiguration)
+            finish()
+        } catch { errorMessage = "L’ouvrage n’a pas pu être enregistré." }
+    }
+
+    private func finish() {
+        dismiss()
+        onFinished()
+    }
+}
+
+private struct DoublageConfiguratorHost: View {
+    @Environment(\.dismiss) private var dismiss
+    @StateObject private var references = LabReferenceStore()
+    let initialConfiguration: DoublageConfiguration?
+    let startsAtResult: Bool
+    let onSave: (DoublageConfiguration) -> Void
+
+    init(
+        initialConfiguration: DoublageConfiguration? = nil,
+        startsAtResult: Bool = false,
+        onSave: @escaping (DoublageConfiguration) -> Void
+    ) {
+        self.initialConfiguration = initialConfiguration
+        self.startsAtResult = startsAtResult
+        self.onSave = onSave
+    }
+
+    var body: some View {
+        DoublageConfiguratorView(
+            initialConfiguration: initialConfiguration,
+            startsAtResult: startsAtResult,
+            onSave: onSave,
+            onClose: { dismiss() }
+        )
+        .environmentObject(references)
+        .task { if references.catalogue == nil { await references.load() } }
     }
 }
 

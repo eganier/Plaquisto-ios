@@ -91,4 +91,43 @@ final class ProjectStoreTests: XCTestCase {
         XCTAssertEqual(copy.works.first?.projectID, copyID)
         XCTAssertEqual(copy.works.first?.configuration.length, 6)
     }
+
+    func testDoublageSurvivesReloadAndDuplication() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let fileURL = directory.appendingPathComponent("projects.json")
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let store = ProjectStore(fileURL: fileURL)
+        let projectID = try store.createProject(name: "Maison", client: "", address: "", notes: "")
+        var configuration = DoublageConfiguration(height: 2.5, enteredLength: 8)
+        configuration.quantities = [DoublageQuantity(name: "Rails", quantity: 16.8, unit: "ml")]
+        let workID = try store.createWork(
+            projectID: projectID,
+            name: "Doublage séjour",
+            type: .peripheralLiningStuds,
+            doublageConfiguration: configuration
+        )
+        let copyID = try store.duplicateWork(projectID: projectID, workID: workID)
+
+        let reloaded = ProjectStore(fileURL: fileURL)
+        let works = try XCTUnwrap(reloaded.project(id: projectID)?.works)
+        XCTAssertEqual(works.count, 2)
+        XCTAssertEqual(works.first(where: { $0.id == workID })?.doublageConfiguration?.area, 20)
+        XCTAssertEqual(works.first(where: { $0.id == copyID })?.doublageConfiguration, configuration)
+    }
+
+    func testCombinedQuantityIncludesCeilingAndDoublage() {
+        let projectID = UUID()
+        let now = Date()
+        let ceiling = WorkItem(id: UUID(), projectID: projectID, name: "Plafond", type: .ceilingOnFurring, configuration: CeilingConfiguration(length: 5, width: 4), createdAt: now, updatedAt: now)
+        var doublageConfiguration = DoublageConfiguration(height: 2.5, enteredLength: 8)
+        doublageConfiguration.quantities = [DoublageQuantity(name: "Rails", quantity: 16.8, unit: "ml")]
+        let doublage = WorkItem(id: UUID(), projectID: projectID, name: "Doublage", type: .peripheralLiningStuds, configuration: CeilingConfiguration(), doublageConfiguration: doublageConfiguration, createdAt: now, updatedAt: now)
+        let catalogue = CataloguePayload(version: "test", ouvrage: nil, isolation: [], systemesFixation: [], parements: [], quantitatifs: [], pareVapeur: [], regles: [])
+
+        let result = CombinedQuantityCalculator.calculate(works: [ceiling, doublage], catalogue: catalogue)
+
+        XCTAssertEqual(result.totalArea, 40)
+        XCTAssertEqual(result.supplies.first(where: { $0.name == "Rails" })?.quantity, 16.8)
+    }
 }
