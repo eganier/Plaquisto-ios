@@ -277,7 +277,7 @@ struct DoublageConfiguratorView: View {
                 Picker("Rails et montants", selection: $frame) {
                     ForEach(frames, id: \.self) { candidate in
                         HStack {
-                            Text(candidate)
+                            Text(frameDisplayName(candidate))
                             if frameHasWarning(candidate) { Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.yellow) }
                         }.tag(candidate)
                     }
@@ -288,7 +288,7 @@ struct DoublageConfiguratorView: View {
                 Toggle("Ajouter des appuis intermédiaires pour montant sur mur support", isOn: $intermediateSupports)
             }
             if isUnavailable {
-                warning("La configuration \(frame) n’est pas prévue par le tableau technique pour les parements sélectionnés. Choisissez une autre ossature.")
+                warning("La configuration \(frameDisplayName(frame)) n’est pas prévue par le tableau technique pour les parements sélectionnés. Choisissez une autre ossature.")
             } else if intermediateSupports {
                 info("La hauteur maximale de ce montage est de \(format(maxHeight, "m")). Prévoyez une ligne d’appuis intermédiaires tous les \(format(maxHeight, "m")) de hauteur.", icon: "info.circle", color: .green)
             } else if isExceeded {
@@ -371,7 +371,7 @@ struct DoublageConfiguratorView: View {
             sectionTitle("Configuration retenue")
             card {
                 LabeledContent("Technique", value: technique)
-                Divider(); LabeledContent("Ossature", value: frame)
+                Divider(); LabeledContent("Ossature", value: frameDisplayName(frame))
                 Divider(); LabeledContent("Montage", value: mounting.rawValue)
                 Divider(); LabeledContent("Appuis intermédiaires", value: intermediateSupports ? "Oui" : "Non")
                 Divider(); LabeledContent("Isolation", value: insulationEnabled ? insulationLayerCount.rawValue : "Non")
@@ -483,6 +483,16 @@ struct DoublageConfiguratorView: View {
 
     private func frameHasWarning(_ candidate: String) -> Bool { let maximum = maximumHeight(frame: candidate); return maximum == 0 || maximum < height }
     private func frameNumber(_ value: String) -> Int { Int(value.dropFirst().prefix { $0.isNumber }) ?? 0 }
+    private func frameDisplayName(_ value: String) -> String {
+        switch value {
+        case "M48-50", "ML48-50":
+            return "M48 ailes élargies"
+        case "R48 + M48-50", "R48 + ML48-50":
+            return "R48 + M48 ailes élargies"
+        default:
+            return value
+        }
+    }
 
     private var allocationsAreComplete: Bool {
         func complete(_ allocations: [FacingAllocation]) -> Bool {

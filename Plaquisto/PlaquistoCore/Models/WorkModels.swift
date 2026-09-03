@@ -83,6 +83,50 @@ struct DoublageConfiguration: Codable, Equatable {
     var area: Double { geometryMode == "surface" ? enteredSurface : enteredLength * height }
 }
 
+struct CloisonFacingSelection: Identifiable, Codable, Equatable, Hashable {
+    var id: UUID
+    var facingID: String
+    var formatID: String
+    var surface: Double
+
+    init(id: UUID = UUID(), facingID: String = "", formatID: String = "", surface: Double = 0) {
+        self.id = id
+        self.facingID = facingID
+        self.formatID = formatID
+        self.surface = surface
+    }
+}
+
+struct CloisonQuantity: Identifiable, Codable, Equatable {
+    var name: String
+    var quantity: Double
+    var unit: String
+    var id: String { "\(name)|\(unit)" }
+}
+
+struct CloisonDistributionConfiguration: Codable, Equatable {
+    var geometryMode = "length"
+    var height: Double = 0
+    var enteredLength: Double = 0
+    var enteredSurface: Double = 0
+    var layers = 1
+    var faceAFirst: [CloisonFacingSelection] = []
+    var faceASecond: [CloisonFacingSelection] = []
+    var faceBFirst: [CloisonFacingSelection] = []
+    var faceBSecond: [CloisonFacingSelection] = []
+    var frame = "R48 + M48/35"
+    var doubledStuds = false
+    var spacing: Double = 0.60
+    var insulationEnabled = true
+    var insulationID = ""
+    var insulationThicknessMM = 0
+    var jointTreatment = true
+    var compoundChoice = "poudre"
+    var quantities: [CloisonQuantity] = []
+
+    var area: Double { geometryMode == "surface" ? enteredSurface : enteredLength * height }
+}
+
 enum WorkCategory: String, Codable, CaseIterable, Identifiable {
     case ceilings = "plafonds"
     case partitions = "cloisons"
@@ -103,18 +147,21 @@ enum WorkCategory: String, Codable, CaseIterable, Identifiable {
 enum WorkType: String, Codable, CaseIterable, Identifiable {
     case ceilingOnFurring = "plafond-fourrures"
     case peripheralLiningStuds = "doublage-peripherique-rails-montants"
+    case distributionPartition = "cloison-de-distribution"
 
     var id: String { rawValue }
     var category: WorkCategory {
         switch self {
         case .ceilingOnFurring: .ceilings
         case .peripheralLiningStuds: .wallInsulation
+        case .distributionPartition: .partitions
         }
     }
     var title: String {
         switch self {
         case .ceilingOnFurring: "Plafond sur fourrures"
         case .peripheralLiningStuds: "Doublage périphérique — Rails et montants"
+        case .distributionPartition: "Cloison de distribution — Rails et montants"
         }
     }
 }
@@ -122,9 +169,10 @@ enum WorkType: String, Codable, CaseIterable, Identifiable {
 enum WorkConfiguration: Codable, Equatable {
     case ceiling(CeilingConfiguration)
     case peripheralLining(DoublageConfiguration)
+    case distributionPartition(CloisonDistributionConfiguration)
 
     private enum CodingKeys: String, CodingKey { case kind, data }
-    private enum Kind: String, Codable { case ceiling, peripheralLining }
+    private enum Kind: String, Codable { case ceiling, peripheralLining, distributionPartition }
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
@@ -133,6 +181,8 @@ enum WorkConfiguration: Codable, Equatable {
             self = .ceiling(try container.decode(CeilingConfiguration.self, forKey: .data))
         case .peripheralLining:
             self = .peripheralLining(try container.decode(DoublageConfiguration.self, forKey: .data))
+        case .distributionPartition:
+            self = .distributionPartition(try container.decode(CloisonDistributionConfiguration.self, forKey: .data))
         }
     }
 
@@ -144,6 +194,9 @@ enum WorkConfiguration: Codable, Equatable {
             try container.encode(configuration, forKey: .data)
         case .peripheralLining(let configuration):
             try container.encode(Kind.peripheralLining, forKey: .kind)
+            try container.encode(configuration, forKey: .data)
+        case .distributionPartition(let configuration):
+            try container.encode(Kind.distributionPartition, forKey: .kind)
             try container.encode(configuration, forKey: .data)
         }
     }
@@ -168,6 +221,11 @@ struct WorkItem: Identifiable, Equatable {
         return configuration
     }
 
+    var cloisonDistributionConfiguration: CloisonDistributionConfiguration? {
+        guard case .distributionPartition(let configuration) = payload else { return nil }
+        return configuration
+    }
+
     init(id: UUID, projectID: UUID, name: String, type: WorkType, payload: WorkConfiguration, createdAt: Date, updatedAt: Date) {
         self.id = id
         self.projectID = projectID
@@ -184,6 +242,10 @@ struct WorkItem: Identifiable, Equatable {
 
     init(id: UUID, projectID: UUID, name: String, type: WorkType, doublageConfiguration: DoublageConfiguration, createdAt: Date, updatedAt: Date) {
         self.init(id: id, projectID: projectID, name: name, type: type, payload: .peripheralLining(doublageConfiguration), createdAt: createdAt, updatedAt: updatedAt)
+    }
+
+    init(id: UUID, projectID: UUID, name: String, type: WorkType, cloisonDistributionConfiguration: CloisonDistributionConfiguration, createdAt: Date, updatedAt: Date) {
+        self.init(id: id, projectID: projectID, name: name, type: type, payload: .distributionPartition(cloisonDistributionConfiguration), createdAt: createdAt, updatedAt: updatedAt)
     }
 }
 

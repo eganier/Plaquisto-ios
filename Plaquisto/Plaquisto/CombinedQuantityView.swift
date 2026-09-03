@@ -130,6 +130,13 @@ enum CombinedQuantityCalculator {
                 }
                 continue
             }
+            if work.type == .distributionPartition, let partition = work.cloisonDistributionConfiguration {
+                totalArea += partition.area
+                for item in partition.quantities {
+                    add(name: item.name, quantity: item.quantity, unit: item.unit)
+                }
+                continue
+            }
             guard let configuration = work.ceilingConfiguration else { continue }
             let area = configuration.length * configuration.width
             totalArea += area
@@ -208,6 +215,7 @@ private extension WorkItem {
             guard let configuration = ceilingConfiguration else { return 0 }
             return configuration.length * configuration.width
         case .peripheralLiningStuds: return doublageConfiguration?.area ?? 0
+        case .distributionPartition: return cloisonDistributionConfiguration?.area ?? 0
         }
     }
 }

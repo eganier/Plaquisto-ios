@@ -116,19 +116,46 @@ final class ProjectStoreTests: XCTestCase {
         XCTAssertEqual(works.first(where: { $0.id == copyID })?.doublageConfiguration, configuration)
     }
 
-    func testCombinedQuantityIncludesCeilingAndDoublage() {
+    func testDistributionPartitionSurvivesReloadAndDuplication() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let fileURL = directory.appendingPathComponent("projects.json")
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let store = ProjectStore(fileURL: fileURL)
+        let projectID = try store.createProject(name: "Maison", client: "", address: "", notes: "")
+        var configuration = CloisonDistributionConfiguration(height: 2.5, enteredLength: 4)
+        configuration.quantities = [CloisonQuantity(name: "Rails R48", quantity: 8.4, unit: "ml")]
+        let workID = try store.createWork(
+            projectID: projectID,
+            name: "Cloison chambre",
+            type: .distributionPartition,
+            cloisonDistributionConfiguration: configuration
+        )
+        let copyID = try store.duplicateWork(projectID: projectID, workID: workID)
+
+        let reloaded = ProjectStore(fileURL: fileURL)
+        let works = try XCTUnwrap(reloaded.project(id: projectID)?.works)
+        XCTAssertEqual(works.count, 2)
+        XCTAssertEqual(works.first(where: { $0.id == workID })?.cloisonDistributionConfiguration?.area, 10)
+        XCTAssertEqual(works.first(where: { $0.id == copyID })?.cloisonDistributionConfiguration, configuration)
+    }
+
+    func testCombinedQuantityIncludesAllWorkTypes() {
         let projectID = UUID()
         let now = Date()
         let ceiling = WorkItem(id: UUID(), projectID: projectID, name: "Plafond", type: .ceilingOnFurring, configuration: CeilingConfiguration(length: 5, width: 4), createdAt: now, updatedAt: now)
         var doublageConfiguration = DoublageConfiguration(height: 2.5, enteredLength: 8)
         doublageConfiguration.quantities = [DoublageQuantity(name: "Rails", quantity: 16.8, unit: "ml")]
         let doublage = WorkItem(id: UUID(), projectID: projectID, name: "Doublage", type: .peripheralLiningStuds, doublageConfiguration: doublageConfiguration, createdAt: now, updatedAt: now)
+        var partitionConfiguration = CloisonDistributionConfiguration(height: 2.5, enteredLength: 4)
+        partitionConfiguration.quantities = [CloisonQuantity(name: "Rails", quantity: 8.4, unit: "ml")]
+        let partition = WorkItem(id: UUID(), projectID: projectID, name: "Cloison", type: .distributionPartition, cloisonDistributionConfiguration: partitionConfiguration, createdAt: now, updatedAt: now)
         let catalogue = CeilingCataloguePayload(version: "test", ouvrage: nil, isolation: [], systemesFixation: [], parements: [], quantitatifs: [], pareVapeur: [], regles: [])
 
-        let result = CombinedQuantityCalculator.calculate(works: [ceiling, doublage], catalogue: catalogue)
+        let result = CombinedQuantityCalculator.calculate(works: [ceiling, doublage, partition], catalogue: catalogue)
 
-        XCTAssertEqual(result.totalArea, 40)
-        XCTAssertEqual(result.supplies.first(where: { $0.name == "Rails" })?.quantity, 16.8)
+        XCTAssertEqual(result.totalArea, 50)
+        XCTAssertEqual(result.supplies.first(where: { $0.name == "Rails" })?.quantity ?? 0, 25.2, accuracy: 0.001)
     }
 
     func testLegacyProjectsAreMigratedToTheNewConfigurationFormat() throws {
@@ -195,6 +222,7 @@ final class ProjectStoreTests: XCTestCase {
     func testWorkTypesAreAssignedToTheirFutureCategories() {
         XCTAssertEqual(WorkType.ceilingOnFurring.category, .ceilings)
         XCTAssertEqual(WorkType.peripheralLiningStuds.category, .wallInsulation)
+        XCTAssertEqual(WorkType.distributionPartition.category, .partitions)
         XCTAssertEqual(WorkCategory.allCases.count, 4)
     }
 }

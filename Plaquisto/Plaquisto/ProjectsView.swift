@@ -246,6 +246,11 @@ private struct SavedWorkView: View {
                     do { try store.updateWork(currentWork, doublageConfiguration: configuration) }
                     catch { errorMessage = "Les modifications n’ont pas pu être enregistrées." }
                 }
+            case .distributionPartition:
+                CloisonDistributionConfiguratorHost(initialConfiguration: currentWork.cloisonDistributionConfiguration, startsAtResult: true) { configuration in
+                    do { try store.updateWork(currentWork, cloisonDistributionConfiguration: configuration) }
+                    catch { errorMessage = "Les modifications n’ont pas pu être enregistrées." }
+                }
             }
         }
         .navigationTitle(currentWork.name)
@@ -270,6 +275,8 @@ private struct WorkConfiguratorContainer: View {
                     CeilingConfiguratorView { configuration in save(configuration: configuration) }
                 case .peripheralLiningStuds:
                     DoublageConfiguratorHost { configuration in save(doublageConfiguration: configuration) }
+                case .distributionPartition:
+                    CloisonDistributionConfiguratorHost { configuration in save(cloisonDistributionConfiguration: configuration) }
                 }
             }
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Fermer") { dismiss() } } }
@@ -287,6 +294,18 @@ private struct WorkConfiguratorContainer: View {
     private func save(doublageConfiguration: DoublageConfiguration) {
         do {
             _ = try store.createWork(projectID: projectID, name: workName, type: workType, doublageConfiguration: doublageConfiguration)
+            finish()
+        } catch { errorMessage = "L’ouvrage n’a pas pu être enregistré." }
+    }
+
+    private func save(cloisonDistributionConfiguration: CloisonDistributionConfiguration) {
+        do {
+            _ = try store.createWork(
+                projectID: projectID,
+                name: workName,
+                type: workType,
+                cloisonDistributionConfiguration: cloisonDistributionConfiguration
+            )
             finish()
         } catch { errorMessage = "L’ouvrage n’a pas pu être enregistré." }
     }
@@ -323,6 +342,35 @@ private struct DoublageConfiguratorHost: View {
         )
         .environmentObject(references)
         .task { if references.catalogue == nil { await references.load() } }
+    }
+}
+
+private struct CloisonDistributionConfiguratorHost: View {
+    @Environment(\.dismiss) private var dismiss
+    @StateObject private var references = CloisonDistributionReferenceStore()
+    let initialConfiguration: CloisonDistributionConfiguration?
+    let startsAtResult: Bool
+    let onSave: (CloisonDistributionConfiguration) -> Void
+
+    init(
+        initialConfiguration: CloisonDistributionConfiguration? = nil,
+        startsAtResult: Bool = false,
+        onSave: @escaping (CloisonDistributionConfiguration) -> Void
+    ) {
+        self.initialConfiguration = initialConfiguration
+        self.startsAtResult = startsAtResult
+        self.onSave = onSave
+    }
+
+    var body: some View {
+        CloisonDistributionConfiguratorView(
+            initialConfiguration: initialConfiguration,
+            startsAtResult: startsAtResult,
+            onSave: onSave,
+            onClose: { dismiss() }
+        )
+        .environmentObject(references)
+        .task { if references.systems.isEmpty { await references.load() } }
     }
 }
 
