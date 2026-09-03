@@ -276,7 +276,9 @@ private struct WorkConfiguratorContainer: View {
                 case .peripheralLiningStuds:
                     DoublageConfiguratorHost { configuration in save(doublageConfiguration: configuration) }
                 case .distributionPartition:
-                    CloisonDistributionConfiguratorHost { configuration in save(cloisonDistributionConfiguration: configuration) }
+                    CloisonDistributionConfiguratorHost(showsCloseButton: false) { configuration in
+                        save(cloisonDistributionConfiguration: configuration)
+                    }
                 }
             }
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Fermer") { dismiss() } } }
@@ -350,15 +352,18 @@ private struct CloisonDistributionConfiguratorHost: View {
     @StateObject private var references = CloisonDistributionReferenceStore()
     let initialConfiguration: CloisonDistributionConfiguration?
     let startsAtResult: Bool
+    let showsCloseButton: Bool
     let onSave: (CloisonDistributionConfiguration) -> Void
 
     init(
         initialConfiguration: CloisonDistributionConfiguration? = nil,
         startsAtResult: Bool = false,
+        showsCloseButton: Bool = true,
         onSave: @escaping (CloisonDistributionConfiguration) -> Void
     ) {
         self.initialConfiguration = initialConfiguration
         self.startsAtResult = startsAtResult
+        self.showsCloseButton = showsCloseButton
         self.onSave = onSave
     }
 
@@ -367,7 +372,8 @@ private struct CloisonDistributionConfiguratorHost: View {
             initialConfiguration: initialConfiguration,
             startsAtResult: startsAtResult,
             onSave: onSave,
-            onClose: { dismiss() }
+            onClose: { dismiss() },
+            showsCloseButton: showsCloseButton
         )
         .environmentObject(references)
         .task { if references.systems.isEmpty { await references.load() } }

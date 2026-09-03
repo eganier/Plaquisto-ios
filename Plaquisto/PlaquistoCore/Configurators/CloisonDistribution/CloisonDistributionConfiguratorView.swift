@@ -30,6 +30,7 @@ struct CloisonDistributionConfiguratorView: View {
     @EnvironmentObject private var references: CloisonDistributionReferenceStore
     private let onSave: ((CloisonDistributionConfiguration) -> Void)?
     private let onClose: (() -> Void)?
+    private let showsCloseButton: Bool
     @State private var step = 1
     @State private var geometryMode = GeometryMode.length
     @State private var height = 0.0
@@ -55,11 +56,13 @@ struct CloisonDistributionConfiguratorView: View {
         initialConfiguration: CloisonDistributionConfiguration? = nil,
         startsAtResult: Bool = false,
         onSave: ((CloisonDistributionConfiguration) -> Void)? = nil,
-        onClose: (() -> Void)? = nil
+        onClose: (() -> Void)? = nil,
+        showsCloseButton: Bool = true
     ) {
         let configuration = initialConfiguration ?? CloisonDistributionConfiguration()
         self.onSave = onSave
         self.onClose = onClose
+        self.showsCloseButton = showsCloseButton
         _step = State(initialValue: startsAtResult ? 7 : 1)
         _geometryMode = State(initialValue: configuration.geometryMode == "surface" ? .surface : .length)
         _height = State(initialValue: configuration.height)
@@ -237,10 +240,12 @@ struct CloisonDistributionConfiguratorView: View {
 
     private var header: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Button("Fermer") {
-                if let onClose { onClose() } else { reset() }
-            }
+            if showsCloseButton {
+                Button("Fermer") {
+                    if let onClose { onClose() } else { reset() }
+                }
                 .buttonStyle(.bordered)
+            }
             Text("OUVRAGE").font(.caption.bold()).foregroundStyle(.secondary)
             Text("Cloison de distribution").font(.title2.bold())
             Label("Données synchronisées avec Plaquisto Admin", systemImage: "checkmark.icloud")
