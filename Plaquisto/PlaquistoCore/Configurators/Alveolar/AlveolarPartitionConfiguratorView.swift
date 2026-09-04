@@ -1,20 +1,8 @@
 import SwiftUI
 
-private struct AlveolarPanelAllocation: Identifiable, Hashable {
-    let id: UUID
-    var panelID: String
-    var formatID: String
-    var surface: Double
-
-    init(id: UUID = UUID(), panelID: String = "", formatID: String = "", surface: Double = 0) {
-        self.id = id
-        self.panelID = panelID
-        self.formatID = formatID
-        self.surface = surface
-    }
-}
-
 struct AlveolarPartitionConfiguratorView: View {
+    typealias AlveolarPanelAllocation = AlveolarPanelSelection
+
     private enum GeometryMode: String, CaseIterable, Identifiable {
         case length = "Longueur"
         case surface = "Surface totale"
@@ -28,7 +16,10 @@ struct AlveolarPartitionConfiguratorView: View {
     }
 
     @EnvironmentObject private var references: AlveolarPartitionReferenceStore
-    @State private var step = 1
+    private let onSave: ((AlveolarPartitionConfiguration) -> Void)?
+    private let onClose: (() -> Void)?
+    private let showsCloseButton: Bool
+    @State private var step: Int
     @State private var geometryMode = GeometryMode.length
     @State private var height = 0.0
     @State private var enteredLength = 0.0
@@ -39,6 +30,27 @@ struct AlveolarPartitionConfiguratorView: View {
 
     private let green = Color(red: 0.12, green: 0.38, blue: 0.29)
     private let stepNames = ["Dimensions", "Panneaux", "Bandes à joint", "Résultat"]
+
+    init(
+        initialConfiguration: AlveolarPartitionConfiguration? = nil,
+        startsAtResult: Bool = false,
+        onSave: ((AlveolarPartitionConfiguration) -> Void)? = nil,
+        onClose: (() -> Void)? = nil,
+        showsCloseButton: Bool = true
+    ) {
+        let configuration = initialConfiguration ?? AlveolarPartitionConfiguration()
+        self.onSave = onSave
+        self.onClose = onClose
+        self.showsCloseButton = showsCloseButton
+        _step = State(initialValue: startsAtResult ? 4 : 1)
+        _geometryMode = State(initialValue: configuration.geometryMode == "surface" ? .surface : .length)
+        _height = State(initialValue: configuration.height)
+        _enteredLength = State(initialValue: configuration.enteredLength)
+        _enteredSurface = State(initialValue: configuration.enteredSurface)
+        _allocations = State(initialValue: configuration.panels.isEmpty ? [AlveolarPanelAllocation()] : configuration.panels)
+        _jointTreatment = State(initialValue: configuration.jointTreatment)
+        _compound = State(initialValue: configuration.compoundChoice == "pate" ? .paste : .powder)
+    }
 
     private var actualLength: Double {
         geometryMode == .length ? enteredLength : (height > 0 ? enteredSurface / height : 0)
@@ -118,8 +130,12 @@ struct AlveolarPartitionConfiguratorView: View {
 
     private var header: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Button("Fermer") { reset() }
+            if showsCloseButton {
+                Button("Fermer") {
+                    if let onClose { onClose() } else { reset() }
+                }
                 .buttonStyle(.bordered)
+            }
             Text("OUVRAGE")
                 .font(.caption.bold())
                 .foregroundStyle(.secondary)
@@ -152,6 +168,9 @@ struct AlveolarPartitionConfiguratorView: View {
                 Button("Continuer") { continueForm() }
                     .buttonStyle(.borderedProminent)
                     .disabled(!canContinue)
+            } else if let onSave {
+                Button("Enregistrer") { onSave(configurationSnapshot()) }
+                    .buttonStyle(.borderedProminent)
             } else {
                 Button("Recommencer") { reset() }
                     .buttonStyle(.borderedProminent)
@@ -340,7 +359,7 @@ struct AlveolarPartitionConfiguratorView: View {
     }
 
     private var canAddPanel: Bool {
-        allocations.count < references.panels.count && remainingArea > 0.009
+        allocations.count < references.panels.count
     }
 
     private var allocationStatus: String {
@@ -415,8 +434,29 @@ struct AlveolarPartitionConfiguratorView: View {
         allocations.append(AlveolarPanelAllocation(
             panelID: panel.id,
             formatID: preferredFormat(for: panel)?.id ?? "",
-            surface: remainingArea
+            surface: remainingArea > 0.009 ? remainingArea : 0
         ))
+    }
+
+    private func configurationSnapshot() -> AlveolarPartitionConfiguration {
+        AlveolarPartitionConfiguration(
+            geometryMode: geometryMode == .surface ? "surface" : "length",
+            height: height,
+            enteredLength: enteredLength,
+            enteredSurface: enteredSurface,
+            panels: allocations,
+            jointTreatment: jointTreatment,
+            compoundChoice: compound == .paste ? "pate" : "poudre",
+            quantities: resultRows.compactMap { quantity(from: $0) }
+        )
+    }
+
+    private func quantity(from row: (String, String)) -> AlveolarQuantity? {
+        let scanner = Scanner(string: row.1.replacingOccurrences(of: ",", with: "."))
+        guard let value = scanner.scanDouble() else { return nil }
+        let unit = String(row.1[scanner.currentIndex...]).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !unit.isEmpty else { return nil }
+        return AlveolarQuantity(name: row.0, quantity: value, unit: unit)
     }
 
     private func continueForm() {

@@ -251,6 +251,11 @@ private struct SavedWorkView: View {
                     do { try store.updateWork(currentWork, cloisonDistributionConfiguration: configuration) }
                     catch { errorMessage = "Les modifications n’ont pas pu être enregistrées." }
                 }
+            case .alveolarPartition:
+                AlveolarPartitionConfiguratorHost(initialConfiguration: currentWork.alveolarPartitionConfiguration, startsAtResult: true) { configuration in
+                    do { try store.updateWork(currentWork, alveolarPartitionConfiguration: configuration) }
+                    catch { errorMessage = "Les modifications n’ont pas pu être enregistrées." }
+                }
             }
         }
         .navigationTitle(currentWork.name)
@@ -278,6 +283,10 @@ private struct WorkConfiguratorContainer: View {
                 case .distributionPartition:
                     CloisonDistributionConfiguratorHost(showsCloseButton: false) { configuration in
                         save(cloisonDistributionConfiguration: configuration)
+                    }
+                case .alveolarPartition:
+                    AlveolarPartitionConfiguratorHost(showsCloseButton: false) { configuration in
+                        save(alveolarPartitionConfiguration: configuration)
                     }
                 }
             }
@@ -307,6 +316,18 @@ private struct WorkConfiguratorContainer: View {
                 name: workName,
                 type: workType,
                 cloisonDistributionConfiguration: cloisonDistributionConfiguration
+            )
+            finish()
+        } catch { errorMessage = "L’ouvrage n’a pas pu être enregistré." }
+    }
+
+    private func save(alveolarPartitionConfiguration: AlveolarPartitionConfiguration) {
+        do {
+            _ = try store.createWork(
+                projectID: projectID,
+                name: workName,
+                type: workType,
+                alveolarPartitionConfiguration: alveolarPartitionConfiguration
             )
             finish()
         } catch { errorMessage = "L’ouvrage n’a pas pu être enregistré." }
@@ -377,6 +398,39 @@ private struct CloisonDistributionConfiguratorHost: View {
         )
         .environmentObject(references)
         .task { if references.systems.isEmpty { await references.load() } }
+    }
+}
+
+private struct AlveolarPartitionConfiguratorHost: View {
+    @Environment(\.dismiss) private var dismiss
+    @StateObject private var references = AlveolarPartitionReferenceStore()
+    let initialConfiguration: AlveolarPartitionConfiguration?
+    let startsAtResult: Bool
+    let showsCloseButton: Bool
+    let onSave: (AlveolarPartitionConfiguration) -> Void
+
+    init(
+        initialConfiguration: AlveolarPartitionConfiguration? = nil,
+        startsAtResult: Bool = false,
+        showsCloseButton: Bool = true,
+        onSave: @escaping (AlveolarPartitionConfiguration) -> Void
+    ) {
+        self.initialConfiguration = initialConfiguration
+        self.startsAtResult = startsAtResult
+        self.showsCloseButton = showsCloseButton
+        self.onSave = onSave
+    }
+
+    var body: some View {
+        AlveolarPartitionConfiguratorView(
+            initialConfiguration: initialConfiguration,
+            startsAtResult: startsAtResult,
+            onSave: onSave,
+            onClose: { dismiss() },
+            showsCloseButton: showsCloseButton
+        )
+        .environmentObject(references)
+        .task { if references.panels.isEmpty { await references.load() } }
     }
 }
 
