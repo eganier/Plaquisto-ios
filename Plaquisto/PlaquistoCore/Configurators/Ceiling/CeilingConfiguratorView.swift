@@ -55,7 +55,10 @@ struct CeilingConfiguratorView: View {
     @State private var insulationLayers: Int
     @State private var secondInsulationID: String
     @State private var secondInsulationThickness: Double
+    @State private var firstInsulationLocation: String
+    @State private var secondInsulationLocation: String
     @State private var selectedSpacing: Double
+    @State private var trackedMinimumPlenum: Double?
     @State private var showSpacingWarning = false
     @State private var showDimensionsWarning = false
     @State private var showVaporBarrierWarning = false
@@ -68,7 +71,7 @@ struct CeilingConfiguratorView: View {
     @State private var showingSavedResult: Bool
     private let onSave: (CeilingConfiguration) -> Void
 
-    private let stepNames = ["Dimensions", "Support", "Isolation et entraxe", "Fixation", "Parements", "Bandes à joint", "Résultat"]
+    private let stepNames = ["Dimensions", "Support", "Isolation", "Plénum et entraxe", "Fixation", "Parements", "Bandes à joint", "Résultat"]
     private let spacingChoices = [0.4, 0.5, 0.6]
 
     init(
@@ -76,7 +79,7 @@ struct CeilingConfiguratorView: View {
         startsAtResult: Bool = false,
         onSave: @escaping (CeilingConfiguration) -> Void = { _ in }
     ) {
-        _step = State(initialValue: startsAtResult ? 6 : 0)
+        _step = State(initialValue: startsAtResult ? 7 : 0)
         _length = State(initialValue: initialConfiguration.length)
         _width = State(initialValue: initialConfiguration.width)
         _enteredArea = State(initialValue: initialConfiguration.length * initialConfiguration.width)
@@ -89,7 +92,10 @@ struct CeilingConfiguratorView: View {
         _insulationLayers = State(initialValue: initialConfiguration.insulationLayers ?? 1)
         _secondInsulationID = State(initialValue: initialConfiguration.secondInsulationID ?? "")
         _secondInsulationThickness = State(initialValue: initialConfiguration.secondInsulationThickness ?? 0)
+        _firstInsulationLocation = State(initialValue: initialConfiguration.firstInsulationLocation ?? "between")
+        _secondInsulationLocation = State(initialValue: initialConfiguration.secondInsulationLocation ?? "below")
         _selectedSpacing = State(initialValue: initialConfiguration.selectedSpacing)
+        _trackedMinimumPlenum = State(initialValue: nil)
         _fixingSystemID = State(initialValue: initialConfiguration.fixingSystemID)
         _layers = State(initialValue: initialConfiguration.layers)
         _firstSkin = State(initialValue: initialConfiguration.firstSkin)
@@ -212,6 +218,35 @@ struct CeilingConfiguratorView: View {
         guard !insulationID.isEmpty else { return 0 }
         return (selectedInsulationPoint?.maxWeight ?? 0) + (insulationLayers == 2 ? (selectedSecondInsulationPoint?.maxWeight ?? 0) : 0)
     }
+    private var betweenStructureTitle: String {
+        isSlopedCeiling ? "Entre les chevrons" : "Entre les solives"
+    }
+    private var belowStructureTitle: String {
+        isSlopedCeiling ? "Sous les chevrons" : "Sous les solives"
+    }
+    private var insulationBelowStructureMM: Double {
+        guard !insulationID.isEmpty else { return 0 }
+        let first = firstInsulationLocation == "below" ? insulationThickness : 0
+        let second = insulationLayers == 2 && secondInsulationLocation == "below" ? secondInsulationThickness : 0
+        return first + second
+    }
+    private var minimumFixingPlenumCM: Double {
+        let eligibleSystems = fixingSystems.filter { system in
+            guard system.data["support"]?.string == support else { return false }
+            return !isSlopedCeiling || !excludedSlopedFixingSystemIDs.contains(system.id)
+        }
+        let minimumMM = eligibleSystems.compactMap { $0.data["plenum_min_mm"]?.number }.min() ?? 0
+        return minimumMM / 10
+    }
+    private var minimumPlenum: Double {
+        max(minimumFixingPlenumCM, insulationBelowStructureMM / 10)
+    }
+    private var additionalPlenumBinding: Binding<Double> {
+        Binding(
+            get: { max(0, plenum - minimumPlenum) },
+            set: { plenum = minimumPlenum + max(0, $0) }
+        )
+    }
     private var maximumSpacing: Double? {
         guard insulationWeight <= 15 else { return nil }
         if insulationWeight >= 10 { return 0.4 }
@@ -305,7 +340,20 @@ struct CeilingConfiguratorView: View {
         .task {
             if store.catalogue == nil { await store.load() }
             normalizeCeilingShapeSelections()
+            plenum = max(plenum, minimumPlenum)
+            trackedMinimumPlenum = minimumPlenum
             normalizeFacingAllocations()
+        }
+        .onChange(of: minimumPlenum) { _, newValue in
+            guard let previousMinimum = trackedMinimumPlenum else {
+                plenum = max(plenum, newValue)
+                trackedMinimumPlenum = newValue
+                return
+            }
+            let existingExtra = max(0, plenum - previousMinimum)
+            plenum = newValue + existingExtra
+            trackedMinimumPlenum = newValue
+            fixingSystemID = ""
         }
         .tint(Color(red: 0.12, green: 0.38, blue: 0.29))
     }
@@ -419,20 +467,10 @@ struct CeilingConfiguratorView: View {
                     ForEach(supports, id: \.self) { Text(supportTitle($0)).tag($0) }
                 }
                 .onChange(of: support) { _, _ in fixingSystemID = "" }
-                MeasureField(label: "Hauteur du plénum", value: $plenum, unit: "cm")
-                    .onChange(of: plenum) { _, _ in fixingSystemID = "" }
-                Toggle("Prévoir la pose d’un pare-vapeur", isOn: $vaporBarrier)
             }
             Section {
-                Label("Le plénum correspond à l’espace vide situé entre le faux plafond, ou plafond suspendu, et la dalle du plancher.", systemImage: "info.circle")
-                if isSlopedCeiling && !vaporBarrier {
-                    Label("La pose d’un pare-vapeur est fortement recommandée pour un plafond rampant.", systemImage: "exclamationmark.triangle.fill")
-                        .foregroundStyle(.orange)
-                }
-                if vaporBarrier {
-                    Text("Les fournitures nécessaires au pare-vapeur seront ajoutées au quantitatif.")
-                        .foregroundStyle(.secondary)
-                }
+                Text("Le support sert à déterminer les systèmes de fixation compatibles. Le plénum sera calculé après le choix de l’isolation.")
+                    .foregroundStyle(.secondary)
             }
 
         case 2:
@@ -483,7 +521,10 @@ struct CeilingConfiguratorView: View {
                         selectedSpacing = maximumSpacing ?? 0.4
                         fixingSystemID = ""
                     }
-                    LabeledContent("Poids maximal retenu", value: "\(format(insulationWeight)) kg/m²")
+                    Picker("Emplacement", selection: $firstInsulationLocation) {
+                        Text(betweenStructureTitle).tag("between")
+                        Text(belowStructureTitle).tag("below")
+                    }
                     if let insulationThermalResistance {
                         LabeledContent("Résistance thermique", value: "R = \(insulationThermalResistance.formatted(.number.precision(.fractionLength(2)))) m²·K/W")
                     }
@@ -517,8 +558,13 @@ struct CeilingConfiguratorView: View {
                             selectedSpacing = maximumSpacing ?? 0.4
                             fixingSystemID = ""
                         }
+                        Picker("Emplacement", selection: $secondInsulationLocation) {
+                            Text(betweenStructureTitle).tag("between")
+                            Text(belowStructureTitle).tag("below")
+                        }
                     }
 
+                    LabeledContent("Poids maximal retenu", value: "\(format(insulationWeight)) kg/m²")
                     if insulationLayers == 2, let totalInsulationThermalResistance {
                         LabeledContent("Résistance thermique totale", value: "R = \(totalInsulationThermalResistance.formatted(.number.precision(.fractionLength(2)))) m²·K/W")
                     }
@@ -531,6 +577,27 @@ struct CeilingConfiguratorView: View {
                 } else {
                     Text("Pour une plage de poids, Plaquisto retient toujours la valeur la plus élevée.")
                 }
+            }
+            Section("Pare-vapeur") {
+                Toggle("Prévoir la pose d’un pare-vapeur", isOn: $vaporBarrier)
+                if isSlopedCeiling && !vaporBarrier {
+                    Label("La pose d’un pare-vapeur est fortement recommandée pour un plafond rampant.", systemImage: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.orange)
+                }
+                if vaporBarrier {
+                    Text("Les fournitures nécessaires au pare-vapeur seront ajoutées au quantitatif.")
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+        case 3:
+            Section("Plénum") {
+                LabeledContent("Plénum minimal calculé", value: "\(format(minimumPlenum)) cm")
+                MeasureField(label: "Marge supplémentaire", value: additionalPlenumBinding, unit: "cm")
+                LabeledContent("Plénum retenu", value: "\(format(plenum)) cm")
+            }
+            Section {
+                Label("Le plénum minimal intègre l’épaisseur des couches d’isolant placées sous la structure. Vous pouvez ajouter une marge pour le passage de gaines, de canalisations ou l’installation de spots.", systemImage: "info.circle")
             }
             Section("Entraxe des fourrures") {
                 Picker("Entraxe", selection: $selectedSpacing) {
@@ -546,7 +613,7 @@ struct CeilingConfiguratorView: View {
                 }
             }
 
-        case 3:
+        case 4:
             Section("Système de fixation") {
                 if compatibleSystems.isEmpty {
                     Label("Aucun système publié n’est compatible avec cette configuration.", systemImage: "exclamationmark.triangle.fill")
@@ -570,7 +637,7 @@ struct CeilingConfiguratorView: View {
                 }
             }
 
-        case 4:
+        case 5:
             Section {
                 ceilingFacingsStep
             }
@@ -578,7 +645,7 @@ struct CeilingConfiguratorView: View {
             .listRowBackground(Color.clear)
             .listRowSeparator(.hidden)
 
-        case 5:
+        case 6:
             Section("Traitement des bandes à joint") {
                 Toggle("Prévoir le traitement des bandes", isOn: $jointTreatment)
                 if jointTreatment {
@@ -612,10 +679,15 @@ struct CeilingConfiguratorView: View {
                 LabeledContent("Support", value: supportTitle(support))
                 if !insulationID.isEmpty {
                     LabeledContent("Isolation", value: insulationLayers == 2 ? "Deux couches" : "Une couche")
+                    LabeledContent("Première couche", value: firstInsulationLocation == "below" ? belowStructureTitle : betweenStructureTitle)
+                    if insulationLayers == 2 {
+                        LabeledContent("Deuxième couche", value: secondInsulationLocation == "below" ? belowStructureTitle : betweenStructureTitle)
+                    }
                     if let totalInsulationThermalResistance {
                         LabeledContent("Résistance thermique totale", value: "R = \(totalInsulationThermalResistance.formatted(.number.precision(.fractionLength(2)))) m²·K/W")
                     }
                 }
+                LabeledContent("Plénum retenu", value: "\(format(plenum)) cm")
             }
             Section("Système de fixation") {
                 LabeledContent("Solution", value: selectedFixingSystem?.title ?? "—")
@@ -742,24 +814,22 @@ struct CeilingConfiguratorView: View {
     private var canContinue: Bool {
         switch step {
         case 0: return enteredArea > 0
-        case 1: return !support.isEmpty && plenum > 0
+        case 1: return !support.isEmpty
         case 2:
             let secondLayerIsValid = insulationID.isEmpty || insulationLayers == 1 || (selectedSecondInsulation != nil && selectedSecondInsulationPoint != nil)
-            return maximumSpacing != nil
-                && (insulationID.isEmpty || selectedInsulationPoint != nil)
-                && secondLayerIsValid
-                && spacingChoices.contains(selectedSpacing)
-        case 3: return selectedFixingSystem != nil
-        case 4: return allocationsAreValid(firstSkin) && (layers == 1 || allocationsAreValid(secondSkin))
-        case 5: return !jointTreatment || ["poudre", "pate"].contains(compoundChoice)
+            return (insulationID.isEmpty || selectedInsulationPoint != nil) && secondLayerIsValid
+        case 3: return plenum >= minimumPlenum && maximumSpacing != nil && spacingChoices.contains(selectedSpacing)
+        case 4: return selectedFixingSystem != nil
+        case 5: return allocationsAreValid(firstSkin) && (layers == 1 || allocationsAreValid(secondSkin))
+        case 6: return !jointTreatment || ["poudre", "pate"].contains(compoundChoice)
         default: return true
         }
     }
 
     private func advance() {
         if step == 0 && (length <= 0 || width <= 0) { showDimensionsWarning = true }
-        else if step == 1 && isSlopedCeiling && !vaporBarrier { showVaporBarrierWarning = true }
-        else if step == 2 && spacingIsAboveRecommendation { showSpacingWarning = true }
+        else if step == 2 && isSlopedCeiling && !vaporBarrier { showVaporBarrierWarning = true }
+        else if step == 3 && spacingIsAboveRecommendation { showSpacingWarning = true }
         else { completeAdvance() }
     }
 
@@ -774,8 +844,8 @@ struct CeilingConfiguratorView: View {
 
     private func prepareDefaults() {
         if step == 0 && support.isEmpty { support = supports.first ?? "" }
-        if step == 2 && fixingSystemID.isEmpty { fixingSystemID = compatibleSystems.first?.id ?? "" }
-        if step == 3 { ensureFacingAllocations() }
+        if step == 3 && fixingSystemID.isEmpty { fixingSystemID = compatibleSystems.first?.id ?? "" }
+        if step == 4 { ensureFacingAllocations() }
     }
 
     private func normalizeCeilingShapeSelections() {
@@ -913,7 +983,9 @@ struct CeilingConfiguratorView: View {
             ceilingShape: ceilingShape,
             insulationLayers: insulationLayers,
             secondInsulationID: secondInsulationID,
-            secondInsulationThickness: secondInsulationThickness
+            secondInsulationThickness: secondInsulationThickness,
+            firstInsulationLocation: firstInsulationLocation,
+            secondInsulationLocation: secondInsulationLocation
         )
     }
 

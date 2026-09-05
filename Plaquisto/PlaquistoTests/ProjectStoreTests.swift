@@ -10,7 +10,19 @@ final class ProjectStoreTests: XCTestCase {
 
         let firstStore = ProjectStore(fileURL: fileURL)
         let projectID = try firstStore.createProject(name: "Maison Martin", client: "Martin", address: "1 rue Test", notes: "Rénovation")
-        let configuration = CeilingConfiguration(length: 8, width: 5, support: "Dalle béton", plenum: 30)
+        let configuration = CeilingConfiguration(
+            length: 8,
+            width: 5,
+            support: "Plancher bois horizontal",
+            plenum: 30,
+            insulationID: "INSULATION-TEST",
+            insulationThickness: 100,
+            insulationLayers: 2,
+            secondInsulationID: "INSULATION-TEST",
+            secondInsulationThickness: 60,
+            firstInsulationLocation: "between",
+            secondInsulationLocation: "below"
+        )
         let workID = try firstStore.createWork(projectID: projectID, name: "Plafond séjour", type: .ceilingOnFurring, configuration: configuration)
 
         let reloadedStore = ProjectStore(fileURL: fileURL)

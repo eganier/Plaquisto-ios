@@ -18,7 +18,7 @@ struct CeilingConfiguration: Codable, Equatable {
     var length: Double = 0
     var width: Double = 0
     var support: String = ""
-    var plenum: Double = 20
+    var plenum: Double = 0
     var vaporBarrier = false
     var insulationID: String = ""
     var insulationThickness: Double = 0
@@ -35,6 +35,8 @@ struct CeilingConfiguration: Codable, Equatable {
     var insulationLayers: Int? = nil
     var secondInsulationID: String? = nil
     var secondInsulationThickness: Double? = nil
+    var firstInsulationLocation: String? = nil
+    var secondInsulationLocation: String? = nil
 }
 
 struct DoublageFacingSelection: Identifiable, Codable, Equatable, Hashable {
