@@ -204,25 +204,118 @@ private struct NewWorkView: View {
     @Environment(\.dismiss) private var dismiss
     let projectID: UUID
     @State private var name = ""
+    @State private var category = WorkCategory.ceilings
     @State private var type = WorkType.ceilingOnFurring
     @State private var configuring = false
 
+    private let columns = [
+        GridItem(.flexible(), spacing: 12),
+        GridItem(.flexible(), spacing: 12)
+    ]
+
+    private var availableTypes: [WorkType] {
+        WorkType.allCases.filter { $0.category == category }
+    }
+
+    private var canConfigure: Bool {
+        !name.clean.isEmpty && availableTypes.contains(type)
+    }
+
     var body: some View {
         NavigationStack {
-            Form {
-                Section("Nouvel ouvrage") {
-                    TextField("Nom de l’ouvrage", text: $name)
-                    Picker("Type", selection: $type) { ForEach(WorkType.allCases) { Text($0.title).tag($0) } }
+            ScrollView {
+                VStack(alignment: .leading, spacing: 24) {
+                    Text("Catégorie d’ouvrage")
+                        .font(.title2.bold())
+
+                    LazyVGrid(columns: columns, spacing: 12) {
+                        ForEach(WorkCategory.allCases) { item in
+                            Button {
+                                category = item
+                                if let firstType = WorkType.allCases.first(where: { $0.category == item }) {
+                                    type = firstType
+                                }
+                            } label: {
+                                Text(item.cardTitle)
+                                    .font(.headline)
+                                    .foregroundStyle(.white)
+                                    .multilineTextAlignment(.center)
+                                    .frame(maxWidth: .infinity, minHeight: 112)
+                                    .padding(.horizontal, 10)
+                                    .background(item.cardColor, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+                                    .overlay {
+                                        RoundedRectangle(cornerRadius: 20, style: .continuous)
+                                            .stroke(.white, lineWidth: category == item ? 4 : 0)
+                                            .padding(4)
+                                    }
+                                    .shadow(color: category == item ? item.cardColor.opacity(0.28) : .clear, radius: 8, y: 4)
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityAddTraits(category == item ? .isSelected : [])
+                        }
+                    }
+
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("Nom de l’ouvrage")
+                            .font(.headline)
+                        TextField("Exemple : Cloison chambre", text: $name)
+                            .textFieldStyle(.plain)
+                            .padding(16)
+                            .background(.background, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                    }
+
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("Ouvrage")
+                            .font(.headline)
+
+                        if availableTypes.isEmpty {
+                            Text("Aucun ouvrage disponible dans cette catégorie pour le moment.")
+                                .foregroundStyle(.secondary)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(16)
+                                .background(.background, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                        } else {
+                            Picker("Type d’ouvrage", selection: $type) {
+                                ForEach(availableTypes) { Text($0.title).tag($0) }
+                            }
+                            .pickerStyle(.menu)
+                            .padding(16)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .background(.background, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                        }
+                    }
                 }
+                .padding(20)
             }
+            .background(Color(.systemGroupedBackground))
             .navigationTitle("Ajouter un ouvrage")
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Annuler") { dismiss() } }
-                ToolbarItem(placement: .confirmationAction) { Button("Configurer") { configuring = true }.disabled(name.clean.isEmpty) }
+                ToolbarItem(placement: .confirmationAction) { Button("Configurer") { configuring = true }.disabled(!canConfigure) }
             }
             .fullScreenCover(isPresented: $configuring) {
                 WorkConfiguratorContainer(projectID: projectID, workName: name.clean, workType: type) { dismiss() }
             }
+        }
+    }
+}
+
+private extension WorkCategory {
+    var cardTitle: String {
+        switch self {
+        case .ceilings: "Plafonds"
+        case .partitions: "Cloisons"
+        case .wallInsulation: "Isolation des murs"
+        case .specificWorks: "Ouvrages spécifiques"
+        }
+    }
+
+    var cardColor: Color {
+        switch self {
+        case .ceilings: Color(red: 0.20, green: 0.43, blue: 0.57)
+        case .partitions: Color(red: 0.76, green: 0.43, blue: 0.24)
+        case .wallInsulation: Color(red: 0.22, green: 0.49, blue: 0.38)
+        case .specificWorks: Color(red: 0.45, green: 0.34, blue: 0.58)
         }
     }
 }

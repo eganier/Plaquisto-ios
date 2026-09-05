@@ -46,14 +46,19 @@ struct CeilingConfiguratorView: View {
     @State private var length: Double
     @State private var width: Double
     @State private var enteredArea: Double
+    @State private var ceilingShape: String
     @State private var support: String
     @State private var plenum: Double
     @State private var vaporBarrier: Bool
     @State private var insulationID: String
     @State private var insulationThickness: Double
+    @State private var insulationLayers: Int
+    @State private var secondInsulationID: String
+    @State private var secondInsulationThickness: Double
     @State private var selectedSpacing: Double
     @State private var showSpacingWarning = false
     @State private var showDimensionsWarning = false
+    @State private var showVaporBarrierWarning = false
     @State private var fixingSystemID: String
     @State private var layers: Int
     @State private var firstSkin: [FacingAllocation]
@@ -75,11 +80,15 @@ struct CeilingConfiguratorView: View {
         _length = State(initialValue: initialConfiguration.length)
         _width = State(initialValue: initialConfiguration.width)
         _enteredArea = State(initialValue: initialConfiguration.length * initialConfiguration.width)
+        _ceilingShape = State(initialValue: initialConfiguration.ceilingShape ?? "horizontal")
         _support = State(initialValue: initialConfiguration.support)
         _plenum = State(initialValue: initialConfiguration.plenum)
         _vaporBarrier = State(initialValue: initialConfiguration.vaporBarrier)
         _insulationID = State(initialValue: initialConfiguration.insulationID)
         _insulationThickness = State(initialValue: initialConfiguration.insulationThickness)
+        _insulationLayers = State(initialValue: initialConfiguration.insulationLayers ?? 1)
+        _secondInsulationID = State(initialValue: initialConfiguration.secondInsulationID ?? "")
+        _secondInsulationThickness = State(initialValue: initialConfiguration.secondInsulationThickness ?? 0)
         _selectedSpacing = State(initialValue: initialConfiguration.selectedSpacing)
         _fixingSystemID = State(initialValue: initialConfiguration.fixingSystemID)
         _layers = State(initialValue: initialConfiguration.layers)
@@ -92,22 +101,49 @@ struct CeilingConfiguratorView: View {
     }
 
     private var catalogue: CeilingCataloguePayload? { store.catalogue }
-    private var workTitle: String { catalogue?.ouvrage?.title ?? "Plafond sur fourrures horizontal" }
+    private var isSlopedCeiling: Bool { ceilingShape == "rampant" }
+    private var workTitle: String {
+        isSlopedCeiling ? "Plafond sur fourrures rampant" : (catalogue?.ouvrage?.title ?? "Plafond sur fourrures horizontal")
+    }
     private var insulationSeries: [CeilingReferenceRecord] { catalogue?.isolation ?? [] }
     private var fixingSystems: [CeilingReferenceRecord] { catalogue?.systemesFixation ?? [] }
     private var facings: [CeilingReferenceRecord] { catalogue?.parements ?? [] }
     private var quantityItems: [CeilingReferenceRecord] { catalogue?.quantitatifs ?? [] }
     private var vaporBarrierRecords: [CeilingReferenceRecord] { catalogue?.pareVapeur ?? [] }
+    private var slopedCeilingRule: CeilingReferenceRecord? {
+        catalogue?.regles.first { $0.data["category"]?.string == "sloped_ceiling" }
+    }
+    private var allowedSlopedSupports: [String] {
+        slopedCeilingRule?.data["allowed_supports"]?.array?.compactMap(\.string)
+            ?? ["Plancher bois horizontal", "Charpente métallique"]
+    }
+    private var excludedSlopedLambdas: [Double] {
+        slopedCeilingRule?.data["excluded_lambdas_w_mk"]?.array?.compactMap(\.number) ?? [0.040]
+    }
     private var supports: [String] {
-        Array(Set(fixingSystems.compactMap { $0.data["support"]?.string })).sorted()
+        let allSupports = Array(Set(fixingSystems.compactMap { $0.data["support"]?.string })).sorted()
+        return isSlopedCeiling ? allSupports.filter(allowedSlopedSupports.contains) : allSupports
+    }
+    private func supportTitle(_ value: String) -> String {
+        if isSlopedCeiling && value == "Plancher bois horizontal" { return "Support bois" }
+        return value
+    }
+    private var availableInsulationSeries: [CeilingReferenceRecord] {
+        guard isSlopedCeiling else { return insulationSeries }
+        return insulationSeries.filter { record in
+            guard let lambda = insulationLambda(for: record) else { return true }
+            return !excludedSlopedLambdas.contains { abs($0 - lambda) < 0.0001 }
+        }
     }
     private var selectedInsulation: CeilingReferenceRecord? { insulationSeries.first { $0.id == insulationID } }
+    private var selectedSecondInsulation: CeilingReferenceRecord? { insulationSeries.first { $0.id == secondInsulationID } }
     private var insulationTypes: [String] {
-        Array(Set(insulationSeries.compactMap { $0.data["material"]?.string })).sorted()
+        Array(Set(availableInsulationSeries.compactMap { $0.data["material"]?.string })).sorted()
     }
     private var selectedInsulationType: String { selectedInsulation?.data["material"]?.string ?? "" }
+    private var selectedSecondInsulationType: String { selectedSecondInsulation?.data["material"]?.string ?? "" }
     private func insulationOptions(for material: String) -> [CeilingReferenceRecord] {
-        insulationSeries.filter { $0.data["material"]?.string == material }.sorted {
+        availableInsulationSeries.filter { $0.data["material"]?.string == material }.sorted {
             (insulationLambda(for: $0) ?? .greatestFiniteMagnitude) < (insulationLambda(for: $1) ?? .greatestFiniteMagnitude)
         }
     }
@@ -126,6 +162,11 @@ struct CeilingConfiguratorView: View {
             insulationID = material.isEmpty ? "" : (insulationOptions(for: material).first?.id ?? "")
         })
     }
+    private var secondInsulationTypeBinding: Binding<String> {
+        Binding(get: { selectedSecondInsulationType }, set: { material in
+            secondInsulationID = material.isEmpty ? "" : (insulationOptions(for: material).first?.id ?? "")
+        })
+    }
     private var insulationPoints: [InsulationPoint] {
         selectedInsulation?.data["values"]?.array?.compactMap { value in
             guard let object = value.object,
@@ -137,6 +178,17 @@ struct CeilingConfiguratorView: View {
     private var selectedInsulationPoint: InsulationPoint? {
         insulationPoints.first { abs($0.thickness - insulationThickness) < 0.01 }
     }
+    private var secondInsulationPoints: [InsulationPoint] {
+        selectedSecondInsulation?.data["values"]?.array?.compactMap { value in
+            guard let object = value.object,
+                  let thickness = object["thickness_mm"]?.number,
+                  let weight = object["max_weight_kg_m2"]?.number else { return nil }
+            return InsulationPoint(thickness: thickness, maxWeight: weight)
+        }.sorted { $0.thickness < $1.thickness } ?? []
+    }
+    private var selectedSecondInsulationPoint: InsulationPoint? {
+        secondInsulationPoints.first { abs($0.thickness - secondInsulationThickness) < 0.01 }
+    }
     private var insulationLambda: Double? {
         insulationLambda(for: selectedInsulation)
     }
@@ -144,7 +196,19 @@ struct CeilingConfiguratorView: View {
         guard let lambda = insulationLambda, lambda > 0, insulationThickness > 0 else { return nil }
         return (insulationThickness / 1000) / lambda
     }
-    private var insulationWeight: Double { selectedInsulationPoint?.maxWeight ?? 0 }
+    private var secondInsulationLambda: Double? { insulationLambda(for: selectedSecondInsulation) }
+    private var secondInsulationThermalResistance: Double? {
+        guard let lambda = secondInsulationLambda, lambda > 0, secondInsulationThickness > 0 else { return nil }
+        return (secondInsulationThickness / 1000) / lambda
+    }
+    private var totalInsulationThermalResistance: Double? {
+        guard let first = insulationThermalResistance else { return nil }
+        return first + (insulationLayers == 2 ? (secondInsulationThermalResistance ?? 0) : 0)
+    }
+    private var insulationWeight: Double {
+        guard !insulationID.isEmpty else { return 0 }
+        return (selectedInsulationPoint?.maxWeight ?? 0) + (insulationLayers == 2 ? (selectedSecondInsulationPoint?.maxWeight ?? 0) : 0)
+    }
     private var maximumSpacing: Double? {
         guard insulationWeight <= 15 else { return nil }
         if insulationWeight >= 10 { return 0.4 }
@@ -236,6 +300,7 @@ struct CeilingConfiguratorView: View {
         }
         .task {
             if store.catalogue == nil { await store.load() }
+            normalizeCeilingShapeSelections()
             normalizeFacingAllocations()
         }
         .tint(Color(red: 0.12, green: 0.38, blue: 0.29))
@@ -306,12 +371,26 @@ struct CeilingConfiguratorView: View {
         } message: {
             Text("Les calculs seront plus précis si la longueur et la largeur de l’ouvrage sont renseignées. Souhaitez-vous vraiment continuer ? Plaquisto estimera les dimensions en considérant une forme carrée.")
         }
+        .alert("Pare-vapeur fortement recommandé", isPresented: $showVaporBarrierWarning) {
+            Button("Prévoir un pare-vapeur", role: .cancel) { vaporBarrier = true }
+            Button("Continuer sans pare-vapeur") { completeAdvance() }
+        } message: {
+            Text("Pour un plafond rampant, la pose d’un pare-vapeur adapté est fortement recommandée afin d’assurer la maîtrise des transferts de vapeur d’eau et la continuité de l’étanchéité à l’air. Vérifiez les règles applicables à votre projet avant de poursuivre sans pare-vapeur.")
+        }
     }
 
     @ViewBuilder
     private var stepContent: some View {
         switch step {
         case 0:
+            Section("Type de plafond") {
+                Picker("Type de plafond", selection: $ceilingShape) {
+                    Text("Horizontal").tag("horizontal")
+                    Text("Rampant").tag("rampant")
+                }
+                .pickerStyle(.segmented)
+                .onChange(of: ceilingShape) { _, _ in normalizeCeilingShapeSelections() }
+            }
             Section("Dimensions de l’ouvrage") {
                 MeasureField(label: "Surface", value: $enteredArea, unit: "m²")
                     .onChange(of: enteredArea) { oldValue, newValue in
@@ -333,7 +412,7 @@ struct CeilingConfiguratorView: View {
             Section("Support du plafond") {
                 Picker("Type de support", selection: $support) {
                     Text("Sélectionner").tag("")
-                    ForEach(supports, id: \.self) { Text($0).tag($0) }
+                    ForEach(supports, id: \.self) { Text(supportTitle($0)).tag($0) }
                 }
                 .onChange(of: support) { _, _ in fixingSystemID = "" }
                 MeasureField(label: "Hauteur du plénum", value: $plenum, unit: "cm")
@@ -342,6 +421,10 @@ struct CeilingConfiguratorView: View {
             }
             Section {
                 Label("Le plénum correspond à l’espace vide situé entre le faux plafond, ou plafond suspendu, et la dalle du plancher.", systemImage: "info.circle")
+                if isSlopedCeiling && !vaporBarrier {
+                    Label("La pose d’un pare-vapeur est fortement recommandée pour un plafond rampant.", systemImage: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.orange)
+                }
                 if vaporBarrier {
                     Text("Les fournitures nécessaires au pare-vapeur seront ajoutées au quantitatif.")
                         .foregroundStyle(.secondary)
@@ -356,10 +439,28 @@ struct CeilingConfiguratorView: View {
                 }
                 .onChange(of: insulationID) { _, _ in
                     insulationThickness = insulationPoints.first?.thickness ?? 0
+                    if insulationID.isEmpty {
+                        insulationLayers = 1
+                        secondInsulationID = ""
+                        secondInsulationThickness = 0
+                    }
                     selectedSpacing = maximumSpacing ?? 0.4
                     fixingSystemID = ""
                 }
                 if !insulationID.isEmpty {
+                    Picker("Nombre de couches", selection: $insulationLayers) {
+                        Text("Une couche").tag(1)
+                        Text("Deux couches").tag(2)
+                    }
+                    .pickerStyle(.segmented)
+                    .onChange(of: insulationLayers) { _, newValue in
+                        if newValue == 2 { prepareSecondInsulationDefault() }
+                        selectedSpacing = maximumSpacing ?? 0.4
+                        fixingSystemID = ""
+                    }
+
+                    Text("Première couche")
+                        .font(.headline)
                     Picker("Lambda", selection: $insulationID) {
                         ForEach(insulationOptions(for: selectedInsulationType)) { option in
                             Text(insulationLambdaTitle(option)).tag(option.id)
@@ -382,11 +483,50 @@ struct CeilingConfiguratorView: View {
                     if let insulationThermalResistance {
                         LabeledContent("Résistance thermique", value: "R = \(insulationThermalResistance.formatted(.number.precision(.fractionLength(2)))) m²·K/W")
                     }
+
+                    if insulationLayers == 2 {
+                        Text("Deuxième couche")
+                            .font(.headline)
+                        Picker("Type d’isolant", selection: secondInsulationTypeBinding) {
+                            ForEach(insulationTypes, id: \.self) { Text($0).tag($0) }
+                        }
+                        .onChange(of: secondInsulationID) { _, _ in
+                            secondInsulationThickness = secondInsulationPoints.first?.thickness ?? 0
+                            selectedSpacing = maximumSpacing ?? 0.4
+                            fixingSystemID = ""
+                        }
+                        Picker("Lambda", selection: $secondInsulationID) {
+                            ForEach(insulationOptions(for: selectedSecondInsulationType)) { option in
+                                Text(insulationLambdaTitle(option)).tag(option.id)
+                            }
+                        }
+                        Picker("Épaisseur", selection: $secondInsulationThickness) {
+                            ForEach(secondInsulationPoints) { point in
+                                if let lambda = secondInsulationLambda, lambda > 0 {
+                                    Text("\(Int(point.thickness)) mm — R = \(((point.thickness / 1000) / lambda).formatted(.number.precision(.fractionLength(2))))").tag(point.thickness)
+                                } else {
+                                    Text("\(Int(point.thickness)) mm").tag(point.thickness)
+                                }
+                            }
+                        }
+                        .onChange(of: secondInsulationThickness) { _, _ in
+                            selectedSpacing = maximumSpacing ?? 0.4
+                            fixingSystemID = ""
+                        }
+                    }
+
+                    if insulationLayers == 2, let totalInsulationThermalResistance {
+                        LabeledContent("Résistance thermique totale", value: "R = \(totalInsulationThermalResistance.formatted(.number.precision(.fractionLength(2)))) m²·K/W")
+                    }
                 }
             } header: {
                 Text("Isolation")
             } footer: {
-                Text("Pour une plage de poids, Plaquisto retient toujours la valeur la plus élevée.")
+                if isSlopedCeiling {
+                    Text("En plafond rampant, les isolants de lambda 0,040 W/(m·K) ne sont pas proposés. Pour une plage de poids, Plaquisto retient toujours la valeur la plus élevée.")
+                } else {
+                    Text("Pour une plage de poids, Plaquisto retient toujours la valeur la plus élevée.")
+                }
             }
             Section("Entraxe des fourrures") {
                 Picker("Entraxe", selection: $selectedSpacing) {
@@ -458,10 +598,20 @@ struct CeilingConfiguratorView: View {
                 VStack(alignment: .leading, spacing: 8) {
                     Label("Quantitatif calculé", systemImage: "checkmark.seal.fill")
                         .font(.headline).foregroundStyle(.green)
-                    Text("\(format(area)) m² · \(layers == 1 ? "simple" : "double") peau · entraxe \(Int(selectedSpacing * 100)) cm")
+                    Text("\(format(area)) m² · plafond \(isSlopedCeiling ? "rampant" : "horizontal") · \(layers == 1 ? "simple" : "double") peau · entraxe \(Int(selectedSpacing * 100)) cm")
                         .font(.subheadline).foregroundStyle(.secondary)
                 }
                 .padding(.vertical, 5)
+            }
+            Section("Configuration du plafond") {
+                LabeledContent("Type", value: isSlopedCeiling ? "Rampant" : "Horizontal")
+                LabeledContent("Support", value: supportTitle(support))
+                if !insulationID.isEmpty {
+                    LabeledContent("Isolation", value: insulationLayers == 2 ? "Deux couches" : "Une couche")
+                    if let totalInsulationThermalResistance {
+                        LabeledContent("Résistance thermique totale", value: "R = \(totalInsulationThermalResistance.formatted(.number.precision(.fractionLength(2)))) m²·K/W")
+                    }
+                }
             }
             Section("Système de fixation") {
                 LabeledContent("Solution", value: selectedFixingSystem?.title ?? "—")
@@ -589,7 +739,12 @@ struct CeilingConfiguratorView: View {
         switch step {
         case 0: return enteredArea > 0
         case 1: return !support.isEmpty && plenum > 0
-        case 2: return maximumSpacing != nil && (insulationID.isEmpty || selectedInsulationPoint != nil) && spacingChoices.contains(selectedSpacing)
+        case 2:
+            let secondLayerIsValid = insulationID.isEmpty || insulationLayers == 1 || (selectedSecondInsulation != nil && selectedSecondInsulationPoint != nil)
+            return maximumSpacing != nil
+                && (insulationID.isEmpty || selectedInsulationPoint != nil)
+                && secondLayerIsValid
+                && spacingChoices.contains(selectedSpacing)
         case 3: return selectedFixingSystem != nil
         case 4: return allocationsAreValid(firstSkin) && (layers == 1 || allocationsAreValid(secondSkin))
         case 5: return !jointTreatment || ["poudre", "pate"].contains(compoundChoice)
@@ -599,6 +754,7 @@ struct CeilingConfiguratorView: View {
 
     private func advance() {
         if step == 0 && (length <= 0 || width <= 0) { showDimensionsWarning = true }
+        else if step == 1 && isSlopedCeiling && !vaporBarrier { showVaporBarrierWarning = true }
         else if step == 2 && spacingIsAboveRecommendation { showSpacingWarning = true }
         else { completeAdvance() }
     }
@@ -616,6 +772,40 @@ struct CeilingConfiguratorView: View {
         if step == 0 && support.isEmpty { support = supports.first ?? "" }
         if step == 2 && fixingSystemID.isEmpty { fixingSystemID = compatibleSystems.first?.id ?? "" }
         if step == 3 { ensureFacingAllocations() }
+    }
+
+    private func normalizeCeilingShapeSelections() {
+        if !supports.contains(support) {
+            support = supports.first ?? ""
+            fixingSystemID = ""
+        }
+
+        if isSlopedCeiling {
+            if let selectedInsulation,
+               !availableInsulationSeries.contains(where: { $0.id == selectedInsulation.id }) {
+                insulationID = ""
+                insulationThickness = 0
+                insulationLayers = 1
+            }
+            if let selectedSecondInsulation,
+               !availableInsulationSeries.contains(where: { $0.id == selectedSecondInsulation.id }) {
+                secondInsulationID = ""
+                secondInsulationThickness = 0
+            }
+        }
+
+        if insulationLayers == 2 { prepareSecondInsulationDefault() }
+        selectedSpacing = maximumSpacing ?? 0.4
+    }
+
+    private func prepareSecondInsulationDefault() {
+        if !availableInsulationSeries.contains(where: { $0.id == secondInsulationID }),
+           let defaultRecord = availableInsulationSeries.first {
+            secondInsulationID = defaultRecord.id
+        }
+        if !secondInsulationPoints.contains(where: { abs($0.thickness - secondInsulationThickness) < 0.01 }) {
+            secondInsulationThickness = secondInsulationPoints.first?.thickness ?? 0
+        }
     }
 
     private func ensureFacingAllocations() {
@@ -706,7 +896,11 @@ struct CeilingConfiguratorView: View {
             firstSkin: firstSkin,
             secondSkin: secondSkin,
             jointTreatment: jointTreatment,
-            compoundChoice: compoundChoice
+            compoundChoice: compoundChoice,
+            ceilingShape: ceilingShape,
+            insulationLayers: insulationLayers,
+            secondInsulationID: secondInsulationID,
+            secondInsulationThickness: secondInsulationThickness
         )
     }
 

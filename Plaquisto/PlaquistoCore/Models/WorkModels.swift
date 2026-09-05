@@ -29,6 +29,12 @@ struct CeilingConfiguration: Codable, Equatable {
     var secondSkin: [FacingSelection] = []
     var jointTreatment = true
     var compoundChoice = "poudre"
+    // Optional fields preserve decoding of ceilings saved before sloped ceilings
+    // and double-layer insulation were introduced.
+    var ceilingShape: String? = nil
+    var insulationLayers: Int? = nil
+    var secondInsulationID: String? = nil
+    var secondInsulationThickness: Double? = nil
 }
 
 struct DoublageFacingSelection: Identifiable, Codable, Equatable, Hashable {
