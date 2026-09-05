@@ -84,23 +84,21 @@ struct AlveolarPartitionConfiguratorView: View {
     }
 
     var body: some View {
-        NavigationStack {
-            Group {
-                if references.isLoading {
-                    ProgressView("Chargement depuis Plaquisto Admin…")
-                } else if let error = references.error {
-                    VStack(spacing: 18) {
-                        ContentUnavailableView(
-                            "Données indisponibles",
-                            systemImage: "wifi.exclamationmark",
-                            description: Text(error)
-                        )
-                        Button("Réessayer") { Task { await references.load() } }
-                            .buttonStyle(.borderedProminent)
-                    }
-                } else {
-                    wizard
+        Group {
+            if references.isLoading {
+                ProgressView("Chargement depuis Plaquisto Admin…")
+            } else if let error = references.error {
+                VStack(spacing: 18) {
+                    ContentUnavailableView(
+                        "Données indisponibles",
+                        systemImage: "wifi.exclamationmark",
+                        description: Text(error)
+                    )
+                    Button("Réessayer") { Task { await references.load() } }
+                        .buttonStyle(.borderedProminent)
                 }
+            } else {
+                wizard
             }
         }
         .tint(green)

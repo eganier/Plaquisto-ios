@@ -181,19 +181,17 @@ struct CloisonDistributionConfiguratorView: View {
     }
 
     var body: some View {
-        NavigationStack {
-            Group {
-                if references.isLoading {
-                    ProgressView("Chargement depuis Plaquisto Admin…")
-                } else if let error = references.error {
-                    ContentUnavailableView(
-                        "Données indisponibles",
-                        systemImage: "wifi.exclamationmark",
-                        description: Text(error)
-                    )
-                } else {
-                    wizard
-                }
+        Group {
+            if references.isLoading {
+                ProgressView("Chargement depuis Plaquisto Admin…")
+            } else if let error = references.error {
+                ContentUnavailableView(
+                    "Données indisponibles",
+                    systemImage: "wifi.exclamationmark",
+                    description: Text(error)
+                )
+            } else {
+                wizard
             }
         }
         .tint(green)

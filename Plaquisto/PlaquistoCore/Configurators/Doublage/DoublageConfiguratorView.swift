@@ -95,12 +95,10 @@ struct DoublageConfiguratorView: View {
     }
 
     var body: some View {
-        NavigationStack {
-            Group {
-                if references.isLoading { ProgressView("Chargement depuis Plaquisto Admin…") }
-                else if let error = references.error { ContentUnavailableView("Données indisponibles", systemImage: "exclamationmark.icloud", description: Text(error)) }
-                else { wizard }
-            }
+        Group {
+            if references.isLoading { ProgressView("Chargement depuis Plaquisto Admin…") }
+            else if let error = references.error { ContentUnavailableView("Données indisponibles", systemImage: "exclamationmark.icloud", description: Text(error)) }
+            else { wizard }
         }
         .onChange(of: groups.count, initial: true) { _, _ in initializeParementsIfNeeded(); normalizeSelections() }
         .onChange(of: facings.count) { _, _ in initializeParementsIfNeeded(); normalizeSelections() }
