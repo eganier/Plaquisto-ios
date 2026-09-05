@@ -2,13 +2,12 @@ import SwiftUI
 
 @main
 struct PlaquistoLabApp: App {
-    @StateObject private var references = AlveolarPartitionReferenceStore()
+    @StateObject private var references = BondedLiningReferenceStore()
 
     var body: some Scene {
         WindowGroup {
-            AlveolarPartitionConfiguratorView()
+            BondedLiningConfiguratorView()
                 .environmentObject(references)
-                .task { await references.load() }
         }
     }
 }

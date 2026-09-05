@@ -256,6 +256,11 @@ private struct SavedWorkView: View {
                     do { try store.updateWork(currentWork, alveolarPartitionConfiguration: configuration) }
                     catch { errorMessage = "Les modifications n’ont pas pu être enregistrées." }
                 }
+            case .peripheralLiningBonded:
+                BondedLiningConfiguratorHost(initialConfiguration: currentWork.bondedLiningConfiguration, startsAtResult: true) { configuration in
+                    do { try store.updateWork(currentWork, bondedLiningConfiguration: configuration) }
+                    catch { errorMessage = "Les modifications n’ont pas pu être enregistrées." }
+                }
             }
         }
         .navigationTitle(currentWork.name)
@@ -287,6 +292,10 @@ private struct WorkConfiguratorContainer: View {
                 case .alveolarPartition:
                     AlveolarPartitionConfiguratorHost(showsCloseButton: false) { configuration in
                         save(alveolarPartitionConfiguration: configuration)
+                    }
+                case .peripheralLiningBonded:
+                    BondedLiningConfiguratorHost(showsCloseButton: false) { configuration in
+                        save(bondedLiningConfiguration: configuration)
                     }
                 }
             }
@@ -329,6 +338,13 @@ private struct WorkConfiguratorContainer: View {
                 type: workType,
                 alveolarPartitionConfiguration: alveolarPartitionConfiguration
             )
+            finish()
+        } catch { errorMessage = "L’ouvrage n’a pas pu être enregistré." }
+    }
+
+    private func save(bondedLiningConfiguration: BondedLiningConfiguration) {
+        do {
+            _ = try store.createWork(projectID: projectID, name: workName, type: workType, bondedLiningConfiguration: bondedLiningConfiguration)
             finish()
         } catch { errorMessage = "L’ouvrage n’a pas pu être enregistré." }
     }
@@ -431,6 +447,28 @@ private struct AlveolarPartitionConfiguratorHost: View {
         )
         .environmentObject(references)
         .task { if references.panels.isEmpty { await references.load() } }
+    }
+}
+
+private struct BondedLiningConfiguratorHost: View {
+    @Environment(\.dismiss) private var dismiss
+    @StateObject private var references = BondedLiningReferenceStore()
+    let initialConfiguration: BondedLiningConfiguration?
+    let startsAtResult: Bool
+    let showsCloseButton: Bool
+    let onSave: (BondedLiningConfiguration) -> Void
+
+    init(initialConfiguration: BondedLiningConfiguration? = nil, startsAtResult: Bool = false, showsCloseButton: Bool = true, onSave: @escaping (BondedLiningConfiguration) -> Void) {
+        self.initialConfiguration = initialConfiguration
+        self.startsAtResult = startsAtResult
+        self.showsCloseButton = showsCloseButton
+        self.onSave = onSave
+    }
+
+    var body: some View {
+        BondedLiningConfiguratorView(initialConfiguration: initialConfiguration, startsAtResult: startsAtResult, onSave: onSave, onClose: { dismiss() }, showsCloseButton: showsCloseButton)
+            .environmentObject(references)
+            .task { if references.references.isEmpty { await references.load() } }
     }
 }
 

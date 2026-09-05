@@ -161,6 +161,43 @@ struct AlveolarPartitionConfiguration: Codable, Equatable {
     var area: Double { geometryMode == "surface" ? enteredSurface : enteredLength * height }
 }
 
+struct BondedFacingAllocation: Identifiable, Codable, Equatable, Hashable {
+    var id: UUID
+    var facing: BondedFacingKind
+    var surface: Double
+
+    init(id: UUID = UUID(), facing: BondedFacingKind = .standard, surface: Double = 0) {
+        self.id = id
+        self.facing = facing
+        self.surface = surface
+    }
+}
+
+struct BondedLiningQuantity: Identifiable, Codable, Equatable {
+    var name: String
+    var quantity: Double
+    var unit: String
+    var id: String { "\(name)|\(unit)" }
+}
+
+struct BondedLiningConfiguration: Codable, Equatable {
+    var geometryMode = "length"
+    var height: Double = 0
+    var enteredLength: Double = 0
+    var enteredSurface: Double = 0
+    var allocations: [BondedFacingAllocation] = []
+    var lambda: Double = 0
+    var hasReveal = false
+    var revealMM = 0
+    var insulationThicknessMM = 0
+    var widthMM = 0
+    var panelHeightMM = 0
+    var jointTreatment = true
+    var quantities: [BondedLiningQuantity] = []
+
+    var area: Double { geometryMode == "surface" ? enteredSurface : enteredLength * height }
+}
+
 enum WorkCategory: String, Codable, CaseIterable, Identifiable {
     case ceilings = "plafonds"
     case partitions = "cloisons"
@@ -183,12 +220,13 @@ enum WorkType: String, Codable, CaseIterable, Identifiable {
     case peripheralLiningStuds = "doublage-peripherique-rails-montants"
     case distributionPartition = "cloison-de-distribution"
     case alveolarPartition = "cloison-de-distribution-alveolaire"
+    case peripheralLiningBonded = "doublage-peripherique-complexe-colle"
 
     var id: String { rawValue }
     var category: WorkCategory {
         switch self {
         case .ceilingOnFurring: .ceilings
-        case .peripheralLiningStuds: .wallInsulation
+        case .peripheralLiningStuds, .peripheralLiningBonded: .wallInsulation
         case .distributionPartition, .alveolarPartition: .partitions
         }
     }
@@ -198,6 +236,7 @@ enum WorkType: String, Codable, CaseIterable, Identifiable {
         case .peripheralLiningStuds: "Doublage périphérique — Rails et montants"
         case .distributionPartition: "Cloison de distribution — Rails et montants"
         case .alveolarPartition: "Cloison de distribution alvéolaire"
+        case .peripheralLiningBonded: "Doublage périphérique — Complexe collé"
         }
     }
 }
@@ -207,9 +246,10 @@ enum WorkConfiguration: Codable, Equatable {
     case peripheralLining(DoublageConfiguration)
     case distributionPartition(CloisonDistributionConfiguration)
     case alveolarPartition(AlveolarPartitionConfiguration)
+    case bondedLining(BondedLiningConfiguration)
 
     private enum CodingKeys: String, CodingKey { case kind, data }
-    private enum Kind: String, Codable { case ceiling, peripheralLining, distributionPartition, alveolarPartition }
+    private enum Kind: String, Codable { case ceiling, peripheralLining, distributionPartition, alveolarPartition, bondedLining }
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
@@ -222,6 +262,8 @@ enum WorkConfiguration: Codable, Equatable {
             self = .distributionPartition(try container.decode(CloisonDistributionConfiguration.self, forKey: .data))
         case .alveolarPartition:
             self = .alveolarPartition(try container.decode(AlveolarPartitionConfiguration.self, forKey: .data))
+        case .bondedLining:
+            self = .bondedLining(try container.decode(BondedLiningConfiguration.self, forKey: .data))
         }
     }
 
@@ -239,6 +281,9 @@ enum WorkConfiguration: Codable, Equatable {
             try container.encode(configuration, forKey: .data)
         case .alveolarPartition(let configuration):
             try container.encode(Kind.alveolarPartition, forKey: .kind)
+            try container.encode(configuration, forKey: .data)
+        case .bondedLining(let configuration):
+            try container.encode(Kind.bondedLining, forKey: .kind)
             try container.encode(configuration, forKey: .data)
         }
     }
@@ -273,6 +318,11 @@ struct WorkItem: Identifiable, Equatable {
         return configuration
     }
 
+    var bondedLiningConfiguration: BondedLiningConfiguration? {
+        guard case .bondedLining(let configuration) = payload else { return nil }
+        return configuration
+    }
+
     init(id: UUID, projectID: UUID, name: String, type: WorkType, payload: WorkConfiguration, createdAt: Date, updatedAt: Date) {
         self.id = id
         self.projectID = projectID
@@ -297,6 +347,10 @@ struct WorkItem: Identifiable, Equatable {
 
     init(id: UUID, projectID: UUID, name: String, type: WorkType, alveolarPartitionConfiguration: AlveolarPartitionConfiguration, createdAt: Date, updatedAt: Date) {
         self.init(id: id, projectID: projectID, name: name, type: type, payload: .alveolarPartition(alveolarPartitionConfiguration), createdAt: createdAt, updatedAt: updatedAt)
+    }
+
+    init(id: UUID, projectID: UUID, name: String, type: WorkType, bondedLiningConfiguration: BondedLiningConfiguration, createdAt: Date, updatedAt: Date) {
+        self.init(id: id, projectID: projectID, name: name, type: type, payload: .bondedLining(bondedLiningConfiguration), createdAt: createdAt, updatedAt: updatedAt)
     }
 }
 
