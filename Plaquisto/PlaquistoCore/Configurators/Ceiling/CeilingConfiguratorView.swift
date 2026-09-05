@@ -120,6 +120,9 @@ struct CeilingConfiguratorView: View {
     private var excludedSlopedLambdas: [Double] {
         slopedCeilingRule?.data["excluded_lambdas_w_mk"]?.array?.compactMap(\.number) ?? [0.040]
     }
+    private var excludedSlopedFixingSystemIDs: [String] {
+        slopedCeilingRule?.data["excluded_fixing_system_ids"]?.array?.compactMap(\.string) ?? ["FIX-BOIS-TIGE"]
+    }
     private var supports: [String] {
         let allSupports = Array(Set(fixingSystems.compactMap { $0.data["support"]?.string })).sorted()
         return isSlopedCeiling ? allSupports.filter(allowedSlopedSupports.contains) : allSupports
@@ -222,6 +225,7 @@ struct CeilingConfiguratorView: View {
     private var compatibleSystems: [CeilingReferenceRecord] {
         let plenumMM = plenum * 10
         return fixingSystems.filter { system in
+            if isSlopedCeiling && excludedSlopedFixingSystemIDs.contains(system.id) { return false }
             guard system.data["support"]?.string == support,
                   let minimum = system.data["plenum_min_mm"]?.number,
                   let maximum = system.data["plenum_max_mm"]?.number,
@@ -454,7 +458,7 @@ struct CeilingConfiguratorView: View {
                     }
                     .pickerStyle(.segmented)
                     .onChange(of: insulationLayers) { _, newValue in
-                        if newValue == 2 { prepareSecondInsulationDefault() }
+                        if newValue == 2 { prepareSecondInsulationDefault(matchingFirstLayer: true) }
                         selectedSpacing = maximumSpacing ?? 0.4
                         fixingSystemID = ""
                     }
@@ -689,7 +693,7 @@ struct CeilingConfiguratorView: View {
                 }
             }
             .onChange(of: allocation.wrappedValue.facingID) { _, _ in
-                allocation.wrappedValue.dimensionID = dimensions(for: allocation.wrappedValue.facingID).first?.id ?? ""
+                allocation.wrappedValue.dimensionID = preferredDimension(for: allocation.wrappedValue.facingID)?.id ?? ""
             }
             Divider()
             Picker("Dimension", selection: allocation.dimensionID) {
@@ -798,7 +802,16 @@ struct CeilingConfiguratorView: View {
         selectedSpacing = maximumSpacing ?? 0.4
     }
 
-    private func prepareSecondInsulationDefault() {
+    private func prepareSecondInsulationDefault(matchingFirstLayer: Bool = false) {
+        if matchingFirstLayer,
+           !insulationID.isEmpty,
+           availableInsulationSeries.contains(where: { $0.id == insulationID }) {
+            secondInsulationID = insulationID
+            secondInsulationThickness = insulationPoints.contains(where: { abs($0.thickness - insulationThickness) < 0.01 })
+                ? insulationThickness
+                : (insulationPoints.first?.thickness ?? 0)
+            return
+        }
         if !availableInsulationSeries.contains(where: { $0.id == secondInsulationID }),
            let defaultRecord = availableInsulationSeries.first {
             secondInsulationID = defaultRecord.id
@@ -815,7 +828,7 @@ struct CeilingConfiguratorView: View {
 
     private func defaultAllocation(area allocationArea: Double) -> FacingAllocation {
         let facingID = defaultFacing?.id ?? ""
-        return FacingAllocation(facingID: facingID, dimensionID: dimensions(for: facingID).first?.id ?? "", area: allocationArea)
+        return FacingAllocation(facingID: facingID, dimensionID: preferredDimension(for: facingID)?.id ?? "", area: allocationArea)
     }
 
     private var defaultFacing: CeilingReferenceRecord? {
@@ -861,7 +874,7 @@ struct CeilingConfiguratorView: View {
             let choices = facings.filter { $0.data["mechanical_family"]?.string == family }
             guard let facing = choices.first(where: { $0.data["function"]?.string == "standard" }) ?? choices.first else { return }
             allocation.wrappedValue.facingID = facing.id
-            allocation.wrappedValue.dimensionID = dimensions(for: facing.id).first?.id ?? ""
+            allocation.wrappedValue.dimensionID = preferredDimension(for: facing.id)?.id ?? ""
         })
     }
 
@@ -872,7 +885,7 @@ struct CeilingConfiguratorView: View {
                 var next = value
                 if !facings.contains(where: { $0.id == next.facingID }) { next.facingID = defaultFacing?.id ?? "" }
                 if !dimensions(for: next.facingID).contains(where: { $0.id == next.dimensionID }) {
-                    next.dimensionID = dimensions(for: next.facingID).first?.id ?? ""
+                    next.dimensionID = preferredDimension(for: next.facingID)?.id ?? ""
                 }
                 return next
             }
@@ -909,12 +922,28 @@ struct CeilingConfiguratorView: View {
     }
 
     private func dimensions(for facingID: String) -> [FacingDimension] {
-        facings.first(where: { $0.id == facingID })?.data["dimensions"]?.array?.compactMap { value in
+        guard let facing = facings.first(where: { $0.id == facingID }) else { return [] }
+        let values: [FacingDimension] = facing.data["dimensions"]?.array?.compactMap { value -> FacingDimension? in
             guard let object = value.object,
                   let width = object["width_mm"]?.number,
                   let length = object["length_mm"]?.number else { return nil }
             return FacingDimension(width: width, length: length)
         } ?? []
+        if facing.data["function"]?.string == "quatre_bords_amincis" {
+            return values.filter { $0.width == 1200 && [2400.0, 2500.0].contains($0.length) }
+        }
+        return values
+    }
+
+    private func preferredDimension(for facingID: String) -> FacingDimension? {
+        let available = dimensions(for: facingID)
+        guard let facing = facings.first(where: { $0.id == facingID }) else { return available.first }
+        let preferredLength = facing.data["function"]?.string == "quatre_bords_amincis" ? 2400.0 : 2500.0
+        if facing.data["mechanical_family"]?.string == "BA13",
+           let preferred = available.first(where: { $0.width == 1200 && $0.length == preferredLength }) {
+            return preferred
+        }
+        return available.first
     }
 
     private func suppliesForSkin(_ allocations: [FacingAllocation], name skinName: String) -> [Supply] {
