@@ -201,12 +201,15 @@ private struct ProjectFormView: View {
 }
 
 private struct NewWorkView: View {
+    @EnvironmentObject private var store: ProjectStore
     @Environment(\.dismiss) private var dismiss
     let projectID: UUID
     @State private var name = ""
     @State private var category = WorkCategory.ceilings
     @State private var type = WorkType.ceilingOnFurring
     @State private var configuring = false
+    @State private var resolvedWorkName = ""
+    @State private var activeAlert: NewWorkAlert?
 
     private let columns = [
         GridItem(.flexible(), spacing: 12),
@@ -218,7 +221,7 @@ private struct NewWorkView: View {
     }
 
     private var canConfigure: Bool {
-        !name.clean.isEmpty && availableTypes.contains(type)
+        availableTypes.contains(type)
     }
 
     var body: some View {
@@ -291,11 +294,57 @@ private struct NewWorkView: View {
             .navigationTitle("Ajouter un ouvrage")
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Annuler") { dismiss() } }
-                ToolbarItem(placement: .confirmationAction) { Button("Configurer") { configuring = true }.disabled(!canConfigure) }
+                ToolbarItem(placement: .confirmationAction) { Button("Configurer") { prepareConfiguration() }.disabled(!canConfigure) }
             }
             .fullScreenCover(isPresented: $configuring) {
-                WorkConfiguratorContainer(projectID: projectID, workName: name.clean, workType: type) { dismiss() }
+                WorkConfiguratorContainer(projectID: projectID, workName: resolvedWorkName, workType: type) { dismiss() }
             }
+            .alert(item: $activeAlert) { alert in
+                switch alert {
+                case .automaticName(let proposedName):
+                    Alert(
+                        title: Text("Nom automatique"),
+                        message: Text("Aucun nom n’a été renseigné. L’ouvrage sera enregistré sous le nom « \(proposedName) »."),
+                        primaryButton: .default(Text("Continuer")) { openConfigurator(with: proposedName) },
+                        secondaryButton: .cancel(Text("Modifier le nom"))
+                    )
+                case .duplicateName(let duplicateName):
+                    Alert(
+                        title: Text("Nom déjà utilisé"),
+                        message: Text("Un ouvrage nommé « \(duplicateName) » existe déjà dans ce chantier. Choisissez un autre nom."),
+                        dismissButton: .default(Text("OK"))
+                    )
+                }
+            }
+        }
+    }
+
+    private func prepareConfiguration() {
+        let enteredName = name.clean
+        if enteredName.isEmpty {
+            activeAlert = .automaticName(store.defaultWorkName(projectID: projectID, type: type))
+        } else if store.workNameExists(projectID: projectID, name: enteredName) {
+            activeAlert = .duplicateName(enteredName)
+        } else {
+            openConfigurator(with: enteredName)
+        }
+    }
+
+    private func openConfigurator(with workName: String) {
+        name = workName
+        resolvedWorkName = workName
+        configuring = true
+    }
+}
+
+private enum NewWorkAlert: Identifiable {
+    case automaticName(String)
+    case duplicateName(String)
+
+    var id: String {
+        switch self {
+        case .automaticName: "automatic-name"
+        case .duplicateName: "duplicate-name"
         }
     }
 }

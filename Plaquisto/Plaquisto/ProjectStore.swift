@@ -27,6 +27,21 @@ final class ProjectStore: ObservableObject {
 
     func project(id: UUID) -> ProjectItem? { projects.first { $0.id == id } }
 
+    func workNameExists(projectID: UUID, name: String) -> Bool {
+        guard let project = project(id: projectID) else { return false }
+        let normalizedName = name.normalizedForComparison
+        return project.works.contains { $0.name.normalizedForComparison == normalizedName }
+    }
+
+    func defaultWorkName(projectID: UUID, type: WorkType) -> String {
+        let baseName = type.defaultNameBase
+        var number = 1
+        while workNameExists(projectID: projectID, name: "\(baseName) \(number)") {
+            number += 1
+        }
+        return "\(baseName) \(number)"
+    }
+
     func createProject(name: String, client: String, address: String, notes: String) throws -> UUID {
         let now = Date()
         let project = ProjectItem(id: UUID(), name: name.trimmed, client: client.trimmed, address: address.trimmed, notes: notes.trimmed, works: [], createdAt: now, updatedAt: now)
@@ -76,6 +91,7 @@ final class ProjectStore: ObservableObject {
     func createWork(projectID: UUID, name: String, type: WorkType, configuration: CeilingConfiguration) throws -> UUID {
         var next = projects
         guard let projectIndex = next.firstIndex(where: { $0.id == projectID }) else { throw StoreError.projectNotFound }
+        try validateWorkName(name, in: next[projectIndex])
         let now = Date()
         let work = WorkItem(id: UUID(), projectID: projectID, name: name.trimmed, type: type, configuration: configuration, createdAt: now, updatedAt: now)
         next[projectIndex].works.insert(work, at: 0)
@@ -87,6 +103,7 @@ final class ProjectStore: ObservableObject {
     func createWork(projectID: UUID, name: String, type: WorkType, doublageConfiguration: DoublageConfiguration) throws -> UUID {
         var next = projects
         guard let projectIndex = next.firstIndex(where: { $0.id == projectID }) else { throw StoreError.projectNotFound }
+        try validateWorkName(name, in: next[projectIndex])
         let now = Date()
         let work = WorkItem(
             id: UUID(),
@@ -106,6 +123,7 @@ final class ProjectStore: ObservableObject {
     func createWork(projectID: UUID, name: String, type: WorkType, cloisonDistributionConfiguration: CloisonDistributionConfiguration) throws -> UUID {
         var next = projects
         guard let projectIndex = next.firstIndex(where: { $0.id == projectID }) else { throw StoreError.projectNotFound }
+        try validateWorkName(name, in: next[projectIndex])
         let now = Date()
         let work = WorkItem(
             id: UUID(),
@@ -125,6 +143,7 @@ final class ProjectStore: ObservableObject {
     func createWork(projectID: UUID, name: String, type: WorkType, alveolarPartitionConfiguration: AlveolarPartitionConfiguration) throws -> UUID {
         var next = projects
         guard let projectIndex = next.firstIndex(where: { $0.id == projectID }) else { throw StoreError.projectNotFound }
+        try validateWorkName(name, in: next[projectIndex])
         let now = Date()
         let work = WorkItem(
             id: UUID(),
@@ -144,6 +163,7 @@ final class ProjectStore: ObservableObject {
     func createWork(projectID: UUID, name: String, type: WorkType, bondedLiningConfiguration: BondedLiningConfiguration) throws -> UUID {
         var next = projects
         guard let projectIndex = next.firstIndex(where: { $0.id == projectID }) else { throw StoreError.projectNotFound }
+        try validateWorkName(name, in: next[projectIndex])
         let now = Date()
         let work = WorkItem(id: UUID(), projectID: projectID, name: name.trimmed, type: type, bondedLiningConfiguration: bondedLiningConfiguration, createdAt: now, updatedAt: now)
         next[projectIndex].works.insert(work, at: 0)
@@ -208,11 +228,11 @@ final class ProjectStore: ObservableObject {
         guard let projectIndex = next.firstIndex(where: { $0.id == projectID }),
               let workIndex = next[projectIndex].works.firstIndex(where: { $0.id == workID }) else { throw StoreError.workNotFound }
         let source = next[projectIndex].works[workIndex]
-        let existingNames = Set(next[projectIndex].works.map(\.name))
+        let existingNames = Set(next[projectIndex].works.map { $0.name.normalizedForComparison })
         let baseName = "\(source.name) – copie"
         var copyName = baseName
         var number = 2
-        while existingNames.contains(copyName) {
+        while existingNames.contains(copyName.normalizedForComparison) {
             copyName = "\(baseName) \(number)"
             number += 1
         }
@@ -230,6 +250,14 @@ final class ProjectStore: ObservableObject {
         next[projectIndex].works.removeAll { $0.id == workID }
         next[projectIndex].updatedAt = Date()
         try commit(next)
+    }
+
+    private func validateWorkName(_ name: String, in project: ProjectItem) throws {
+        let normalizedName = name.normalizedForComparison
+        guard !normalizedName.isEmpty else { throw StoreError.invalidWorkName }
+        guard !project.works.contains(where: { $0.name.normalizedForComparison == normalizedName }) else {
+            throw StoreError.duplicateWorkName
+        }
     }
 
     private func load() {
@@ -254,9 +282,12 @@ final class ProjectStore: ObservableObject {
         }
     }
 
-    private enum StoreError: Error { case projectNotFound, workNotFound }
+    private enum StoreError: Error { case projectNotFound, workNotFound, invalidWorkName, duplicateWorkName }
 }
 
 private extension String {
     var trimmed: String { trimmingCharacters(in: .whitespacesAndNewlines) }
+    var normalizedForComparison: String {
+        trimmed.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+    }
 }

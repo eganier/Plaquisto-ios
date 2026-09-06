@@ -247,6 +247,15 @@ enum WorkType: String, Codable, CaseIterable, Identifiable {
         case .peripheralLiningBonded: "Doublage périphérique — Complexe collé"
         }
     }
+    var defaultNameBase: String {
+        switch self {
+        case .ceilingOnFurring: "Plafond sur fourrures"
+        case .peripheralLiningStuds: "Doublage périphérique sur rails et montants"
+        case .distributionPartition: "Cloison de distribution"
+        case .alveolarPartition: "Cloison de distribution alvéolaire"
+        case .peripheralLiningBonded: "Doublage périphérique en complexe collé"
+        }
+    }
 }
 
 enum WorkConfiguration: Codable, Equatable {

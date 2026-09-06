@@ -50,6 +50,29 @@ final class ProjectStoreTests: XCTestCase {
         XCTAssertEqual(works.first?.ceilingConfiguration?.length, 12)
     }
 
+    func testDefaultWorkNameUsesTheFirstAvailableNumber() throws {
+        let fileURL = FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: fileURL) }
+        let store = ProjectStore(fileURL: fileURL)
+        let projectID = try store.createProject(name: "Test", client: "", address: "", notes: "")
+        _ = try store.createWork(projectID: projectID, name: "Plafond sur fourrures 1", type: .ceilingOnFurring, configuration: CeilingConfiguration())
+
+        XCTAssertEqual(store.defaultWorkName(projectID: projectID, type: .ceilingOnFurring), "Plafond sur fourrures 2")
+    }
+
+    func testDuplicateWorkNamesAreRejectedIgnoringCaseAndAccents() throws {
+        let fileURL = FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: fileURL) }
+        let store = ProjectStore(fileURL: fileURL)
+        let projectID = try store.createProject(name: "Test", client: "", address: "", notes: "")
+        _ = try store.createWork(projectID: projectID, name: "Cloison séjour", type: .distributionPartition, cloisonDistributionConfiguration: CloisonDistributionConfiguration())
+
+        XCTAssertTrue(store.workNameExists(projectID: projectID, name: "  CLOISON SEJOUR  "))
+        XCTAssertThrowsError(
+            try store.createWork(projectID: projectID, name: "Cloison sejour", type: .distributionPartition, cloisonDistributionConfiguration: CloisonDistributionConfiguration())
+        )
+    }
+
     func testDuplicatingAWorkCopiesItsConfigurationWithANewIdentity() throws {
         let fileURL = FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID().uuidString).json")
         defer { try? FileManager.default.removeItem(at: fileURL) }

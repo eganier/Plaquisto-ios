@@ -224,6 +224,15 @@ struct CeilingConfiguratorView: View {
     private var belowStructureTitle: String {
         isSlopedCeiling ? "Sous les chevrons" : "Sous les solives"
     }
+    private var isWoodSupport: Bool {
+        let normalizedSupport = support.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+        return normalizedSupport.contains("bois") || normalizedSupport.contains("solive")
+    }
+    private var plenumSectionTitle: String {
+        guard isWoodSupport else { return "Plénum" }
+        let structure = isSlopedCeiling ? "chevrons" : "solives"
+        return "Plénum (entre la partie basse des \(structure) et la partie supérieure du BA13)"
+    }
     private var insulationBelowStructureMM: Double {
         guard !insulationID.isEmpty else { return 0 }
         let first = firstInsulationLocation == "below" ? insulationThickness : 0
@@ -297,7 +306,7 @@ struct CeilingConfiguratorView: View {
 
         for (index, component) in selectedComponents.enumerated() {
             var quantity = fixingSystemCount * component.quantity
-            if component.calculation == "plenum_m" { quantity *= plenum / 100 }
+            if component.calculation == "plenum_m" { quantity *= (plenum + 5) / 100 }
             result.append(Supply(id: "FIX-\(index)-\(component.name)", name: component.name, quantity: quantity, unit: component.unit))
         }
         return result
@@ -591,10 +600,12 @@ struct CeilingConfiguratorView: View {
             }
 
         case 3:
-            Section("Plénum") {
+            Section {
                 LabeledContent("Plénum minimal calculé", value: "\(format(minimumPlenum)) cm")
                 MeasureField(label: "Marge supplémentaire", value: additionalPlenumBinding, unit: "cm")
                 LabeledContent("Plénum retenu", value: "\(format(plenum)) cm")
+            } header: {
+                Text(plenumSectionTitle)
             }
             Section {
                 Label("Le plénum minimal intègre l’épaisseur des couches d’isolant placées sous la structure. Vous pouvez ajouter une marge pour le passage de gaines, de canalisations ou l’installation de spots.", systemImage: "info.circle")
@@ -1062,7 +1073,7 @@ struct CeilingConfiguratorView: View {
     }
 
     private func componentDescription(_ component: FixingComponent) -> String {
-        component.calculation == "plenum_m" ? "selon le plénum · ml" : "\(format(component.quantity)) \(component.unit) par système"
+        component.calculation == "plenum_m" ? "selon le plénum + 5 cm · ml" : "\(format(component.quantity)) \(component.unit) par système"
     }
 
     private func format(_ value: Double) -> String {
