@@ -71,6 +71,7 @@ struct DoublageConfiguration: Codable, Equatable {
     var height: Double = 0
     var enteredLength: Double = 0
     var enteredSurface: Double = 0
+    var wallCount: Int? = nil
     var layers = 1
     var firstSkin: [DoublageFacingSelection] = []
     var secondSkin: [DoublageFacingSelection] = []
@@ -89,6 +90,24 @@ struct DoublageConfiguration: Codable, Equatable {
     var quantities: [DoublageQuantity] = []
 
     var area: Double { geometryMode == "surface" ? enteredSurface : enteredLength * height }
+}
+
+enum DoublageStudCalculator {
+    static func studAxes(length: Double, spacing: Double, wallCount: Int) -> Int {
+        guard length > 0, spacing > 0, wallCount > 0 else { return 0 }
+        let baysPerWall = Int(ceil((length / Double(wallCount)) / spacing))
+        return wallCount * (baysPerWall + 1)
+    }
+
+    static func studs(length: Double, spacing: Double, wallCount: Int, doubled: Bool) -> Int {
+        guard length > 0, spacing > 0, wallCount > 0 else { return 0 }
+        let baysPerWall = Int(ceil((length / Double(wallCount)) / spacing))
+        if !doubled { return wallCount * (baysPerWall + 1) }
+
+        // Les deux extrémités de chaque mur restent simples. Seuls les montants intérieurs sont doublés.
+        let studsPerWall = 2 + max(0, baysPerWall - 1) * 2
+        return wallCount * studsPerWall
+    }
 }
 
 struct CloisonFacingSelection: Identifiable, Codable, Equatable, Hashable {

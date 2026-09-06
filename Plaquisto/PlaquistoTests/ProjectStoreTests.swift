@@ -288,4 +288,15 @@ final class ProjectStoreTests: XCTestCase {
         XCTAssertEqual(WorkType.alveolarPartition.category, .partitions)
         XCTAssertEqual(WorkCategory.allCases.count, 4)
     }
+
+    func testDoublageStudCountIncludesEveryWallEnd() {
+        XCTAssertEqual(DoublageStudCalculator.studs(length: 4, spacing: 0.6, wallCount: 1, doubled: false), 8)
+        XCTAssertEqual(DoublageStudCalculator.studs(length: 4, spacing: 0.6, wallCount: 4, doubled: false), 12)
+    }
+
+    func testDoublageDoubleStudsKeepWallEndsSingle() {
+        // Pour quatre murs estimés à 1 m : 3 axes par mur, soit 2 montants simples aux extrémités et 2 au centre.
+        XCTAssertEqual(DoublageStudCalculator.studs(length: 4, spacing: 0.6, wallCount: 4, doubled: true), 16)
+        XCTAssertEqual(DoublageStudCalculator.studAxes(length: 4, spacing: 0.6, wallCount: 4), 12)
+    }
 }

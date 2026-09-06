@@ -18,6 +18,7 @@ struct DoublageConfiguratorView: View {
     @State private var height = 0.0
     @State private var enteredLength = 0.0
     @State private var enteredSurface = 0.0
+    @State private var wallCount = 4
     @State private var skinCount = SkinCount.single
     @State private var firstSkin = [FacingAllocation()]
     @State private var secondSkin = [FacingAllocation()]
@@ -49,6 +50,7 @@ struct DoublageConfiguratorView: View {
         _height = State(initialValue: configuration.height)
         _enteredLength = State(initialValue: configuration.enteredLength)
         _enteredSurface = State(initialValue: configuration.enteredSurface)
+        _wallCount = State(initialValue: max(1, configuration.wallCount ?? 4))
         _skinCount = State(initialValue: configuration.layers == 2 ? .double : .single)
         _firstSkin = State(initialValue: configuration.firstSkin.isEmpty ? [FacingAllocation()] : configuration.firstSkin)
         _secondSkin = State(initialValue: configuration.secondSkin.isEmpty ? [FacingAllocation()] : configuration.secondSkin)
@@ -86,7 +88,7 @@ struct DoublageConfiguratorView: View {
     private var frameIsAccepted: Bool { maxHeight >= height || (intermediateSupports && maxHeight > 0) }
     private var canContinue: Bool {
         switch step {
-        case 1: return height > 0 && (geometryMode == .length ? enteredLength > 0 : enteredSurface > 0)
+        case 1: return height > 0 && wallCount > 0 && (geometryMode == .length ? enteredLength > 0 : enteredSurface > 0)
         case 2: return allocationsAreComplete && !performanceGroupIDs.isEmpty
         case 3: return frameIsAccepted
         case 4: return !insulationEnabled || insulationSelectionIsComplete(firstInsulation) && (insulationLayerCount == .single || insulationSelectionIsComplete(secondInsulation))
@@ -177,11 +179,13 @@ struct DoublageConfiguratorView: View {
                 Divider()
                 if geometryMode == .length { DecimalRow("Longueur du doublage (périmètre)", value: $enteredLength, unit: "m") }
                 else { DecimalRow("Surface totale", value: $enteredSurface, unit: "m²") }
+                Divider()
+                IntegerRow("Nombre de murs (facultatif)", value: $wallCount)
             }
             card {
                 LabeledContent(geometryMode == .length ? "Surface calculée" : "Longueur calculée", value: format(geometryMode == .length ? actualArea : actualLength, geometryMode == .length ? "m²" : "m"))
             }
-            Text("La hauteur sous plafond est obligatoire. Renseignez ensuite soit la longueur du doublage, soit sa surface totale.").font(.footnote).foregroundStyle(.secondary)
+            Text("La hauteur sous plafond est obligatoire. Renseignez ensuite soit la longueur du doublage, soit sa surface totale. Le nombre de murs est prérempli à 4 pour tenir compte des montants placés aux extrémités de chaque mur.").font(.footnote).foregroundStyle(.secondary)
         }
     }
 
@@ -371,6 +375,7 @@ struct DoublageConfiguratorView: View {
                 LabeledContent("Technique", value: technique)
                 Divider(); LabeledContent("Ossature", value: frameDisplayName(frame))
                 Divider(); LabeledContent("Montage", value: mounting.rawValue)
+                Divider(); LabeledContent("Nombre de murs", value: "\(wallCount)")
                 Divider(); LabeledContent("Appuis intermédiaires", value: intermediateSupports ? "Oui" : "Non")
                 Divider(); LabeledContent("Isolation", value: insulationEnabled ? insulationLayerCount.rawValue : "Non")
                 if insulationEnabled { Divider(); LabeledContent("Résistance thermique totale", value: "R = \(thermalResistanceTotal.formatted(.number.precision(.fractionLength(2)))) m²·K/W") }
@@ -391,8 +396,13 @@ struct DoublageConfiguratorView: View {
     private var resultRows: [(String, String)] {
         guard actualArea > 0, actualLength > 0, height > 0, let table = references.quantityTable else { return [] }
         let rails = 2 * actualLength * 1.05
-        let bays = ceil(actualLength / spacing)
-        let studs = (mounting == .simple ? bays + 1 : 2 * bays) * height * 1.05
+        let studCount = DoublageStudCalculator.studs(
+            length: actualLength,
+            spacing: spacing,
+            wallCount: wallCount,
+            doubled: mounting == .double
+        )
+        let studs = Double(studCount) * height * 1.05
         var rows = allocationRows(firstSkin, skinName: "1re peau")
         if skinCount == .double {
             rows += allocationRows(secondSkin, skinName: "2e peau")
@@ -416,7 +426,7 @@ struct DoublageConfiguratorView: View {
             if let value = table.trpf13[key] { rows.append(("Vis TRPF 13", format(actualArea * value, "unités", rounded: true))) }
         }
         if intermediateSupports, maxHeight > 0 {
-            let supportsPerLine = Int(ceil((rails / 2) / spacing))
+            let supportsPerLine = DoublageStudCalculator.studAxes(length: actualLength, spacing: spacing, wallCount: wallCount)
             let lines = max(1, Int(ceil(height / maxHeight)) - 1)
             rows.append(("Appuis intermédiaires pour montant sur mur support", "\(supportsPerLine * lines) unités"))
         }
@@ -728,6 +738,7 @@ struct DoublageConfiguratorView: View {
             height: height,
             enteredLength: enteredLength,
             enteredSurface: enteredSurface,
+            wallCount: wallCount,
             layers: skinCount == .double ? 2 : 1,
             firstSkin: firstSkin,
             secondSkin: skinCount == .double ? secondSkin : [],
@@ -756,7 +767,7 @@ struct DoublageConfiguratorView: View {
     }
 
     private func reset() {
-        step = 1; geometryMode = .length; height = 0; enteredLength = 0; enteredSurface = 0
+        step = 1; geometryMode = .length; height = 0; enteredLength = 0; enteredSurface = 0; wallCount = 4
         skinCount = .single; firstSkin = [FacingAllocation()]; secondSkin = [FacingAllocation()]
         technique = "Rails et montants"; frame = "R48 + M48"; mounting = .simple; spacing = 0.6
         intermediateSupports = false; insulationEnabled = true; insulationLayerCount = .single
@@ -800,6 +811,27 @@ private struct DecimalRow: View {
             Text(title); Spacer()
             TextField("0", value: $value, format: .number.precision(.fractionLength(0...2))).keyboardType(.decimalPad).multilineTextAlignment(.trailing).frame(maxWidth: 86)
             Text(unit).foregroundStyle(.secondary)
+        }
+    }
+}
+
+private struct IntegerRow: View {
+    let title: String
+    @Binding var value: Int
+
+    init(_ title: String, value: Binding<Int>) {
+        self.title = title
+        _value = value
+    }
+
+    var body: some View {
+        HStack {
+            Text(title)
+            Spacer()
+            TextField("4", value: $value, format: .number)
+                .keyboardType(.numberPad)
+                .multilineTextAlignment(.trailing)
+                .frame(maxWidth: 86)
         }
     }
 }
