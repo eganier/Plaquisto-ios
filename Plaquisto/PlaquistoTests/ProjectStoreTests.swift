@@ -299,4 +299,36 @@ final class ProjectStoreTests: XCTestCase {
         XCTAssertEqual(DoublageStudCalculator.studs(length: 4, spacing: 0.6, wallCount: 4, doubled: true), 16)
         XCTAssertEqual(DoublageStudCalculator.studAxes(length: 4, spacing: 0.6, wallCount: 4), 12)
     }
+
+    func testFurringLiningCalculatesAxesAndIntermediateSupportLines() {
+        XCTAssertEqual(FurringLiningCalculator.furringAxes(length: 20, spacing: 0.6, wallCount: 4), 40)
+        XCTAssertEqual(FurringLiningCalculator.recommendedSupportLines(height: 2.62, maximumSpacing: 1.3), 2)
+    }
+
+    func testFurringLiningSurvivesReloadAndDuplication() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let fileURL = directory.appendingPathComponent("projects.json")
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let store = ProjectStore(fileURL: fileURL)
+        let projectID = try store.createProject(name: "Maison", client: "", address: "", notes: "")
+        var configuration = FurringLiningConfiguration()
+        configuration.height = 2.62
+        configuration.enteredLength = 20
+        configuration.wallCount = 4
+        configuration.selectedSupportLines = 2
+        configuration.quantities = [DoublageQuantity(name: "Fourrures", quantity: 100.8, unit: "ml")]
+        let workID = try store.createWork(
+            projectID: projectID,
+            name: "Doublage séjour",
+            type: .peripheralLiningFurrings,
+            furringLiningConfiguration: configuration
+        )
+        let copyID = try store.duplicateWork(projectID: projectID, workID: workID)
+
+        let reloaded = ProjectStore(fileURL: fileURL)
+        let works = try XCTUnwrap(reloaded.project(id: projectID)?.works)
+        XCTAssertEqual(works.first(where: { $0.id == workID })?.furringLiningConfiguration, configuration)
+        XCTAssertEqual(works.first(where: { $0.id == copyID })?.furringLiningConfiguration, configuration)
+    }
 }

@@ -403,6 +403,11 @@ private struct SavedWorkView: View {
                     do { try store.updateWork(currentWork, bondedLiningConfiguration: configuration) }
                     catch { errorMessage = "Les modifications n’ont pas pu être enregistrées." }
                 }
+            case .peripheralLiningFurrings:
+                FurringLiningConfiguratorHost(initialConfiguration: currentWork.furringLiningConfiguration, startsAtResult: true) { configuration in
+                    do { try store.updateWork(currentWork, furringLiningConfiguration: configuration) }
+                    catch { errorMessage = "Les modifications n’ont pas pu être enregistrées." }
+                }
             }
         }
         .navigationTitle(currentWork.name)
@@ -438,6 +443,10 @@ private struct WorkConfiguratorContainer: View {
                 case .peripheralLiningBonded:
                     BondedLiningConfiguratorHost(showsCloseButton: false) { configuration in
                         save(bondedLiningConfiguration: configuration)
+                    }
+                case .peripheralLiningFurrings:
+                    FurringLiningConfiguratorHost(showsCloseButton: false) { configuration in
+                        save(furringLiningConfiguration: configuration)
                     }
                 }
             }
@@ -487,6 +496,13 @@ private struct WorkConfiguratorContainer: View {
     private func save(bondedLiningConfiguration: BondedLiningConfiguration) {
         do {
             _ = try store.createWork(projectID: projectID, name: workName, type: workType, bondedLiningConfiguration: bondedLiningConfiguration)
+            finish()
+        } catch { errorMessage = "L’ouvrage n’a pas pu être enregistré." }
+    }
+
+    private func save(furringLiningConfiguration: FurringLiningConfiguration) {
+        do {
+            _ = try store.createWork(projectID: projectID, name: workName, type: workType, furringLiningConfiguration: furringLiningConfiguration)
             finish()
         } catch { errorMessage = "L’ouvrage n’a pas pu être enregistré." }
     }
@@ -611,6 +627,25 @@ private struct BondedLiningConfiguratorHost: View {
         BondedLiningConfiguratorView(initialConfiguration: initialConfiguration, startsAtResult: startsAtResult, onSave: onSave, onClose: { dismiss() }, showsCloseButton: showsCloseButton)
             .environmentObject(references)
             .task { if references.references.isEmpty { await references.load() } }
+    }
+}
+
+private struct FurringLiningConfiguratorHost: View {
+    @Environment(\.dismiss) private var dismiss
+    @StateObject private var references = FurringLiningReferenceStore()
+    let initialConfiguration: FurringLiningConfiguration?
+    let startsAtResult: Bool
+    let showsCloseButton: Bool
+    let onSave: (FurringLiningConfiguration) -> Void
+
+    init(initialConfiguration: FurringLiningConfiguration? = nil, startsAtResult: Bool = false, showsCloseButton: Bool = true, onSave: @escaping (FurringLiningConfiguration) -> Void) {
+        self.initialConfiguration = initialConfiguration; self.startsAtResult = startsAtResult; self.showsCloseButton = showsCloseButton; self.onSave = onSave
+    }
+
+    var body: some View {
+        FurringLiningConfiguratorView(initialConfiguration: initialConfiguration, startsAtResult: startsAtResult, onSave: onSave, onClose: { dismiss() }, showsCloseButton: showsCloseButton)
+            .environmentObject(references)
+            .task { if references.payload == nil { await references.load() } }
     }
 }
 

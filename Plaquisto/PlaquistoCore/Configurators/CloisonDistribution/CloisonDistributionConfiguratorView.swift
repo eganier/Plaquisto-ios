@@ -44,6 +44,8 @@ struct CloisonDistributionConfiguratorView: View {
     @State private var mounting = StudMounting.simple
     @State private var selectedFrame = "R48 + M48/35"
     @State private var spacing = 0.60
+    @State private var tiledArea = false
+    @State private var tiledAreaSurface = 0.0
     @State private var systemID = ""
     @State private var insulationEnabled = true
     @State private var insulationID = ""
@@ -76,6 +78,8 @@ struct CloisonDistributionConfiguratorView: View {
         _mounting = State(initialValue: configuration.doubledStuds ? .double : .simple)
         _selectedFrame = State(initialValue: configuration.frame)
         _spacing = State(initialValue: configuration.spacing)
+        _tiledArea = State(initialValue: configuration.tiledArea ?? false)
+        _tiledAreaSurface = State(initialValue: configuration.tiledAreaSurface ?? (configuration.tiledArea == true ? configuration.area : 0))
         _insulationEnabled = State(initialValue: configuration.insulationEnabled)
         _insulationID = State(initialValue: configuration.insulationID)
         _insulationThicknessMM = State(initialValue: configuration.insulationThicknessMM)
@@ -132,6 +136,23 @@ struct CloisonDistributionConfiguratorView: View {
         "\(mounting == .simple ? "simple" : "double")_\(spacing < 0.5 ? "040" : "060")"
     }
 
+    private var tiledAreaRequiresReducedSpacing: Bool {
+        guard tiledArea, tiledAreaSurface > 0, skinCount == .single else { return false }
+        let selections = faceAFirst + faceBFirst
+        return selections.contains { allocation in
+            guard let family = facing(allocation)?.family else { return false }
+            return references.tiledAreaSingleFacingFamilies.contains(family)
+        }
+    }
+
+    private var availableSpacings: [Double] {
+        [0.40, 0.60]
+    }
+
+    private var effectiveTiledArea: Double { tiledArea ? min(max(tiledAreaSurface, 0), actualArea) : 0 }
+    private var nonTiledArea: Double { max(0, actualArea - effectiveTiledArea) }
+    private var tiledAreaSurfaceIsValid: Bool { !tiledArea || (tiledAreaSurface > 0 && tiledAreaSurface <= actualArea + 0.001) }
+
     private var selectedFrameWidthMM: Int {
         references.systems.first(where: { $0.frame == selectedFrame })?.frameWidthMM ?? 48
     }
@@ -168,7 +189,7 @@ struct CloisonDistributionConfiguratorView: View {
         case 1:
             return height > 0 && (geometryMode == .length ? enteredLength > 0 : enteredSurface > 0)
         case 2:
-            return availableFrames.contains(selectedFrame)
+            return availableFrames.contains(selectedFrame) && tiledAreaSurfaceIsValid
         case 3:
             return allRequiredLayersAreComplete
         case 4:
@@ -203,6 +224,7 @@ struct CloisonDistributionConfiguratorView: View {
         .onChange(of: selectedFrame) { _, _ in normalizeSystem() }
         .onChange(of: mounting) { _, _ in normalizeSystem() }
         .onChange(of: spacing) { _, _ in normalizeSystem() }
+        .onChange(of: tiledArea) { _, enabled in if !enabled { tiledAreaSurface = 0 } }
         .onChange(of: systemID) { _, _ in normalizeInsulation() }
         .onChange(of: insulationID) { _, _ in normalizeInsulationThickness() }
         .alert("Hauteur de plaque insuffisante", isPresented: $showPlateHeightWarning) {
@@ -345,9 +367,11 @@ struct CloisonDistributionConfiguratorView: View {
                 Divider()
                 LabeledContent("Ossature retenue", value: selectedSystem?.frame ?? selectedFrame)
                 Divider()
-                LabeledContent("Entraxe", value: "\(Int(spacing * 100)) cm")
+                LabeledContent("Entraxe courant", value: "\(Int(spacing * 100)) cm")
                 Divider()
                 LabeledContent("Montage", value: mounting.rawValue)
+                Divider()
+                LabeledContent("Surface carrelée", value: tiledArea ? format(effectiveTiledArea, "m²") : "Non")
                 Divider()
                 LabeledContent("Épaisseur totale de la cloison", value: selectedSystem.map { "\($0.totalThicknessMM) mm" } ?? "—")
                 Divider()
@@ -477,13 +501,30 @@ struct CloisonDistributionConfiguratorView: View {
                 }
                 Divider()
                 Picker("Entraxe des montants", selection: $spacing) {
-                    Text("40 cm").tag(0.40)
-                    Text("60 cm").tag(0.60)
+                    ForEach(availableSpacings, id: \.self) { value in
+                        Text("\(Int(value * 100)) cm").tag(value)
+                    }
                 }
                 Divider()
                 Picker("Montage des montants", selection: $mounting) {
                     ForEach(StudMounting.allCases) { Text($0.rawValue).tag($0) }
                 }
+                Divider()
+                Toggle("Une partie de la surface sera carrelée", isOn: $tiledArea)
+                if tiledArea {
+                    Divider()
+                    LabDecimalRow("Surface carrelée", value: $tiledAreaSurface, unit: "m²")
+                }
+            }
+
+            if tiledArea {
+                info("Avec un parement simple BA13 ou BA15, la surface carrelée sera réalisée avec des montants espacés de 40 cm au lieu de 60 cm. Le reste de l’ouvrage conserve son entraxe normal.", icon: "square.grid.3x3.fill", color: .orange)
+            }
+
+            if tiledAreaRequiresReducedSpacing {
+                warning("Les \(format(effectiveTiledArea, "m²")) carrelés seront calculés avec un entraxe de 40 cm. Les \(format(nonTiledArea, "m²")) restants conservent l’entraxe de \(Int(spacing * 100)) cm.")
+            } else if tiledArea && !tiledAreaSurfaceIsValid {
+                warning("La surface carrelée doit être supérieure à 0 m² et ne peut pas dépasser la surface de l’ouvrage.")
             }
 
             if let range = preliminaryHeightRange {
@@ -580,7 +621,9 @@ struct CloisonDistributionConfiguratorView: View {
                 Divider()
                 LabeledContent("Montants", value: mounting.rawValue)
                 Divider()
-                LabeledContent("Entraxe", value: "\(Int(spacing * 100)) cm")
+                LabeledContent("Entraxe courant", value: "\(Int(spacing * 100)) cm")
+                Divider()
+                LabeledContent("Surface carrelée", value: tiledArea ? format(effectiveTiledArea, "m²") : "Non")
                 Divider()
                 LabeledContent("Isolation", value: insulationEnabled ? insulationSummary : "Non")
             }
@@ -624,12 +667,12 @@ struct CloisonDistributionConfiguratorView: View {
         let railFactor = table.coefficients[skinCount == .single ? "rail_simple_skin_ml_m2" : "rail_double_skin_ml_m2"] ?? 0
 
         rows.append(("Rails R\(selectedFrameWidthMM)", format(actualArea * railFactor, "ml")))
-        rows.append(("Montants \(selectedStudName)", format(actualArea * (table.studs[studKey] ?? 0), "ml")))
-        rows.append(("Vis TTPC 25 ou 35", format(actualArea * (table.firstLayerScrews[detailKey] ?? 0), "unités", rounded: true)))
+        rows.append(("Montants \(selectedStudName)", format(mixedSpacingQuantity(table.studs, standardKey: studKey, layerKey: nil, mountingKey: mountingKey), "ml")))
+        rows.append(("Vis TTPC 25 ou 35", format(mixedSpacingQuantity(table.firstLayerScrews, standardKey: detailKey, layerKey: layerKey, mountingKey: mountingKey), "unités", rounded: true)))
         if skinCount == .double {
-            rows.append(("Vis TTPC 45", format(actualArea * (table.secondLayerScrews[detailKey] ?? 0), "unités", rounded: true)))
+            rows.append(("Vis TTPC 45", format(mixedSpacingQuantity(table.secondLayerScrews, standardKey: detailKey, layerKey: layerKey, mountingKey: mountingKey), "unités", rounded: true)))
         }
-        rows.append(("Vis TRPF 13", format(actualArea * (table.frameScrews[detailKey] ?? 0), "unités", rounded: true)))
+        rows.append(("Vis TRPF 13", format(mixedSpacingQuantity(table.frameScrews, standardKey: detailKey, layerKey: layerKey, mountingKey: mountingKey), "unités", rounded: true)))
 
         if insulationEnabled {
             rows.append(("Isolation · \(insulationSummary)", format(actualArea * (table.coefficients["insulation_m2_m2"] ?? 1.10), "m²")))
@@ -641,6 +684,19 @@ struct CloisonDistributionConfiguratorView: View {
             rows.append((compound.rawValue, format(actualArea * (table.coefficients[compoundKey] ?? 0), "kg")))
         }
         return rows
+    }
+
+    private func mixedSpacingQuantity(
+        _ coefficients: [String: Double],
+        standardKey: String,
+        layerKey: String?,
+        mountingKey: String
+    ) -> Double {
+        let standardValue = coefficients[standardKey] ?? 0
+        guard tiledAreaRequiresReducedSpacing, spacing > references.tiledAreaMaximumSpacing else { return actualArea * standardValue }
+        let tiledKey = layerKey.map { "\($0)_0.40_\(mountingKey)" } ?? "0.40_\(mountingKey)"
+        let tiledValue = coefficients[tiledKey] ?? standardValue
+        return nonTiledArea * standardValue + effectiveTiledArea * tiledValue
     }
 
     private func appendCombinedFacingRows(
@@ -889,6 +945,8 @@ struct CloisonDistributionConfiguratorView: View {
             frame: selectedFrame,
             doubledStuds: mounting == .double,
             spacing: spacing,
+            tiledArea: tiledArea,
+            tiledAreaSurface: tiledArea ? effectiveTiledArea : nil,
             insulationEnabled: insulationEnabled,
             insulationID: insulationID,
             insulationThicknessMM: insulationThicknessMM,
@@ -920,6 +978,8 @@ struct CloisonDistributionConfiguratorView: View {
         mounting = .simple
         selectedFrame = "R48 + M48/35"
         spacing = 0.60
+        tiledArea = false
+        tiledAreaSurface = 0
         systemID = ""
         insulationEnabled = true
         insulationID = ""

@@ -10,6 +10,7 @@ struct DoublageReferenceRecord: Codable, Identifiable {
 struct DoublageCataloguePayload: Codable {
     let version: String
     let doublage: DoublagePayload?
+    let doublageFourrures: FurringLiningPayload?
 }
 
 struct DoublagePayload: Codable {
@@ -145,6 +146,14 @@ final class DoublageReferenceStore: ObservableObject {
     private let endpoint = URL(string: "https://plaquisto-admin.vercel.app/api/ios/catalogue")!
     private let cacheKey = "plaquisto.catalogue.doublage.v3"
     private let legacyCacheKey = "plaquisto.lab.catalogue.doublage.v3"
+
+    var tiledAreaMaximumSpacing: Double {
+        catalogue?.doublage?.performance?.data["tiled_area_rule"]?.object?["maximum_spacing_m"]?.number ?? 0.40
+    }
+
+    var tiledAreaSingleFacingFamilies: Set<String> {
+        Set(catalogue?.doublage?.performance?.data["tiled_area_rule"]?.object?["single_facing_families"]?.array?.compactMap(\.string) ?? ["BA13", "BA15"])
+    }
 
     var insulationFamilies: [DoublageInsulationFamily] {
         (catalogue?.doublage?.isolants ?? []).compactMap { record in

@@ -18,6 +18,7 @@ struct DoublageConfiguratorView: View {
     @State private var height = 0.0
     @State private var enteredLength = 0.0
     @State private var enteredSurface = 0.0
+    @State private var specifiesWallCount = true
     @State private var wallCount = 4
     @State private var skinCount = SkinCount.single
     @State private var firstSkin = [FacingAllocation()]
@@ -26,6 +27,8 @@ struct DoublageConfiguratorView: View {
     @State private var frame = "R48 + M48"
     @State private var mounting = StudMounting.simple
     @State private var spacing = 0.6
+    @State private var tiledArea = false
+    @State private var tiledAreaSurface = 0.0
     @State private var intermediateSupports = false
     @State private var insulationEnabled = true
     @State private var insulationLayerCount = InsulationLayerCount.single
@@ -50,6 +53,7 @@ struct DoublageConfiguratorView: View {
         _height = State(initialValue: configuration.height)
         _enteredLength = State(initialValue: configuration.enteredLength)
         _enteredSurface = State(initialValue: configuration.enteredSurface)
+        _specifiesWallCount = State(initialValue: initialConfiguration == nil || configuration.wallCount != nil)
         _wallCount = State(initialValue: max(1, configuration.wallCount ?? 4))
         _skinCount = State(initialValue: configuration.layers == 2 ? .double : .single)
         _firstSkin = State(initialValue: configuration.firstSkin.isEmpty ? [FacingAllocation()] : configuration.firstSkin)
@@ -58,6 +62,8 @@ struct DoublageConfiguratorView: View {
         _frame = State(initialValue: configuration.frame)
         _mounting = State(initialValue: configuration.doubledStuds ? .double : .simple)
         _spacing = State(initialValue: configuration.spacing)
+        _tiledArea = State(initialValue: configuration.tiledArea ?? false)
+        _tiledAreaSurface = State(initialValue: configuration.tiledAreaSurface ?? (configuration.tiledArea == true ? configuration.area : 0))
         _intermediateSupports = State(initialValue: configuration.intermediateSupports)
         _insulationEnabled = State(initialValue: configuration.insulationEnabled)
         _insulationLayerCount = State(initialValue: configuration.insulationLayers == 2 ? .double : .single)
@@ -75,21 +81,34 @@ struct DoublageConfiguratorView: View {
     private var insulationFamilies: [DoublageInsulationFamily] { references.insulationFamilies }
     private var actualLength: Double { geometryMode == .length ? enteredLength : (height > 0 ? enteredSurface / height : 0) }
     private var actualArea: Double { geometryMode == .surface ? enteredSurface : enteredLength * height }
+    private var calculationWallCount: Int { specifiesWallCount ? wallCount : 1 }
     private var performanceGroupIDs: [String] {
         if skinCount == .single { return Array(Set(firstSkin.compactMap { groupID(first: $0, second: nil) })) }
         return Array(Set(firstSkin.flatMap { first in secondSkin.compactMap { second in groupID(first: first, second: second) } }))
     }
     private var performanceGroups: [DoublagePerformanceGroup] { performanceGroupIDs.compactMap { id in groups.first(where: { $0.id == id }) } }
     private var frames: [String] { Array(Set(performanceGroups.first?.values.map(\.frame) ?? [])).sorted { frameNumber($0) < frameNumber($1) } }
-    private var spacings: [Double] { Array(Set(performanceGroups.first?.values.map(\.spacing) ?? [])).sorted() }
+    private var spacings: [Double] {
+        Array(Set(performanceGroups.first?.values.map(\.spacing) ?? [])).sorted()
+    }
+    private var tiledAreaRequiresReducedSpacing: Bool {
+        guard tiledArea, tiledAreaSurface > 0, skinCount == .single else { return false }
+        return firstSkin.contains { allocation in
+            guard let family = facing(for: allocation)?.mechanicalFamily else { return false }
+            return references.tiledAreaSingleFacingFamilies.contains(family)
+        }
+    }
+    private var effectiveTiledArea: Double { tiledArea ? min(max(tiledAreaSurface, 0), actualArea) : 0 }
+    private var nonTiledArea: Double { max(0, actualArea - effectiveTiledArea) }
+    private var tiledAreaSurfaceIsValid: Bool { !tiledArea || (tiledAreaSurface > 0 && tiledAreaSurface <= actualArea + 0.001) }
     private var maxHeight: Double { maximumHeight(frame: frame) }
     private var isUnavailable: Bool { maxHeight == 0 }
     private var isExceeded: Bool { maxHeight > 0 && height > maxHeight }
     private var frameIsAccepted: Bool { maxHeight >= height || (intermediateSupports && maxHeight > 0) }
     private var canContinue: Bool {
         switch step {
-        case 1: return height > 0 && wallCount > 0 && (geometryMode == .length ? enteredLength > 0 : enteredSurface > 0)
-        case 2: return allocationsAreComplete && !performanceGroupIDs.isEmpty
+        case 1: return height > 0 && (!specifiesWallCount || wallCount > 0) && (geometryMode == .length ? enteredLength > 0 : enteredSurface > 0)
+        case 2: return allocationsAreComplete && !performanceGroupIDs.isEmpty && tiledAreaSurfaceIsValid
         case 3: return frameIsAccepted
         case 4: return !insulationEnabled || insulationSelectionIsComplete(firstInsulation) && (insulationLayerCount == .single || insulationSelectionIsComplete(secondInsulation))
         default: return true
@@ -107,6 +126,7 @@ struct DoublageConfiguratorView: View {
         .onChange(of: skinCount) { _, _ in resetParementsForSkinCount() }
         .onChange(of: firstSkin) { _, _ in normalizeAfterFirstSkinChange() }
         .onChange(of: secondSkin) { _, _ in normalizeSelections() }
+        .onChange(of: tiledArea) { _, enabled in if !enabled { tiledAreaSurface = 0 } }
         .onChange(of: insulationFamilies.count, initial: true) { _, _ in initializeInsulationIfNeeded() }
         .alert("Hauteur de plaque insuffisante", isPresented: $showPlateHeightWarning) {
             Button("Revenir au choix", role: .cancel) {}
@@ -180,12 +200,19 @@ struct DoublageConfiguratorView: View {
                 if geometryMode == .length { DecimalRow("Longueur du doublage (périmètre)", value: $enteredLength, unit: "m") }
                 else { DecimalRow("Surface totale", value: $enteredSurface, unit: "m²") }
                 Divider()
-                IntegerRow("Nombre de murs (facultatif)", value: $wallCount)
+                Toggle("Préciser le nombre de murs", isOn: $specifiesWallCount)
+                if specifiesWallCount {
+                    Divider()
+                    IntegerRow("Nombre de murs", value: $wallCount)
+                }
             }
             card {
                 LabeledContent(geometryMode == .length ? "Surface calculée" : "Longueur calculée", value: format(geometryMode == .length ? actualArea : actualLength, geometryMode == .length ? "m²" : "m"))
             }
-            Text("La hauteur sous plafond est obligatoire. Renseignez ensuite soit la longueur du doublage, soit sa surface totale. Le nombre de murs est prérempli à 4 pour tenir compte des montants placés aux extrémités de chaque mur.").font(.footnote).foregroundStyle(.secondary)
+            Text(specifiesWallCount
+                 ? "La hauteur sous plafond est obligatoire. Le nombre de murs est prérempli à 4 pour tenir compte des montants placés aux extrémités de chaque mur."
+                 : "Le nombre de murs n’est pas renseigné. Le quantitatif des montants sera estimé uniquement à partir de la longueur totale et sera légèrement moins précis.")
+                .font(.footnote).foregroundStyle(.secondary)
         }
     }
 
@@ -194,6 +221,18 @@ struct DoublageConfiguratorView: View {
             sectionTitle("Nombre de peaux")
             card {
                 Picker("Nombre de parements", selection: $skinCount) { ForEach(SkinCount.allCases) { Text($0.rawValue).tag($0) } }.pickerStyle(.segmented)
+                Divider()
+                Toggle("Une partie de la surface sera carrelée", isOn: $tiledArea)
+                if tiledArea {
+                    Divider()
+                    DecimalRow("Surface carrelée", value: $tiledAreaSurface, unit: "m²")
+                }
+            }
+            if tiledArea {
+                info("Avec un parement simple BA13 ou BA15, la surface carrelée sera réalisée avec des montants espacés de 40 cm au lieu de 60 cm. Le reste de l’ouvrage conserve son entraxe normal.", icon: "square.grid.3x3.fill", color: .orange)
+            }
+            if tiledArea && !tiledAreaSurfaceIsValid {
+                Text("La surface carrelée doit être supérieure à 0 m² et ne peut pas dépasser la surface de l’ouvrage.").font(.footnote).foregroundStyle(.red).padding(.horizontal, 12)
             }
             sectionTitle("Première peau")
             ForEach(firstSkin.indices, id: \.self) { index in
@@ -289,6 +328,9 @@ struct DoublageConfiguratorView: View {
                 Divider()
                 Toggle("Ajouter des appuis intermédiaires pour montant sur mur support", isOn: $intermediateSupports)
             }
+            if tiledAreaRequiresReducedSpacing {
+                info("Les \(format(effectiveTiledArea, "m²")) carrelés seront calculés avec un entraxe de 40 cm. Les \(format(nonTiledArea, "m²")) restants conservent l’entraxe de \(Int(spacing * 100)) cm.", icon: "square.grid.3x3.fill", color: .orange)
+            }
             if isUnavailable {
                 warning("La configuration \(frameDisplayName(frame)) n’est pas prévue par le tableau technique pour les parements sélectionnés. Choisissez une autre ossature.")
             } else if intermediateSupports {
@@ -369,13 +411,14 @@ struct DoublageConfiguratorView: View {
 
     private var resultStep: some View {
         VStack(alignment: .leading, spacing: 14) {
-            info("Quantitatif calculé · \(format(actualArea, "m²")) · \(skinCount.rawValue.lowercased()) · entraxe \(Int(spacing * 100)) cm", icon: "checkmark.seal.fill", color: .green)
+            info("Quantitatif calculé · \(format(actualArea, "m²")) · \(skinCount.rawValue.lowercased()) · entraxe courant \(Int(spacing * 100)) cm", icon: "checkmark.seal.fill", color: .green)
             sectionTitle("Configuration retenue")
             card {
                 LabeledContent("Technique", value: technique)
                 Divider(); LabeledContent("Ossature", value: frameDisplayName(frame))
                 Divider(); LabeledContent("Montage", value: mounting.rawValue)
-                Divider(); LabeledContent("Nombre de murs", value: "\(wallCount)")
+                Divider(); LabeledContent("Surface carrelée", value: tiledArea ? format(effectiveTiledArea, "m²") : "Non")
+                Divider(); LabeledContent("Nombre de murs", value: specifiesWallCount ? "\(wallCount)" : "Non renseigné")
                 Divider(); LabeledContent("Appuis intermédiaires", value: intermediateSupports ? "Oui" : "Non")
                 Divider(); LabeledContent("Isolation", value: insulationEnabled ? insulationLayerCount.rawValue : "Non")
                 if insulationEnabled { Divider(); LabeledContent("Résistance thermique totale", value: "R = \(thermalResistanceTotal.formatted(.number.precision(.fractionLength(2)))) m²·K/W") }
@@ -396,12 +439,18 @@ struct DoublageConfiguratorView: View {
     private var resultRows: [(String, String)] {
         guard actualArea > 0, actualLength > 0, height > 0, let table = references.quantityTable else { return [] }
         let rails = 2 * actualLength * 1.05
-        let studCount = DoublageStudCalculator.studs(
+        var studCount = DoublageStudCalculator.studs(
             length: actualLength,
             spacing: spacing,
-            wallCount: wallCount,
+            wallCount: calculationWallCount,
             doubled: mounting == .double
         )
+        if tiledAreaRequiresReducedSpacing && spacing > references.tiledAreaMaximumSpacing {
+            let tiledLength = actualLength * effectiveTiledArea / actualArea
+            let baseBays = Int(ceil(tiledLength / spacing))
+            let tiledBays = Int(ceil(tiledLength / references.tiledAreaMaximumSpacing))
+            studCount += max(0, tiledBays - baseBays) * (mounting == .double ? 2 : 1)
+        }
         let studs = Double(studCount) * height * 1.05
         var rows = allocationRows(firstSkin, skinName: "1re peau")
         if skinCount == .double {
@@ -420,13 +469,12 @@ struct DoublageConfiguratorView: View {
         }
         let mountingKey = mounting == .simple ? "simple" : "double"
         if spacing == 0.4 || spacing == 0.6 {
-            let key = String(format: "%.2f_%@", spacing, mountingKey)
-            if let value = table.ttpc25[key] { rows.append(("Vis TTPC 25", format(actualArea * value, "unités", rounded: true))) }
-            if skinCount == .double, let value = table.ttpc35[key] { rows.append(("Vis TTPC 35", format(actualArea * value, "unités", rounded: true))) }
-            if let value = table.trpf13[key] { rows.append(("Vis TRPF 13", format(actualArea * value, "unités", rounded: true))) }
+            if let value = mixedSpacingQuantity(table.ttpc25, mountingKey: mountingKey) { rows.append(("Vis TTPC 25", format(value, "unités", rounded: true))) }
+            if skinCount == .double, let value = mixedSpacingQuantity(table.ttpc35, mountingKey: mountingKey) { rows.append(("Vis TTPC 35", format(value, "unités", rounded: true))) }
+            if let value = mixedSpacingQuantity(table.trpf13, mountingKey: mountingKey) { rows.append(("Vis TRPF 13", format(value, "unités", rounded: true))) }
         }
         if intermediateSupports, maxHeight > 0 {
-            let supportsPerLine = DoublageStudCalculator.studAxes(length: actualLength, spacing: spacing, wallCount: wallCount)
+            let supportsPerLine = DoublageStudCalculator.studAxes(length: actualLength, spacing: spacing, wallCount: calculationWallCount)
             let lines = max(1, Int(ceil(height / maxHeight)) - 1)
             rows.append(("Appuis intermédiaires pour montant sur mur support", "\(supportsPerLine * lines) unités"))
         }
@@ -436,6 +484,15 @@ struct DoublageConfiguratorView: View {
             rows.append((compound.rawValue, format(actualArea * (table.coefficients[key] ?? 0), "kg")))
         }
         return rows
+    }
+
+    private func mixedSpacingQuantity(_ coefficients: [String: Double], mountingKey: String) -> Double? {
+        let standardKey = String(format: "%.2f_%@", spacing, mountingKey)
+        guard let standardValue = coefficients[standardKey] else { return nil }
+        guard tiledAreaRequiresReducedSpacing, spacing > references.tiledAreaMaximumSpacing else { return actualArea * standardValue }
+        let tiledKey = String(format: "%.2f_%@", references.tiledAreaMaximumSpacing, mountingKey)
+        guard let tiledValue = coefficients[tiledKey] else { return nil }
+        return nonTiledArea * standardValue + effectiveTiledArea * tiledValue
     }
 
     private func allocationRows(_ allocations: [FacingAllocation], skinName: String) -> [(String, String)] {
@@ -738,7 +795,7 @@ struct DoublageConfiguratorView: View {
             height: height,
             enteredLength: enteredLength,
             enteredSurface: enteredSurface,
-            wallCount: wallCount,
+            wallCount: specifiesWallCount ? wallCount : nil,
             layers: skinCount == .double ? 2 : 1,
             firstSkin: firstSkin,
             secondSkin: skinCount == .double ? secondSkin : [],
@@ -746,6 +803,8 @@ struct DoublageConfiguratorView: View {
             frame: frame,
             doubledStuds: mounting == .double,
             spacing: spacing,
+            tiledArea: tiledArea,
+            tiledAreaSurface: tiledArea ? effectiveTiledArea : nil,
             intermediateSupports: intermediateSupports,
             insulationEnabled: insulationEnabled,
             insulationLayers: insulationLayerCount == .double ? 2 : 1,
@@ -767,9 +826,9 @@ struct DoublageConfiguratorView: View {
     }
 
     private func reset() {
-        step = 1; geometryMode = .length; height = 0; enteredLength = 0; enteredSurface = 0; wallCount = 4
+        step = 1; geometryMode = .length; height = 0; enteredLength = 0; enteredSurface = 0; specifiesWallCount = true; wallCount = 4
         skinCount = .single; firstSkin = [FacingAllocation()]; secondSkin = [FacingAllocation()]
-        technique = "Rails et montants"; frame = "R48 + M48"; mounting = .simple; spacing = 0.6
+        technique = "Rails et montants"; frame = "R48 + M48"; mounting = .simple; spacing = 0.6; tiledArea = false; tiledAreaSurface = 0
         intermediateSupports = false; insulationEnabled = true; insulationLayerCount = .single
         firstInsulation = InsulationSelection(); secondInsulation = InsulationSelection(); vaporBarrier = false
         jointTreatment = true; compound = .powder

@@ -46,6 +46,7 @@ struct CeilingConfiguratorView: View {
     @State private var length: Double
     @State private var width: Double
     @State private var enteredArea: Double
+    @State private var specifiesDimensions: Bool
     @State private var ceilingShape: String
     @State private var support: String
     @State private var plenum: Double
@@ -83,6 +84,7 @@ struct CeilingConfiguratorView: View {
         _length = State(initialValue: initialConfiguration.length)
         _width = State(initialValue: initialConfiguration.width)
         _enteredArea = State(initialValue: initialConfiguration.length * initialConfiguration.width)
+        _specifiesDimensions = State(initialValue: initialConfiguration.dimensionsSpecified ?? true)
         _ceilingShape = State(initialValue: initialConfiguration.ceilingShape ?? "horizontal")
         _support = State(initialValue: initialConfiguration.support)
         _plenum = State(initialValue: initialConfiguration.plenum)
@@ -422,11 +424,12 @@ struct CeilingConfiguratorView: View {
             Text("L’entraxe choisi de \(Int(selectedSpacing * 100)) cm dépasse la valeur maximale recommandée de \(Int((maximumSpacing ?? 0) * 100)) cm pour le poids d’isolant retenu. Cette configuration peut ne pas respecter les règles techniques applicables. Souhaitez-vous néanmoins poursuivre ?")
         }
         .alert("Dimensions non renseignées", isPresented: $showDimensionsWarning) {
-            Button("Renseigner les dimensions", role: .cancel) {}
+            Button("Renseigner les dimensions", role: .cancel) { specifiesDimensions = true }
             Button("Continuer avec une estimation") {
                 let side = sqrt(enteredArea)
                 length = side
                 width = side
+                specifiesDimensions = false
                 completeAdvance()
             }
         } message: {
@@ -461,12 +464,17 @@ struct CeilingConfiguratorView: View {
                     }
             }
             Section {
-                MeasureField(label: "Longueur", value: $length, unit: "m")
-                    .onChange(of: length) { _, _ in updateAreaFromDimensions() }
-                MeasureField(label: "Largeur", value: $width, unit: "m")
-                    .onChange(of: width) { _, _ in updateAreaFromDimensions() }
+                Toggle("Préciser la longueur et la largeur", isOn: $specifiesDimensions)
+                if specifiesDimensions {
+                    MeasureField(label: "Longueur", value: $length, unit: "m")
+                        .onChange(of: length) { _, _ in updateAreaFromDimensions() }
+                    MeasureField(label: "Largeur", value: $width, unit: "m")
+                        .onChange(of: width) { _, _ in updateAreaFromDimensions() }
+                }
             } footer: {
-                Text("La longueur et la largeur améliorent la précision des calculs. Si elles sont toutes les deux renseignées, la surface est calculée automatiquement.")
+                Text(specifiesDimensions
+                     ? "La longueur et la largeur améliorent la précision des calculs. Si elles sont toutes les deux renseignées, la surface est calculée automatiquement."
+                     : "La longueur et la largeur ne sont pas renseignées. Plaquisto estimera un ouvrage carré et le quantitatif sera légèrement moins précis.")
             }
 
         case 1:
@@ -838,7 +846,7 @@ struct CeilingConfiguratorView: View {
     }
 
     private func advance() {
-        if step == 0 && (length <= 0 || width <= 0) { showDimensionsWarning = true }
+        if step == 0 && (!specifiesDimensions || length <= 0 || width <= 0) { showDimensionsWarning = true }
         else if step == 2 && isSlopedCeiling && !vaporBarrier { showVaporBarrierWarning = true }
         else if step == 3 && spacingIsAboveRecommendation { showSpacingWarning = true }
         else { completeAdvance() }
@@ -979,6 +987,7 @@ struct CeilingConfiguratorView: View {
         CeilingConfiguration(
             length: length,
             width: width,
+            dimensionsSpecified: specifiesDimensions,
             support: support,
             plenum: plenum,
             vaporBarrier: vaporBarrier,

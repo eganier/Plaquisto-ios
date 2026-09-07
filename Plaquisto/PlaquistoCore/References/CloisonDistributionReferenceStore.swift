@@ -113,6 +113,8 @@ final class CloisonDistributionReferenceStore: ObservableObject {
     @Published private(set) var facings: [CloisonFacingChoice] = []
     @Published private(set) var insulations: [CloisonInsulation] = []
     @Published private(set) var quantities = CloisonQuantityTable(coefficients: [:], studs: [:], firstLayerScrews: [:], secondLayerScrews: [:], frameScrews: [:])
+    @Published private(set) var tiledAreaMaximumSpacing = 0.40
+    @Published private(set) var tiledAreaSingleFacingFamilies: Set<String> = ["BA13", "BA15"]
     @Published private(set) var isLoading = true
     @Published private(set) var error: String?
 
@@ -153,6 +155,9 @@ final class CloisonDistributionReferenceStore: ObservableObject {
         facings = parsedFacings
         insulations = parsedInsulations
         quantities = parsedQuantities
+        let tiledRule = payload.performance?.data["tiled_area_rule"]?.object
+        tiledAreaMaximumSpacing = tiledRule?["maximum_spacing_m"]?.number ?? 0.40
+        tiledAreaSingleFacingFamilies = Set(tiledRule?["single_facing_families"]?.array?.compactMap(\.string) ?? ["BA13", "BA15"])
         return true
     }
 

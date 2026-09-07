@@ -17,6 +17,8 @@ struct FacingSelection: Identifiable, Codable, Equatable {
 struct CeilingConfiguration: Codable, Equatable {
     var length: Double = 0
     var width: Double = 0
+    // Optional so ceilings saved before the explicit dimensions choice remain decodable.
+    var dimensionsSpecified: Bool? = nil
     var support: String = ""
     var plenum: Double = 0
     var vaporBarrier = false
@@ -79,6 +81,9 @@ struct DoublageConfiguration: Codable, Equatable {
     var frame = "R48 + M48"
     var doubledStuds = false
     var spacing: Double = 0.6
+    // Optional so projects saved before the tiled-area rule remain decodable.
+    var tiledArea: Bool? = nil
+    var tiledAreaSurface: Double? = nil
     var intermediateSupports = false
     var insulationEnabled = true
     var insulationLayers = 1
@@ -144,6 +149,9 @@ struct CloisonDistributionConfiguration: Codable, Equatable {
     var frame = "R48 + M48/35"
     var doubledStuds = false
     var spacing: Double = 0.60
+    // Optional so projects saved before the tiled-area rule remain decodable.
+    var tiledArea: Bool? = nil
+    var tiledAreaSurface: Double? = nil
     var insulationEnabled = true
     var insulationID = ""
     var insulationThicknessMM = 0
@@ -225,6 +233,30 @@ struct BondedLiningConfiguration: Codable, Equatable {
     var area: Double { geometryMode == "surface" ? enteredSurface : enteredLength * height }
 }
 
+struct FurringLiningConfiguration: Codable, Equatable {
+    var geometryMode = "length"
+    var height: Double = 0
+    var enteredLength: Double = 0
+    var enteredSurface: Double = 0
+    var wallCount: Int? = nil
+    var layers = 1
+    var firstSkin: [FurringFacingSelection] = []
+    var secondSkin: [FurringFacingSelection] = []
+    var thirdSkin: [FurringFacingSelection] = []
+    var tiledArea = false
+    var tiledAreaSurface: Double = 0
+    var selectedSupportLines = 1
+    var insulationEnabled = true
+    var firstInsulation = FurringInsulationSelection()
+    var vaporBarrier = false
+    var vaporBarrierInstallation = "through_supports"
+    var jointTreatment = true
+    var compoundChoice = "poudre"
+    var quantities: [DoublageQuantity] = []
+
+    var area: Double { geometryMode == "surface" ? enteredSurface : enteredLength * height }
+}
+
 enum WorkCategory: String, Codable, CaseIterable, Identifiable {
     case ceilings = "plafonds"
     case partitions = "cloisons"
@@ -248,12 +280,13 @@ enum WorkType: String, Codable, CaseIterable, Identifiable {
     case distributionPartition = "cloison-de-distribution"
     case alveolarPartition = "cloison-de-distribution-alveolaire"
     case peripheralLiningBonded = "doublage-peripherique-complexe-colle"
+    case peripheralLiningFurrings = "doublage-peripherique-lisses-fourrures"
 
     var id: String { rawValue }
     var category: WorkCategory {
         switch self {
         case .ceilingOnFurring: .ceilings
-        case .peripheralLiningStuds, .peripheralLiningBonded: .wallInsulation
+        case .peripheralLiningStuds, .peripheralLiningBonded, .peripheralLiningFurrings: .wallInsulation
         case .distributionPartition, .alveolarPartition: .partitions
         }
     }
@@ -264,6 +297,7 @@ enum WorkType: String, Codable, CaseIterable, Identifiable {
         case .distributionPartition: "Cloison de distribution — Rails et montants"
         case .alveolarPartition: "Cloison de distribution alvéolaire"
         case .peripheralLiningBonded: "Doublage périphérique — Complexe collé"
+        case .peripheralLiningFurrings: "Doublage périphérique — Lisses et fourrures"
         }
     }
     var defaultNameBase: String {
@@ -273,6 +307,7 @@ enum WorkType: String, Codable, CaseIterable, Identifiable {
         case .distributionPartition: "Cloison de distribution"
         case .alveolarPartition: "Cloison de distribution alvéolaire"
         case .peripheralLiningBonded: "Doublage périphérique en complexe collé"
+        case .peripheralLiningFurrings: "Doublage périphérique sur lisses et fourrures"
         }
     }
 }
@@ -283,9 +318,10 @@ enum WorkConfiguration: Codable, Equatable {
     case distributionPartition(CloisonDistributionConfiguration)
     case alveolarPartition(AlveolarPartitionConfiguration)
     case bondedLining(BondedLiningConfiguration)
+    case furringLining(FurringLiningConfiguration)
 
     private enum CodingKeys: String, CodingKey { case kind, data }
-    private enum Kind: String, Codable { case ceiling, peripheralLining, distributionPartition, alveolarPartition, bondedLining }
+    private enum Kind: String, Codable { case ceiling, peripheralLining, distributionPartition, alveolarPartition, bondedLining, furringLining }
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
@@ -300,6 +336,8 @@ enum WorkConfiguration: Codable, Equatable {
             self = .alveolarPartition(try container.decode(AlveolarPartitionConfiguration.self, forKey: .data))
         case .bondedLining:
             self = .bondedLining(try container.decode(BondedLiningConfiguration.self, forKey: .data))
+        case .furringLining:
+            self = .furringLining(try container.decode(FurringLiningConfiguration.self, forKey: .data))
         }
     }
 
@@ -320,6 +358,9 @@ enum WorkConfiguration: Codable, Equatable {
             try container.encode(configuration, forKey: .data)
         case .bondedLining(let configuration):
             try container.encode(Kind.bondedLining, forKey: .kind)
+            try container.encode(configuration, forKey: .data)
+        case .furringLining(let configuration):
+            try container.encode(Kind.furringLining, forKey: .kind)
             try container.encode(configuration, forKey: .data)
         }
     }
@@ -359,6 +400,11 @@ struct WorkItem: Identifiable, Equatable {
         return configuration
     }
 
+    var furringLiningConfiguration: FurringLiningConfiguration? {
+        guard case .furringLining(let configuration) = payload else { return nil }
+        return configuration
+    }
+
     init(id: UUID, projectID: UUID, name: String, type: WorkType, payload: WorkConfiguration, createdAt: Date, updatedAt: Date) {
         self.id = id
         self.projectID = projectID
@@ -387,6 +433,10 @@ struct WorkItem: Identifiable, Equatable {
 
     init(id: UUID, projectID: UUID, name: String, type: WorkType, bondedLiningConfiguration: BondedLiningConfiguration, createdAt: Date, updatedAt: Date) {
         self.init(id: id, projectID: projectID, name: name, type: type, payload: .bondedLining(bondedLiningConfiguration), createdAt: createdAt, updatedAt: updatedAt)
+    }
+
+    init(id: UUID, projectID: UUID, name: String, type: WorkType, furringLiningConfiguration: FurringLiningConfiguration, createdAt: Date, updatedAt: Date) {
+        self.init(id: id, projectID: projectID, name: name, type: type, payload: .furringLining(furringLiningConfiguration), createdAt: createdAt, updatedAt: updatedAt)
     }
 }
 

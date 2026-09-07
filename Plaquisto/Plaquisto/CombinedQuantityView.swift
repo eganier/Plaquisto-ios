@@ -149,6 +149,11 @@ enum CombinedQuantityCalculator {
                 for item in lining.quantities { add(name: item.name, quantity: item.quantity, unit: item.unit) }
                 continue
             }
+            if work.type == .peripheralLiningFurrings, let lining = work.furringLiningConfiguration {
+                totalArea += lining.area
+                for item in lining.quantities { add(name: item.name, quantity: item.quantity, unit: item.unit) }
+                continue
+            }
             guard let configuration = work.ceilingConfiguration else { continue }
             let area = configuration.length * configuration.width
             totalArea += area
@@ -230,6 +235,7 @@ private extension WorkItem {
         case .distributionPartition: return cloisonDistributionConfiguration?.area ?? 0
         case .alveolarPartition: return alveolarPartitionConfiguration?.area ?? 0
         case .peripheralLiningBonded: return bondedLiningConfiguration?.area ?? 0
+        case .peripheralLiningFurrings: return furringLiningConfiguration?.area ?? 0
         }
     }
 }
