@@ -331,4 +331,31 @@ final class ProjectStoreTests: XCTestCase {
         XCTAssertEqual(works.first(where: { $0.id == workID })?.furringLiningConfiguration, configuration)
         XCTAssertEqual(works.first(where: { $0.id == copyID })?.furringLiningConfiguration, configuration)
     }
+
+    func testAdhesiveFacingSurvivesReloadAndDuplication() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let fileURL = directory.appendingPathComponent("projects.json")
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let store = ProjectStore(fileURL: fileURL)
+        let projectID = try store.createProject(name: "Maison", client: "", address: "", notes: "")
+        var configuration = AdhesiveFacingConfiguration()
+        configuration.height = 2.5
+        configuration.enteredLength = 8
+        configuration.facingFamily = "BA13"
+        configuration.facingFunctionID = "FACING-BA13-STANDARD"
+        configuration.quantities = [AdhesiveFacingQuantity(name: "Mortier adhésif", quantity: 36, unit: "kg")]
+        let workID = try store.createWork(
+            projectID: projectID,
+            name: "Parement collé séjour",
+            type: .peripheralLiningAdhesiveFacing,
+            adhesiveFacingConfiguration: configuration
+        )
+        let copyID = try store.duplicateWork(projectID: projectID, workID: workID)
+
+        let reloaded = ProjectStore(fileURL: fileURL)
+        let works = try XCTUnwrap(reloaded.project(id: projectID)?.works)
+        XCTAssertEqual(works.first(where: { $0.id == workID })?.adhesiveFacingConfiguration, configuration)
+        XCTAssertEqual(works.first(where: { $0.id == copyID })?.adhesiveFacingConfiguration, configuration)
+    }
 }

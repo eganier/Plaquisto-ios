@@ -281,12 +281,13 @@ enum WorkType: String, Codable, CaseIterable, Identifiable {
     case alveolarPartition = "cloison-de-distribution-alveolaire"
     case peripheralLiningBonded = "doublage-peripherique-complexe-colle"
     case peripheralLiningFurrings = "doublage-peripherique-lisses-fourrures"
+    case peripheralLiningAdhesiveFacing = "doublage-peripherique-parement-colle"
 
     var id: String { rawValue }
     var category: WorkCategory {
         switch self {
         case .ceilingOnFurring: .ceilings
-        case .peripheralLiningStuds, .peripheralLiningBonded, .peripheralLiningFurrings: .wallInsulation
+        case .peripheralLiningStuds, .peripheralLiningBonded, .peripheralLiningFurrings, .peripheralLiningAdhesiveFacing: .wallInsulation
         case .distributionPartition, .alveolarPartition: .partitions
         }
     }
@@ -298,6 +299,7 @@ enum WorkType: String, Codable, CaseIterable, Identifiable {
         case .alveolarPartition: "Cloison de distribution alvéolaire"
         case .peripheralLiningBonded: "Doublage périphérique — Complexe collé"
         case .peripheralLiningFurrings: "Doublage périphérique — Lisses et fourrures"
+        case .peripheralLiningAdhesiveFacing: "Doublage périphérique — Parement collé"
         }
     }
     var defaultNameBase: String {
@@ -308,6 +310,7 @@ enum WorkType: String, Codable, CaseIterable, Identifiable {
         case .alveolarPartition: "Cloison de distribution alvéolaire"
         case .peripheralLiningBonded: "Doublage périphérique en complexe collé"
         case .peripheralLiningFurrings: "Doublage périphérique sur lisses et fourrures"
+        case .peripheralLiningAdhesiveFacing: "Doublage périphérique en parement collé"
         }
     }
 }
@@ -319,9 +322,10 @@ enum WorkConfiguration: Codable, Equatable {
     case alveolarPartition(AlveolarPartitionConfiguration)
     case bondedLining(BondedLiningConfiguration)
     case furringLining(FurringLiningConfiguration)
+    case adhesiveFacing(AdhesiveFacingConfiguration)
 
     private enum CodingKeys: String, CodingKey { case kind, data }
-    private enum Kind: String, Codable { case ceiling, peripheralLining, distributionPartition, alveolarPartition, bondedLining, furringLining }
+    private enum Kind: String, Codable { case ceiling, peripheralLining, distributionPartition, alveolarPartition, bondedLining, furringLining, adhesiveFacing }
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
@@ -338,6 +342,8 @@ enum WorkConfiguration: Codable, Equatable {
             self = .bondedLining(try container.decode(BondedLiningConfiguration.self, forKey: .data))
         case .furringLining:
             self = .furringLining(try container.decode(FurringLiningConfiguration.self, forKey: .data))
+        case .adhesiveFacing:
+            self = .adhesiveFacing(try container.decode(AdhesiveFacingConfiguration.self, forKey: .data))
         }
     }
 
@@ -361,6 +367,9 @@ enum WorkConfiguration: Codable, Equatable {
             try container.encode(configuration, forKey: .data)
         case .furringLining(let configuration):
             try container.encode(Kind.furringLining, forKey: .kind)
+            try container.encode(configuration, forKey: .data)
+        case .adhesiveFacing(let configuration):
+            try container.encode(Kind.adhesiveFacing, forKey: .kind)
             try container.encode(configuration, forKey: .data)
         }
     }
@@ -405,6 +414,11 @@ struct WorkItem: Identifiable, Equatable {
         return configuration
     }
 
+    var adhesiveFacingConfiguration: AdhesiveFacingConfiguration? {
+        guard case .adhesiveFacing(let configuration) = payload else { return nil }
+        return configuration
+    }
+
     init(id: UUID, projectID: UUID, name: String, type: WorkType, payload: WorkConfiguration, createdAt: Date, updatedAt: Date) {
         self.id = id
         self.projectID = projectID
@@ -437,6 +451,10 @@ struct WorkItem: Identifiable, Equatable {
 
     init(id: UUID, projectID: UUID, name: String, type: WorkType, furringLiningConfiguration: FurringLiningConfiguration, createdAt: Date, updatedAt: Date) {
         self.init(id: id, projectID: projectID, name: name, type: type, payload: .furringLining(furringLiningConfiguration), createdAt: createdAt, updatedAt: updatedAt)
+    }
+
+    init(id: UUID, projectID: UUID, name: String, type: WorkType, adhesiveFacingConfiguration: AdhesiveFacingConfiguration, createdAt: Date, updatedAt: Date) {
+        self.init(id: id, projectID: projectID, name: name, type: type, payload: .adhesiveFacing(adhesiveFacingConfiguration), createdAt: createdAt, updatedAt: updatedAt)
     }
 }
 

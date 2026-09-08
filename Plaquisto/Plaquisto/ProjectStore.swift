@@ -184,6 +184,18 @@ final class ProjectStore: ObservableObject {
         return work.id
     }
 
+    func createWork(projectID: UUID, name: String, type: WorkType, adhesiveFacingConfiguration: AdhesiveFacingConfiguration) throws -> UUID {
+        var next = projects
+        guard let projectIndex = next.firstIndex(where: { $0.id == projectID }) else { throw StoreError.projectNotFound }
+        try validateWorkName(name, in: next[projectIndex])
+        let now = Date()
+        let work = WorkItem(id: UUID(), projectID: projectID, name: name.trimmed, type: type, adhesiveFacingConfiguration: adhesiveFacingConfiguration, createdAt: now, updatedAt: now)
+        next[projectIndex].works.insert(work, at: 0)
+        next[projectIndex].updatedAt = now
+        try commit(next)
+        return work.id
+    }
+
     func updateWork(_ work: WorkItem, configuration: CeilingConfiguration) throws {
         var next = projects
         guard let projectIndex = next.firstIndex(where: { $0.id == work.projectID }),
@@ -239,6 +251,16 @@ final class ProjectStore: ObservableObject {
         guard let projectIndex = next.firstIndex(where: { $0.id == work.projectID }),
               let workIndex = next[projectIndex].works.firstIndex(where: { $0.id == work.id }) else { throw StoreError.workNotFound }
         next[projectIndex].works[workIndex].payload = .furringLining(furringLiningConfiguration)
+        next[projectIndex].works[workIndex].updatedAt = Date()
+        next[projectIndex].updatedAt = Date()
+        try commit(next)
+    }
+
+    func updateWork(_ work: WorkItem, adhesiveFacingConfiguration: AdhesiveFacingConfiguration) throws {
+        var next = projects
+        guard let projectIndex = next.firstIndex(where: { $0.id == work.projectID }),
+              let workIndex = next[projectIndex].works.firstIndex(where: { $0.id == work.id }) else { throw StoreError.workNotFound }
+        next[projectIndex].works[workIndex].payload = .adhesiveFacing(adhesiveFacingConfiguration)
         next[projectIndex].works[workIndex].updatedAt = Date()
         next[projectIndex].updatedAt = Date()
         try commit(next)
