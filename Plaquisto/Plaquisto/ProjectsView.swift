@@ -2,9 +2,14 @@ import SwiftUI
 
 struct ProjectsHomeView: View {
     @EnvironmentObject private var store: ProjectStore
+    let onOpenAccount: () -> Void
     @State private var showingNewProject = false
     @State private var projectToDelete: ProjectItem?
     @State private var errorMessage = ""
+
+    init(onOpenAccount: @escaping () -> Void = {}) {
+        self.onOpenAccount = onOpenAccount
+    }
 
     var body: some View {
         NavigationStack {
@@ -38,8 +43,12 @@ struct ProjectsHomeView: View {
             }
             .navigationTitle("Mes chantiers")
             .toolbar {
-                ToolbarItem(placement: .primaryAction) {
+                ToolbarItemGroup(placement: .topBarTrailing) {
                     Button { showingNewProject = true } label: { Label("Nouveau chantier", systemImage: "plus") }
+                    Button(action: onOpenAccount) {
+                        Image(systemName: "person.crop.circle")
+                    }
+                    .accessibilityLabel("Compte et réglages")
                 }
             }
             .navigationDestination(for: UUID.self) { ProjectDetailView(projectID: $0) }
