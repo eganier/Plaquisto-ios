@@ -17,6 +17,8 @@ struct FacingSelection: Identifiable, Codable, Equatable {
 struct CeilingConfiguration: Codable, Equatable {
     var length: Double = 0
     var width: Double = 0
+    // Keeps the exact entered surface when dimensions were estimated and rounded.
+    var enteredArea: Double? = nil
     // Optional so ceilings saved before the explicit dimensions choice remain decodable.
     var dimensionsSpecified: Bool? = nil
     var support: String = ""
@@ -39,6 +41,8 @@ struct CeilingConfiguration: Codable, Equatable {
     var secondInsulationThickness: Double? = nil
     var firstInsulationLocation: String? = nil
     var secondInsulationLocation: String? = nil
+    // Optional so ceilings saved before the direction choice remain decodable.
+    var furringDirection: String? = nil
 }
 
 struct DoublageFacingSelection: Identifiable, Codable, Equatable, Hashable {
@@ -276,6 +280,7 @@ enum WorkCategory: String, Codable, CaseIterable, Identifiable {
 
 enum WorkType: String, Codable, CaseIterable, Identifiable {
     case ceilingOnFurring = "plafond-fourrures"
+    case ceilingOnRailsAndStuds = "plafond-rails-montants"
     case peripheralLiningStuds = "doublage-peripherique-rails-montants"
     case distributionPartition = "cloison-de-distribution"
     case alveolarPartition = "cloison-de-distribution-alveolaire"
@@ -286,7 +291,7 @@ enum WorkType: String, Codable, CaseIterable, Identifiable {
     var id: String { rawValue }
     var category: WorkCategory {
         switch self {
-        case .ceilingOnFurring: .ceilings
+        case .ceilingOnFurring, .ceilingOnRailsAndStuds: .ceilings
         case .peripheralLiningStuds, .peripheralLiningBonded, .peripheralLiningFurrings, .peripheralLiningAdhesiveFacing: .wallInsulation
         case .distributionPartition, .alveolarPartition: .partitions
         }
@@ -294,6 +299,7 @@ enum WorkType: String, Codable, CaseIterable, Identifiable {
     var title: String {
         switch self {
         case .ceilingOnFurring: "Plafond sur fourrures"
+        case .ceilingOnRailsAndStuds: "Plafond sur ossature rails et montants"
         case .peripheralLiningStuds: "Doublage périphérique — Rails et montants"
         case .distributionPartition: "Cloison de distribution — Rails et montants"
         case .alveolarPartition: "Cloison de distribution alvéolaire"
@@ -305,6 +311,7 @@ enum WorkType: String, Codable, CaseIterable, Identifiable {
     var defaultNameBase: String {
         switch self {
         case .ceilingOnFurring: "Plafond sur fourrures"
+        case .ceilingOnRailsAndStuds: "Plafond sur ossature rails et montants"
         case .peripheralLiningStuds: "Doublage périphérique sur rails et montants"
         case .distributionPartition: "Cloison de distribution"
         case .alveolarPartition: "Cloison de distribution alvéolaire"
@@ -317,6 +324,7 @@ enum WorkType: String, Codable, CaseIterable, Identifiable {
 
 enum WorkConfiguration: Codable, Equatable {
     case ceiling(CeilingConfiguration)
+    case railStudCeiling(RailStudCeilingConfiguration)
     case peripheralLining(DoublageConfiguration)
     case distributionPartition(CloisonDistributionConfiguration)
     case alveolarPartition(AlveolarPartitionConfiguration)
@@ -325,13 +333,15 @@ enum WorkConfiguration: Codable, Equatable {
     case adhesiveFacing(AdhesiveFacingConfiguration)
 
     private enum CodingKeys: String, CodingKey { case kind, data }
-    private enum Kind: String, Codable { case ceiling, peripheralLining, distributionPartition, alveolarPartition, bondedLining, furringLining, adhesiveFacing }
+    private enum Kind: String, Codable { case ceiling, railStudCeiling, peripheralLining, distributionPartition, alveolarPartition, bondedLining, furringLining, adhesiveFacing }
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         switch try container.decode(Kind.self, forKey: .kind) {
         case .ceiling:
             self = .ceiling(try container.decode(CeilingConfiguration.self, forKey: .data))
+        case .railStudCeiling:
+            self = .railStudCeiling(try container.decode(RailStudCeilingConfiguration.self, forKey: .data))
         case .peripheralLining:
             self = .peripheralLining(try container.decode(DoublageConfiguration.self, forKey: .data))
         case .distributionPartition:
@@ -352,6 +362,9 @@ enum WorkConfiguration: Codable, Equatable {
         switch self {
         case .ceiling(let configuration):
             try container.encode(Kind.ceiling, forKey: .kind)
+            try container.encode(configuration, forKey: .data)
+        case .railStudCeiling(let configuration):
+            try container.encode(Kind.railStudCeiling, forKey: .kind)
             try container.encode(configuration, forKey: .data)
         case .peripheralLining(let configuration):
             try container.encode(Kind.peripheralLining, forKey: .kind)
@@ -386,6 +399,11 @@ struct WorkItem: Identifiable, Equatable {
 
     var ceilingConfiguration: CeilingConfiguration? {
         guard case .ceiling(let configuration) = payload else { return nil }
+        return configuration
+    }
+
+    var railStudCeilingConfiguration: RailStudCeilingConfiguration? {
+        guard case .railStudCeiling(let configuration) = payload else { return nil }
         return configuration
     }
 
@@ -431,6 +449,10 @@ struct WorkItem: Identifiable, Equatable {
 
     init(id: UUID, projectID: UUID, name: String, type: WorkType, configuration: CeilingConfiguration, createdAt: Date, updatedAt: Date) {
         self.init(id: id, projectID: projectID, name: name, type: type, payload: .ceiling(configuration), createdAt: createdAt, updatedAt: updatedAt)
+    }
+
+    init(id: UUID, projectID: UUID, name: String, type: WorkType, railStudCeilingConfiguration: RailStudCeilingConfiguration, createdAt: Date, updatedAt: Date) {
+        self.init(id: id, projectID: projectID, name: name, type: type, payload: .railStudCeiling(railStudCeilingConfiguration), createdAt: createdAt, updatedAt: updatedAt)
     }
 
     init(id: UUID, projectID: UUID, name: String, type: WorkType, doublageConfiguration: DoublageConfiguration, createdAt: Date, updatedAt: Date) {

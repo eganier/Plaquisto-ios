@@ -80,10 +80,6 @@ struct CombinedQuantityView: View {
                             LabeledContent(supply.name, value: displayQuantity(supply.quantity, unit: supply.unit) + " " + supply.unit)
                         }
                     }
-                    Section {
-                        Text("Les quantités identiques ont été additionnées. Elles restent indicatives et proviennent des tableaux publiés dans Plaquisto Admin.")
-                            .foregroundStyle(.secondary)
-                    }
                 }
             }
         }
@@ -123,6 +119,11 @@ enum CombinedQuantityCalculator {
         }
 
         for work in works {
+            if work.type == .ceilingOnRailsAndStuds, let ceiling = work.railStudCeilingConfiguration {
+                totalArea += ceiling.effectiveArea
+                for item in ceiling.quantities { add(name: item.name, quantity: item.quantity, unit: item.unit) }
+                continue
+            }
             if work.type == .peripheralLiningStuds, let doublage = work.doublageConfiguration {
                 totalArea += doublage.area
                 for item in doublage.quantities {
@@ -236,6 +237,7 @@ private extension WorkItem {
         case .ceilingOnFurring:
             guard let configuration = ceilingConfiguration else { return 0 }
             return configuration.length * configuration.width
+        case .ceilingOnRailsAndStuds: return railStudCeilingConfiguration?.effectiveArea ?? 0
         case .peripheralLiningStuds: return doublageConfiguration?.area ?? 0
         case .distributionPartition: return cloisonDistributionConfiguration?.area ?? 0
         case .alveolarPartition: return alveolarPartitionConfiguration?.area ?? 0

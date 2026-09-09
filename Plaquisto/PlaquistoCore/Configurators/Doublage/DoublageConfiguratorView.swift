@@ -290,6 +290,7 @@ struct DoublageConfiguratorView: View {
             if canDelete {
                 Divider()
                 Button("Supprimer ce type", role: .destructive) { removeAllocation(allocation.wrappedValue.id, secondLayer: secondLayer) }
+                    .buttonStyle(.borderless)
             }
         }.tint(Color(red: 0.12, green: 0.38, blue: 0.29))
     }
@@ -432,7 +433,6 @@ struct DoublageConfiguratorView: View {
                 }
             }
             if spacing != 0.4 && spacing != 0.6 { info("La visserie pour les entraxes de 45 et 90 cm reste à compléter dans Plaquisto Admin. Elle n’est pas estimée ici.", icon: "info.circle", color: .secondary) }
-            Text("Quantités indicatives avec la marge prévue dans votre tableau. Elles restent à vérifier selon les conditions réelles du chantier.").font(.footnote).foregroundStyle(.secondary)
         }
     }
 
@@ -763,7 +763,10 @@ struct DoublageConfiguratorView: View {
     }
 
     private func initializeInsulationIfNeeded() {
-        guard let family = insulationFamilies.first, let lambda = family.lambdas.first else { return }
+        guard let family = insulationFamilies.first(where: {
+            $0.title.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current).contains("laine de verre")
+        }) ?? insulationFamilies.first,
+        let lambda = family.lambdas.first else { return }
         let fallback = InsulationSelection(familyID: family.id, lambda: lambda.value, thicknessMM: lambda.thicknessesMM.first ?? 0)
         if insulationFamily(firstInsulation) == nil { firstInsulation = fallback }
         if insulationFamily(secondInsulation) == nil { secondInsulation = fallback }

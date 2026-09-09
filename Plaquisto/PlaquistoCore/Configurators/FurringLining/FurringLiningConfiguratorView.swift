@@ -372,6 +372,7 @@ struct FurringLiningConfiguratorView: View {
             if canDelete {
                 Divider()
                 Button("Supprimer ce type", role: .destructive) { removeFacing(selection.wrappedValue.id, layer: layer) }
+                    .buttonStyle(.borderless)
             }
         }
     }
@@ -515,7 +516,6 @@ struct FurringLiningConfiguratorView: View {
             if skinCount == .triple {
                 infoCard("La quantité de vis de troisième peau est estimée avec le ratio d’une peau supplémentaire. La longueur exacte de la vis devra être définie dans Plaquisto Admin.", icon: "info.circle", color: .orange)
             }
-            Text("Quantités indicatives. Elles restent à vérifier selon la géométrie réelle et les conditions du chantier.").font(.footnote).foregroundStyle(.secondary)
         }
     }
 
@@ -767,7 +767,10 @@ struct FurringLiningConfiguratorView: View {
     }
 
     private func initializeInsulationIfNeeded() {
-        guard let family = insulationFamilies.first, let lambda = family.lambdas.first else { return }
+        guard let family = insulationFamilies.first(where: {
+            $0.title.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current).contains("laine de verre")
+        }) ?? insulationFamilies.first,
+        let lambda = family.lambdas.first else { return }
         let fallback = FurringInsulationSelection(familyID: family.id, lambda: lambda.value, thicknessMM: lambda.thicknessesMM.first ?? 0)
         if insulationFamily(firstInsulation) == nil { firstInsulation = fallback }
     }

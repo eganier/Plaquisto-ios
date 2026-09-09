@@ -471,6 +471,7 @@ struct CloisonDistributionConfiguratorView: View {
             if canDelete {
                 Divider()
                 Button("Supprimer ce type", role: .destructive, action: onDelete)
+                    .buttonStyle(.borderless)
             }
         }
     }
@@ -635,10 +636,6 @@ struct CloisonDistributionConfiguratorView: View {
                     LabeledContent(row.0, value: row.1)
                 }
             }
-            Text("Les quantités sont indicatives. Elles devront être adaptées aux ouvertures, aux découpes et aux conditions réelles du chantier.")
-                .font(.footnote)
-                .foregroundStyle(.secondary)
-                .padding(.horizontal, 12)
         }
     }
 
@@ -898,7 +895,9 @@ struct CloisonDistributionConfiguratorView: View {
 
     private func normalizeInsulation() {
         if !references.insulations.contains(where: { $0.id == insulationID }) {
-            insulationID = references.insulations.first?.id ?? ""
+            insulationID = references.insulations.first(where: {
+                $0.title.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current).contains("laine de verre")
+            })?.id ?? references.insulations.first?.id ?? ""
         }
         normalizeInsulationThickness()
     }

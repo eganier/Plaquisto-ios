@@ -305,8 +305,10 @@ struct AlveolarPartitionConfiguratorView: View {
             if allocations.count > 1 {
                 Divider()
                 Button("Supprimer ce panneau", role: .destructive) {
-                    allocations.removeAll { $0.id == allocation.wrappedValue.id }
+                    let allocationID = allocation.wrappedValue.id
+                    allocations.removeAll { $0.id == allocationID }
                 }
+                .buttonStyle(.borderless)
             }
         }
     }

@@ -171,7 +171,11 @@ struct BondedLiningConfiguratorView: View {
                         Picker("Type", selection: $allocation.facing) { ForEach(availableFacings(for: allocation.id)) { Text($0.title).tag($0) } }.labelsHidden()
                     }
                     Divider(); BondedDecimalRow("Surface attribuée", value: $allocation.surface, unit: "m²")
-                    if allocations.count > 1 { Divider(); Button("Supprimer ce parement", role: .destructive) { allocations.removeAll { $0.id == allocation.id } } }
+                    if allocations.count > 1 {
+                        Divider()
+                        Button("Supprimer ce parement", role: .destructive) { allocations.removeAll { $0.id == allocation.id } }
+                            .buttonStyle(.borderless)
+                    }
                 }
             }
             if allocations.count < references.facingKinds.count { Button("Ajouter un autre type de parement") { addFacing() }.foregroundStyle(.green) }

@@ -383,6 +383,11 @@ private struct SavedWorkView: View {
                     do { try store.updateWork(currentWork, configuration: configuration) }
                     catch { errorMessage = "Les modifications n’ont pas pu être enregistrées." }
                 }
+            case .ceilingOnRailsAndStuds:
+                RailStudCeilingConfiguratorView(initialConfiguration: currentWork.railStudCeilingConfiguration, startsAtResult: true) { configuration in
+                    do { try store.updateWork(currentWork, railStudCeilingConfiguration: configuration) }
+                    catch { errorMessage = "Les modifications n’ont pas pu être enregistrées." }
+                }
             case .peripheralLiningStuds:
                 DoublageConfiguratorHost(initialConfiguration: currentWork.doublageConfiguration, startsAtResult: true) { configuration in
                     do { try store.updateWork(currentWork, doublageConfiguration: configuration) }
@@ -435,6 +440,8 @@ private struct WorkConfiguratorContainer: View {
                 switch workType {
                 case .ceilingOnFurring:
                     CeilingConfiguratorView { configuration in save(configuration: configuration) }
+                case .ceilingOnRailsAndStuds:
+                    RailStudCeilingConfiguratorView { configuration in save(railStudCeilingConfiguration: configuration) }
                 case .peripheralLiningStuds:
                     DoublageConfiguratorHost { configuration in save(doublageConfiguration: configuration) }
                 case .distributionPartition:
@@ -467,6 +474,13 @@ private struct WorkConfiguratorContainer: View {
     private func save(configuration: CeilingConfiguration) {
         do {
             _ = try store.createWork(projectID: projectID, name: workName, type: workType, configuration: configuration)
+            finish()
+        } catch { errorMessage = "L’ouvrage n’a pas pu être enregistré." }
+    }
+
+    private func save(railStudCeilingConfiguration: RailStudCeilingConfiguration) {
+        do {
+            _ = try store.createWork(projectID: projectID, name: workName, type: workType, railStudCeilingConfiguration: railStudCeilingConfiguration)
             finish()
         } catch { errorMessage = "L’ouvrage n’a pas pu être enregistré." }
     }
