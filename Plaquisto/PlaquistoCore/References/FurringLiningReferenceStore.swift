@@ -48,6 +48,15 @@ enum FurringLiningCalculator {
         guard height > 0, maximumSpacing > 0 else { return 0 }
         return max(1, Int(ceil(height / maximumSpacing)) - 1)
     }
+    static func horizontalSupportFurringLength(
+        wallLength: Double,
+        supportLines: Int,
+        wasteFactor: Double,
+        isIncluded: Bool
+    ) -> Double {
+        guard isIncluded, wallLength > 0, supportLines > 0 else { return 0 }
+        return wallLength * Double(supportLines) * wasteFactor
+    }
 }
 
 @MainActor

@@ -175,6 +175,174 @@ final class ProjectStoreTests: XCTestCase {
         XCTAssertEqual(works.first(where: { $0.id == copyID })?.cloisonDistributionConfiguration, configuration)
     }
 
+    func testOpeningsSurviveReloadAndDuplication() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let fileURL = directory.appendingPathComponent("projects.json")
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let store = ProjectStore(fileURL: fileURL)
+        let projectID = try store.createProject(name: "Maison", client: "", address: "", notes: "")
+        let configuration = OpeningConfiguration(
+            context: OpeningContext(system: .furringLining, hsp: 2.50, spacing: 0.60),
+            openings: [
+                OpeningInput(kind: .window, width: 1.20, height: 1.05, name: "Fenêtre évier"),
+                OpeningInput(kind: .frenchDoorOrBay, width: 1.80, height: 2.15)
+            ]
+        )
+        let workID = try store.createWork(
+            projectID: projectID,
+            name: "Ouvertures séjour",
+            type: .openings,
+            openingConfiguration: configuration
+        )
+        let copyID = try store.duplicateWork(projectID: projectID, workID: workID)
+
+        let reloaded = ProjectStore(fileURL: fileURL)
+        let works = try XCTUnwrap(reloaded.project(id: projectID)?.works)
+        XCTAssertEqual(works.first(where: { $0.id == workID })?.openingConfiguration, configuration)
+        XCTAssertEqual(works.first(where: { $0.id == copyID })?.openingConfiguration, configuration)
+    }
+
+    func testOpeningHeightSuggestionsReuseTheMatchingExistingWork() throws {
+        let fileURL = FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: fileURL) }
+        let store = ProjectStore(fileURL: fileURL)
+        let projectID = try store.createProject(name: "Maison", client: "", address: "", notes: "")
+
+        _ = try store.createWork(
+            projectID: projectID,
+            name: "Doublage séjour",
+            type: .peripheralLiningStuds,
+            doublageConfiguration: DoublageConfiguration(
+                height: 2.62,
+                layers: 2,
+                firstSkin: [.init(facingID: "parement-ba13-standard")],
+                secondSkin: [.init(facingID: "parement-ba13-hydrofuge")],
+                insulationEnabled: true,
+                insulationLayers: 1,
+                firstInsulation: .init(familyID: "laine-verre", lambda: 0.032, thicknessMM: 100)
+            )
+        )
+        _ = try store.createWork(
+            projectID: projectID,
+            name: "Cloison chambre",
+            type: .distributionPartition,
+            cloisonDistributionConfiguration: CloisonDistributionConfiguration(height: 2.48)
+        )
+
+        let suggestions = store.openingHeightSuggestions(projectID: projectID)
+
+        XCTAssertEqual(suggestions[.railStudLining]?.height, 2.62)
+        XCTAssertEqual(suggestions[.railStudLining]?.sourceWorkName, "Doublage séjour")
+        XCTAssertEqual(try XCTUnwrap(suggestions[.railStudLining]?.minimumJoineryLiningDepth), 0.126, accuracy: 0.000_1)
+        XCTAssertEqual(suggestions[.distributionPartition]?.height, 2.48)
+        XCTAssertEqual(suggestions[.distributionPartition]?.sourceWorkName, "Cloison chambre")
+    }
+
+    func testOpeningHeightSuggestionsIgnoreAnEmptyHeight() throws {
+        let fileURL = FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: fileURL) }
+        let store = ProjectStore(fileURL: fileURL)
+        let projectID = try store.createProject(name: "Maison", client: "", address: "", notes: "")
+        _ = try store.createWork(
+            projectID: projectID,
+            name: "Doublage incomplet",
+            type: .peripheralLiningFurrings,
+            furringLiningConfiguration: FurringLiningConfiguration(height: 0)
+        )
+
+        XCTAssertNil(store.openingHeightSuggestions(projectID: projectID)[.furringLining])
+    }
+
+    func testOpeningHeightOptionsListOnlyCompatibleWorksWithTheirHeights() throws {
+        let fileURL = FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: fileURL) }
+        let store = ProjectStore(fileURL: fileURL)
+        let projectID = try store.createProject(name: "Maison", client: "", address: "", notes: "")
+
+        _ = try store.createWork(
+            projectID: projectID,
+            name: "Doublage cuisine",
+            type: .peripheralLiningFurrings,
+            furringLiningConfiguration: FurringLiningConfiguration(
+                height: 2.52,
+                firstSkin: [.init(facingID: "parement-ba13-standard")],
+                insulationEnabled: true,
+                firstInsulation: .init(familyID: "laine-verre", lambda: 0.032, thicknessMM: 100)
+            )
+        )
+        _ = try store.createWork(
+            projectID: projectID,
+            name: "Doublage salon",
+            type: .peripheralLiningFurrings,
+            furringLiningConfiguration: FurringLiningConfiguration(height: 2.70)
+        )
+        _ = try store.createWork(
+            projectID: projectID,
+            name: "Cloison chambre",
+            type: .distributionPartition,
+            cloisonDistributionConfiguration: CloisonDistributionConfiguration(height: 2.45)
+        )
+
+        let options = store.openingHeightOptions(projectID: projectID)
+        XCTAssertEqual(options[.furringLining]?.map(\.sourceWorkName), ["Doublage salon", "Doublage cuisine"])
+        XCTAssertEqual(options[.furringLining]?.map(\.height), [2.70, 2.52])
+        XCTAssertEqual(try XCTUnwrap(options[.furringLining]?.last?.minimumJoineryLiningDepth), 0.128, accuracy: 0.000_1)
+        XCTAssertEqual(options[.distributionPartition]?.map(\.sourceWorkName), ["Cloison chambre"])
+        XCTAssertNil(options[.railStudLining])
+    }
+
+    func testJoineryConflictFollowsTheCurrentReferenceWorkComposition() throws {
+        let fileURL = FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: fileURL) }
+        let store = ProjectStore(fileURL: fileURL)
+        let projectID = try store.createProject(name: "Maison", client: "", address: "", notes: "")
+
+        var lining = FurringLiningConfiguration(
+            height: 2.52,
+            firstSkin: [.init(facingID: "parement-ba13-standard")],
+            insulationEnabled: true,
+            firstInsulation: .init(familyID: "laine-verre", lambda: 0.032, thicknessMM: 100)
+        )
+        let liningID = try store.createWork(
+            projectID: projectID,
+            name: "Cuisine - Doublage périphérique",
+            type: .peripheralLiningFurrings,
+            furringLiningConfiguration: lining
+        )
+        _ = try store.createWork(
+            projectID: projectID,
+            name: "Cuisine - Ouvertures",
+            type: .openings,
+            openingConfiguration: OpeningConfiguration(
+                context: OpeningContext(system: .furringLining, hsp: 2.52),
+                openings: [
+                    OpeningInput(
+                        kind: .window,
+                        width: 1.20,
+                        height: 1.05,
+                        mountingMode: .onJoineryLining,
+                        revealDepth: 0.12
+                    )
+                ],
+                sourceWorkID: liningID,
+                roomName: "Cuisine"
+            )
+        )
+
+        let conflict = try XCTUnwrap(store.openingJoineryConflict(projectID: projectID, referenceWorkID: liningID))
+        XCTAssertEqual(conflict.openingCount, 1)
+        XCTAssertEqual(conflict.minimumDepth, 0.128, accuracy: 0.000_1)
+        XCTAssertEqual(conflict.smallestEnteredDepth, 0.12, accuracy: 0.000_1)
+        XCTAssertEqual(conflict.maximumCompatibleInsulationThickness, 0.092, accuracy: 0.000_1)
+
+        lining.firstInsulation.thicknessMM = 80
+        let work = try XCTUnwrap(store.project(id: projectID)?.works.first(where: { $0.id == liningID }))
+        try store.updateWork(work, furringLiningConfiguration: lining)
+
+        XCTAssertNil(store.openingJoineryConflict(projectID: projectID, referenceWorkID: liningID))
+    }
+
     func testAlveolarPartitionSurvivesReloadAndDuplication() throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         let fileURL = directory.appendingPathComponent("projects.json")
@@ -286,6 +454,7 @@ final class ProjectStoreTests: XCTestCase {
         XCTAssertEqual(WorkType.peripheralLiningStuds.category, .wallInsulation)
         XCTAssertEqual(WorkType.distributionPartition.category, .partitions)
         XCTAssertEqual(WorkType.alveolarPartition.category, .partitions)
+        XCTAssertEqual(WorkType.openings.category, .openings)
         XCTAssertEqual(WorkCategory.allCases.count, 4)
     }
 
@@ -303,6 +472,8 @@ final class ProjectStoreTests: XCTestCase {
     func testFurringLiningCalculatesAxesAndIntermediateSupportLines() {
         XCTAssertEqual(FurringLiningCalculator.furringAxes(length: 20, spacing: 0.6, wallCount: 4), 40)
         XCTAssertEqual(FurringLiningCalculator.recommendedSupportLines(height: 2.62, maximumSpacing: 1.3), 2)
+        XCTAssertEqual(FurringLiningCalculator.horizontalSupportFurringLength(wallLength: 20, supportLines: 2, wasteFactor: 1.05, isIncluded: true), 42)
+        XCTAssertEqual(FurringLiningCalculator.horizontalSupportFurringLength(wallLength: 20, supportLines: 2, wasteFactor: 1.05, isIncluded: false), 0)
     }
 
     func testFurringLiningSurvivesReloadAndDuplication() throws {
@@ -317,6 +488,7 @@ final class ProjectStoreTests: XCTestCase {
         configuration.enteredLength = 20
         configuration.wallCount = 4
         configuration.selectedSupportLines = 2
+        configuration.includesHorizontalSupportFurring = false
         configuration.quantities = [DoublageQuantity(name: "Fourrures", quantity: 100.8, unit: "ml")]
         let workID = try store.createWork(
             projectID: projectID,
@@ -357,5 +529,72 @@ final class ProjectStoreTests: XCTestCase {
         let works = try XCTUnwrap(reloaded.project(id: projectID)?.works)
         XCTAssertEqual(works.first(where: { $0.id == workID })?.adhesiveFacingConfiguration, configuration)
         XCTAssertEqual(works.first(where: { $0.id == copyID })?.adhesiveFacingConfiguration, configuration)
+    }
+
+    func testGeneratedWorkNamesUseRoomAndSimpleWorkCategory() {
+        XCTAssertEqual(
+            WorkType.peripheralLiningFurrings.generatedName(roomName: " Salon "),
+            "Salon - Doublage périphérique"
+        )
+        XCTAssertEqual(
+            WorkType.peripheralLiningStuds.generatedName(roomName: "Salon"),
+            "Salon - Doublage périphérique"
+        )
+        XCTAssertEqual(
+            WorkType.ceilingOnRailsAndStuds.generatedName(roomName: "Buanderie"),
+            "Buanderie - Plafond"
+        )
+    }
+
+    func testOpeningSummaryGroupsIdenticalKindsAndDimensions() {
+        let configuration = OpeningConfiguration(
+            context: OpeningContext(system: .furringLining, hsp: 2.5),
+            openings: [
+                OpeningInput(kind: .window, width: 0.60, height: 0.40),
+                OpeningInput(kind: .window, width: 0.60, height: 0.40),
+                OpeningInput(kind: .window, width: 0.70, height: 2.00),
+                OpeningInput(kind: .frenchDoorOrBay, width: 0.70, height: 2.00)
+            ]
+        )
+
+        let lines = OpeningSummaryFormatter.lines(for: configuration)
+
+        XCTAssertEqual(lines.count, 3)
+        XCTAssertEqual(lines[0].title, "Fenêtres")
+        XCTAssertEqual(lines[0].count, 2)
+        XCTAssertEqual(lines[1].title, "Fenêtre")
+        XCTAssertEqual(lines[1].count, 1)
+        XCTAssertEqual(lines[2].title, "Porte-fenêtre / baie")
+    }
+
+    func testRenamingReferenceWorkAlsoRenamesItsLinkedOpenings() throws {
+        let fileURL = FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: fileURL) }
+        let store = ProjectStore(fileURL: fileURL)
+        let projectID = try store.createProject(name: "Maison", client: "", address: "", notes: "")
+        let sourceID = try store.createWork(
+            projectID: projectID,
+            name: "Salon - Doublage périphérique",
+            type: .peripheralLiningFurrings,
+            furringLiningConfiguration: FurringLiningConfiguration(height: 2.50)
+        )
+        let openingsID = try store.createWork(
+            projectID: projectID,
+            name: "Salon - Ouvertures",
+            type: .openings,
+            openingConfiguration: OpeningConfiguration(
+                context: OpeningContext(system: .furringLining, hsp: 2.50),
+                openings: [OpeningInput(kind: .window, width: 0.60, height: 0.40)],
+                sourceWorkID: sourceID,
+                roomName: "Salon"
+            )
+        )
+
+        try store.renameWork(projectID: projectID, workID: sourceID, roomName: "Cuisine")
+
+        let works = try XCTUnwrap(store.project(id: projectID)?.works)
+        XCTAssertEqual(works.first(where: { $0.id == sourceID })?.name, "Cuisine - Doublage périphérique")
+        XCTAssertEqual(works.first(where: { $0.id == openingsID })?.name, "Cuisine - Ouvertures")
+        XCTAssertEqual(works.first(where: { $0.id == openingsID })?.openingConfiguration?.roomName, "Cuisine")
     }
 }

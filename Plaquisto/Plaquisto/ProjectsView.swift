@@ -83,6 +83,8 @@ private struct ProjectDetailView: View {
     @State private var showingNewWork = false
     @State private var confirmingDelete = false
     @State private var workToDelete: WorkItem?
+    @State private var workToRename: WorkItem?
+    @State private var isolationWorkID: UUID?
     @State private var errorMessage = ""
 
     private var project: ProjectItem? { store.project(id: projectID) }
@@ -101,12 +103,39 @@ private struct ProjectDetailView: View {
                             Text("Aucun ouvrage enregistré.").foregroundStyle(.secondary)
                         } else {
                             ForEach(project.works) { work in
-                                NavigationLink {
-                                    SavedWorkView(work: work)
-                                } label: {
-                                    VStack(alignment: .leading, spacing: 4) {
-                                        Text(work.name).font(.headline)
-                                        Text(work.type.title).font(.subheadline).foregroundStyle(.secondary)
+                                VStack(alignment: .leading, spacing: 7) {
+                                    NavigationLink {
+                                        SavedWorkView(work: work)
+                                    } label: {
+                                        VStack(alignment: .leading, spacing: 4) {
+                                            Text(work.name).font(.headline)
+                                            if let configuration = work.openingConfiguration {
+                                                ForEach(OpeningSummaryFormatter.lines(for: configuration)) { line in
+                                                    HStack(alignment: .firstTextBaseline, spacing: 6) {
+                                                        Text("•")
+                                                        Text(openingSummary(line))
+                                                    }
+                                                    .font(.subheadline)
+                                                    .foregroundStyle(.secondary)
+                                                }
+                                            } else {
+                                                Text(work.type.title).font(.subheadline).foregroundStyle(.secondary)
+                                            }
+                                        }
+                                    }
+                                    if let conflict = store.openingJoineryConflict(
+                                        projectID: projectID,
+                                        referenceWorkID: work.id
+                                    ) {
+                                        Button {
+                                            isolationWorkID = work.id
+                                        } label: {
+                                            Label(joineryConflictSummary(conflict), systemImage: "exclamationmark.triangle.fill")
+                                                .font(.caption.weight(.semibold))
+                                                .foregroundStyle(.orange)
+                                                .fixedSize(horizontal: false, vertical: true)
+                                        }
+                                        .buttonStyle(.plain)
                                     }
                                 }
                                 .swipeActions {
@@ -114,6 +143,8 @@ private struct ProjectDetailView: View {
                                         .tint(.red)
                                     Button { duplicateWork(work) } label: { Label("Dupliquer", systemImage: "plus.square.on.square") }
                                         .tint(.blue)
+                                    Button { workToRename = work } label: { Label("Renommer", systemImage: "pencil") }
+                                        .tint(.orange)
                                 }
                             }
                         }
@@ -136,9 +167,25 @@ private struct ProjectDetailView: View {
                     Section { Button("Supprimer le chantier", role: .destructive) { confirmingDelete = true } }
                 }
                 .navigationTitle(project.name)
+                .navigationDestination(isPresented: Binding(
+                    get: { isolationWorkID != nil },
+                    set: { if !$0 { isolationWorkID = nil } }
+                )) {
+                    if let isolationWorkID,
+                       let work = store.project(id: projectID)?.works.first(where: { $0.id == isolationWorkID }) {
+                        SavedWorkView(work: work, opensIsolationStep: true)
+                    } else {
+                        ContentUnavailableView("Ouvrage introuvable", systemImage: "exclamationmark.triangle")
+                    }
+                }
                 .toolbar { Button("Modifier") { showingEdit = true } }
                 .sheet(isPresented: $showingEdit) { ProjectFormView(project: project) }
                 .sheet(isPresented: $showingNewWork) { NewWorkView(projectID: projectID) }
+                .sheet(item: $workToRename) { work in
+                    RenameWorkView(work: work) { roomName in
+                        renameWork(work, roomName: roomName)
+                    }
+                }
                 .confirmationDialog("Supprimer ce chantier et tous ses ouvrages ?", isPresented: $confirmingDelete, titleVisibility: .visible) {
                     Button("Supprimer définitivement", role: .destructive) { deleteProject() }
                     Button("Annuler", role: .cancel) {}
@@ -158,6 +205,58 @@ private struct ProjectDetailView: View {
     private func deleteProject() { do { try store.deleteProject(id: projectID); dismiss() } catch { errorMessage = "Le chantier n’a pas pu être supprimé." } }
     private func deleteWork(_ work: WorkItem) { do { try store.deleteWork(projectID: projectID, workID: work.id); workToDelete = nil } catch { errorMessage = "L’ouvrage n’a pas pu être supprimé." } }
     private func duplicateWork(_ work: WorkItem) { do { try store.duplicateWork(projectID: projectID, workID: work.id) } catch { errorMessage = "L’ouvrage n’a pas pu être dupliqué." } }
+    private func renameWork(_ work: WorkItem, roomName: String) {
+        do {
+            try store.renameWork(projectID: projectID, workID: work.id, roomName: roomName)
+            workToRename = nil
+        } catch {
+            errorMessage = "Ce nom est vide ou déjà utilisé dans ce chantier."
+        }
+    }
+
+    private func openingSummary(_ line: OpeningSummaryLine) -> String {
+        let width = (line.width * 100).formatted(.number.precision(.fractionLength(0...1)))
+        let height = (line.height * 100).formatted(.number.precision(.fractionLength(0...1)))
+        return "\(line.title) \(width) × \(height) cm (×\(line.count))"
+    }
+
+    private func joineryConflictSummary(_ conflict: OpeningJoineryConflict) -> String {
+        let maximumInsulation = (conflict.maximumCompatibleInsulationThickness * 100)
+            .formatted(.number.precision(.fractionLength(0...1)))
+        return "Épaisseur d’isolant incompatible avec les tapées de menuiserie. L’épaisseur d’isolation doit être inférieure ou égale à \(maximumInsulation) cm."
+    }
+}
+
+private struct RenameWorkView: View {
+    @Environment(\.dismiss) private var dismiss
+    let work: WorkItem
+    let onSave: (String) -> Void
+    @State private var roomName: String
+
+    init(work: WorkItem, onSave: @escaping (String) -> Void) {
+        self.work = work
+        self.onSave = onSave
+        _roomName = State(initialValue: work.inferredRoomName)
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("Pièce concernée") {
+                    TextField("Exemple : Salon", text: $roomName)
+                    LabeledContent("Nom de l’ouvrage", value: work.type.generatedName(roomName: roomName))
+                }
+            }
+            .navigationTitle("Renommer")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("Annuler") { dismiss() } }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Enregistrer") { onSave(roomName) }
+                        .disabled(roomName.clean.isEmpty)
+                }
+            }
+        }
+    }
 }
 
 private struct ProjectFormView: View {
@@ -213,7 +312,7 @@ private struct NewWorkView: View {
     @EnvironmentObject private var store: ProjectStore
     @Environment(\.dismiss) private var dismiss
     let projectID: UUID
-    @State private var name = ""
+    @State private var roomName = ""
     @State private var category = WorkCategory.ceilings
     @State private var type = WorkType.ceilingOnFurring
     @State private var configuring = false
@@ -230,97 +329,77 @@ private struct NewWorkView: View {
     }
 
     private var canConfigure: Bool {
-        availableTypes.contains(type)
+        availableTypes.contains(type) && !roomName.clean.isEmpty
     }
 
     var body: some View {
         NavigationStack {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 24) {
-                    Text("Catégorie d’ouvrage")
-                        .font(.title2.bold())
+            VStack(spacing: 0) {
+                if category == .openings {
+                    categoryPicker
+                    .padding(20)
+                    .background(Color(.systemGroupedBackground))
 
-                    LazyVGrid(columns: columns, spacing: 12) {
-                        ForEach(WorkCategory.allCases) { item in
-                            Button {
-                                category = item
-                                if let firstType = WorkType.allCases.first(where: { $0.category == item }) {
-                                    type = firstType
+                    OpeningLabView(
+                        heightOptions: store.openingHeightOptions(projectID: projectID)
+                    ) { configuration in
+                        saveOpening(configuration)
+                    }
+                } else {
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 24) {
+                            categoryPicker
+
+                        roomNameField
+
+                        VStack(alignment: .leading, spacing: 10) {
+                            Text("Ouvrage")
+                                .font(.headline)
+
+                            if availableTypes.isEmpty {
+                                Text("Aucun ouvrage disponible dans cette catégorie pour le moment.")
+                                    .foregroundStyle(.secondary)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .padding(16)
+                                    .background(.background, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                            } else {
+                                Picker("Type d’ouvrage", selection: $type) {
+                                    ForEach(availableTypes) { Text($0.title).tag($0) }
                                 }
-                            } label: {
-                                Text(item.cardTitle)
-                                    .font(.headline)
-                                    .foregroundStyle(.white)
-                                    .multilineTextAlignment(.center)
-                                    .frame(maxWidth: .infinity, minHeight: 112)
-                                    .padding(.horizontal, 10)
-                                    .background(item.cardColor, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
-                                    .overlay {
-                                        RoundedRectangle(cornerRadius: 20, style: .continuous)
-                                            .stroke(.white, lineWidth: category == item ? 4 : 0)
-                                            .padding(4)
-                                    }
-                                    .shadow(color: category == item ? item.cardColor.opacity(0.28) : .clear, radius: 8, y: 4)
-                            }
-                            .buttonStyle(.plain)
-                            .accessibilityAddTraits(category == item ? .isSelected : [])
-                        }
-                    }
-
-                    VStack(alignment: .leading, spacing: 10) {
-                        Text("Nom de l’ouvrage")
-                            .font(.headline)
-                        TextField("Exemple : Cloison chambre", text: $name)
-                            .textFieldStyle(.plain)
-                            .padding(16)
-                            .background(.background, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-                    }
-
-                    VStack(alignment: .leading, spacing: 10) {
-                        Text("Ouvrage")
-                            .font(.headline)
-
-                        if availableTypes.isEmpty {
-                            Text("Aucun ouvrage disponible dans cette catégorie pour le moment.")
-                                .foregroundStyle(.secondary)
-                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .pickerStyle(.menu)
                                 .padding(16)
+                                .frame(maxWidth: .infinity, alignment: .leading)
                                 .background(.background, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-                        } else {
-                            Picker("Type d’ouvrage", selection: $type) {
-                                ForEach(availableTypes) { Text($0.title).tag($0) }
                             }
-                            .pickerStyle(.menu)
-                            .padding(16)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .background(.background, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
                         }
+                        }
+                        .padding(20)
                     }
                 }
-                .padding(20)
             }
             .background(Color(.systemGroupedBackground))
-            .navigationTitle("Ajouter un ouvrage")
+            .navigationTitle(category == .openings ? "Ouvertures" : "Ajouter un ouvrage")
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Annuler") { dismiss() } }
-                ToolbarItem(placement: .confirmationAction) { Button("Configurer") { prepareConfiguration() }.disabled(!canConfigure) }
+                if category != .openings {
+                    ToolbarItem(placement: .confirmationAction) { Button("Configurer") { prepareConfiguration() }.disabled(!canConfigure) }
+                }
             }
             .fullScreenCover(isPresented: $configuring) {
                 WorkConfiguratorContainer(projectID: projectID, workName: resolvedWorkName, workType: type) { dismiss() }
             }
             .alert(item: $activeAlert) { alert in
                 switch alert {
-                case .automaticName(let proposedName):
-                    Alert(
-                        title: Text("Nom automatique"),
-                        message: Text("Aucun nom n’a été renseigné. L’ouvrage sera enregistré sous le nom « \(proposedName) »."),
-                        primaryButton: .default(Text("Continuer")) { openConfigurator(with: proposedName) },
-                        secondaryButton: .cancel(Text("Modifier le nom"))
-                    )
                 case .duplicateName(let duplicateName):
                     Alert(
                         title: Text("Nom déjà utilisé"),
                         message: Text("Un ouvrage nommé « \(duplicateName) » existe déjà dans ce chantier. Choisissez un autre nom."),
+                        dismissButton: .default(Text("OK"))
+                    )
+                case .saveFailed:
+                    Alert(
+                        title: Text("Enregistrement impossible"),
+                        message: Text("Les ouvertures n’ont pas pu être enregistrées sur cet appareil."),
                         dismissButton: .default(Text("OK"))
                     )
                 }
@@ -328,32 +407,103 @@ private struct NewWorkView: View {
         }
     }
 
+    private var roomNameField: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Pièce concernée")
+                .font(.headline)
+            TextField("Exemple : Salon", text: $roomName)
+                .textFieldStyle(.plain)
+                .padding(16)
+                .background(.background, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+            if !roomName.clean.isEmpty {
+                Text(type.generatedName(roomName: roomName))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private var categoryPicker: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("Catégorie d’ouvrage")
+                .font(.title2.bold())
+
+            LazyVGrid(columns: columns, spacing: 12) {
+                ForEach(WorkCategory.allCases) { item in
+                    Button {
+                        category = item
+                        if let firstType = WorkType.allCases.first(where: { $0.category == item }) {
+                            type = firstType
+                        }
+                    } label: {
+                        Text(item.cardTitle)
+                            .font(.headline)
+                            .foregroundStyle(.white)
+                            .multilineTextAlignment(.center)
+                            .frame(maxWidth: .infinity, minHeight: 112)
+                            .padding(.horizontal, 10)
+                            .background(item.cardColor, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+                            .overlay {
+                                RoundedRectangle(cornerRadius: 20, style: .continuous)
+                                    .stroke(.white, lineWidth: category == item ? 4 : 0)
+                                    .padding(4)
+                            }
+                            .shadow(color: category == item ? item.cardColor.opacity(0.28) : .clear, radius: 8, y: 4)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityAddTraits(category == item ? .isSelected : [])
+                }
+            }
+        }
+    }
+
     private func prepareConfiguration() {
-        let enteredName = name.clean
-        if enteredName.isEmpty {
-            activeAlert = .automaticName(store.defaultWorkName(projectID: projectID, type: type))
-        } else if store.workNameExists(projectID: projectID, name: enteredName) {
-            activeAlert = .duplicateName(enteredName)
+        let generatedName = type.generatedName(roomName: roomName)
+        if store.workNameExists(projectID: projectID, name: generatedName) {
+            activeAlert = .duplicateName(generatedName)
         } else {
-            openConfigurator(with: enteredName)
+            openConfigurator(with: generatedName)
+        }
+    }
+
+    private func saveOpening(_ configuration: OpeningConfiguration) {
+        let linkedRoomName = configuration.sourceWorkID.flatMap { sourceID in
+            store.project(id: projectID)?.works.first(where: { $0.id == sourceID })?.inferredRoomName
+        }
+        let effectiveRoomName = linkedRoomName ?? configuration.roomName
+        let workName = effectiveRoomName.map { WorkType.openings.generatedName(roomName: $0) }
+            ?? store.defaultWorkName(projectID: projectID, type: .openings)
+        if store.workNameExists(projectID: projectID, name: workName) {
+            activeAlert = .duplicateName(workName)
+            return
+        }
+        do {
+            _ = try store.createWork(
+                projectID: projectID,
+                name: workName,
+                type: .openings,
+                openingConfiguration: configuration
+            )
+            dismiss()
+        } catch {
+            activeAlert = .saveFailed
         }
     }
 
     private func openConfigurator(with workName: String) {
-        name = workName
         resolvedWorkName = workName
         configuring = true
     }
 }
 
 private enum NewWorkAlert: Identifiable {
-    case automaticName(String)
     case duplicateName(String)
+    case saveFailed
 
     var id: String {
         switch self {
-        case .automaticName: "automatic-name"
         case .duplicateName: "duplicate-name"
+        case .saveFailed: "save-failed"
         }
     }
 }
@@ -364,7 +514,7 @@ private extension WorkCategory {
         case .ceilings: "Plafonds"
         case .partitions: "Cloisons"
         case .wallInsulation: "Isolation des murs"
-        case .specificWorks: "Ouvrages spécifiques"
+        case .openings: "Ouvertures"
         }
     }
 
@@ -373,14 +523,16 @@ private extension WorkCategory {
         case .ceilings: Color(red: 0.20, green: 0.43, blue: 0.57)
         case .partitions: Color(red: 0.76, green: 0.43, blue: 0.24)
         case .wallInsulation: Color(red: 0.22, green: 0.49, blue: 0.38)
-        case .specificWorks: Color(red: 0.45, green: 0.34, blue: 0.58)
+        case .openings: Color(red: 0.45, green: 0.34, blue: 0.58)
         }
     }
 }
 
 private struct SavedWorkView: View {
     @EnvironmentObject private var store: ProjectStore
+    @Environment(\.dismiss) private var dismiss
     let work: WorkItem
+    var opensIsolationStep = false
     @State private var errorMessage = ""
     private var currentWork: WorkItem { store.project(id: work.projectID)?.works.first(where: { $0.id == work.id }) ?? work }
 
@@ -389,42 +541,58 @@ private struct SavedWorkView: View {
             switch currentWork.type {
             case .ceilingOnFurring:
                 CeilingConfiguratorView(initialConfiguration: currentWork.ceilingConfiguration ?? CeilingConfiguration(), startsAtResult: true) { configuration in
-                    do { try store.updateWork(currentWork, configuration: configuration) }
+                    do { try store.updateWork(currentWork, configuration: configuration); dismiss() }
                     catch { errorMessage = "Les modifications n’ont pas pu être enregistrées." }
                 }
             case .ceilingOnRailsAndStuds:
                 RailStudCeilingConfiguratorView(initialConfiguration: currentWork.railStudCeilingConfiguration, startsAtResult: true) { configuration in
-                    do { try store.updateWork(currentWork, railStudCeilingConfiguration: configuration) }
+                    do { try store.updateWork(currentWork, railStudCeilingConfiguration: configuration); dismiss() }
                     catch { errorMessage = "Les modifications n’ont pas pu être enregistrées." }
                 }
             case .peripheralLiningStuds:
-                DoublageConfiguratorHost(initialConfiguration: currentWork.doublageConfiguration, startsAtResult: true) { configuration in
-                    do { try store.updateWork(currentWork, doublageConfiguration: configuration) }
+                DoublageConfiguratorHost(
+                    initialConfiguration: currentWork.doublageConfiguration,
+                    startsAtResult: !opensIsolationStep,
+                    initialStep: opensIsolationStep ? 4 : nil
+                ) { configuration in
+                    do { try store.updateWork(currentWork, doublageConfiguration: configuration); dismiss() }
                     catch { errorMessage = "Les modifications n’ont pas pu être enregistrées." }
                 }
             case .distributionPartition:
                 CloisonDistributionConfiguratorHost(initialConfiguration: currentWork.cloisonDistributionConfiguration, startsAtResult: true) { configuration in
-                    do { try store.updateWork(currentWork, cloisonDistributionConfiguration: configuration) }
+                    do { try store.updateWork(currentWork, cloisonDistributionConfiguration: configuration); dismiss() }
                     catch { errorMessage = "Les modifications n’ont pas pu être enregistrées." }
                 }
             case .alveolarPartition:
                 AlveolarPartitionConfiguratorHost(initialConfiguration: currentWork.alveolarPartitionConfiguration, startsAtResult: true) { configuration in
-                    do { try store.updateWork(currentWork, alveolarPartitionConfiguration: configuration) }
+                    do { try store.updateWork(currentWork, alveolarPartitionConfiguration: configuration); dismiss() }
                     catch { errorMessage = "Les modifications n’ont pas pu être enregistrées." }
                 }
             case .peripheralLiningBonded:
                 BondedLiningConfiguratorHost(initialConfiguration: currentWork.bondedLiningConfiguration, startsAtResult: true) { configuration in
-                    do { try store.updateWork(currentWork, bondedLiningConfiguration: configuration) }
+                    do { try store.updateWork(currentWork, bondedLiningConfiguration: configuration); dismiss() }
                     catch { errorMessage = "Les modifications n’ont pas pu être enregistrées." }
                 }
             case .peripheralLiningFurrings:
-                FurringLiningConfiguratorHost(initialConfiguration: currentWork.furringLiningConfiguration, startsAtResult: true) { configuration in
-                    do { try store.updateWork(currentWork, furringLiningConfiguration: configuration) }
+                FurringLiningConfiguratorHost(
+                    initialConfiguration: currentWork.furringLiningConfiguration,
+                    startsAtResult: !opensIsolationStep,
+                    initialStep: opensIsolationStep ? 4 : nil
+                ) { configuration in
+                    do { try store.updateWork(currentWork, furringLiningConfiguration: configuration); dismiss() }
                     catch { errorMessage = "Les modifications n’ont pas pu être enregistrées." }
                 }
             case .peripheralLiningAdhesiveFacing:
                 AdhesiveFacingConfiguratorHost(initialConfiguration: currentWork.adhesiveFacingConfiguration, startsAtResult: true) { configuration in
-                    do { try store.updateWork(currentWork, adhesiveFacingConfiguration: configuration) }
+                    do { try store.updateWork(currentWork, adhesiveFacingConfiguration: configuration); dismiss() }
+                    catch { errorMessage = "Les modifications n’ont pas pu être enregistrées." }
+                }
+            case .openings:
+                OpeningLabView(
+                    initialConfiguration: currentWork.openingConfiguration,
+                    heightOptions: store.openingHeightOptions(projectID: currentWork.projectID)
+                ) { configuration in
+                    do { try store.updateWork(currentWork, openingConfiguration: configuration); dismiss() }
                     catch { errorMessage = "Les modifications n’ont pas pu être enregistrées." }
                 }
             }
@@ -472,6 +640,10 @@ private struct WorkConfiguratorContainer: View {
                 case .peripheralLiningAdhesiveFacing:
                     AdhesiveFacingConfiguratorHost(showsCloseButton: false) { configuration in
                         save(adhesiveFacingConfiguration: configuration)
+                    }
+                case .openings:
+                    OpeningLabView(heightOptions: store.openingHeightOptions(projectID: projectID)) { configuration in
+                        save(openingConfiguration: configuration)
                     }
                 }
             }
@@ -546,6 +718,18 @@ private struct WorkConfiguratorContainer: View {
         } catch { errorMessage = "L’ouvrage n’a pas pu être enregistré." }
     }
 
+    private func save(openingConfiguration: OpeningConfiguration) {
+        do {
+            _ = try store.createWork(
+                projectID: projectID,
+                name: workName,
+                type: workType,
+                openingConfiguration: openingConfiguration
+            )
+            finish()
+        } catch { errorMessage = "L’ouvrage n’a pas pu être enregistré." }
+    }
+
     private func finish() {
         dismiss()
         onFinished()
@@ -557,15 +741,18 @@ private struct DoublageConfiguratorHost: View {
     @StateObject private var references = DoublageReferenceStore()
     let initialConfiguration: DoublageConfiguration?
     let startsAtResult: Bool
+    let initialStep: Int?
     let onSave: (DoublageConfiguration) -> Void
 
     init(
         initialConfiguration: DoublageConfiguration? = nil,
         startsAtResult: Bool = false,
+        initialStep: Int? = nil,
         onSave: @escaping (DoublageConfiguration) -> Void
     ) {
         self.initialConfiguration = initialConfiguration
         self.startsAtResult = startsAtResult
+        self.initialStep = initialStep
         self.onSave = onSave
     }
 
@@ -573,6 +760,7 @@ private struct DoublageConfiguratorHost: View {
         DoublageConfiguratorView(
             initialConfiguration: initialConfiguration,
             startsAtResult: startsAtResult,
+            initialStep: initialStep,
             onSave: onSave,
             onClose: { dismiss() }
         )
@@ -674,15 +862,16 @@ private struct FurringLiningConfiguratorHost: View {
     @StateObject private var references = FurringLiningReferenceStore()
     let initialConfiguration: FurringLiningConfiguration?
     let startsAtResult: Bool
+    let initialStep: Int?
     let showsCloseButton: Bool
     let onSave: (FurringLiningConfiguration) -> Void
 
-    init(initialConfiguration: FurringLiningConfiguration? = nil, startsAtResult: Bool = false, showsCloseButton: Bool = true, onSave: @escaping (FurringLiningConfiguration) -> Void) {
-        self.initialConfiguration = initialConfiguration; self.startsAtResult = startsAtResult; self.showsCloseButton = showsCloseButton; self.onSave = onSave
+    init(initialConfiguration: FurringLiningConfiguration? = nil, startsAtResult: Bool = false, initialStep: Int? = nil, showsCloseButton: Bool = true, onSave: @escaping (FurringLiningConfiguration) -> Void) {
+        self.initialConfiguration = initialConfiguration; self.startsAtResult = startsAtResult; self.initialStep = initialStep; self.showsCloseButton = showsCloseButton; self.onSave = onSave
     }
 
     var body: some View {
-        FurringLiningConfiguratorView(initialConfiguration: initialConfiguration, startsAtResult: startsAtResult, onSave: onSave, onClose: { dismiss() }, showsCloseButton: showsCloseButton)
+        FurringLiningConfiguratorView(initialConfiguration: initialConfiguration, startsAtResult: startsAtResult, initialStep: initialStep, onSave: onSave, onClose: { dismiss() }, showsCloseButton: showsCloseButton)
             .environmentObject(references)
             .task { if references.payload == nil { await references.load() } }
     }

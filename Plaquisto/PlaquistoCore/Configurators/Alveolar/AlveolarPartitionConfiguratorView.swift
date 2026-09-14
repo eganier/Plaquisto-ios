@@ -19,6 +19,7 @@ struct AlveolarPartitionConfiguratorView: View {
     private let onSave: ((AlveolarPartitionConfiguration) -> Void)?
     private let onClose: (() -> Void)?
     private let showsCloseButton: Bool
+    private let isEditing: Bool
     @State private var step: Int
     @State private var geometryMode = GeometryMode.length
     @State private var height = 0.0
@@ -27,6 +28,7 @@ struct AlveolarPartitionConfiguratorView: View {
     @State private var allocations = [AlveolarPanelAllocation()]
     @State private var jointTreatment = true
     @State private var compound = Compound.powder
+    @State private var configurationExpanded = false
 
     private let green = Color(red: 0.12, green: 0.38, blue: 0.29)
     private let stepNames = ["Dimensions", "Panneaux", "Bandes à joint", "Résultat"]
@@ -42,6 +44,7 @@ struct AlveolarPartitionConfiguratorView: View {
         self.onSave = onSave
         self.onClose = onClose
         self.showsCloseButton = showsCloseButton
+        self.isEditing = initialConfiguration != nil
         _step = State(initialValue: startsAtResult ? 4 : 1)
         _geometryMode = State(initialValue: configuration.geometryMode == "surface" ? .surface : .length)
         _height = State(initialValue: configuration.height)
@@ -104,6 +107,13 @@ struct AlveolarPartitionConfiguratorView: View {
         .tint(green)
         .onChange(of: references.panels.count, initial: true) { _, _ in initializeAllocations() }
         .onChange(of: height) { _, _ in normalizeFormats() }
+        .toolbar {
+            if isEditing, let onSave {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Enregistrer") { onSave(configurationSnapshot()) }
+                }
+            }
+        }
     }
 
     private var wizard: some View {
@@ -256,17 +266,6 @@ struct AlveolarPartitionConfiguratorView: View {
 
     private var resultStep: some View {
         VStack(alignment: .leading, spacing: 18) {
-            sectionTitle("Synthèse de l’ouvrage")
-            formCard {
-                summaryRow("Hauteur", format(height, "m"))
-                Divider()
-                summaryRow("Longueur", format(actualLength, "m"))
-                Divider()
-                summaryRow("Surface", format(actualArea, "m²"))
-                Divider()
-                summaryRow("Traitement des joints", jointTreatment ? compound.rawValue : "Non prévu")
-            }
-
             sectionTitle("Quantitatif indicatif")
             formCard {
                 ForEach(Array(resultRows.enumerated()), id: \.offset) { index, row in
@@ -274,7 +273,30 @@ struct AlveolarPartitionConfiguratorView: View {
                     summaryRow(row.0, row.1)
                 }
             }
+            DisclosureGroup(isExpanded: $configurationExpanded) {
+                formCard {
+                    editableConfigurationRow("Hauteur", value: format(height, "m"), targetStep: 1); Divider()
+                    editableConfigurationRow("Longueur", value: format(actualLength, "m"), targetStep: 1); Divider()
+                    editableConfigurationRow("Surface", value: format(actualArea, "m²"), targetStep: 1); Divider()
+                    editableConfigurationRow("Traitement des joints", value: jointTreatment ? compound.rawValue : "Non prévu", targetStep: 3)
+                }.padding(.top, 8)
+            } label: { sectionTitle("Configuration retenue") }
         }
+    }
+
+    private func editableConfigurationRow(_ title: String, value: String, targetStep: Int) -> some View {
+        Button {
+            withAnimation { step = targetStep }
+        } label: {
+            HStack(spacing: 8) {
+                Text(title)
+                Spacer()
+                Text(value).foregroundStyle(.secondary).multilineTextAlignment(.trailing)
+                Image(systemName: "chevron.right").font(.caption.weight(.semibold)).foregroundStyle(.tertiary)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
     }
 
     private func panelCard(_ allocation: Binding<AlveolarPanelAllocation>) -> some View {
@@ -506,8 +528,7 @@ struct AlveolarPartitionConfiguratorView: View {
         HStack {
             Text(title)
             Spacer()
-            TextField("0", value: value, format: .number.precision(.fractionLength(0...2)))
-                .keyboardType(.decimalPad)
+            ZeroEmptyDecimalTextField(value: value)
                 .multilineTextAlignment(.trailing)
                 .frame(maxWidth: 90)
             Text(unit).foregroundStyle(.secondary)

@@ -72,12 +72,18 @@ struct CombinedQuantityView: View {
             } else if let summary {
                 List {
                     Section("Ouvrages inclus") {
-                        ForEach(works) { work in LabeledContent(work.name, value: format(work.area) + " m²") }
+                        ForEach(works) { work in
+                            if work.type == .openings {
+                                LabeledContent(work.name, value: "\(work.openingConfiguration?.openings.count ?? 0) ouverture(s)")
+                            } else {
+                                LabeledContent(work.name, value: format(work.area) + " m²")
+                            }
+                        }
                         LabeledContent("Surface totale", value: format(summary.totalArea) + " m²").fontWeight(.semibold)
                     }
                     Section("Fournitures totales indicatives") {
-                        ForEach(summary.supplies) { supply in
-                            LabeledContent(supply.name, value: displayQuantity(supply.quantity, unit: supply.unit) + " " + supply.unit)
+                        ForEach(supplyRows(summary.supplies)) { row in
+                            LabeledContent(row.name, value: row.value)
                         }
                     }
                 }
@@ -89,8 +95,10 @@ struct CombinedQuantityView: View {
     }
 
     private func format(_ value: Double) -> String { value.formatted(.number.precision(.fractionLength(0...2))) }
-    private func displayQuantity(_ value: Double, unit: String) -> String {
-        unit == "unité" || unit.contains("plaque") ? String(Int(ceil(value))) : format(value)
+    private func supplyRows(_ supplies: [CombinedSupply]) -> [SupplyListingRow] {
+        SupplyListingConsolidator.rows(supplies.map {
+            .init(name: $0.name, quantity: $0.quantity, unit: $0.unit)
+        })
     }
 }
 
@@ -113,12 +121,23 @@ enum CombinedQuantityCalculator {
 
         func add(name: String, quantity: Double, unit: String) {
             guard quantity > 0 else { return }
+            let name = SupplyListingConsolidator.canonicalName(name)
+            let unit = SupplyListingConsolidator.canonicalUnit(unit)
             let key = "\(name)|\(unit)"
             let previous = totals[key]?.quantity ?? 0
             totals[key] = CombinedSupply(name: name, quantity: previous + quantity, unit: unit)
         }
 
         for work in works {
+            if work.type == .openings, let configuration = work.openingConfiguration {
+                let results = configuration.openings.map {
+                    OpeningQuantityCalculator.calculate($0, context: configuration.context)
+                }
+                for item in OpeningQuantityCalculator.totals(results) {
+                    add(name: item.name, quantity: item.quantity, unit: item.unit.rawValue)
+                }
+                continue
+            }
             if work.type == .ceilingOnRailsAndStuds, let ceiling = work.railStudCeilingConfiguration {
                 totalArea += ceiling.effectiveArea
                 for item in ceiling.quantities { add(name: item.name, quantity: item.quantity, unit: item.unit) }
@@ -244,6 +263,7 @@ private extension WorkItem {
         case .peripheralLiningBonded: return bondedLiningConfiguration?.area ?? 0
         case .peripheralLiningFurrings: return furringLiningConfiguration?.area ?? 0
         case .peripheralLiningAdhesiveFacing: return adhesiveFacingConfiguration?.area ?? 0
+        case .openings: return 0
         }
     }
 }

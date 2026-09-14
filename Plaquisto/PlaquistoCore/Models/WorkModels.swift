@@ -59,6 +59,18 @@ struct DoublageFacingSelection: Identifiable, Codable, Equatable, Hashable {
     }
 }
 
+protocol OpeningFacingSelection {
+    var openingFacingID: String { get }
+}
+
+extension DoublageFacingSelection: OpeningFacingSelection {
+    var openingFacingID: String { facingID }
+}
+
+extension FurringFacingSelection: OpeningFacingSelection {
+    var openingFacingID: String { facingID }
+}
+
 struct DoublageInsulationSelection: Codable, Equatable, Hashable {
     var familyID: String = ""
     var lambda: Double = 0
@@ -250,6 +262,10 @@ struct FurringLiningConfiguration: Codable, Equatable {
     var tiledArea = false
     var tiledAreaSurface: Double = 0
     var selectedSupportLines = 1
+    // Optional so configurations saved before the spacing was persisted remain decodable.
+    var furringSpacing: Double? = nil
+    // Optional so configurations saved before this choice remain decodable.
+    var includesHorizontalSupportFurring: Bool? = nil
     var insulationEnabled = true
     var firstInsulation = FurringInsulationSelection()
     var vaporBarrier = false
@@ -265,7 +281,7 @@ enum WorkCategory: String, Codable, CaseIterable, Identifiable {
     case ceilings = "plafonds"
     case partitions = "cloisons"
     case wallInsulation = "isolation-murs"
-    case specificWorks = "ouvrages-specifiques"
+    case openings = "ouvertures"
 
     var id: String { rawValue }
     var title: String {
@@ -273,7 +289,7 @@ enum WorkCategory: String, Codable, CaseIterable, Identifiable {
         case .ceilings: "Les plafonds"
         case .partitions: "Les cloisons"
         case .wallInsulation: "L’isolation des murs"
-        case .specificWorks: "Ouvrages spécifiques"
+        case .openings: "Les ouvertures"
         }
     }
 }
@@ -287,6 +303,7 @@ enum WorkType: String, Codable, CaseIterable, Identifiable {
     case peripheralLiningBonded = "doublage-peripherique-complexe-colle"
     case peripheralLiningFurrings = "doublage-peripherique-lisses-fourrures"
     case peripheralLiningAdhesiveFacing = "doublage-peripherique-parement-colle"
+    case openings = "ouvertures"
 
     var id: String { rawValue }
     var category: WorkCategory {
@@ -294,6 +311,7 @@ enum WorkType: String, Codable, CaseIterable, Identifiable {
         case .ceilingOnFurring, .ceilingOnRailsAndStuds: .ceilings
         case .peripheralLiningStuds, .peripheralLiningBonded, .peripheralLiningFurrings, .peripheralLiningAdhesiveFacing: .wallInsulation
         case .distributionPartition, .alveolarPartition: .partitions
+        case .openings: .openings
         }
     }
     var title: String {
@@ -306,6 +324,7 @@ enum WorkType: String, Codable, CaseIterable, Identifiable {
         case .peripheralLiningBonded: "Doublage périphérique — Complexe collé"
         case .peripheralLiningFurrings: "Doublage périphérique — Lisses et fourrures"
         case .peripheralLiningAdhesiveFacing: "Doublage périphérique — Parement collé"
+        case .openings: "Ouvertures"
         }
     }
     var defaultNameBase: String {
@@ -318,7 +337,28 @@ enum WorkType: String, Codable, CaseIterable, Identifiable {
         case .peripheralLiningBonded: "Doublage périphérique en complexe collé"
         case .peripheralLiningFurrings: "Doublage périphérique sur lisses et fourrures"
         case .peripheralLiningAdhesiveFacing: "Doublage périphérique en parement collé"
+        case .openings: "Ouvertures"
         }
+    }
+
+    /// Intitulé volontairement simple utilisé dans le nom visible d'un ouvrage.
+    /// Le détail constructif complet reste affiché séparément via `title`.
+    var simpleTitle: String {
+        switch self {
+        case .ceilingOnFurring, .ceilingOnRailsAndStuds:
+            "Plafond"
+        case .peripheralLiningStuds, .peripheralLiningBonded, .peripheralLiningFurrings, .peripheralLiningAdhesiveFacing:
+            "Doublage périphérique"
+        case .distributionPartition, .alveolarPartition:
+            "Cloison"
+        case .openings:
+            "Ouvertures"
+        }
+    }
+
+    func generatedName(roomName: String) -> String {
+        let room = roomName.trimmingCharacters(in: .whitespacesAndNewlines)
+        return room.isEmpty ? simpleTitle : "\(room) - \(simpleTitle)"
     }
 }
 
@@ -331,9 +371,10 @@ enum WorkConfiguration: Codable, Equatable {
     case bondedLining(BondedLiningConfiguration)
     case furringLining(FurringLiningConfiguration)
     case adhesiveFacing(AdhesiveFacingConfiguration)
+    case openings(OpeningConfiguration)
 
     private enum CodingKeys: String, CodingKey { case kind, data }
-    private enum Kind: String, Codable { case ceiling, railStudCeiling, peripheralLining, distributionPartition, alveolarPartition, bondedLining, furringLining, adhesiveFacing }
+    private enum Kind: String, Codable { case ceiling, railStudCeiling, peripheralLining, distributionPartition, alveolarPartition, bondedLining, furringLining, adhesiveFacing, openings }
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
@@ -354,6 +395,8 @@ enum WorkConfiguration: Codable, Equatable {
             self = .furringLining(try container.decode(FurringLiningConfiguration.self, forKey: .data))
         case .adhesiveFacing:
             self = .adhesiveFacing(try container.decode(AdhesiveFacingConfiguration.self, forKey: .data))
+        case .openings:
+            self = .openings(try container.decode(OpeningConfiguration.self, forKey: .data))
         }
     }
 
@@ -383,6 +426,9 @@ enum WorkConfiguration: Codable, Equatable {
             try container.encode(configuration, forKey: .data)
         case .adhesiveFacing(let configuration):
             try container.encode(Kind.adhesiveFacing, forKey: .kind)
+            try container.encode(configuration, forKey: .data)
+        case .openings(let configuration):
+            try container.encode(Kind.openings, forKey: .kind)
             try container.encode(configuration, forKey: .data)
         }
     }
@@ -437,6 +483,18 @@ struct WorkItem: Identifiable, Equatable {
         return configuration
     }
 
+    var openingConfiguration: OpeningConfiguration? {
+        guard case .openings(let configuration) = payload else { return nil }
+        return configuration
+    }
+
+    /// Pièce déduite des nouveaux noms `Pièce - Ouvrage`. Pour les données
+    /// historiques, le nom complet reste proposé afin qu'il puisse être corrigé.
+    var inferredRoomName: String {
+        guard let separator = name.range(of: " - ") else { return name }
+        return String(name[..<separator.lowerBound]).trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     init(id: UUID, projectID: UUID, name: String, type: WorkType, payload: WorkConfiguration, createdAt: Date, updatedAt: Date) {
         self.id = id
         self.projectID = projectID
@@ -477,6 +535,10 @@ struct WorkItem: Identifiable, Equatable {
 
     init(id: UUID, projectID: UUID, name: String, type: WorkType, adhesiveFacingConfiguration: AdhesiveFacingConfiguration, createdAt: Date, updatedAt: Date) {
         self.init(id: id, projectID: projectID, name: name, type: type, payload: .adhesiveFacing(adhesiveFacingConfiguration), createdAt: createdAt, updatedAt: updatedAt)
+    }
+
+    init(id: UUID, projectID: UUID, name: String, type: WorkType, openingConfiguration: OpeningConfiguration, createdAt: Date, updatedAt: Date) {
+        self.init(id: id, projectID: projectID, name: name, type: type, payload: .openings(openingConfiguration), createdAt: createdAt, updatedAt: updatedAt)
     }
 }
 

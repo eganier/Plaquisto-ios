@@ -1,5 +1,12 @@
 import Foundation
 
+struct OpeningJoineryConflict: Equatable {
+    let openingCount: Int
+    let minimumDepth: Double
+    let smallestEnteredDepth: Double
+    let maximumCompatibleInsulationThickness: Double
+}
+
 @MainActor
 final class ProjectStore: ObservableObject {
     @Published private(set) var projects: [ProjectItem] = []
@@ -27,10 +34,12 @@ final class ProjectStore: ObservableObject {
 
     func project(id: UUID) -> ProjectItem? { projects.first { $0.id == id } }
 
-    func workNameExists(projectID: UUID, name: String) -> Bool {
+    func workNameExists(projectID: UUID, name: String, excluding workID: UUID? = nil) -> Bool {
         guard let project = project(id: projectID) else { return false }
         let normalizedName = name.normalizedForComparison
-        return project.works.contains { $0.name.normalizedForComparison == normalizedName }
+        return project.works.contains {
+            $0.id != workID && $0.name.normalizedForComparison == normalizedName
+        }
     }
 
     func defaultWorkName(projectID: UUID, type: WorkType) -> String {
@@ -40,6 +49,154 @@ final class ProjectStore: ObservableObject {
             number += 1
         }
         return "\(baseName) \(number)"
+    }
+
+    func openingHeightSuggestions(projectID: UUID) -> [OpeningWorkSystem: OpeningHeightSuggestion] {
+        openingHeightOptions(projectID: projectID).compactMapValues(\.first)
+    }
+
+    /// Contrôle les tapées des ouvertures liées avec la composition actuelle du
+    /// doublage. Le résultat est recalculé à chaque publication du chantier.
+    func openingJoineryConflict(projectID: UUID, referenceWorkID: UUID) -> OpeningJoineryConflict? {
+        guard let project = project(id: projectID),
+              let referenceWork = project.works.first(where: { $0.id == referenceWorkID }),
+              let reference = openingHeightOptions(projectID: projectID)
+                .values
+                .flatMap({ $0 })
+                .first(where: { $0.sourceWorkID == referenceWorkID }),
+              let minimumDepth = reference.minimumJoineryLiningDepth else { return nil }
+
+        let incompatibleDepths = project.works.compactMap(\.openingConfiguration)
+            .filter { $0.sourceWorkID == referenceWorkID }
+            .flatMap(\.openings)
+            .compactMap { opening -> Double? in
+                guard opening.mountingMode == .onJoineryLining,
+                      let depth = opening.revealDepth,
+                      depth > 0,
+                      depth + 0.000_1 < minimumDepth else { return nil }
+                return depth
+            }
+
+        guard let smallestDepth = incompatibleDepths.min() else { return nil }
+        let currentInsulationThickness: Double = switch referenceWork.type {
+        case .peripheralLiningFurrings:
+            Double(referenceWork.furringLiningConfiguration?.firstInsulation.thicknessMM ?? 0) / 1_000
+        case .peripheralLiningStuds:
+            referenceWork.doublageConfiguration.map { configuration in
+                let millimeters = configuration.insulationEnabled
+                    ? configuration.firstInsulation.thicknessMM + (configuration.insulationLayers == 2 ? configuration.secondInsulation.thicknessMM : 0)
+                    : 0
+                return Double(millimeters) / 1_000
+            } ?? 0
+        default:
+            0
+        }
+        let fixedCompositionDepth = max(0, minimumDepth - currentInsulationThickness)
+        return OpeningJoineryConflict(
+            openingCount: incompatibleDepths.count,
+            minimumDepth: minimumDepth,
+            smallestEnteredDepth: smallestDepth,
+            maximumCompatibleInsulationThickness: max(0, smallestDepth - fixedCompositionDepth)
+        )
+    }
+
+    func openingHeightOptions(projectID: UUID) -> [OpeningWorkSystem: [OpeningHeightSuggestion]] {
+        guard let works = project(id: projectID)?.works else { return [:] }
+
+        func height(of work: WorkItem) -> Double? {
+            switch work.type {
+            case .peripheralLiningStuds:
+                work.doublageConfiguration?.height
+            case .distributionPartition:
+                work.cloisonDistributionConfiguration?.height
+            case .alveolarPartition:
+                work.alveolarPartitionConfiguration?.height
+            case .peripheralLiningBonded:
+                work.bondedLiningConfiguration?.height
+            case .peripheralLiningFurrings:
+                work.furringLiningConfiguration?.height
+            case .peripheralLiningAdhesiveFacing:
+                work.adhesiveFacingConfiguration?.height
+            case .ceilingOnFurring, .ceilingOnRailsAndStuds, .openings:
+                nil
+            }
+        }
+
+        func suggestions(types: Set<WorkType>) -> [OpeningHeightSuggestion] {
+            works.compactMap { work in
+                guard types.contains(work.type), let value = height(of: work), value > 0 else { return nil }
+                let framing: (spacing: Double, doubled: Bool) = switch work.type {
+                case .peripheralLiningStuds:
+                    (work.doublageConfiguration?.spacing ?? 0.60, work.doublageConfiguration?.doubledStuds ?? false)
+                case .distributionPartition:
+                    (work.cloisonDistributionConfiguration?.spacing ?? 0.60, work.cloisonDistributionConfiguration?.doubledStuds ?? false)
+                case .peripheralLiningFurrings:
+                    (work.furringLiningConfiguration?.furringSpacing ?? 0.60, false)
+                default:
+                    (0.60, false)
+                }
+                let minimumJoineryLiningDepth: Double? = switch work.type {
+                case .peripheralLiningFurrings:
+                    work.furringLiningConfiguration.map { configuration in
+                        let insulation = configuration.insulationEnabled ? configuration.firstInsulation.thicknessMM : 0
+                        let facing = facingThicknessMM(
+                            layers: [configuration.firstSkin, configuration.secondSkin, configuration.thirdSkin],
+                            activeLayerCount: configuration.layers,
+                            quantityNames: configuration.quantities.map(\.name)
+                        )
+                        return Double(insulation) / 1_000 + 0.015 + facing / 1_000
+                    }
+                case .peripheralLiningStuds:
+                    work.doublageConfiguration.map { configuration in
+                        let insulation = configuration.insulationEnabled
+                            ? configuration.firstInsulation.thicknessMM + (configuration.insulationLayers == 2 ? configuration.secondInsulation.thicknessMM : 0)
+                            : 0
+                        let facing = facingThicknessMM(
+                            layers: [configuration.firstSkin, configuration.secondSkin],
+                            activeLayerCount: configuration.layers,
+                            quantityNames: configuration.quantities.map(\.name)
+                        )
+                        return Double(insulation) / 1_000 + facing / 1_000
+                    }
+                default:
+                    nil
+                }
+                return OpeningHeightSuggestion(
+                    sourceWorkID: work.id,
+                    height: value,
+                    sourceWorkName: work.name,
+                    spacing: framing.spacing,
+                    doubledStuds: framing.doubled,
+                    minimumJoineryLiningDepth: minimumJoineryLiningDepth
+                )
+            }
+        }
+
+        return [
+            .furringLining: suggestions(types: [.peripheralLiningFurrings]),
+            .railStudLining: suggestions(types: [.peripheralLiningStuds]),
+            .distributionPartition: suggestions(types: [.distributionPartition, .alveolarPartition])
+        ].filter { !$0.value.isEmpty }
+    }
+
+    private func facingThicknessMM<Selection>(
+        layers: [[Selection]],
+        activeLayerCount: Int,
+        quantityNames: [String]
+    ) -> Double where Selection: OpeningFacingSelection {
+        let selectedLayers = layers.prefix(max(0, activeLayerCount))
+        return selectedLayers.reduce(0) { total, layer in
+            let candidates = layer.map(\.openingFacingID) + quantityNames
+            return total + (candidates.compactMap(Self.plasterboardThicknessMM).first ?? 13)
+        }
+    }
+
+    private static func plasterboardThicknessMM(in text: String) -> Double? {
+        let normalized = text.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+        guard let expression = try? NSRegularExpression(pattern: #"ba\s*([0-9]{2})"#),
+              let match = expression.firstMatch(in: normalized, range: NSRange(normalized.startIndex..., in: normalized)),
+              let range = Range(match.range(at: 1), in: normalized) else { return nil }
+        return Double(normalized[range])
     }
 
     func createProject(name: String, client: String, address: String, notes: String) throws -> UUID {
@@ -208,6 +365,26 @@ final class ProjectStore: ObservableObject {
         return work.id
     }
 
+    func createWork(projectID: UUID, name: String, type: WorkType, openingConfiguration: OpeningConfiguration) throws -> UUID {
+        var next = projects
+        guard let projectIndex = next.firstIndex(where: { $0.id == projectID }) else { throw StoreError.projectNotFound }
+        try validateWorkName(name, in: next[projectIndex])
+        let now = Date()
+        let work = WorkItem(
+            id: UUID(),
+            projectID: projectID,
+            name: name.trimmed,
+            type: type,
+            openingConfiguration: openingConfiguration,
+            createdAt: now,
+            updatedAt: now
+        )
+        next[projectIndex].works.insert(work, at: 0)
+        next[projectIndex].updatedAt = now
+        try commit(next)
+        return work.id
+    }
+
     func updateWork(_ work: WorkItem, configuration: CeilingConfiguration) throws {
         var next = projects
         guard let projectIndex = next.firstIndex(where: { $0.id == work.projectID }),
@@ -288,6 +465,66 @@ final class ProjectStore: ObservableObject {
         try commit(next)
     }
 
+    func updateWork(_ work: WorkItem, openingConfiguration: OpeningConfiguration) throws {
+        var next = projects
+        guard let projectIndex = next.firstIndex(where: { $0.id == work.projectID }),
+              let workIndex = next[projectIndex].works.firstIndex(where: { $0.id == work.id }) else { throw StoreError.workNotFound }
+        next[projectIndex].works[workIndex].payload = .openings(openingConfiguration)
+        if let roomName = openingRoomName(for: openingConfiguration, in: next[projectIndex]), !roomName.isEmpty {
+            let generatedName = WorkType.openings.generatedName(roomName: roomName)
+            if !next[projectIndex].works.contains(where: {
+                $0.id != work.id && $0.name.normalizedForComparison == generatedName.normalizedForComparison
+            }) {
+                next[projectIndex].works[workIndex].name = generatedName
+            }
+        }
+        next[projectIndex].works[workIndex].updatedAt = Date()
+        next[projectIndex].updatedAt = Date()
+        try commit(next)
+    }
+
+    func renameWork(projectID: UUID, workID: UUID, roomName: String) throws {
+        var next = projects
+        guard let projectIndex = next.firstIndex(where: { $0.id == projectID }),
+              let workIndex = next[projectIndex].works.firstIndex(where: { $0.id == workID }) else {
+            throw StoreError.workNotFound
+        }
+
+        let cleanRoomName = roomName.trimmed
+        guard !cleanRoomName.isEmpty else { throw StoreError.invalidWorkName }
+        let work = next[projectIndex].works[workIndex]
+        let generatedName = work.type.generatedName(roomName: cleanRoomName)
+        try validateWorkName(generatedName, in: next[projectIndex], excluding: workID)
+
+        let now = Date()
+        next[projectIndex].works[workIndex].name = generatedName
+        next[projectIndex].works[workIndex].updatedAt = now
+
+        if work.type == .openings,
+           case .openings(var configuration) = next[projectIndex].works[workIndex].payload {
+            configuration.roomName = cleanRoomName
+            next[projectIndex].works[workIndex].payload = .openings(configuration)
+        } else {
+            for index in next[projectIndex].works.indices {
+                guard case .openings(var configuration) = next[projectIndex].works[index].payload,
+                      configuration.sourceWorkID == workID else { continue }
+                let openingName = WorkType.openings.generatedName(roomName: cleanRoomName)
+                let conflicts = next[projectIndex].works.contains {
+                    $0.id != next[projectIndex].works[index].id &&
+                    $0.name.normalizedForComparison == openingName.normalizedForComparison
+                }
+                guard !conflicts else { continue }
+                configuration.roomName = cleanRoomName
+                next[projectIndex].works[index].payload = .openings(configuration)
+                next[projectIndex].works[index].name = openingName
+                next[projectIndex].works[index].updatedAt = now
+            }
+        }
+
+        next[projectIndex].updatedAt = now
+        try commit(next)
+    }
+
     @discardableResult
     func duplicateWork(projectID: UUID, workID: UUID) throws -> UUID {
         var next = projects
@@ -318,12 +555,22 @@ final class ProjectStore: ObservableObject {
         try commit(next)
     }
 
-    private func validateWorkName(_ name: String, in project: ProjectItem) throws {
+    private func validateWorkName(_ name: String, in project: ProjectItem, excluding workID: UUID? = nil) throws {
         let normalizedName = name.normalizedForComparison
         guard !normalizedName.isEmpty else { throw StoreError.invalidWorkName }
-        guard !project.works.contains(where: { $0.name.normalizedForComparison == normalizedName }) else {
+        guard !project.works.contains(where: {
+            $0.id != workID && $0.name.normalizedForComparison == normalizedName
+        }) else {
             throw StoreError.duplicateWorkName
         }
+    }
+
+    private func openingRoomName(for configuration: OpeningConfiguration, in project: ProjectItem) -> String? {
+        if let sourceWorkID = configuration.sourceWorkID,
+           let source = project.works.first(where: { $0.id == sourceWorkID }) {
+            return source.inferredRoomName
+        }
+        return configuration.roomName?.trimmed
     }
 
     private func load() {

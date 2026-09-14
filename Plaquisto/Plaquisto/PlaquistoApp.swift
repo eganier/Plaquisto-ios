@@ -22,12 +22,7 @@ private struct PlaquistoRootView: View {
                 .tabItem { Label("Chantiers", systemImage: "building.2") }
                 .tag(AppTab.projects)
 
-            AppSectionPlaceholder(
-                title: "Scanner",
-                symbol: "viewfinder",
-                message: "Les relevés LiDAR pourront être rattachés directement à un chantier.",
-                onOpenAccount: { showingAccount = true }
-            )
+            ScannerDebugView(onOpenAccount: { showingAccount = true })
             .tabItem { Label("Scanner", systemImage: "viewfinder") }
             .tag(AppTab.scanner)
 

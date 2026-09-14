@@ -8,6 +8,7 @@ struct BondedLiningConfiguratorView: View {
     let onSave: (BondedLiningConfiguration) -> Void
     let onClose: () -> Void
     let showsCloseButton: Bool
+    private let isEditing: Bool
 
     @State private var step: Int
     @State private var geometryMode: GeometryMode
@@ -23,6 +24,7 @@ struct BondedLiningConfiguratorView: View {
     @State private var selectedHeightMM: Int
     @State private var jointTreatment: Bool
     @State private var showPanelHeightWarning = false
+    @State private var configurationExpanded = false
 
     private let green = Color(red: 0.12, green: 0.38, blue: 0.29)
     private let stepNames = ["Dimensions", "Parement", "Isolation et tapée", "Format", "Bandes à joint", "Résultat"]
@@ -51,6 +53,7 @@ struct BondedLiningConfiguratorView: View {
         self.onSave = onSave
         self.onClose = onClose
         self.showsCloseButton = showsCloseButton
+        self.isEditing = initialConfiguration != nil
     }
 
     private var actualLength: Double { geometryMode == .length ? enteredLength : (height > 0 ? enteredSurface / height : 0) }
@@ -98,6 +101,13 @@ struct BondedLiningConfiguratorView: View {
             }
         }
         .onChange(of: selectedRevealMM) { _, _ in applyRecommendedThickness() }
+        .toolbar {
+            if isEditing {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Enregistrer") { onSave(configuration) }
+                }
+            }
+        }
         .alert("Hauteur de panneau insuffisante", isPresented: $showPanelHeightWarning) {
             Button("Revenir au choix", role: .cancel) {}
             Button("Continuer malgré tout") { step += 1 }
@@ -225,19 +235,35 @@ struct BondedLiningConfiguratorView: View {
 
     private var resultStep: some View {
         VStack(alignment: .leading, spacing: 18) {
-            sectionTitle("Configuration retenue")
-            card {
-                LabeledContent("Dimensions", value: "\(format(actualLength, "m")) × \(format(height, "m"))"); Divider()
-                LabeledContent("Surface", value: format(actualArea, "m²")); Divider()
-                LabeledContent("Lambda", value: "λ \(selectedLambda.formatted(.number.precision(.fractionLength(3)))) W/(m·K)"); Divider()
-                LabeledContent("Complexe", value: "13+\(selectedThicknessMM)"); Divider()
-                LabeledContent("Résistance thermique", value: "R = \(thermalResistance.formatted(.number.precision(.fractionLength(2)))) m²·K/W"); Divider()
-                LabeledContent("Tapée", value: revealMode == .none ? "Aucune tapée à respecter" : "\(selectedRevealMM) mm"); Divider()
-                LabeledContent("Format", value: "\(selectedWidthMM) × \(selectedHeightMM) mm")
-            }
             sectionTitle("Quantitatif indicatif")
             card { ForEach(configuration.quantities) { item in LabeledContent(item.name, value: format(item.quantity, item.unit)); if item.id != configuration.quantities.last?.id { Divider() } } }
+            DisclosureGroup(isExpanded: $configurationExpanded) {
+                card {
+                    editableConfigurationRow("Dimensions", value: "\(format(actualLength, "m")) × \(format(height, "m"))", targetStep: 1); Divider()
+                    editableConfigurationRow("Surface", value: format(actualArea, "m²"), targetStep: 1); Divider()
+                    editableConfigurationRow("Lambda", value: "λ \(selectedLambda.formatted(.number.precision(.fractionLength(3)))) W/(m·K)", targetStep: 3); Divider()
+                    editableConfigurationRow("Complexe", value: "13+\(selectedThicknessMM)", targetStep: 3); Divider()
+                    editableConfigurationRow("Résistance thermique", value: "R = \(thermalResistance.formatted(.number.precision(.fractionLength(2)))) m²·K/W", targetStep: 3); Divider()
+                    editableConfigurationRow("Tapée", value: revealMode == .none ? "Aucune tapée à respecter" : "\(selectedRevealMM) mm", targetStep: 3); Divider()
+                    editableConfigurationRow("Format", value: "\(selectedWidthMM) × \(selectedHeightMM) mm", targetStep: 4)
+                }.padding(.top, 8)
+            } label: { sectionTitle("Configuration retenue") }
         }
+    }
+
+    private func editableConfigurationRow(_ title: String, value: String, targetStep: Int) -> some View {
+        Button {
+            withAnimation { step = targetStep }
+        } label: {
+            HStack(spacing: 8) {
+                Text(title)
+                Spacer()
+                Text(value).foregroundStyle(.secondary).multilineTextAlignment(.trailing)
+                Image(systemName: "chevron.right").font(.caption.weight(.semibold)).foregroundStyle(.tertiary)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
     }
 
     private var configuration: BondedLiningConfiguration {
@@ -280,16 +306,20 @@ struct BondedLiningConfiguratorView: View {
     }
     private func normalizeFormat() {
         guard !availableWidths.isEmpty else { return }
-        if !availableWidths.contains(selectedWidthMM) { selectedWidthMM = availableWidths[0] }
+        if !availableWidths.contains(selectedWidthMM) {
+            selectedWidthMM = availableWidths.min(by: { abs($0 - 1_200) < abs($1 - 1_200) }) ?? availableWidths[0]
+        }
         normalizeHeight()
     }
     private func normalizeHeight() {
         guard !availableHeights.isEmpty else { return }
-        if !availableHeights.contains(selectedHeightMM) { selectedHeightMM = availableHeights.first(where: { Double($0) / 1000 >= height }) ?? availableHeights.last! }
+        if !availableHeights.contains(selectedHeightMM) {
+            selectedHeightMM = availableHeights.sorted().first(where: { Double($0) / 1000 >= height }) ?? availableHeights.max()!
+        }
     }
     private func normalizeHeightForWork() {
         guard !availableHeights.isEmpty, Double(selectedHeightMM) / 1000 < height else { return }
-        selectedHeightMM = availableHeights.first(where: { Double($0) / 1000 >= height }) ?? availableHeights.last!
+        selectedHeightMM = availableHeights.sorted().first(where: { Double($0) / 1000 >= height }) ?? availableHeights.max()!
     }
     private func continueForm() {
         if step == 1, allocations.count == 1, allocations[0].surface == 0 { allocations[0].surface = actualArea }
@@ -305,5 +335,5 @@ struct BondedLiningConfiguratorView: View {
 private struct BondedDecimalRow: View {
     let title: String; @Binding var value: Double; let unit: String
     init(_ title: String, value: Binding<Double>, unit: String) { self.title = title; _value = value; self.unit = unit }
-    var body: some View { HStack { Text(title); Spacer(); TextField("0", value: $value, format: .number).keyboardType(.decimalPad).multilineTextAlignment(.trailing).frame(minWidth: 58, maxWidth: 100); Text(unit).foregroundStyle(.secondary) } }
+    var body: some View { HStack { Text(title); Spacer(); ZeroEmptyDecimalTextField(value: $value).multilineTextAlignment(.trailing).frame(minWidth: 58, maxWidth: 100); Text(unit).foregroundStyle(.secondary) } }
 }

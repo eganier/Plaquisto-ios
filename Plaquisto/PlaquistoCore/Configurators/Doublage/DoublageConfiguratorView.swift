@@ -13,6 +13,7 @@ struct DoublageConfiguratorView: View {
     @EnvironmentObject private var references: DoublageReferenceStore
     private let onSave: ((DoublageConfiguration) -> Void)?
     private let onClose: (() -> Void)?
+    private let isEditing: Bool
     @State private var step = 1
     @State private var geometryMode = GeometryMode.length
     @State private var height = 0.0
@@ -38,17 +39,20 @@ struct DoublageConfiguratorView: View {
     @State private var jointTreatment = true
     @State private var compound = Compound.powder
     @State private var showPlateHeightWarning = false
+    @State private var configurationExpanded = false
 
     init(
         initialConfiguration: DoublageConfiguration? = nil,
         startsAtResult: Bool = false,
+        initialStep: Int? = nil,
         onSave: ((DoublageConfiguration) -> Void)? = nil,
         onClose: (() -> Void)? = nil
     ) {
         let configuration = initialConfiguration ?? DoublageConfiguration()
         self.onSave = onSave
         self.onClose = onClose
-        _step = State(initialValue: startsAtResult ? 6 : 1)
+        self.isEditing = initialConfiguration != nil
+        _step = State(initialValue: initialStep ?? (startsAtResult ? 6 : 1))
         _geometryMode = State(initialValue: configuration.geometryMode == "surface" ? .surface : .length)
         _height = State(initialValue: configuration.height)
         _enteredLength = State(initialValue: configuration.enteredLength)
@@ -128,6 +132,13 @@ struct DoublageConfiguratorView: View {
         .onChange(of: secondSkin) { _, _ in normalizeSelections() }
         .onChange(of: tiledArea) { _, enabled in if !enabled { tiledAreaSurface = 0 } }
         .onChange(of: insulationFamilies.count, initial: true) { _, _ in initializeInsulationIfNeeded() }
+        .toolbar {
+            if isEditing, let onSave {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Enregistrer") { onSave(configurationSnapshot()) }
+                }
+            }
+        }
         .alert("Hauteur de plaque insuffisante", isPresented: $showPlateHeightWarning) {
             Button("Revenir au choix", role: .cancel) {}
             Button("Continuer malgré tout") { step += 1 }
@@ -413,18 +424,6 @@ struct DoublageConfiguratorView: View {
     private var resultStep: some View {
         VStack(alignment: .leading, spacing: 14) {
             info("Quantitatif calculé · \(format(actualArea, "m²")) · \(skinCount.rawValue.lowercased()) · entraxe courant \(Int(spacing * 100)) cm", icon: "checkmark.seal.fill", color: .green)
-            sectionTitle("Configuration retenue")
-            card {
-                LabeledContent("Technique", value: technique)
-                Divider(); LabeledContent("Ossature", value: frameDisplayName(frame))
-                Divider(); LabeledContent("Montage", value: mounting.rawValue)
-                Divider(); LabeledContent("Surface carrelée", value: tiledArea ? format(effectiveTiledArea, "m²") : "Non")
-                Divider(); LabeledContent("Nombre de murs", value: specifiesWallCount ? "\(wallCount)" : "Non renseigné")
-                Divider(); LabeledContent("Appuis intermédiaires", value: intermediateSupports ? "Oui" : "Non")
-                Divider(); LabeledContent("Isolation", value: insulationEnabled ? insulationLayerCount.rawValue : "Non")
-                if insulationEnabled { Divider(); LabeledContent("Résistance thermique totale", value: "R = \(thermalResistanceTotal.formatted(.number.precision(.fractionLength(2)))) m²·K/W") }
-                Divider(); LabeledContent("Pare-vapeur", value: vaporBarrier ? "Oui" : "Non")
-            }
             sectionTitle("Quantitatif indicatif")
             card {
                 ForEach(Array(resultRows.enumerated()), id: \.offset) { index, row in
@@ -432,8 +431,36 @@ struct DoublageConfiguratorView: View {
                     LabeledContent(row.0, value: row.1)
                 }
             }
+            DisclosureGroup(isExpanded: $configurationExpanded) {
+                card {
+                    editableConfigurationRow("Technique", value: technique, targetStep: 3)
+                    Divider(); editableConfigurationRow("Ossature", value: frameDisplayName(frame), targetStep: 3)
+                    Divider(); editableConfigurationRow("Montage", value: mounting.rawValue, targetStep: 3)
+                    Divider(); editableConfigurationRow("Surface carrelée", value: tiledArea ? format(effectiveTiledArea, "m²") : "Non", targetStep: 2)
+                    Divider(); editableConfigurationRow("Nombre de murs", value: specifiesWallCount ? "\(wallCount)" : "Non renseigné", targetStep: 1)
+                    Divider(); editableConfigurationRow("Appuis intermédiaires", value: intermediateSupports ? "Oui" : "Non", targetStep: 3)
+                    Divider(); editableConfigurationRow("Isolation", value: insulationEnabled ? insulationLayerCount.rawValue : "Non", targetStep: 4)
+                    if insulationEnabled { Divider(); editableConfigurationRow("Résistance thermique totale", value: "R = \(thermalResistanceTotal.formatted(.number.precision(.fractionLength(2)))) m²·K/W", targetStep: 4) }
+                    Divider(); editableConfigurationRow("Pare-vapeur", value: vaporBarrier ? "Oui" : "Non", targetStep: 4)
+                }.padding(.top, 8)
+            } label: { sectionTitle("Configuration retenue") }
             if spacing != 0.4 && spacing != 0.6 { info("La visserie pour les entraxes de 45 et 90 cm reste à compléter dans Plaquisto Admin. Elle n’est pas estimée ici.", icon: "info.circle", color: .secondary) }
         }
+    }
+
+    private func editableConfigurationRow(_ title: String, value: String, targetStep: Int) -> some View {
+        Button {
+            withAnimation { step = targetStep }
+        } label: {
+            HStack(spacing: 8) {
+                Text(title)
+                Spacer()
+                Text(value).foregroundStyle(.secondary).multilineTextAlignment(.trailing)
+                Image(systemName: "chevron.right").font(.caption.weight(.semibold)).foregroundStyle(.tertiary)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
     }
 
     private var resultRows: [(String, String)] {
@@ -452,10 +479,8 @@ struct DoublageConfiguratorView: View {
             studCount += max(0, tiledBays - baseBays) * (mounting == .double ? 2 : 1)
         }
         let studs = Double(studCount) * height * 1.05
-        var rows = allocationRows(firstSkin, skinName: "1re peau")
-        if skinCount == .double {
-            rows += allocationRows(secondSkin, skinName: "2e peau")
-        }
+        let selectedFacings = firstSkin + (skinCount == .double ? secondSkin : [])
+        var rows = allocationRows(selectedFacings)
         rows += [("Rails", format(rails, "ml")), ("Montants", format(studs, "ml"))]
         if insulationEnabled {
             rows.append(("Isolation · 1re couche · \(insulationDescription(firstInsulation))", format(actualArea * (table.coefficients["insulation_m2_m2"] ?? 1.1), "m²")))
@@ -495,16 +520,28 @@ struct DoublageConfiguratorView: View {
         return nonTiledArea * standardValue + effectiveTiledArea * tiledValue
     }
 
-    private func allocationRows(_ allocations: [FacingAllocation], skinName: String) -> [(String, String)] {
-        allocations.flatMap { allocation -> [(String, String)] in
-            guard let facing = facing(for: allocation), let plateFormat = selectedFormat(allocation) else { return [] }
+    private func allocationRows(_ allocations: [FacingAllocation]) -> [(String, String)] {
+        typealias Group = (facing: DoublageFacingChoice, plateFormat: DoublageFacingFormat, plateCount: Int)
+        var groups: [String: Group] = [:]
+
+        for allocation in allocations {
+            guard let facing = facing(for: allocation), let plateFormat = selectedFormat(allocation) else { continue }
             let suppliedArea = allocation.surface * 1.05
             let plateArea = Double(plateFormat.widthMM * plateFormat.lengthMM) / 1_000_000
             let plateCount = Int(ceil(suppliedArea / max(plateArea, 0.01)))
-            return [
-                ("Parement · \(skinName) · \(facing.title)", format(suppliedArea, "m²")),
-                ("Plaques · \(plateFormat.title)", "\(plateCount) unités"),
-            ]
+            let key = "\(facing.id)|\(plateFormat.id)"
+            if var group = groups[key] {
+                group.plateCount += plateCount
+                groups[key] = group
+            } else {
+                groups[key] = (facing, plateFormat, plateCount)
+            }
+        }
+
+        return groups.values.sorted {
+            "\($0.facing.title)|\($0.plateFormat.title)" < "\($1.facing.title)|\($1.plateFormat.title)"
+        }.map { group in
+            ("\(group.facing.title) · \(group.plateFormat.title)", "\(group.plateCount) plaques")
         }
     }
 
@@ -648,8 +685,11 @@ struct DoublageConfiguratorView: View {
 
     private func preferredFormat(in formats: [DoublageFacingFormat]) -> DoublageFacingFormat? {
         let shortest: (DoublageFacingFormat, DoublageFacingFormat) -> Bool = { lhs, rhs in
+            let leftWidthPenalty = abs(lhs.widthMM - 1200)
+            let rightWidthPenalty = abs(rhs.widthMM - 1200)
+            if leftWidthPenalty != rightWidthPenalty { return leftWidthPenalty < rightWidthPenalty }
             if lhs.lengthMM != rhs.lengthMM { return lhs.lengthMM < rhs.lengthMM }
-            return abs(lhs.widthMM - 1200) < abs(rhs.widthMM - 1200)
+            return lhs.widthMM < rhs.widthMM
         }
         let fitting = formats.filter { Double($0.lengthMM) / 1000 >= height }.sorted(by: shortest)
         if let first = fitting.first { return first }
@@ -748,7 +788,7 @@ struct DoublageConfiguratorView: View {
 
     private func insulationFamilyBinding(_ selection: Binding<InsulationSelection>) -> Binding<String> {
         Binding(get: { selection.wrappedValue.familyID }, set: { familyID in
-            guard let family = insulationFamilies.first(where: { $0.id == familyID }), let lambda = family.lambdas.first else { return }
+            guard let family = insulationFamilies.first(where: { $0.id == familyID }), let lambda = preferredLambda(for: family) else { return }
             selection.wrappedValue = InsulationSelection(familyID: familyID, lambda: lambda.value, thicknessMM: lambda.thicknessesMM.first ?? 0)
         })
     }
@@ -766,10 +806,17 @@ struct DoublageConfiguratorView: View {
         guard let family = insulationFamilies.first(where: {
             $0.title.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current).contains("laine de verre")
         }) ?? insulationFamilies.first,
-        let lambda = family.lambdas.first else { return }
+        let lambda = preferredLambda(for: family) else { return }
         let fallback = InsulationSelection(familyID: family.id, lambda: lambda.value, thicknessMM: lambda.thicknessesMM.first ?? 0)
         if insulationFamily(firstInsulation) == nil { firstInsulation = fallback }
         if insulationFamily(secondInsulation) == nil { secondInsulation = fallback }
+    }
+
+    private func preferredLambda(for family: DoublageInsulationFamily) -> DoublageInsulationLambda? {
+        let material = family.title.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+        let target = material.contains("laine de bois") ? 0.036 : (material.contains("laine de verre") ? 0.032 : nil)
+        return target.flatMap { expected in family.lambdas.first(where: { abs($0.value - expected) < 0.000_001 }) }
+            ?? family.lambdas.first
     }
 
     private func insulationSelectionIsComplete(_ selection: InsulationSelection) -> Bool {
@@ -871,7 +918,7 @@ private struct DecimalRow: View {
     var body: some View {
         HStack {
             Text(title); Spacer()
-            TextField("0", value: $value, format: .number.precision(.fractionLength(0...2))).keyboardType(.decimalPad).multilineTextAlignment(.trailing).frame(maxWidth: 86)
+            ZeroEmptyDecimalTextField(value: $value).multilineTextAlignment(.trailing).frame(maxWidth: 86)
             Text(unit).foregroundStyle(.secondary)
         }
     }
