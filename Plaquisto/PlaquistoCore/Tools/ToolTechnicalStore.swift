@@ -81,6 +81,7 @@ final class ToolTechnicalStore: ObservableObject {
     @Published private(set) var furringSupports: [FurringSupportOption] = []
     @Published private(set) var insulationMasses: [InsulationMassOption] = []
     @Published private(set) var insulationSpacingBands: [InsulationSpacingBand] = []
+    @Published private(set) var layoutFormats: [LayoutCatalogFormat] = []
     @Published private(set) var isLoading = false
     @Published private(set) var isOffline = false
     @Published private(set) var error: String?
@@ -113,6 +114,14 @@ final class ToolTechnicalStore: ObservableObject {
 
     private func parse(_ data: Data) throws {
         guard let root = try JSONSerialization.jsonObject(with: data) as? [String: Any] else { throw URLError(.cannotParseResponse) }
+
+        layoutFormats = array(root["parements"]).flatMap { record -> [LayoutCatalogFormat] in
+            guard let id = record["id"] as? String, let title = record["title"] as? String else { return [] }
+            return array(dictionary(record["data"])?["dimensions"]).compactMap { dimension in
+                guard let width = number(dimension["width_mm"]), let length = number(dimension["length_mm"]), width > 0, length > 0 else { return nil }
+                return .init(id: "\(id)-\(width)-\(length)", title: title, width: width, length: length)
+            }
+        }
 
         let ceilingData = recordData(in: dictionary(root["plafondRailsMontants"]))
         ceilingSpans = array(ceilingData?["spans"]).compactMap { item in

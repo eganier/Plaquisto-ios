@@ -86,7 +86,7 @@ private struct ToolDestinationView: View {
         case .ceilingSpan: CeilingSpanToolView()
         case .partitionHeight: PartitionHeightToolView()
         case .furringSpacing: FurringSpacingToolView()
-        case .layout: ContentUnavailableView("Calepinage avec Astra", systemImage: "sparkles", description: Text("Le moteur polygonal interactif sera développé séparément avec Astra."))
+        case .layout: SheetLayoutView()
         case .liningHeight: LiningHeightToolView()
         case .vat: VATToolView()
         case .arch: ArchTemplateToolView()
