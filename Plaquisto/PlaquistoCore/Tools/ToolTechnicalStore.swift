@@ -24,6 +24,7 @@ struct PartitionHeightOption: Identifiable, Hashable {
     let id: String
     let type: String
     let frame: String
+    let frameWidthMM: Int
     let facing: String
     let layers: Int
     let heights: [String: Double]
@@ -50,6 +51,7 @@ struct FurringSupportOption: Identifiable, Hashable {
 struct InsulationMassOption: Identifiable, Hashable {
     let id: String
     let title: String
+    let material: String
     let lambda: Double
     let thicknessMM: Int
     let surfaceMass: Double
@@ -126,7 +128,15 @@ final class ToolTechnicalStore: ObservableObject {
                   let facing = item["facing_family"] as? String,
                   let layers = number(item["layers_per_face"]),
                   let rawHeights = item["heights"] as? [String: NSNumber] else { return nil }
-            return PartitionHeightOption(id: id, type: type, frame: frame, facing: facing, layers: Int(layers), heights: rawHeights.mapValues(\.doubleValue))
+            return PartitionHeightOption(
+                id: id,
+                type: type,
+                frame: frame,
+                frameWidthMM: Int(number(item["frame_width_mm"]) ?? 0),
+                facing: facing,
+                layers: Int(layers),
+                heights: rawHeights.mapValues(\.doubleValue)
+            )
         }
 
         let liningData = recordData(in: dictionary(root["doublage"]))
@@ -158,10 +168,13 @@ final class ToolTechnicalStore: ObservableObject {
             let id = record["id"] as? String ?? UUID().uuidString
             let title = record["title"] as? String ?? "Isolant"
             let data = dictionary(record["data"])
+            let material = data?["material"] as? String
+                ?? title.components(separatedBy: " · ").first
+                ?? title
             let lambda = number(data?["lambda_w_mk"]) ?? parsedLambda(data?["conductivity"] as? String ?? title)
             return array(data?["values"]).compactMap { value in
                 guard let thickness = number(value["thickness_mm"]), let mass = number(value["max_weight_kg_m2"]) else { return nil }
-                return .init(id: "\(id)-\(Int(thickness))", title: title, lambda: lambda, thicknessMM: Int(thickness), surfaceMass: mass)
+                return .init(id: "\(id)-\(Int(thickness))", title: title, material: material, lambda: lambda, thicknessMM: Int(thickness), surfaceMass: mass)
             }
         }.sorted { ($0.title, $0.thicknessMM) < ($1.title, $1.thicknessMM) }
 

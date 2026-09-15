@@ -36,7 +36,7 @@ struct ToolDefinition: Identifiable, Hashable {
 enum ToolCatalog {
     static let all: [ToolDefinition] = [
         .init(id: "thermal", title: "Résistance thermique", shortDescription: "Calculer R, l’épaisseur ou le lambda d’un isolant.", icon: "thermometer.medium", category: .isolation, keywords: ["R", "lambda", "épaisseur", "isolant"], destination: .thermal),
-        .init(id: "furring-spacing", title: "Entraxe selon l’isolant", shortDescription: "Contrôler la masse surfacique et la règle d’entraxe disponible.", icon: "arrow.left.and.right", category: .isolation, keywords: ["fourrure", "laine", "densité", "poids"], destination: .furringSpacing),
+        .init(id: "furring-spacing", title: "Entraxe des fourrures selon l’isolant", shortDescription: "Identifier l’entraxe recommandé entre fourrures selon la masse surfacique de l’isolant.", icon: "arrow.left.and.right", category: .isolation, keywords: ["fourrure", "laine", "densité", "poids", "masse surfacique"], destination: .furringSpacing),
         .init(id: "partition-height", title: "Hauteur de cloison", shortDescription: "Vérifier ou rechercher une configuration compatible.", icon: "rectangle.split.3x1", category: .partitions, keywords: ["montant", "rail", "entraxe", "BA13"], destination: .partitionHeight),
         .init(id: "lining-height", title: "Hauteur de doublage", shortDescription: "Contrôler un doublage sur montants ou fourrures.", icon: "square.3.layers.3d", category: .partitions, keywords: ["appui", "fourrure", "montant", "doublage"], destination: .liningHeight),
         .init(id: "ceiling-span", title: "Plafond autoportant", shortDescription: "Vérifier une portée ou trouver les montages compatibles.", icon: "rectangle.topthird.inset.filled", category: .ceilings, keywords: ["portée", "montant", "plafond", "autoportant"], destination: .ceilingSpan),
@@ -50,13 +50,6 @@ enum ToolCatalog {
         guard !normalized.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return all }
         return all.filter { $0.searchableText.contains(normalized) }
     }
-}
-
-enum ThermalMode: String, CaseIterable, Identifiable {
-    case resistance = "Trouver R"
-    case thickness = "Trouver l’épaisseur"
-    case lambda = "Trouver λ"
-    var id: String { rawValue }
 }
 
 enum ThermalCalculator {

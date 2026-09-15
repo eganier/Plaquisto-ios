@@ -1,39 +1,39 @@
 import SwiftUI
 
 struct ThermalToolView: View {
-    @State private var mode = ThermalMode.resistance
     @State private var thickness = 0.0
     @State private var lambda = 0.0
     @State private var resistance = 0.0
 
-    private var result: (String, String)? {
-        switch mode {
-        case .resistance:
-            return ThermalCalculator.resistance(thicknessMM: thickness, lambda: lambda).map { ("Résistance thermique", $0.formatted(.number.precision(.fractionLength(2))) + " m²·K/W") }
-        case .thickness:
-            return ThermalCalculator.thickness(resistance: resistance, lambda: lambda).map { ("Épaisseur nécessaire", $0.formatted(.number.precision(.fractionLength(0...1))) + " mm") }
-        case .lambda:
-            return ThermalCalculator.lambda(thicknessMM: thickness, resistance: resistance).map { ("Conductivité thermique", $0.formatted(.number.precision(.fractionLength(3))) + " W/(m·K)") }
+    private enum ValueKind: Equatable { case thickness, lambda, resistance }
+
+    private var computedKind: ValueKind? {
+        let filled = [thickness > 0, lambda > 0, resistance > 0].filter { $0 }.count
+        guard filled == 2 else { return nil }
+        if thickness <= 0 { return .thickness }
+        if lambda <= 0 { return .lambda }
+        return .resistance
+    }
+
+    private func computedValue(for kind: ValueKind) -> Double? {
+        guard computedKind == kind else { return nil }
+        switch kind {
+        case .thickness: return ThermalCalculator.thickness(resistance: resistance, lambda: lambda)
+        case .lambda: return ThermalCalculator.lambda(thicknessMM: thickness, resistance: resistance)
+        case .resistance: return ThermalCalculator.resistance(thicknessMM: thickness, lambda: lambda)
         }
     }
 
     var body: some View {
         Form {
             Section {
-                Picker("Calcul", selection: $mode) { ForEach(ThermalMode.allCases) { Text($0.rawValue).tag($0) } }
-                    .pickerStyle(.segmented)
-            }
-            Section("Données") {
-                if mode != .lambda { ToolNumberField(title: "Lambda λ", unit: "W/(m·K)", value: $lambda) }
-                if mode != .thickness { ToolNumberField(title: "Épaisseur", unit: "mm", value: $thickness) }
-                if mode != .resistance { ToolNumberField(title: "Résistance R", unit: "m²·K/W", value: $resistance) }
-            }
-            Section {
-                if let result {
-                    LabeledContent(result.0, value: result.1).font(.headline)
-                } else {
-                    Label("Renseignez des valeurs strictement positives.", systemImage: "info.circle").foregroundStyle(.secondary)
-                }
+                thermalRow(.thickness)
+                thermalRow(.lambda)
+                thermalRow(.resistance)
+            } header: {
+                Text("Données")
+            } footer: {
+                Text("Renseignez deux valeurs : la troisième est calculée automatiquement.")
             }
         }
         .navigationTitle("Résistance thermique")
@@ -41,6 +41,46 @@ struct ThermalToolView: View {
     }
 
     private func reset() { thickness = 0; lambda = 0; resistance = 0 }
+
+    @ViewBuilder
+    private func thermalRow(_ kind: ValueKind) -> some View {
+        if let value = computedValue(for: kind) {
+            LabeledContent(title(for: kind), value: formatted(value, for: kind))
+                .font(.headline)
+                .foregroundStyle(.green)
+        } else if kind == .lambda {
+            Picker("Lambda λ", selection: $lambda) {
+                Text("Sélectionner").tag(0.0)
+                ForEach(stride(from: 0.030, through: 0.0401, by: 0.002).map { $0 }, id: \.self) { value in
+                    Text(value.formatted(.number.locale(Locale(identifier: "fr_FR")).precision(.fractionLength(3))))
+                        .tag(value)
+                }
+            }
+        } else if kind == .thickness {
+            ToolNumberField(title: "Épaisseur", unit: "mm", value: $thickness)
+        } else {
+            ToolNumberField(title: "Résistance R", unit: "m²·K/W", value: $resistance)
+        }
+    }
+
+    private func title(for kind: ValueKind) -> String {
+        switch kind {
+        case .thickness: "Épaisseur"
+        case .lambda: "Lambda λ"
+        case .resistance: "Résistance R"
+        }
+    }
+
+    private func formatted(_ value: Double, for kind: ValueKind) -> String {
+        switch kind {
+        case .thickness:
+            value.formatted(.number.precision(.fractionLength(0...1))) + " mm"
+        case .lambda:
+            value.formatted(.number.precision(.fractionLength(3))) + " W/(m·K)"
+        case .resistance:
+            value.formatted(.number.precision(.fractionLength(2))) + " m²·K/W"
+        }
+    }
 }
 
 struct VATToolView: View {

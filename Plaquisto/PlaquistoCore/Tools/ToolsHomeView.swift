@@ -4,11 +4,6 @@ struct ToolsHomeView: View {
     var onOpenAccount: (() -> Void)?
     @StateObject private var technicalStore = ToolTechnicalStore()
     @State private var query = ""
-    @AppStorage("plaquisto.tools.favorites") private var favoriteStorage = "thermal,vat"
-
-    private var favorites: Set<String> {
-        Set(favoriteStorage.split(separator: ",").map(String.init))
-    }
 
     private var results: [ToolDefinition] { ToolCatalog.search(query) }
 
@@ -16,9 +11,6 @@ struct ToolsHomeView: View {
         NavigationStack {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 22) {
-                    if query.isEmpty, !favoriteTools.isEmpty {
-                        section("Favoris", tools: favoriteTools)
-                    }
                     ForEach(ToolCategory.allCases) { category in
                         let tools = results.filter { $0.category == category }
                         if !tools.isEmpty { section(category.rawValue, tools: tools) }
@@ -45,37 +37,23 @@ struct ToolsHomeView: View {
         .task { await technicalStore.load() }
     }
 
-    private var favoriteTools: [ToolDefinition] { ToolCatalog.all.filter { favorites.contains($0.id) } }
-
     @ViewBuilder
     private func section(_ title: String, tools: [ToolDefinition]) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             Text(title).font(.title3.bold()).foregroundStyle(.secondary)
             ForEach(tools) { tool in
                 NavigationLink(value: tool.destination) {
-                    ToolCard(tool: tool, isFavorite: favorites.contains(tool.id))
+                    ToolCard(tool: tool)
                 }
                 .buttonStyle(.plain)
                 .disabled(!tool.isAvailable)
-                .contextMenu {
-                    Button(favorites.contains(tool.id) ? "Retirer des favoris" : "Ajouter aux favoris", systemImage: favorites.contains(tool.id) ? "star.slash" : "star") {
-                        toggleFavorite(tool.id)
-                    }
-                }
             }
         }
-    }
-
-    private func toggleFavorite(_ id: String) {
-        var updated = favorites
-        if updated.contains(id) { updated.remove(id) } else { updated.insert(id) }
-        favoriteStorage = updated.sorted().joined(separator: ",")
     }
 }
 
 private struct ToolCard: View {
     let tool: ToolDefinition
-    let isFavorite: Bool
 
     var body: some View {
         HStack(spacing: 14) {
@@ -92,9 +70,6 @@ private struct ToolCard: View {
                 Text(tool.shortDescription).font(.subheadline).foregroundStyle(.secondary)
             }
             Spacer()
-            Image(systemName: isFavorite ? "star.fill" : "star")
-                .foregroundStyle(isFavorite ? .yellow : .secondary)
-                .padding(8)
             if tool.isAvailable { Image(systemName: "chevron.right").font(.caption.bold()).foregroundStyle(.tertiary) }
         }
         .padding(14)

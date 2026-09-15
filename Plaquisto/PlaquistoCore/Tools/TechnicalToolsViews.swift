@@ -53,42 +53,221 @@ struct PartitionHeightToolView: View {
     @EnvironmentObject private var store: ToolTechnicalStore
     @State private var mode = TechnicalSearchMode.verify
     @State private var height = 0.0
-    @State private var spacing = 0.60
+    @State private var spacing = 0.40
     @State private var doubled = false
-    @State private var selectedID = ""
+    @State private var selectedFrame = ""
+    @State private var layers = 1
+    @State private var facing = ""
+    @State private var findSpacing = PartitionSpacingFilter.all
+    @State private var findAssembly = PartitionAssemblyFilter.all
 
-    private var key: String { "\(doubled ? "double" : "simple")_\(spacing < 0.5 ? "040" : "060")" }
-    private var options: [PartitionHeightOption] { store.partitionHeights }
-    private var selected: PartitionHeightOption? { options.first { $0.id == selectedID } ?? options.first }
-    private func maximum(_ option: PartitionHeightOption) -> Double { option.heights[key] ?? 0 }
-    private var compatible: [PartitionHeightOption] { options.filter { maximum($0) >= height }.sorted { maximum($0) - height < maximum($1) - height } }
+    private var options: [PartitionHeightOption] {
+        store.partitionHeights.sorted(by: partitionOptionOrder)
+    }
+    private var frames: [String] {
+        unique(options.map(\.frame)).sorted { lhs, rhs in
+            let left = options.first { $0.frame == lhs }?.frameWidthMM ?? .max
+            let right = options.first { $0.frame == rhs }?.frameWidthMM ?? .max
+            return left == right ? lhs.localizedStandardCompare(rhs) == .orderedAscending : left < right
+        }
+    }
+    private var verifyLayers: [Int] {
+        unique(options.filter { $0.frame == selectedFrame }.map(\.layers)).sorted()
+    }
+    private var verifyFacings: [String] {
+        unique(options.filter { $0.frame == selectedFrame && $0.layers == layers }.map(\.facing)).sorted(by: facingOrder)
+    }
+    private var findLayers: [Int] { unique(options.map(\.layers)).sorted() }
+    private var findFacings: [String] {
+        unique(options.filter { $0.layers == layers }.map(\.facing)).sorted(by: facingOrder)
+    }
+    private var selected: PartitionHeightOption? {
+        options.first { $0.frame == selectedFrame && $0.layers == layers && $0.facing == facing }
+    }
+    private var selectedMaximum: Double { selected?.heights[heightKey(spacing: spacing, doubled: doubled)] ?? 0 }
+    private var compatible: [PartitionHeightCandidate] {
+        guard height > 0 else { return [] }
+        var result: [PartitionHeightCandidate] = []
+        for option in options where option.layers == layers && option.facing == facing {
+            for candidateDoubled in [false, true] {
+                if let filter = findAssembly.doubled, filter != candidateDoubled { continue }
+                for candidateSpacing in [0.60, 0.40] {
+                    if let filter = findSpacing.value, abs(filter - candidateSpacing) >= 0.001 { continue }
+                    let maximum = option.heights[heightKey(spacing: candidateSpacing, doubled: candidateDoubled)] ?? 0
+                    if maximum >= height {
+                        result.append(.init(option: option, spacing: candidateSpacing, doubled: candidateDoubled, maximum: maximum))
+                    }
+                }
+            }
+        }
+        return result.sorted(by: candidateOrder)
+    }
 
     var body: some View {
         TechnicalToolForm(title: "Hauteur de cloison", store: store) {
             Section { Picker("Mode", selection: $mode) { ForEach(TechnicalSearchMode.allCases) { Text($0.rawValue).tag($0) } }.pickerStyle(.segmented) }
-            Section("Besoin") {
-                ToolNumberField(title: "Hauteur sous plafond", unit: "m", value: $height)
-                Picker("Entraxe", selection: $spacing) { Text("40 cm").tag(0.40); Text("60 cm").tag(0.60) }.pickerStyle(.segmented)
-                Toggle("Montants doublés", isOn: $doubled)
-            }
             if mode == .verify {
-                Section("Configuration") { Picker("Système", selection: $selectedID) { ForEach(options) { Text($0.title).tag($0.id) } } }
-                if let selected { compatibility(maximum: maximum(selected), requested: height) }
+                verifyContent
             } else {
-                Section("Configurations compatibles") {
-                    if height <= 0 { Text("Renseignez la hauteur sous plafond.").foregroundStyle(.secondary) }
-                    else if compatible.isEmpty { Text("Aucune configuration publiée n’est compatible.").foregroundStyle(.orange) }
-                    else { ForEach(compatible.prefix(20)) { option in resultRow(option.title, maximum: maximum(option), requested: height) } }
+                findContent
+            }
+        }
+        .onAppear { normalizeSelections() }
+        .onChange(of: store.partitionHeights) { _, _ in normalizeSelections() }
+        .onChange(of: mode) { _, _ in normalizeSelections() }
+        .onChange(of: selectedFrame) { _, _ in normalizeVerifySelections() }
+        .onChange(of: layers) { _, _ in normalizeFacing() }
+    }
+
+    private var verifyContent: some View {
+        Group {
+            Section("Configuration") {
+                Picker("Système rail / montant", selection: $selectedFrame) {
+                    ForEach(frames, id: \.self) { Text($0).tag($0) }
+                }
+                Picker("Montants", selection: $doubled) {
+                    Text("Simples").tag(false)
+                    Text("Doublés").tag(true)
+                }
+                .pickerStyle(.segmented)
+                Picker("Entraxe", selection: $spacing) {
+                    Text("40 cm").tag(0.40)
+                    Text("60 cm").tag(0.60)
+                }
+                .pickerStyle(.segmented)
+                Picker("Parements", selection: $layers) {
+                    ForEach(verifyLayers, id: \.self) { Text(layerTitle($0)).tag($0) }
+                }
+                Picker("Type de parement", selection: $facing) {
+                    ForEach(verifyFacings, id: \.self) { Text($0).tag($0) }
+                }
+            }
+            Section("Résultat") {
+                if selectedMaximum > 0 {
+                    LabeledContent("Hauteur maximale", value: meters(selectedMaximum))
+                        .font(.headline)
+                        .foregroundStyle(.green)
+                } else {
+                    Label("Aucune hauteur n’est publiée pour cette configuration.", systemImage: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.orange)
                 }
             }
         }
-        .onAppear { selectFirstOptionIfNeeded() }
-        .onChange(of: options) { _, value in if selectedID.isEmpty { selectedID = value.first?.id ?? "" } }
     }
 
-    private func selectFirstOptionIfNeeded() {
-        if selectedID.isEmpty { selectedID = options.first?.id ?? "" }
+    private var findContent: some View {
+        Group {
+            Section("Besoin") {
+                ToolNumberField(title: "Hauteur sous plafond", unit: "m", value: $height)
+                Picker("Parements", selection: $layers) {
+                    ForEach(findLayers, id: \.self) { Text(layerTitle($0)).tag($0) }
+                }
+                Picker("Type de parement", selection: $facing) {
+                    ForEach(findFacings, id: \.self) { Text($0).tag($0) }
+                }
+            }
+            Section("Affiner les résultats") {
+                Picker("Entraxe", selection: $findSpacing) {
+                    ForEach(PartitionSpacingFilter.allCases) { Text($0.rawValue).tag($0) }
+                }
+                .pickerStyle(.segmented)
+                Picker("Montants", selection: $findAssembly) {
+                    ForEach(PartitionAssemblyFilter.allCases) { Text($0.rawValue).tag($0) }
+                }
+                .pickerStyle(.segmented)
+            }
+            Section("Configurations compatibles") {
+                if height <= 0 {
+                    Text("Renseignez la hauteur sous plafond.").foregroundStyle(.secondary)
+                } else if compatible.isEmpty {
+                    Text("Aucune configuration publiée n’est compatible avec ces critères.").foregroundStyle(.orange)
+                } else {
+                    ForEach(compatible.prefix(30)) { candidate in
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(candidate.option.frame).font(.subheadline.bold())
+                            Text("\(candidate.doubled ? "Montants doublés" : "Montants simples") · entraxe \(Int(candidate.spacing * 100)) cm · maximum \(meters(candidate.maximum))")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+            }
+        }
     }
+
+    private func normalizeSelections() {
+        if !frames.contains(selectedFrame) { selectedFrame = frames.first ?? "" }
+        if !findLayers.contains(layers) { layers = findLayers.first ?? 1 }
+        normalizeVerifySelections()
+        normalizeFacing()
+    }
+
+    private func normalizeVerifySelections() {
+        if !verifyLayers.contains(layers) { layers = verifyLayers.first ?? findLayers.first ?? 1 }
+        normalizeFacing()
+    }
+
+    private func normalizeFacing() {
+        let values = mode == .verify ? verifyFacings : findFacings
+        if !values.contains(facing) { facing = values.first ?? "" }
+    }
+}
+
+private enum PartitionSpacingFilter: String, CaseIterable, Identifiable {
+    case all = "Tous", forty = "40 cm", sixty = "60 cm"
+    var id: Self { self }
+    var value: Double? {
+        switch self { case .all: nil; case .forty: 0.40; case .sixty: 0.60 }
+    }
+}
+
+private enum PartitionAssemblyFilter: String, CaseIterable, Identifiable {
+    case all = "Tous", single = "Simples", double = "Doublés"
+    var id: Self { self }
+    var doubled: Bool? {
+        switch self { case .all: nil; case .single: false; case .double: true }
+    }
+}
+
+private struct PartitionHeightCandidate: Identifiable {
+    let option: PartitionHeightOption
+    let spacing: Double
+    let doubled: Bool
+    let maximum: Double
+    var id: String { "\(option.id)-\(doubled)-\(spacing)" }
+}
+
+private func heightKey(spacing: Double, doubled: Bool) -> String {
+    "\(doubled ? "double" : "simple")_\(spacing < 0.5 ? "040" : "060")"
+}
+
+private func layerTitle(_ layers: Int) -> String {
+    layers == 1 ? "1 couche par face" : "\(layers) couches par face"
+}
+
+private func unique<Value: Hashable>(_ values: [Value]) -> [Value] {
+    var seen = Set<Value>()
+    return values.filter { seen.insert($0).inserted }
+}
+
+private func facingOrder(_ lhs: String, _ rhs: String) -> Bool {
+    let number: (String) -> Int = { Int($0.filter(\.isNumber)) ?? .max }
+    return number(lhs) == number(rhs) ? lhs < rhs : number(lhs) < number(rhs)
+}
+
+private func partitionOptionOrder(_ lhs: PartitionHeightOption, _ rhs: PartitionHeightOption) -> Bool {
+    if lhs.frameWidthMM != rhs.frameWidthMM { return lhs.frameWidthMM < rhs.frameWidthMM }
+    if lhs.frame != rhs.frame { return lhs.frame.localizedStandardCompare(rhs.frame) == .orderedAscending }
+    if lhs.layers != rhs.layers { return lhs.layers < rhs.layers }
+    return facingOrder(lhs.facing, rhs.facing)
+}
+
+private func candidateOrder(_ lhs: PartitionHeightCandidate, _ rhs: PartitionHeightCandidate) -> Bool {
+    if lhs.option.frameWidthMM != rhs.option.frameWidthMM { return lhs.option.frameWidthMM < rhs.option.frameWidthMM }
+    if lhs.option.frame != rhs.option.frame { return lhs.option.frame.localizedStandardCompare(rhs.option.frame) == .orderedAscending }
+    if lhs.doubled != rhs.doubled { return !lhs.doubled }
+    if lhs.spacing != rhs.spacing { return lhs.spacing > rhs.spacing }
+    return lhs.maximum < rhs.maximum
 }
 
 struct LiningHeightToolView: View {
@@ -160,43 +339,100 @@ struct LiningHeightToolView: View {
 
 struct FurringSpacingToolView: View {
     @EnvironmentObject private var store: ToolTechnicalStore
-    @State private var selectedID = ""
+    @State private var material = ""
+    @State private var lambda = 0.0
+    @State private var thicknessMM = 0
+    @State private var sheetDirection = SheetDirection.perpendicular
 
-    private var selected: InsulationMassOption? { store.insulationMasses.first { $0.id == selectedID } ?? store.insulationMasses.first }
+    private var materials: [String] {
+        unique(store.insulationMasses.map(\.material)).sorted { lhs, rhs in
+            let leftGlass = lhs.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current).contains("verre")
+            let rightGlass = rhs.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current).contains("verre")
+            return leftGlass == rightGlass ? lhs.localizedStandardCompare(rhs) == .orderedAscending : leftGlass
+        }
+    }
+    private var lambdas: [Double] {
+        unique(store.insulationMasses.filter { $0.material == material }.map(\.lambda)).filter { $0 > 0 }.sorted()
+    }
+    private var thicknesses: [Int] {
+        unique(store.insulationMasses.filter { $0.material == material && abs($0.lambda - lambda) < 0.000_1 }.map(\.thicknessMM)).sorted()
+    }
+    private var selected: InsulationMassOption? {
+        store.insulationMasses.first { $0.material == material && abs($0.lambda - lambda) < 0.000_1 && $0.thicknessMM == thicknessMM }
+    }
     private var band: InsulationSpacingBand? { selected.flatMap { item in store.insulationSpacingBands.first { $0.contains(item.surfaceMass) } } }
+    private var recommendedSpacing: Double? {
+        sheetDirection == .parallel ? 0.40 : band?.spacing
+    }
 
     var body: some View {
-        TechnicalToolForm(title: "Entraxe selon l’isolant", store: store) {
+        TechnicalToolForm(title: "Entraxe des fourrures selon l’isolant", store: store) {
             Section("Isolant") {
-                Picker("Type, lambda et épaisseur", selection: $selectedID) {
-                    ForEach(store.insulationMasses) { item in
-                        Text("\(item.title) · \(item.thicknessMM) mm").tag(item.id)
+                Picker("Type d’isolant", selection: $material) {
+                    ForEach(materials, id: \.self) { Text($0).tag($0) }
+                }
+                Picker("Lambda", selection: $lambda) {
+                    ForEach(lambdas, id: \.self) { value in
+                        Text("λ \(value.formatted(.number.precision(.fractionLength(3)))) W/(m·K)").tag(value)
                     }
+                }
+                Picker("Épaisseur", selection: $thicknessMM) {
+                    ForEach(thicknesses, id: \.self) { Text("\($0) mm").tag($0) }
                 }
             }
-            if let selected {
-                Section("Données Plaquisto Admin") {
-                    LabeledContent("Lambda", value: selected.lambda > 0 ? selected.lambda.formatted(.number.precision(.fractionLength(3))) + " W/(m·K)" : "Non renseigné")
-                    LabeledContent("Épaisseur", value: "\(selected.thicknessMM) mm")
-                    LabeledContent("Masse surfacique maximale", value: selected.surfaceMass.formatted(.number.precision(.fractionLength(0...2))) + " kg/m²")
+            Section("Sens de pose des plaques") {
+                Picker("Sens de pose", selection: $sheetDirection) {
+                    ForEach(SheetDirection.allCases) { Text($0.rawValue).tag($0) }
                 }
-                Section("Résultat") {
-                    if let band {
-                        LabeledContent("Entraxe maximal admissible", value: "\(Int(band.spacing * 100)) cm").font(.headline)
-                        Text("La valeur maximale publiée pour la plage de poids est retenue.").font(.footnote).foregroundStyle(.secondary)
-                    } else {
-                        Label("Aucun entraxe admissible n’est défini pour cette masse dans le référentiel actuel.", systemImage: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+                    .pickerStyle(.inline)
+            }
+            Section("Résultat") {
+                if let recommendedSpacing {
+                    LabeledContent("Entraxe recommandé", value: "\(Int(recommendedSpacing * 100)) cm")
+                        .font(.headline)
+                        .foregroundStyle(.green)
+                    if sheetDirection == .parallel {
+                        Text("La pose parallèle aux fourrures impose un entraxe de 40 cm.")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
                     }
+                } else if selected != nil {
+                    Label("Aucun entraxe admissible n’est défini pour cet isolant.", systemImage: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.orange)
+                } else {
+                    Text("Sélectionnez le type d’isolant, son lambda et son épaisseur.")
+                        .foregroundStyle(.secondary)
                 }
             }
         }
-        .onAppear { selectFirstOptionIfNeeded() }
-        .onChange(of: store.insulationMasses) { _, value in if selectedID.isEmpty { selectedID = value.first?.id ?? "" } }
+        .onAppear { normalizeInsulationSelection() }
+        .onChange(of: store.insulationMasses) { _, _ in normalizeInsulationSelection() }
+        .onChange(of: material) { _, _ in selectPreferredLambdaAndThickness() }
+        .onChange(of: lambda) { _, _ in normalizeThickness() }
     }
 
-    private func selectFirstOptionIfNeeded() {
-        if selectedID.isEmpty { selectedID = store.insulationMasses.first?.id ?? "" }
+    private func normalizeInsulationSelection() {
+        if !materials.contains(material) { material = materials.first ?? "" }
+        selectPreferredLambdaAndThickness()
     }
+
+    private func selectPreferredLambdaAndThickness() {
+        let target = material.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current).contains("bois") ? 0.036 : 0.035
+        if !lambdas.contains(where: { abs($0 - lambda) < 0.000_1 }) {
+            lambda = lambdas.first(where: { abs($0 - target) < 0.000_1 }) ?? lambdas.first ?? 0
+        }
+        normalizeThickness()
+    }
+
+    private func normalizeThickness() {
+        if !thicknesses.contains(thicknessMM) { thicknessMM = thicknesses.first ?? 0 }
+    }
+}
+
+private enum SheetDirection: String, CaseIterable, Identifiable {
+    case perpendicular = "Perpendiculaire aux fourrures"
+    case parallel = "Parallèle aux fourrures"
+    var id: Self { self }
 }
 
 private struct TechnicalToolForm<Content: View>: View {
