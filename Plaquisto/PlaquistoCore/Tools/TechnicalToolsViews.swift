@@ -77,7 +77,10 @@ struct CeilingSpanToolView: View {
             if mode == .verify {
                 Section("Configuration") {
                     Picker("Système rail / montant", selection: $stud) {
-                        ForEach(studs, id: \.self) { Text("R\($0) + M\($0)").tag($0) }
+                        ForEach(studs, id: \.self) { value in
+                            compatibilityPickerLabel("R\(value) + M\(value)", compatible: ceilingCompatible(stud: value))
+                                .tag(value)
+                        }
                     }
                     selectorTitle("Configuration des montants") {
                         Picker("Configuration des montants", selection: $doubled) {
@@ -88,11 +91,15 @@ struct CeilingSpanToolView: View {
                         .pickerStyle(.segmented)
                     }
                     Picker("Parements", selection: $layers) {
-                        ForEach(availableLayers, id: \.self) { Text(liningLayerTitle($0)).tag($0) }
+                        ForEach(availableLayers, id: \.self) { value in
+                            compatibilityPickerLabel(liningLayerTitle(value), compatible: ceilingLayerCompatible(value))
+                                .tag(value)
+                        }
                     }
                     Picker("Type de parement", selection: $facing) {
                         ForEach(availableFacings, id: \.self) { code in
-                            Text(ceilingFacingLabel(code, options: options)).tag(code)
+                            compatibilityPickerLabel(ceilingFacingLabel(code, options: options), compatible: ceilingCompatible(facing: code))
+                                .tag(code)
                         }
                     }
                 }
@@ -156,6 +163,28 @@ struct CeilingSpanToolView: View {
 
     private func normalizeThickness() {
         if !thicknesses.contains(thicknessMM) { thicknessMM = thicknesses.first ?? 0 }
+    }
+
+    private func ceilingCompatible(stud candidateStud: Int? = nil, facing candidateFacing: String? = nil) -> Bool? {
+        guard requestedSpan > 0, loadBand != nil else { return nil }
+        let resolvedStud = candidateStud ?? stud
+        let resolvedFacing = candidateFacing ?? facing
+        return options.contains {
+            $0.stud == resolvedStud
+                && $0.assembly == (doubled ? "double" : "single")
+                && $0.facing == resolvedFacing
+                && span($0) >= requestedSpan
+        }
+    }
+
+    private func ceilingLayerCompatible(_ candidateLayers: Int) -> Bool? {
+        guard requestedSpan > 0, loadBand != nil else { return nil }
+        return options.contains {
+            $0.stud == stud
+                && $0.assembly == (doubled ? "double" : "single")
+                && ceilingLayerCount($0.facing) == candidateLayers
+                && span($0) >= requestedSpan
+        }
     }
 }
 
@@ -233,7 +262,10 @@ struct PartitionHeightToolView: View {
         Group {
             Section("Configuration") {
                 Picker("Système rail / montant", selection: $selectedFrame) {
-                    ForEach(frames, id: \.self) { Text($0).tag($0) }
+                    ForEach(frames, id: \.self) { value in
+                        compatibilityPickerLabel(value, compatible: partitionCompatible(frame: value))
+                            .tag(value)
+                    }
                 }
                 VStack(alignment: .leading, spacing: 8) {
                     Text("Entraxe des montants").font(.subheadline.weight(.semibold))
@@ -254,22 +286,19 @@ struct PartitionHeightToolView: View {
                     .pickerStyle(.segmented)
                 }
                 Picker("Parements", selection: $layers) {
-                    ForEach(verifyLayers, id: \.self) { Text(layerTitle($0)).tag($0) }
+                    ForEach(verifyLayers, id: \.self) { value in
+                        compatibilityPickerLabel(layerTitle(value), compatible: partitionLayerCompatible(value))
+                            .tag(value)
+                    }
                 }
                 Picker("Type de parement", selection: $facing) {
-                    ForEach(verifyFacings, id: \.self) { Text($0).tag($0) }
+                    ForEach(verifyFacings, id: \.self) { value in
+                        compatibilityPickerLabel(value, compatible: partitionCompatible(facing: value))
+                            .tag(value)
+                    }
                 }
             }
-            Section("Résultat") {
-                if selectedMaximum > 0 {
-                    LabeledContent("Hauteur maximale", value: meters(selectedMaximum))
-                        .font(.headline)
-                        .foregroundStyle(.green)
-                } else {
-                    Label("Aucune hauteur n’est publiée pour cette configuration.", systemImage: "exclamationmark.triangle.fill")
-                        .foregroundStyle(.orange)
-                }
-            }
+            compatibility(maximum: selectedMaximum, requested: height)
         }
     }
 
@@ -336,6 +365,25 @@ struct PartitionHeightToolView: View {
     private func normalizeFacing() {
         let values = mode == .verify ? verifyFacings : findFacings
         if !values.contains(facing) { facing = values.first ?? "" }
+    }
+
+    private func partitionCompatible(frame candidateFrame: String? = nil, facing candidateFacing: String? = nil) -> Bool? {
+        guard height > 0 else { return nil }
+        let resolvedFrame = candidateFrame ?? selectedFrame
+        let resolvedFacing = candidateFacing ?? facing
+        let maximum = options.first {
+            $0.frame == resolvedFrame && $0.layers == layers && $0.facing == resolvedFacing
+        }?.heights[heightKey(spacing: spacing, doubled: doubled)] ?? 0
+        return maximum >= height
+    }
+
+    private func partitionLayerCompatible(_ candidateLayers: Int) -> Bool? {
+        guard height > 0 else { return nil }
+        return options.contains { option in
+            option.frame == selectedFrame
+                && option.layers == candidateLayers
+                && (option.heights[heightKey(spacing: spacing, doubled: doubled)] ?? 0) >= height
+        }
     }
 }
 
@@ -499,10 +547,22 @@ struct LiningHeightToolView: View {
             }
             Section("Parement") {
                 Picker("Nombre de couches", selection: $layers) {
-                    ForEach(availableLayers, id: \.self) { Text(liningLayerTitle($0)).tag($0) }
+                    ForEach(availableLayers, id: \.self) { value in
+                        compatibilityPickerLabel(
+                            liningLayerTitle(value),
+                            compatible: mode == .verify ? liningLayerCompatible(value) : nil
+                        )
+                        .tag(value)
+                    }
                 }
                 Picker("Type de parement", selection: $facing) {
-                    ForEach(availableFacings, id: \.self) { Text($0).tag($0) }
+                    ForEach(availableFacings, id: \.self) { value in
+                        compatibilityPickerLabel(
+                            value,
+                            compatible: mode == .verify ? liningFacingCompatible(value) : nil
+                        )
+                        .tag(value)
+                    }
                 }
             }
             if system == 0 { furringContent } else { liningContent }
@@ -564,7 +624,10 @@ struct LiningHeightToolView: View {
         if mode == .verify {
             Section("Configuration de l’ossature") {
                 Picker("Système rail / montant", selection: $liningFrame) {
-                    ForEach(liningFrames, id: \.self) { Text($0).tag($0) }
+                    ForEach(liningFrames, id: \.self) { value in
+                        compatibilityPickerLabel(value, compatible: liningFrameCompatible(value))
+                            .tag(value)
+                    }
                 }
                 selectorTitle("Entraxe des montants") {
                     Picker("Entraxe des montants", selection: $liningSpacing) {
@@ -614,6 +677,44 @@ struct LiningHeightToolView: View {
                 else if compatibleLining.isEmpty { Text("Aucun montage rails / montants publié n’est compatible.").foregroundStyle(.orange) }
                 else { ForEach(compatibleLining.prefix(20)) { option in resultRow(option.title, maximum: option.maximumHeight, requested: height) } }
             }
+        }
+    }
+
+    private func liningLayerCompatible(_ candidateLayers: Int) -> Bool? {
+        guard height > 0 else { return nil }
+        if system == 0 {
+            return store.furringSupports.contains {
+                $0.layers == candidateLayers && $0.maximumHeight >= height
+            }
+        }
+        return store.liningHeights.contains {
+            $0.layers == candidateLayers && $0.maximumHeight >= height
+        }
+    }
+
+    private func liningFacingCompatible(_ candidateFacing: String) -> Bool? {
+        guard height > 0 else { return nil }
+        if system == 0 {
+            return store.furringSupports.contains {
+                $0.layers == layers
+                    && $0.supportedFacings.contains(candidateFacing)
+                    && $0.maximumHeight >= height
+            }
+        }
+        return store.liningHeights.contains {
+            $0.layers == layers
+                && $0.supportedFacings.contains(candidateFacing)
+                && $0.maximumHeight >= height
+        }
+    }
+
+    private func liningFrameCompatible(_ candidateFrame: String) -> Bool? {
+        guard height > 0 else { return nil }
+        return filteredLining.contains {
+            $0.frame == candidateFrame
+                && $0.assembly == liningAssembly
+                && abs($0.spacing - liningSpacing) < 0.001
+                && $0.maximumHeight >= height
         }
     }
 }
@@ -777,6 +878,19 @@ private struct TechnicalToolForm<Content: View>: View {
                 .foregroundStyle(maximum >= requested ? .green : .red).font(.headline)
             LabeledContent("Valeur maximale", value: meters(maximum))
         }
+    }
+}
+
+@ViewBuilder private func compatibilityPickerLabel(_ title: String, compatible: Bool?) -> some View {
+    if compatible == false {
+        Label {
+            Text(title)
+        } icon: {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundStyle(.orange)
+        }
+    } else {
+        Text(title)
     }
 }
 
