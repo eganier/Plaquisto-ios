@@ -166,15 +166,23 @@ struct PartitionHeightToolView: View {
                     ForEach(findFacings, id: \.self) { Text($0).tag($0) }
                 }
             }
-            Section("Affiner les résultats") {
-                Picker("Entraxe", selection: $findSpacing) {
-                    ForEach(PartitionSpacingFilter.allCases) { Text($0.rawValue).tag($0) }
+            Section {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Entraxe des montants").font(.subheadline.weight(.semibold))
+                    Picker("Entraxe des montants", selection: $findSpacing) {
+                        ForEach(PartitionSpacingFilter.allCases) { Text($0.rawValue).tag($0) }
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.segmented)
                 }
-                .pickerStyle(.segmented)
-                Picker("Montants", selection: $findAssembly) {
-                    ForEach(PartitionAssemblyFilter.allCases) { Text($0.rawValue).tag($0) }
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Configuration des montants").font(.subheadline.weight(.semibold))
+                    Picker("Configuration des montants", selection: $findAssembly) {
+                        ForEach(PartitionAssemblyFilter.allCases) { Text($0.rawValue).tag($0) }
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.segmented)
                 }
-                .pickerStyle(.segmented)
             }
             Section("Configurations compatibles") {
                 if height <= 0 {
@@ -245,6 +253,18 @@ private func layerTitle(_ layers: Int) -> String {
     layers == 1 ? "1 couche par face" : "\(layers) couches par face"
 }
 
+private func liningLayerTitle(_ layers: Int) -> String {
+    layers == 1 ? "1 couche" : "\(layers) couches"
+}
+
+private func frameOrder(_ lhs: String, _ rhs: String) -> Bool {
+    let width: (String) -> Int = { value in
+        let digits = value.drop(while: { !$0.isNumber }).prefix(while: { $0.isNumber })
+        return Int(digits) ?? .max
+    }
+    return width(lhs) == width(rhs) ? lhs.localizedStandardCompare(rhs) == .orderedAscending : width(lhs) < width(rhs)
+}
+
 private func unique<Value: Hashable>(_ values: [Value]) -> [Value] {
     var seen = Set<Value>()
     return values.filter { seen.insert($0).inserted }
@@ -275,11 +295,36 @@ struct LiningHeightToolView: View {
     @State private var mode = TechnicalSearchMode.verify
     @State private var system = 0
     @State private var height = 0.0
-    @State private var selectedLiningID = ""
     @State private var selectedFurringID = ""
+    @State private var layers = 1
+    @State private var facing = "BA13"
+    @State private var liningFrame = ""
+    @State private var liningSpacing = 0.45
+    @State private var liningDoubled = false
 
-    private var selectedLining: LiningHeightOption? { store.liningHeights.first { $0.id == selectedLiningID } ?? store.liningHeights.first }
-    private var selectedFurring: FurringSupportOption? { store.furringSupports.first { $0.id == selectedFurringID } ?? store.furringSupports.first }
+    private let availableLayers = [1, 2, 3]
+    private let availableFacings = ["BA13", "BA15", "BA18"]
+    private var filteredLining: [LiningHeightOption] {
+        store.liningHeights.filter { $0.layers == layers && $0.supportedFacings.contains(facing) }
+    }
+    private var filteredFurring: [FurringSupportOption] {
+        store.furringSupports.filter { $0.layers == layers && $0.supportedFacings.contains(facing) }
+    }
+    private var liningFrames: [String] {
+        unique(filteredLining.map(\.frame)).sorted(by: frameOrder)
+    }
+    private var liningSpacings: [Double] {
+        unique(filteredLining.filter { $0.frame == liningFrame && $0.assembly == liningAssembly }.map(\.spacing)).sorted()
+    }
+    private var liningAssembly: String { liningDoubled ? "Montants doublés" : "Montants simples" }
+    private var selectedLining: LiningHeightOption? {
+        filteredLining.first {
+            $0.frame == liningFrame
+                && $0.assembly == liningAssembly
+                && abs($0.spacing - liningSpacing) < 0.001
+        }
+    }
+    private var selectedFurring: FurringSupportOption? { filteredFurring.first { $0.id == selectedFurringID } ?? filteredFurring.first }
 
     var body: some View {
         TechnicalToolForm(title: "Hauteur de doublage", store: store) {
@@ -288,21 +333,50 @@ struct LiningHeightToolView: View {
                 Picker("Ossature", selection: $system) { Text("Lisses / fourrures").tag(0); Text("Rails / montants").tag(1) }.pickerStyle(.segmented)
                 ToolNumberField(title: "Hauteur sous plafond", unit: "m", value: $height)
             }
+            Section("Parement") {
+                Picker("Nombre de couches", selection: $layers) {
+                    ForEach(availableLayers, id: \.self) { Text(liningLayerTitle($0)).tag($0) }
+                }
+                Picker("Type de parement", selection: $facing) {
+                    ForEach(availableFacings, id: \.self) { Text($0).tag($0) }
+                }
+            }
             if system == 0 { furringContent } else { liningContent }
         }
         .onAppear { selectFirstOptionsIfNeeded() }
-        .onChange(of: store.liningHeights) { _, value in if selectedLiningID.isEmpty { selectedLiningID = value.first?.id ?? "" } }
-        .onChange(of: store.furringSupports) { _, value in if selectedFurringID.isEmpty { selectedFurringID = value.first?.id ?? "" } }
+        .onChange(of: store.liningHeights) { _, _ in normalizeFacingSelection() }
+        .onChange(of: store.furringSupports) { _, value in
+            if selectedFurringID.isEmpty { selectedFurringID = value.first?.id ?? "" }
+            normalizeFacingSelection()
+        }
+        .onChange(of: system) { _, _ in normalizeFacingSelection() }
+        .onChange(of: layers) { _, _ in normalizeFacingSelection() }
+        .onChange(of: facing) { _, _ in normalizeFacingSelection() }
+        .onChange(of: liningFrame) { _, _ in normalizeLiningConfiguration() }
+        .onChange(of: liningDoubled) { _, _ in normalizeLiningConfiguration() }
     }
 
     private func selectFirstOptionsIfNeeded() {
-        if selectedLiningID.isEmpty { selectedLiningID = store.liningHeights.first?.id ?? "" }
         if selectedFurringID.isEmpty { selectedFurringID = store.furringSupports.first?.id ?? "" }
+        normalizeFacingSelection()
+    }
+
+    private func normalizeFacingSelection() {
+        if !availableLayers.contains(layers) { layers = availableLayers.first ?? 1 }
+        if !availableFacings.contains(facing) { facing = availableFacings.first ?? "" }
+        if let first = filteredFurring.first, !filteredFurring.contains(where: { $0.id == selectedFurringID }) { selectedFurringID = first.id }
+        normalizeLiningConfiguration()
+    }
+
+    private func normalizeLiningConfiguration() {
+        if !liningFrames.contains(liningFrame) { liningFrame = liningFrames.first ?? "" }
+        if !liningSpacings.contains(where: { abs($0 - liningSpacing) < 0.001 }) {
+            liningSpacing = liningSpacings.first ?? 0.45
+        }
     }
 
     @ViewBuilder private var furringContent: some View {
         if mode == .verify {
-            Section("Parement") { Picker("Montage", selection: $selectedFurringID) { ForEach(store.furringSupports) { Text($0.title).tag($0.id) } } }
             if let rule = selectedFurring {
                 compatibility(maximum: rule.maximumHeight, requested: height)
                 Section("Lignes d’appuis") {
@@ -314,7 +388,7 @@ struct LiningHeightToolView: View {
             }
         } else {
             Section("Configurations compatibles") {
-                let values = store.furringSupports.filter { $0.maximumHeight >= height }.sorted { $0.maximumHeight < $1.maximumHeight }
+                let values = filteredFurring.filter { $0.maximumHeight >= height }.sorted { $0.maximumHeight < $1.maximumHeight }
                 if height <= 0 { Text("Renseignez la hauteur sous plafond.").foregroundStyle(.secondary) }
                 else if values.isEmpty { Text("Aucun montage sur fourrures publié n’est compatible.").foregroundStyle(.orange) }
                 else { ForEach(values) { rule in resultRow(rule.title, maximum: rule.maximumHeight, requested: height) } }
@@ -324,14 +398,36 @@ struct LiningHeightToolView: View {
 
     @ViewBuilder private var liningContent: some View {
         if mode == .verify {
-            Section("Configuration") { Picker("Montage", selection: $selectedLiningID) { ForEach(store.liningHeights) { Text("\($0.label) · \($0.title)").tag($0.id) } } }
-            if let selectedLining { compatibility(maximum: selectedLining.maximumHeight, requested: height) }
+            Section("Configuration de l’ossature") {
+                Picker("Système rail / montant", selection: $liningFrame) {
+                    ForEach(liningFrames, id: \.self) { Text($0).tag($0) }
+                }
+                Picker("Configuration des montants", selection: $liningDoubled) {
+                    Text("Simples").tag(false)
+                    Text("Doublés").tag(true)
+                }
+                .pickerStyle(.segmented)
+                Picker("Entraxe des montants", selection: $liningSpacing) {
+                    ForEach(liningSpacings, id: \.self) { value in
+                        Text("\(Int(value * 100)) cm").tag(value)
+                    }
+                }
+                .pickerStyle(.segmented)
+            }
+            if let selectedLining {
+                compatibility(maximum: selectedLining.maximumHeight, requested: height)
+            } else {
+                Section("Résultat") {
+                    Label("Aucune hauteur n’est publiée pour cette configuration.", systemImage: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.orange)
+                }
+            }
         } else {
             Section("Configurations compatibles") {
-                let values = store.liningHeights.filter { $0.maximumHeight >= height }.sorted { $0.maximumHeight < $1.maximumHeight }
+                let values = filteredLining.filter { $0.maximumHeight >= height }.sorted { $0.maximumHeight < $1.maximumHeight }
                 if height <= 0 { Text("Renseignez la hauteur sous plafond.").foregroundStyle(.secondary) }
                 else if values.isEmpty { Text("Aucun montage rails / montants publié n’est compatible.").foregroundStyle(.orange) }
-                else { ForEach(values.prefix(20)) { option in resultRow("\(option.label) · \(option.title)", maximum: option.maximumHeight, requested: height) } }
+                else { ForEach(values.prefix(20)) { option in resultRow(option.title, maximum: option.maximumHeight, requested: height) } }
             }
         }
     }
@@ -381,10 +477,11 @@ struct FurringSpacingToolView: View {
                 }
             }
             Section("Sens de pose des plaques") {
-                Picker("Sens de pose", selection: $sheetDirection) {
+                Picker("", selection: $sheetDirection) {
                     ForEach(SheetDirection.allCases) { Text($0.rawValue).tag($0) }
                 }
-                    .pickerStyle(.inline)
+                .labelsHidden()
+                .pickerStyle(.segmented)
             }
             Section("Résultat") {
                 if let recommendedSpacing {
@@ -465,7 +562,6 @@ private struct TechnicalToolForm<Content: View>: View {
             Label(maximum >= requested ? "Configuration compatible" : "Configuration incompatible", systemImage: maximum >= requested ? "checkmark.circle.fill" : "xmark.circle.fill")
                 .foregroundStyle(maximum >= requested ? .green : .red).font(.headline)
             LabeledContent("Valeur maximale", value: meters(maximum))
-            LabeledContent("Marge", value: signedMeters(maximum - requested))
         }
     }
 }
@@ -473,9 +569,8 @@ private struct TechnicalToolForm<Content: View>: View {
 @ViewBuilder private func resultRow(_ title: String, maximum: Double, requested: Double) -> some View {
     VStack(alignment: .leading, spacing: 4) {
         Text(title).font(.subheadline.bold())
-        Text("Maximum \(meters(maximum)) · marge \(signedMeters(maximum - requested))").font(.caption).foregroundStyle(.secondary)
+        Text("Maximum \(meters(maximum))").font(.caption).foregroundStyle(.secondary)
     }
 }
 
 private func meters(_ value: Double) -> String { value.formatted(.number.locale(Locale(identifier: "fr_FR")).precision(.fractionLength(2))) + " m" }
-private func signedMeters(_ value: Double) -> String { (value >= 0 ? "+" : "") + meters(value) }

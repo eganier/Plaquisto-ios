@@ -34,6 +34,8 @@ struct PartitionHeightOption: Identifiable, Hashable {
 struct LiningHeightOption: Identifiable, Hashable {
     let id: String
     let label: String
+    let layers: Int
+    let supportedFacings: [String]
     let frame: String
     let spacing: Double
     let assembly: String
@@ -44,6 +46,8 @@ struct LiningHeightOption: Identifiable, Hashable {
 struct FurringSupportOption: Identifiable, Hashable {
     let id: String
     let title: String
+    let layers: Int
+    let supportedFacings: [String]
     let maximumHeight: Double
     let maximumSupportSpacing: Double
 }
@@ -143,13 +147,21 @@ final class ToolTechnicalStore: ObservableObject {
         liningHeights = array(liningData?["groups"]).flatMap { group -> [LiningHeightOption] in
             let groupID = group["id"] as? String ?? UUID().uuidString
             let label = group["label"] as? String ?? "Parement"
+            let layers = label.contains("Double peau") ? 2 : (label.contains("Triple peau") ? 3 : 1)
+            let supportedFacings: [String]
+            switch groupID {
+            case "BA13_BA15": supportedFacings = ["BA13", "BA15"]
+            case "BA18": supportedFacings = ["BA18"]
+            case "DOUBLE_1200": supportedFacings = ["BA13", "BA15", "BA18"]
+            default: supportedFacings = []
+            }
             return array(group["values"]).flatMap { value -> [LiningHeightOption] in
                 guard let frame = value["frame"] as? String, let spacing = number(value["spacing_m"]) else { return [] }
                 let simple = number(value["simple_m"]) ?? 0
                 let double = number(value["double_m"]) ?? 0
                 return [
-                    .init(id: "\(groupID)-\(frame)-\(spacing)-simple", label: label, frame: frame, spacing: spacing, assembly: "Montants simples", maximumHeight: simple),
-                    .init(id: "\(groupID)-\(frame)-\(spacing)-double", label: label, frame: frame, spacing: spacing, assembly: "Montants doublés", maximumHeight: double)
+                    .init(id: "\(groupID)-\(frame)-\(spacing)-simple", label: label, layers: layers, supportedFacings: supportedFacings, frame: frame, spacing: spacing, assembly: "Montants simples", maximumHeight: simple),
+                    .init(id: "\(groupID)-\(frame)-\(spacing)-double", label: label, layers: layers, supportedFacings: supportedFacings, frame: frame, spacing: spacing, assembly: "Montants doublés", maximumHeight: double)
                 ].filter { $0.maximumHeight > 0 }
             }
         }
@@ -160,7 +172,19 @@ final class ToolTechnicalStore: ObservableObject {
                   let title = item["title"] as? String,
                   let maxHeight = number(item["maximum_height_m"]),
                   let maxSpacing = number(item["maximum_support_spacing_m"]) else { return nil }
-            return .init(id: id, title: title, maximumHeight: maxHeight, maximumSupportSpacing: maxSpacing)
+            let layers: Int
+            if id.contains("triple") { layers = 3 }
+            else if id.contains("double") { layers = 2 }
+            else { layers = 1 }
+            let supportedFacings: [String]
+            switch id {
+            case "single-ba13-ba15": supportedFacings = ["BA13", "BA15"]
+            case "single-ba18": supportedFacings = ["BA18"]
+            case "double-skin": supportedFacings = ["BA13"]
+            case "triple-ba13": supportedFacings = ["BA13"]
+            default: supportedFacings = []
+            }
+            return .init(id: id, title: title, layers: layers, supportedFacings: supportedFacings, maximumHeight: maxHeight, maximumSupportSpacing: maxSpacing)
         }
 
         let insulationRecords = array(root["isolation"])
