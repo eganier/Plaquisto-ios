@@ -10,42 +10,152 @@ struct CeilingSpanToolView: View {
     @EnvironmentObject private var store: ToolTechnicalStore
     @State private var mode = TechnicalSearchMode.verify
     @State private var requestedSpan = 0.0
-    @State private var loadBand = 0
-    @State private var selectedID = ""
+    @State private var material = ""
+    @State private var lambda = 0.0
+    @State private var thicknessMM = 0
+    @State private var stud = 48
+    @State private var doubled = false
+    @State private var layers = 1
+    @State private var facing = "ba13"
+    @State private var findAssembly = PartitionAssemblyFilter.all
 
     private var options: [CeilingSpanOption] { store.ceilingSpans }
-    private var selected: CeilingSpanOption? { options.first { $0.id == selectedID } ?? options.first }
-    private func span(_ option: CeilingSpanOption) -> Double { option.spans.indices.contains(loadBand) ? option.spans[loadBand] : 0 }
-    private var compatible: [CeilingSpanOption] { options.filter { span($0) >= requestedSpan }.sorted { span($0) - requestedSpan < span($1) - requestedSpan } }
+    private var materials: [String] { insulationMaterials(store.insulationMasses) }
+    private var lambdas: [Double] { insulationLambdas(store.insulationMasses, material: material) }
+    private var thicknesses: [Int] { insulationThicknesses(store.insulationMasses, material: material, lambda: lambda) }
+    private var insulation: InsulationMassOption? {
+        store.insulationMasses.first { $0.material == material && abs($0.lambda - lambda) < 0.000_1 && $0.thicknessMM == thicknessMM }
+    }
+    private var loadBand: Int? {
+        guard let mass = insulation?.surfaceMass else { return nil }
+        if mass < 6 { return 0 }
+        if mass < 10 { return 1 }
+        if mass <= 15 { return 2 }
+        return nil
+    }
+    private var studs: [Int] { unique(options.map(\.stud)).sorted() }
+    private var availableLayers: [Int] { unique(options.map { ceilingLayerCount($0.facing) }).sorted() }
+    private var availableFacings: [String] {
+        unique(options.filter { ceilingLayerCount($0.facing) == layers }.map(\.facing)).sorted(by: facingOrder)
+    }
+    private var selected: CeilingSpanOption? {
+        options.first { $0.stud == stud && $0.assembly == (doubled ? "double" : "single") && $0.facing == facing }
+    }
+    private func span(_ option: CeilingSpanOption) -> Double {
+        guard let loadBand, option.spans.indices.contains(loadBand) else { return 0 }
+        return option.spans[loadBand]
+    }
+    private var compatible: [CeilingSpanOption] {
+        options.filter { option in
+            span(option) >= requestedSpan
+                && (findAssembly.doubled == nil || findAssembly.doubled == (option.assembly == "double"))
+        }
+        .sorted { lhs, rhs in
+            if lhs.stud != rhs.stud { return lhs.stud < rhs.stud }
+            if lhs.assembly != rhs.assembly { return lhs.assembly == "single" }
+            return span(lhs) < span(rhs)
+        }
+    }
 
     var body: some View {
         TechnicalToolForm(title: "Plafond autoportant", store: store) {
             Section { Picker("Mode", selection: $mode) { ForEach(TechnicalSearchMode.allCases) { Text($0.rawValue).tag($0) } }.pickerStyle(.segmented) }
             Section("Portée") { ToolNumberField(title: "Portée à franchir", unit: "m", value: $requestedSpan) }
-            Section("Charge d’isolant") {
-                Picker("Bande", selection: $loadBand) {
-                    Text("< 6 kg/m²").tag(0); Text("6 à < 10 kg/m²").tag(1); Text("10 à 15 kg/m²").tag(2)
+            Section("Isolant") {
+                Picker("Type d’isolant", selection: $material) {
+                    ForEach(materials, id: \.self) { Text($0).tag($0) }
+                }
+                Picker("Lambda", selection: $lambda) {
+                    ForEach(lambdas, id: \.self) { value in
+                        Text("λ \(value.formatted(.number.precision(.fractionLength(3)))) W/(m·K)").tag(value)
+                    }
+                }
+                Picker("Épaisseur", selection: $thicknessMM) {
+                    ForEach(thicknesses, id: \.self) { Text("\($0) mm").tag($0) }
                 }
             }
             if mode == .verify {
                 Section("Configuration") {
-                    Picker("Montage", selection: $selectedID) { ForEach(options) { Text($0.title).tag($0.id) } }
+                    Picker("Système rail / montant", selection: $stud) {
+                        ForEach(studs, id: \.self) { Text("R\($0) + M\($0)").tag($0) }
+                    }
+                    selectorTitle("Configuration des montants") {
+                        Picker("Configuration des montants", selection: $doubled) {
+                            Text("Simples").tag(false)
+                            Text("Doublés").tag(true)
+                        }
+                        .labelsHidden()
+                        .pickerStyle(.segmented)
+                    }
+                    Picker("Parements", selection: $layers) {
+                        ForEach(availableLayers, id: \.self) { Text(liningLayerTitle($0)).tag($0) }
+                    }
+                    Picker("Type de parement", selection: $facing) {
+                        ForEach(availableFacings, id: \.self) { code in
+                            Text(ceilingFacingLabel(code, options: options)).tag(code)
+                        }
+                    }
                 }
-                if let selected { compatibility(maximum: span(selected), requested: requestedSpan) }
+                if let selected, loadBand != nil {
+                    compatibility(maximum: span(selected), requested: requestedSpan)
+                } else if insulation != nil {
+                    Section("Résultat") {
+                        Label("Aucune portée n’est publiée pour cette configuration.", systemImage: "exclamationmark.triangle.fill")
+                            .foregroundStyle(.orange)
+                    }
+                }
             } else {
+                Section {
+                    selectorTitle("Configuration des montants") {
+                        Picker("Configuration des montants", selection: $findAssembly) {
+                            ForEach(PartitionAssemblyFilter.allCases) { Text($0.rawValue).tag($0) }
+                        }
+                        .labelsHidden()
+                        .pickerStyle(.segmented)
+                    }
+                }
                 Section("Configurations compatibles") {
                     if requestedSpan <= 0 { Text("Renseignez la portée à franchir.").foregroundStyle(.secondary) }
+                    else if loadBand == nil { Text("Sélectionnez un isolant compatible avec les données publiées.").foregroundStyle(.orange) }
                     else if compatible.isEmpty { Text("Aucune configuration publiée ne couvre cette portée.").foregroundStyle(.orange) }
                     else { ForEach(compatible) { option in resultRow(option.title, maximum: span(option), requested: requestedSpan) } }
                 }
             }
         }
-        .onAppear { selectFirstOptionIfNeeded() }
-        .onChange(of: options) { _, value in if selectedID.isEmpty { selectedID = value.first?.id ?? "" } }
+        .onAppear { normalizeSelections() }
+        .onChange(of: options) { _, _ in normalizeSelections() }
+        .onChange(of: store.insulationMasses) { _, _ in normalizeInsulationSelection() }
+        .onChange(of: material) { _, _ in selectPreferredLambdaAndThickness() }
+        .onChange(of: lambda) { _, _ in normalizeThickness() }
+        .onChange(of: layers) { _, _ in normalizeFacing() }
     }
 
-    private func selectFirstOptionIfNeeded() {
-        if selectedID.isEmpty { selectedID = options.first?.id ?? "" }
+    private func normalizeSelections() {
+        if !studs.contains(stud) { stud = studs.first ?? 48 }
+        if !availableLayers.contains(layers) { layers = availableLayers.first ?? 1 }
+        normalizeFacing()
+        normalizeInsulationSelection()
+    }
+
+    private func normalizeFacing() {
+        if !availableFacings.contains(facing) { facing = availableFacings.first ?? "" }
+    }
+
+    private func normalizeInsulationSelection() {
+        if !materials.contains(material) { material = materials.first ?? "" }
+        selectPreferredLambdaAndThickness()
+    }
+
+    private func selectPreferredLambdaAndThickness() {
+        let target = material.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current).contains("bois") ? 0.036 : 0.035
+        if !lambdas.contains(where: { abs($0 - lambda) < 0.000_1 }) {
+            lambda = lambdas.first(where: { abs($0 - target) < 0.000_1 }) ?? lambdas.first ?? 0
+        }
+        normalizeThickness()
+    }
+
+    private func normalizeThickness() {
+        if !thicknesses.contains(thicknessMM) { thicknessMM = thicknesses.first ?? 0 }
     }
 }
 
@@ -265,6 +375,37 @@ private func liningLayerTitle(_ layers: Int) -> String {
     layers == 1 ? "1 couche" : "\(layers) couches"
 }
 
+private func ceilingLayerCount(_ facing: String) -> Int {
+    facing.contains("double") ? 2 : 1
+}
+
+private func ceilingFacingLabel(_ facing: String, options: [CeilingSpanOption]) -> String {
+    options.first { $0.facing == facing }?.facingLabel ?? facing
+}
+
+private func insulationMaterials(_ options: [InsulationMassOption]) -> [String] {
+    unique(options.map(\.material)).sorted { lhs, rhs in
+        let leftGlass = lhs.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current).contains("verre")
+        let rightGlass = rhs.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current).contains("verre")
+        return leftGlass == rightGlass ? lhs.localizedStandardCompare(rhs) == .orderedAscending : leftGlass
+    }
+}
+
+private func insulationLambdas(_ options: [InsulationMassOption], material: String) -> [Double] {
+    unique(options.filter { $0.material == material }.map(\.lambda)).filter { $0 > 0 }.sorted()
+}
+
+private func insulationThicknesses(_ options: [InsulationMassOption], material: String, lambda: Double) -> [Int] {
+    unique(options.filter { $0.material == material && abs($0.lambda - lambda) < 0.000_1 }.map(\.thicknessMM)).sorted()
+}
+
+@ViewBuilder private func selectorTitle<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
+    VStack(alignment: .leading, spacing: 8) {
+        Text(title).font(.subheadline.weight(.semibold))
+        content()
+    }
+}
+
 private func frameOrder(_ lhs: String, _ rhs: String) -> Bool {
     let width: (String) -> Int = { value in
         let digits = value.drop(while: { !$0.isNumber }).prefix(while: { $0.isNumber })
@@ -309,6 +450,8 @@ struct LiningHeightToolView: View {
     @State private var liningFrame = ""
     @State private var liningSpacing = 0.45
     @State private var liningDoubled = false
+    @State private var findLiningSpacing = LiningSpacingFilter.all
+    @State private var findLiningAssembly = PartitionAssemblyFilter.all
 
     private let availableLayers = [1, 2, 3]
     private let availableFacings = ["BA13", "BA15", "BA18"]
@@ -333,6 +476,19 @@ struct LiningHeightToolView: View {
         }
     }
     private var selectedFurring: FurringSupportOption? { filteredFurring.first { $0.id == selectedFurringID } ?? filteredFurring.first }
+    private var compatibleLining: [LiningHeightOption] {
+        filteredLining.filter { option in
+            option.maximumHeight >= height
+                && (findLiningSpacing.value == nil || abs(option.spacing - (findLiningSpacing.value ?? 0)) < 0.001)
+                && (findLiningAssembly.doubled == nil || findLiningAssembly.doubled == (option.assembly == "Montants doublés"))
+        }
+        .sorted { lhs, rhs in
+            if frameOrder(lhs.frame, rhs.frame) { return true }
+            if frameOrder(rhs.frame, lhs.frame) { return false }
+            if lhs.assembly != rhs.assembly { return lhs.assembly == "Montants simples" }
+            return lhs.spacing > rhs.spacing
+        }
+    }
 
     var body: some View {
         TechnicalToolForm(title: "Hauteur de doublage", store: store) {
@@ -410,17 +566,23 @@ struct LiningHeightToolView: View {
                 Picker("Système rail / montant", selection: $liningFrame) {
                     ForEach(liningFrames, id: \.self) { Text($0).tag($0) }
                 }
-                Picker("Configuration des montants", selection: $liningDoubled) {
-                    Text("Simples").tag(false)
-                    Text("Doublés").tag(true)
-                }
-                .pickerStyle(.segmented)
-                Picker("Entraxe des montants", selection: $liningSpacing) {
-                    ForEach(liningSpacings, id: \.self) { value in
-                        Text("\(Int(value * 100)) cm").tag(value)
+                selectorTitle("Entraxe des montants") {
+                    Picker("Entraxe des montants", selection: $liningSpacing) {
+                        ForEach(liningSpacings, id: \.self) { value in
+                            Text("\(Int(value * 100)) cm").tag(value)
+                        }
                     }
+                    .labelsHidden()
+                    .pickerStyle(.segmented)
                 }
-                .pickerStyle(.segmented)
+                selectorTitle("Configuration des montants") {
+                    Picker("Configuration des montants", selection: $liningDoubled) {
+                        Text("Simples").tag(false)
+                        Text("Doublés").tag(true)
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.segmented)
+                }
             }
             if let selectedLining {
                 compatibility(maximum: selectedLining.maximumHeight, requested: height)
@@ -431,13 +593,36 @@ struct LiningHeightToolView: View {
                 }
             }
         } else {
+            Section {
+                selectorTitle("Entraxe des montants") {
+                    Picker("Entraxe des montants", selection: $findLiningSpacing) {
+                        ForEach(LiningSpacingFilter.allCases) { Text($0.rawValue).tag($0) }
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.segmented)
+                }
+                selectorTitle("Configuration des montants") {
+                    Picker("Configuration des montants", selection: $findLiningAssembly) {
+                        ForEach(PartitionAssemblyFilter.allCases) { Text($0.rawValue).tag($0) }
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.segmented)
+                }
+            }
             Section("Configurations compatibles") {
-                let values = filteredLining.filter { $0.maximumHeight >= height }.sorted { $0.maximumHeight < $1.maximumHeight }
                 if height <= 0 { Text("Renseignez la hauteur sous plafond.").foregroundStyle(.secondary) }
-                else if values.isEmpty { Text("Aucun montage rails / montants publié n’est compatible.").foregroundStyle(.orange) }
-                else { ForEach(values.prefix(20)) { option in resultRow(option.title, maximum: option.maximumHeight, requested: height) } }
+                else if compatibleLining.isEmpty { Text("Aucun montage rails / montants publié n’est compatible.").foregroundStyle(.orange) }
+                else { ForEach(compatibleLining.prefix(20)) { option in resultRow(option.title, maximum: option.maximumHeight, requested: height) } }
             }
         }
+    }
+}
+
+private enum LiningSpacingFilter: String, CaseIterable, Identifiable {
+    case all = "Tous", fortyFive = "45 cm", ninety = "90 cm"
+    var id: Self { self }
+    var value: Double? {
+        switch self { case .all: nil; case .fortyFive: 0.45; case .ninety: 0.90 }
     }
 }
 
@@ -470,7 +655,7 @@ struct FurringSpacingToolView: View {
     }
 
     var body: some View {
-        TechnicalToolForm(title: "Entraxe des fourrures selon l’isolant", store: store) {
+        TechnicalToolForm(title: "Entraxe des fourrures", store: store) {
             Section("Isolant") {
                 Picker("Type d’isolant", selection: $material) {
                     ForEach(materials, id: \.self) { Text($0).tag($0) }
