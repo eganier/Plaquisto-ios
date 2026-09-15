@@ -477,11 +477,26 @@ struct FurringSpacingToolView: View {
                 }
             }
             Section("Sens de pose des plaques") {
-                Picker("", selection: $sheetDirection) {
-                    ForEach(SheetDirection.allCases) { Text($0.rawValue).tag($0) }
+                HStack(spacing: 3) {
+                    ForEach(SheetDirection.allCases) { direction in
+                        Button {
+                            sheetDirection = direction
+                        } label: {
+                            Text(direction.displayTitle)
+                                .font(.subheadline.weight(.semibold))
+                                .multilineTextAlignment(.center)
+                                .lineLimit(2)
+                                .frame(maxWidth: .infinity, minHeight: 48)
+                                .background(
+                                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                        .fill(sheetDirection == direction ? Color(.systemBackground) : .clear)
+                                )
+                        }
+                        .buttonStyle(.plain)
+                    }
                 }
-                .labelsHidden()
-                .pickerStyle(.segmented)
+                .padding(3)
+                .background(Color(.secondarySystemFill), in: RoundedRectangle(cornerRadius: 13, style: .continuous))
             }
             Section("Résultat") {
                 if let recommendedSpacing {
@@ -530,6 +545,12 @@ private enum SheetDirection: String, CaseIterable, Identifiable {
     case perpendicular = "Perpendiculaire aux fourrures"
     case parallel = "Parallèle aux fourrures"
     var id: Self { self }
+    var displayTitle: String {
+        switch self {
+        case .perpendicular: "Perpendiculaire\naux fourrures"
+        case .parallel: "Parallèle\naux fourrures"
+        }
+    }
 }
 
 private struct TechnicalToolForm<Content: View>: View {
