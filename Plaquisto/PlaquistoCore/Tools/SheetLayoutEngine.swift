@@ -16,7 +16,7 @@ struct LayoutOpening: Codable, Equatable, Identifiable {
     var bounds: LayoutBounds { .init(points: contour) }
 }
 enum LayoutEdgeTone: String, Codable {
-    case blue, orange, purple, green
+    case blue, orange, purple, green, teal, gray
 }
 struct LayoutDimensionCorrection: Codable, Equatable, Identifiable {
     var edgeIndex: Int
@@ -213,7 +213,8 @@ enum LayoutPreset: String, CaseIterable {
     static func available(for kind: LayoutSupportKind) -> [Self] {
         kind == .wall ? [.rectangle, .slope, .lShape] : [.rectangle, .freeform]
     }
-    func contour(length: Double, height: Double, secondaryHeight: Double, mirrored: Bool = false) -> [LayoutPoint] {
+    func contour(length: Double, height: Double, secondaryHeight: Double, mirrored: Bool = false,
+                 lowerLength: Double? = nil) -> [LayoutPoint] {
         switch self {
         case .rectangle, .freeform:
             return [.zero, .init(x: length, y: 0), .init(x: length, y: height), .init(x: 0, y: height)]
@@ -231,10 +232,12 @@ enum LayoutPreset: String, CaseIterable {
                 normal = [.zero, .init(x: length, y: 0), .init(x: length, y: height / 2),
                           .init(x: length / 2, y: height / 2), .init(x: length / 2, y: height), .init(x: 0, y: height)]
             } else {
-                normal = [.zero, .init(x: length, y: 0), .init(x: length, y: secondaryHeight),
-                          .init(x: length / 2, y: secondaryHeight), .init(x: length / 2, y: height), .init(x: 0, y: height)]
+                let low = min(length - 10, max(10, lowerLength ?? length / 2))
+                normal = [.init(x: length, y: height), .init(x: length - low, y: height),
+                          .init(x: length - low, y: secondaryHeight), .init(x: 0, y: secondaryHeight),
+                          .zero, .init(x: length, y: 0)]
             }
-            return mirrored ? Array(normal.map { .init(x: length - $0.x, y: $0.y) }.reversed()) : normal
+            return mirrored ? normal.map { .init(x: length - $0.x, y: $0.y) } : normal
         }
     }
     func contour(width: Double, height: Double, secondaryHeight: Double) -> [LayoutPoint] {

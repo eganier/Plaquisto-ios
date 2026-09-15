@@ -83,6 +83,25 @@ final class SheetLayoutEngineTests: XCTestCase {
         XCTAssertFalse(LayoutPreset.available(for: .wall).contains(.gable))
         XCTAssertEqual(LayoutPreset.available(for: .ceiling), [.rectangle, .freeform])
     }
+    func testSlopeMirrorMovesMaximumHeightFromBCToDA() throws {
+        let normal = LayoutPreset.slope.contour(length: 4000, height: 2500, secondaryHeight: 4000)
+        let mirrored = LayoutPreset.slope.contour(length: 4000, height: 2500, secondaryHeight: 4000, mirrored: true)
+        XCTAssertEqual((normal[2] - normal[1]).length, 4000, accuracy: 0.001)
+        XCTAssertEqual((normal[0] - normal[3]).length, 2500, accuracy: 0.001)
+        XCTAssertEqual((mirrored[2] - mirrored[1]).length, 2500, accuracy: 0.001)
+        XCTAssertEqual((mirrored[0] - mirrored[3]).length, 4000, accuracy: 0.001)
+    }
+
+    func testLWallUsesRequestedArchitecturalSides() throws {
+        let contour = LayoutPreset.lShape.contour(length: 5000, height: 2400, secondaryHeight: 3100,
+                                                   lowerLength: 1800)
+        XCTAssertEqual((contour[1] - contour[0]).length, 1800, accuracy: 0.001) // BA
+        XCTAssertEqual((contour[3] - contour[2]).length, 3200, accuracy: 0.001) // DC
+        XCTAssertEqual((contour[4] - contour[3]).length, 3100, accuracy: 0.001) // DE
+        XCTAssertEqual((contour[5] - contour[4]).length, 5000, accuracy: 0.001) // EF
+        XCTAssertEqual((contour[0] - contour[5]).length, 2400, accuracy: 0.001) // FA
+        XCTAssertNoThrow(try LayoutGeometry.validate(contour))
+    }
     func testConcaveCeilingWithStairwell() throws {
         var s = surface(.lShape, width: 4000, height: 4000); s.kind = .ceiling
         s.openings = [.init(kind: .stairwell, contour: LayoutBounds(min: .init(x: 500, y: 500), max: .init(x: 1500, y: 1500)).polygon)]

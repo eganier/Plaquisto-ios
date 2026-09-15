@@ -9,6 +9,8 @@ struct LayoutSurfaceForm: View {
     @State private var length = 4000.0
     @State private var height = 2500.0
     @State private var second = 3000.0
+    @State private var lowerLength = 2000.0
+    @State private var upperLength = 2000.0
     @State private var mirrored = false
     @State private var sketch: [LayoutPoint] = []
     @State private var measuredSides: [Double] = []
@@ -19,14 +21,15 @@ struct LayoutSurfaceForm: View {
             guard sketch.count >= 3, measuredSides.count == sketch.count else { return ([], []) }
             return (try? LayoutGeometry.closedMeasuredContour(sketch: angledSketch, lengths: measuredSides)) ?? ([], [])
         }
-        return (preset.contour(length: length, height: height, secondaryHeight: second, mirrored: mirrored), [])
+        return (preset.contour(length: length, height: height, secondaryHeight: second, mirrored: mirrored,
+                               lowerLength: lowerLength), [])
     }
     private var contour: [LayoutPoint] { generated.contour }
     private var tones: [LayoutEdgeTone] {
         switch (kind, preset) {
         case (.wall, .rectangle): return [.blue, .orange, .blue, .orange]
-        case (.wall, .slope): return [.blue, .purple, .green, .orange]
-        case (.wall, .lShape): return [.blue, .purple, .blue, .orange, .blue, .orange]
+        case (.wall, .slope): return mirrored ? [.blue, .orange, .gray, .purple] : [.blue, .purple, .gray, .orange]
+        case (.wall, .lShape): return [.green, .gray, .teal, .purple, .blue, .orange]
         case (.ceiling, .rectangle): return [.blue, .orange, .blue, .orange]
         default: return contour.indices.map { [.blue, .orange, .purple, .green][$0 % 4] }
         }
@@ -34,6 +37,7 @@ struct LayoutSurfaceForm: View {
     private var valid: Bool {
         length >= 10 && height >= 10 && length <= 100_000 && height <= 100_000
             && (!(preset == .slope || preset == .lShape) || second >= height)
+            && (preset != .lShape || (lowerLength >= 10 && upperLength >= 10 && abs(lowerLength + upperLength - length) < 0.1))
             && (preset != .freeform || (sketch.count >= 3 && measuredSides.allSatisfy { $0 >= 10 }))
             && (try? LayoutGeometry.validate(contour)) != nil
     }
@@ -77,7 +81,9 @@ struct LayoutSurfaceForm: View {
                     }
                 } else {
                     Section("Dimensions") {
-                        LayoutDimensionField(title: "Longueur", millimetres: $length, tint: .blue)
+                        if preset != .lShape {
+                            LayoutDimensionField(title: "Longueur", millimetres: $length, tint: .blue)
+                        }
                         if kind == .ceiling {
                             LayoutDimensionField(title: "Largeur", millimetres: $height, tint: .orange)
                         } else if preset == .rectangle {
@@ -85,6 +91,13 @@ struct LayoutSurfaceForm: View {
                         } else {
                             LayoutDimensionField(title: "Hauteur sous plafond mini", millimetres: $height, tint: .orange)
                             LayoutDimensionField(title: "Hauteur sous plafond maxi", millimetres: $second, tint: .purple)
+                            if preset == .lShape {
+                                LayoutDimensionField(title: "Longueur totale", millimetres: totalLengthBinding, tint: .blue)
+                                LayoutDimensionField(title: "Longueur basse", millimetres: lowerLengthBinding, tint: .green)
+                                LayoutDimensionField(title: "Longueur haute", millimetres: upperLengthBinding, tint: .teal)
+                                Text("Renseignez deux longueurs : la troisième est calculée automatiquement.")
+                                    .font(.footnote).foregroundStyle(.secondary)
+                            }
                             Toggle("Miroir", isOn: $mirrored)
                         }
                     }
@@ -138,6 +151,24 @@ struct LayoutSurfaceForm: View {
         let incoming = points[index - 1] - points[index], outgoing = points[(index + 1) % points.count] - points[index]
         let cosine = max(-1, min(1, LayoutGeometry.dot(incoming, outgoing) / max(0.0001, incoming.length * outgoing.length)))
         return acos(cosine) * 180 / .pi
+    }
+    private var totalLengthBinding: Binding<Double> {
+        Binding(get: { length }, set: { value in
+            length = value
+            upperLength = max(10, value - lowerLength)
+        })
+    }
+    private var lowerLengthBinding: Binding<Double> {
+        Binding(get: { lowerLength }, set: { value in
+            lowerLength = value
+            upperLength = max(10, length - value)
+        })
+    }
+    private var upperLengthBinding: Binding<Double> {
+        Binding(get: { upperLength }, set: { value in
+            upperLength = value
+            lowerLength = max(10, length - value)
+        })
     }
 }
 
@@ -396,6 +427,8 @@ func toneColor(_ tone: LayoutEdgeTone) -> Color {
     case .orange: return .orange
     case .purple: return .purple
     case .green: return .green
+    case .teal: return .teal
+    case .gray: return .gray
     }
 }
 
