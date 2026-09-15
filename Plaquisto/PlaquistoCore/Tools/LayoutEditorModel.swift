@@ -109,11 +109,12 @@ struct LayoutDimensionField: View {
     let title: String
     @Binding var millimetres: Double
     var signed = false
+    var tint: Color? = nil
     @State private var text = ""
     @FocusState private var focused: Bool
     var body: some View {
         HStack {
-            Text(title)
+            Text(title).foregroundStyle(tint ?? Color.primary)
             Spacer(minLength: 12)
             TextField("0", text: $text)
                 .keyboardType(signed ? .numbersAndPunctuation : .decimalPad)

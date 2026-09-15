@@ -59,6 +59,30 @@ final class SheetLayoutEngineTests: XCTestCase {
         XCTAssertTrue(first.contains { abs($0.x - 1200) < 0.001 && abs($0.y - 2200) < 0.001 })
         _ = try check(surface(.gable, height: 1800, second: 2500), area: 7_740_000, count: 3)
     }
+    func testMeasuredContourClosesAndRecordsDistributedCorrections() throws {
+        let sketch = [LayoutPoint.zero, .init(x: 4000, y: 0), .init(x: 3980, y: 3000), .init(x: 0, y: 2970)]
+        let requested = [4000.0, 3000, 3990, 2960]
+        let (closed, corrections) = try LayoutGeometry.closedMeasuredContour(sketch: sketch, lengths: requested)
+        XCTAssertNoThrow(try LayoutGeometry.validate(closed))
+        XCTAssertEqual(closed.count, 4)
+        XCTAssertFalse(corrections.isEmpty)
+        let vectors = LayoutGeometry.edges(closed).map { $0.b - $0.a }
+        let closure = vectors.reduce(LayoutPoint.zero, +)
+        XCTAssertEqual(closure.length, 0, accuracy: 0.001)
+        XCTAssertEqual(corrections.map(\.edgeIndex), corrections.map(\.edgeIndex).sorted())
+    }
+
+    func testWallPresetsMirrorSlopeAndLWithoutChangingArea() throws {
+        for preset in [LayoutPreset.slope, .lShape] {
+            let normal = preset.contour(length: 4000, height: 2400, secondaryHeight: 3000)
+            let mirrored = preset.contour(length: 4000, height: 2400, secondaryHeight: 3000, mirrored: true)
+            XCTAssertEqual(abs(LayoutGeometry.area(normal)), abs(LayoutGeometry.area(mirrored)), accuracy: 0.001)
+            XCTAssertNoThrow(try LayoutGeometry.validate(normal))
+            XCTAssertNoThrow(try LayoutGeometry.validate(mirrored))
+        }
+        XCTAssertFalse(LayoutPreset.available(for: .wall).contains(.gable))
+        XCTAssertEqual(LayoutPreset.available(for: .ceiling), [.rectangle, .freeform])
+    }
     func testConcaveCeilingWithStairwell() throws {
         var s = surface(.lShape, width: 4000, height: 4000); s.kind = .ceiling
         s.openings = [.init(kind: .stairwell, contour: LayoutBounds(min: .init(x: 500, y: 500), max: .init(x: 1500, y: 1500)).polygon)]

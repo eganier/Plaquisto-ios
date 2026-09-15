@@ -47,6 +47,57 @@ enum LayoutGeometry {
     static let minimumArea = 0.0001 // square millimetres
     static func cross(_ a: LayoutPoint, _ b: LayoutPoint) -> Double { a.x * b.y - a.y * b.x }
     static func dot(_ a: LayoutPoint, _ b: LayoutPoint) -> Double { a.x * b.x + a.y * b.y }
+
+    // Keeps the directions suggested by the sketch and distributes the closing
+    // error over every measured side with a least-squares correction.
+    static func closedMeasuredContour(sketch: [LayoutPoint], lengths: [Double]) throws -> ([LayoutPoint], [LayoutDimensionCorrection]) {
+        guard sketch.count >= 3, sketch.count == lengths.count, lengths.allSatisfy({ $0 >= 10 && $0.isFinite }) else {
+            throw LayoutGeometryError.invalidContour
+        }
+        let directions = edges(sketch).map { edge -> LayoutPoint in
+            let vector = edge.b - edge.a
+            return vector * (1 / max(epsilon, vector.length))
+        }
+        let error = zip(directions, lengths).reduce(LayoutPoint.zero) { $0 + $1.0 * $1.1 }
+        let xx = directions.reduce(0) { $0 + $1.x * $1.x }
+        let xy = directions.reduce(0) { $0 + $1.x * $1.y }
+        let yy = directions.reduce(0) { $0 + $1.y * $1.y }
+        let determinant = xx * yy - xy * xy
+        guard abs(determinant) > 1e-8 else { throw LayoutGeometryError.invalidContour }
+        let lambda = LayoutPoint(x: (yy * error.x - xy * error.y) / determinant,
+                                 y: (xx * error.y - xy * error.x) / determinant)
+        let corrected = zip(directions, lengths).map { direction, length in
+            length - dot(direction, lambda)
+        }
+        guard corrected.allSatisfy({ $0 >= 10 && $0.isFinite }) else { throw LayoutGeometryError.invalidContour }
+        var points = [LayoutPoint.zero]
+        for index in 0..<(directions.count - 1) {
+            points.append(points[index] + directions[index] * corrected[index])
+        }
+        try validate(points)
+        let corrections = lengths.indices.compactMap { index -> LayoutDimensionCorrection? in
+            guard abs(corrected[index] - lengths[index]) > 0.05 else { return nil }
+            return .init(edgeIndex: index, original: lengths[index], corrected: corrected[index])
+        }
+        return (points, corrections)
+    }
+
+    static func simplifiedStroke(_ points: [LayoutPoint], tolerance: Double) -> [LayoutPoint] {
+        guard points.count > 2 else { return points }
+        func simplify(_ values: ArraySlice<LayoutPoint>) -> [LayoutPoint] {
+            guard let first = values.first, let last = values.last, values.count > 2 else { return Array(values) }
+            var furthest = 0.0, split: ArraySlice<LayoutPoint>.Index?
+            for index in values.indices.dropFirst().dropLast() {
+                let current = distance(values[index], to: first, last)
+                if current > furthest { furthest = current; split = index }
+            }
+            guard furthest > tolerance, let split else { return [first, last] }
+            return simplify(values[...split]).dropLast() + simplify(values[split...])
+        }
+        var result = simplify(points[...])
+        if result.count > 2, (result.first! - result.last!).length < tolerance * 2 { result.removeLast() }
+        return result
+    }
     static func area(_ p: [LayoutPoint]) -> Double {
         guard p.count >= 3 else { return 0 }
         // Translate first to avoid cancellation for contours far from the origin.

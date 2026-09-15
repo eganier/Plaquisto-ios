@@ -15,6 +15,18 @@ struct LayoutOpening: Codable, Equatable, Identifiable {
     var contour: [LayoutPoint]
     var bounds: LayoutBounds { .init(points: contour) }
 }
+enum LayoutEdgeTone: String, Codable {
+    case blue, orange, purple, green
+}
+struct LayoutDimensionCorrection: Codable, Equatable, Identifiable {
+    var edgeIndex: Int
+    var original: Double
+    var corrected: Double
+    var id: Int { edgeIndex }
+    var difference: Double { abs(corrected - original) }
+    var percentage: Double { original > 0 ? difference / original * 100 : 0 }
+    var symbol: String { difference > 50 ? "exclamationmark.octagon.fill" : "exclamationmark.triangle.fill" }
+}
 struct Surface2D: Codable, Equatable, Identifiable {
     var id = UUID()
     var name: String
@@ -24,7 +36,27 @@ struct Surface2D: Codable, Equatable, Identifiable {
     var provenance = "manual"
     var sourceIdentifier: String? = nil
     var localFrame: LayoutLocalFrame? = nil
+    var edgeTones: [LayoutEdgeTone] = []
+    var dimensionCorrections: [LayoutDimensionCorrection] = []
     var bounds: LayoutBounds { .init(points: contour) }
+}
+extension Surface2D {
+    private enum CodingKeys: String, CodingKey {
+        case id, name, kind, contour, openings, provenance, sourceIdentifier, localFrame, edgeTones, dimensionCorrections
+    }
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        id = try values.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
+        name = try values.decode(String.self, forKey: .name)
+        kind = try values.decode(LayoutSupportKind.self, forKey: .kind)
+        contour = try values.decode([LayoutPoint].self, forKey: .contour)
+        openings = try values.decodeIfPresent([LayoutOpening].self, forKey: .openings) ?? []
+        provenance = try values.decodeIfPresent(String.self, forKey: .provenance) ?? "manual"
+        sourceIdentifier = try values.decodeIfPresent(String.self, forKey: .sourceIdentifier)
+        localFrame = try values.decodeIfPresent(LayoutLocalFrame.self, forKey: .localFrame)
+        edgeTones = try values.decodeIfPresent([LayoutEdgeTone].self, forKey: .edgeTones) ?? []
+        dimensionCorrections = try values.decodeIfPresent([LayoutDimensionCorrection].self, forKey: .dimensionCorrections) ?? []
+    }
 }
 struct LayoutVector3: Codable, Equatable {
     var x: Double; var y: Double; var z: Double
@@ -177,13 +209,35 @@ enum SheetLayoutEngine {
 }
 
 enum LayoutPreset: String, CaseIterable {
-    case rectangle = "Rectangle", slope = "Sous rampant", gable = "Pignon", lShape = "En L"
-    func contour(width: Double, height: Double, secondaryHeight: Double) -> [LayoutPoint] {
+    case rectangle = "Rectangle", slope = "Sous rampant", gable = "Pignon", lShape = "En L", freeform = "Dessiner la forme"
+    static func available(for kind: LayoutSupportKind) -> [Self] {
+        kind == .wall ? [.rectangle, .slope, .lShape] : [.rectangle, .freeform]
+    }
+    func contour(length: Double, height: Double, secondaryHeight: Double, mirrored: Bool = false) -> [LayoutPoint] {
         switch self {
-        case .rectangle: return [.zero, .init(x: width, y: 0), .init(x: width, y: height), .init(x: 0, y: height)]
-        case .slope: return [.zero, .init(x: width, y: 0), .init(x: width, y: secondaryHeight), .init(x: 0, y: height)]
-        case .gable: return [.zero, .init(x: width, y: 0), .init(x: width, y: height), .init(x: width / 2, y: secondaryHeight), .init(x: 0, y: height)]
-        case .lShape: return [.zero, .init(x: width, y: 0), .init(x: width, y: height / 2), .init(x: width / 2, y: height / 2), .init(x: width / 2, y: height), .init(x: 0, y: height)]
+        case .rectangle, .freeform:
+            return [.zero, .init(x: length, y: 0), .init(x: length, y: height), .init(x: 0, y: height)]
+        case .slope:
+            let left = mirrored ? secondaryHeight : height, right = mirrored ? height : secondaryHeight
+            return [.zero, .init(x: length, y: 0), .init(x: length, y: right), .init(x: 0, y: left)]
+        case .gable:
+            return [.zero, .init(x: length, y: 0), .init(x: length, y: height),
+                    .init(x: length / 2, y: secondaryHeight), .init(x: 0, y: height)]
+        case .lShape:
+            // Preserve older saved L-shaped ceilings whose third dimension was
+            // the depth of the return. New wall forms use min/max heights.
+            let normal: [LayoutPoint]
+            if secondaryHeight < height {
+                normal = [.zero, .init(x: length, y: 0), .init(x: length, y: height / 2),
+                          .init(x: length / 2, y: height / 2), .init(x: length / 2, y: height), .init(x: 0, y: height)]
+            } else {
+                normal = [.zero, .init(x: length, y: 0), .init(x: length, y: secondaryHeight),
+                          .init(x: length / 2, y: secondaryHeight), .init(x: length / 2, y: height), .init(x: 0, y: height)]
+            }
+            return mirrored ? Array(normal.map { .init(x: length - $0.x, y: $0.y) }.reversed()) : normal
         }
+    }
+    func contour(width: Double, height: Double, secondaryHeight: Double) -> [LayoutPoint] {
+        contour(length: width, height: height, secondaryHeight: secondaryHeight)
     }
 }

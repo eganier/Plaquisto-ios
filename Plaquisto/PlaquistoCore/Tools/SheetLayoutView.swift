@@ -35,13 +35,14 @@ private enum LayoutInteraction: String, CaseIterable {
     }
 }
 private enum LayoutEditorSheet: Identifiable {
-    case newSurface, settings, opening(UUID?), vertex(Int), cut(LayoutCutSelection), pieces
+    case newSurface, settings, opening(UUID?), vertex(Int), correction(Int), cut(LayoutCutSelection), pieces
     var id: String {
         switch self {
         case .newSurface: return "new"
         case .settings: return "settings"
         case .opening(let id): return "opening-\(id?.uuidString ?? "new")"
         case .vertex(let i): return "vertex-\(i)"
+        case .correction(let i): return "correction-\(i)"
         case .cut(let selection): return "cut-\(selection.id)"
         case .pieces: return "pieces"
         }
@@ -93,7 +94,7 @@ struct SheetLayoutView: View {
             Text("Dessinez un mur ou un plafond, puis ajustez la pose et consultez chaque découpe.")
                 .foregroundStyle(.secondary).multilineTextAlignment(.center)
             Button("Saisir manuellement") { sheet = .newSurface }.buttonStyle(.borderedProminent).tint(.teal)
-            Button("Importer depuis un scan — à venir") {}.disabled(true)
+            Button("Importer un ouvrage depuis Chantier (à venir)") {}.disabled(true)
             if let error = model.saveError { Text(error).font(.footnote).foregroundStyle(.orange) }
         }.padding(30).frame(maxWidth: .infinity, maxHeight: .infinity)
     }
@@ -188,12 +189,19 @@ struct SheetLayoutView: View {
             let a = surface.contour[i], b = surface.contour[(i + 1) % surface.contour.count]
             if (b - a).length * viewport.scale > 48 {
                 let center = viewport.screen((a + b) * 0.5)
-                context.draw(Text(layoutCM((b - a).length)).font(.system(size: 10)).foregroundStyle(.secondary), at: .init(x: center.x, y: center.y - 10))
+                let tone = surface.edgeTones.indices.contains(i) ? toneColor(surface.edgeTones[i]) : .secondary
+                let correction = surface.dimensionCorrections.first { $0.edgeIndex == i }
+                context.draw(Text("\(vertexName(i))–\(vertexName((i + 1) % surface.contour.count)) · \(layoutCM((b - a).length))")
+                    .font(.system(size: 10, weight: .medium)).foregroundStyle(tone), at: .init(x: center.x, y: center.y - 12))
+                if let correction {
+                    context.draw(Text(Image(systemName: correction.symbol)).foregroundStyle(correctionColor(correction)),
+                                 at: .init(x: center.x + 52, y: center.y - 12))
+                }
             }
             if mode == .contour {
                 let p = viewport.screen(a), radius = selectedVertex == i ? 8.0 : 6.0
                 context.fill(Path(ellipseIn: CGRect(x: p.x - radius, y: p.y - radius, width: radius * 2, height: radius * 2)), with: .color(selectedVertex == i ? .orange : .teal))
-                context.draw(Text("\(i + 1)").font(.caption.bold()), at: .init(x: p.x + 12, y: p.y - 12))
+                context.draw(Text(vertexName(i)).font(.caption.bold()), at: .init(x: p.x + 12, y: p.y - 12))
             }
         }
     }
@@ -208,6 +216,16 @@ struct SheetLayoutView: View {
         }
     }
     private func tapped(_ p: CGPoint, document: LayoutDocument, viewport: LayoutViewport) {
+        if let correction = document.surface.dimensionCorrections.min(by: { first, second in
+            let a1 = document.surface.contour[first.edgeIndex], b1 = document.surface.contour[(first.edgeIndex + 1) % document.surface.contour.count]
+            let a2 = document.surface.contour[second.edgeIndex], b2 = document.surface.contour[(second.edgeIndex + 1) % document.surface.contour.count]
+            let p1 = viewport.screen((a1 + b1) * 0.5), p2 = viewport.screen((a2 + b2) * 0.5)
+            return hypot(p1.x - p.x, p1.y - p.y) < hypot(p2.x - p.x, p2.y - p.y)
+        }) {
+            let a = document.surface.contour[correction.edgeIndex], b = document.surface.contour[(correction.edgeIndex + 1) % document.surface.contour.count]
+            let center = viewport.screen((a + b) * 0.5)
+            if hypot(center.x - p.x, center.y - p.y) < 42 { sheet = .correction(correction.edgeIndex); return }
+        }
         if mode == .contour {
             selectedVertex = nearestVertex(p, document: document, viewport: viewport)
             if let selectedVertex { sheet = .vertex(selectedVertex) }
@@ -268,6 +286,10 @@ struct SheetLayoutView: View {
         case .vertex(let index):
             if let document = model.document, document.surface.contour.indices.contains(index) {
                 LayoutVertexForm(index: index, contour: document.surface.contour) { p in var copy = document; copy.surface.contour = p; model.apply(copy); selectedVertex = nil }
+            }
+        case .correction(let index):
+            if let correction = model.document?.surface.dimensionCorrections.first(where: { $0.edgeIndex == index }) {
+                LayoutCorrectionDetail(correction: correction, edgeCount: model.document?.surface.contour.count ?? 1)
             }
         case .cut(let selection): LayoutCutDetail(selection: selection)
         case .pieces:

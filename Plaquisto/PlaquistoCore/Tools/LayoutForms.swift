@@ -6,14 +6,35 @@ struct LayoutSurfaceForm: View {
     @State private var name = ""
     @State private var kind = LayoutSupportKind.wall
     @State private var preset = LayoutPreset.rectangle
-    @State private var width = 4000.0
+    @State private var length = 4000.0
     @State private var height = 2500.0
     @State private var second = 3000.0
-    private var contour: [LayoutPoint] { preset.contour(width: width, height: height, secondaryHeight: second) }
+    @State private var mirrored = false
+    @State private var sketch: [LayoutPoint] = []
+    @State private var measuredSides: [Double] = []
+    @State private var referenceAngles: [Double] = []
+    @State private var selectedCorrection: LayoutDimensionCorrection?
+    private var generated: (contour: [LayoutPoint], corrections: [LayoutDimensionCorrection]) {
+        if kind == .ceiling, preset == .freeform {
+            guard sketch.count >= 3, measuredSides.count == sketch.count else { return ([], []) }
+            return (try? LayoutGeometry.closedMeasuredContour(sketch: angledSketch, lengths: measuredSides)) ?? ([], [])
+        }
+        return (preset.contour(length: length, height: height, secondaryHeight: second, mirrored: mirrored), [])
+    }
+    private var contour: [LayoutPoint] { generated.contour }
+    private var tones: [LayoutEdgeTone] {
+        switch (kind, preset) {
+        case (.wall, .rectangle): return [.blue, .orange, .blue, .orange]
+        case (.wall, .slope): return [.blue, .purple, .green, .orange]
+        case (.wall, .lShape): return [.blue, .purple, .blue, .orange, .blue, .orange]
+        case (.ceiling, .rectangle): return [.blue, .orange, .blue, .orange]
+        default: return contour.indices.map { [.blue, .orange, .purple, .green][$0 % 4] }
+        }
+    }
     private var valid: Bool {
-        width >= 10 && height >= 10 && width <= 100_000 && height <= 100_000
-            && (!(preset == .slope || preset == .gable) || second >= 10)
-            && (preset != .gable || second >= height)
+        length >= 10 && height >= 10 && length <= 100_000 && height <= 100_000
+            && (!(preset == .slope || preset == .lShape) || second >= height)
+            && (preset != .freeform || (sketch.count >= 3 && measuredSides.allSatisfy { $0 >= 10 }))
             && (try? LayoutGeometry.validate(contour)) != nil
     }
     var body: some View {
@@ -22,18 +43,55 @@ struct LayoutSurfaceForm: View {
                 Section("Support") {
                     TextField("Pièce (facultatif)", text: $name)
                     Picker("Type", selection: $kind) { ForEach(LayoutSupportKind.allCases, id: \.self) { Text($0.rawValue) } }.pickerStyle(.segmented)
-                    Picker("Forme", selection: $preset) { ForEach(LayoutPreset.allCases, id: \.self) { Text($0.rawValue) } }
+                    Picker("Forme", selection: $preset) { ForEach(LayoutPreset.available(for: kind), id: \.self) { Text($0.rawValue) } }
                 }
-                Section("Dimensions") {
-                    LayoutDimensionField(title: kind == .wall ? "Largeur" : "Longueur", millimetres: $width)
-                    LayoutDimensionField(title: heightTitle, millimetres: $height)
-                    if preset == .slope || preset == .gable {
-                        LayoutDimensionField(title: preset == .gable ? "Hauteur au faîtage" : "Hauteur droite", millimetres: $second)
+                if preset == .freeform, kind == .ceiling {
+                    Section("Dessiner le plafond") {
+                        LayoutSketchPad { points in acceptSketch(points) }.frame(height: 230)
+                        Text("Tracez le contour en un seul geste. Plaquisto le transforme en côtés rectilignes que vous pourrez coter.")
+                            .font(.footnote).foregroundStyle(.secondary)
                     }
-                    if preset == .lShape { Text("Le décroché est créé à mi-largeur et mi-hauteur. Vous pourrez déplacer chaque sommet sur le plan.").font(.footnote).foregroundStyle(.secondary) }
+                    if measuredSides.count >= 3 {
+                        Section("Cotes du plafond") {
+                            ForEach(measuredSides.indices, id: \.self) { index in
+                                LayoutDimensionField(title: "\(vertexName(index))–\(vertexName((index + 1) % measuredSides.count))", millimetres: $measuredSides[index], tint: toneColor(tones[index]))
+                            }
+                            if !referenceAngles.isEmpty {
+                                ForEach(referenceAngles.indices, id: \.self) { index in
+                                    HStack {
+                                        Text("Angle \(vertexName(index))–\(vertexName(index + 1))–\(vertexName(index + 2))")
+                                        Spacer()
+                                        TextField("90", value: $referenceAngles[index], format: .number.precision(.fractionLength(0...1)))
+                                            .keyboardType(.decimalPad).multilineTextAlignment(.trailing).frame(width: 80)
+                                        Text("°").foregroundStyle(.secondary)
+                                    }
+                                }
+                            }
+                        }
+                        if contour.isEmpty {
+                            Section {
+                                Label("Ces mesures ne permettent pas de refermer proprement la forme. Vérifiez les cotes ou redessinez le plafond.", systemImage: "exclamationmark.octagon.fill")
+                                    .foregroundStyle(.red)
+                            }
+                        }
+                    }
+                } else {
+                    Section("Dimensions") {
+                        LayoutDimensionField(title: "Longueur", millimetres: $length, tint: .blue)
+                        if kind == .ceiling {
+                            LayoutDimensionField(title: "Largeur", millimetres: $height, tint: .orange)
+                        } else if preset == .rectangle {
+                            LayoutDimensionField(title: "Hauteur sous plafond", millimetres: $height, tint: .orange)
+                        } else {
+                            LayoutDimensionField(title: "Hauteur sous plafond mini", millimetres: $height, tint: .orange)
+                            LayoutDimensionField(title: "Hauteur sous plafond maxi", millimetres: $second, tint: .purple)
+                            Toggle("Miroir", isOn: $mirrored)
+                        }
+                    }
                 }
                 Section("Aperçu du support") {
-                    LayoutContourPreview(contours: [contour], numbered: true).frame(height: 190)
+                    LayoutMeasuredPreview(contour: contour, tones: tones, corrections: generated.corrections) { selectedCorrection = $0 }
+                        .frame(height: 240)
                 }
                 Section { Text("Toutes les cotes sont en centimètres. Pour un rampant de plafond, renseignez les longueurs mesurées dans le plan incliné.").font(.footnote).foregroundStyle(.secondary) }
             }
@@ -42,17 +100,44 @@ struct LayoutSurfaceForm: View {
                 ToolbarItem(placement: .cancellationAction) { Button("Annuler") { dismiss() } }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Créer") {
-                        onCreate(.init(surface: .init(name: name.isEmpty ? kind.rawValue : name, kind: kind, contour: contour)))
+                        onCreate(.init(surface: .init(name: name.isEmpty ? kind.rawValue : name, kind: kind, contour: contour,
+                                                      edgeTones: tones, dimensionCorrections: generated.corrections)))
                         dismiss()
                     }.disabled(!valid)
                 }
             }
+            .onChange(of: kind) { _, value in if !LayoutPreset.available(for: value).contains(preset) { preset = .rectangle } }
+            .sheet(item: $selectedCorrection) { LayoutCorrectionDetail(correction: $0, edgeCount: contour.count) }
         }
     }
-    private var heightTitle: String {
-        if preset == .gable { return "Hauteur des côtés" }
-        if preset == .slope { return "Hauteur gauche" }
-        return kind == .wall ? "Hauteur" : "Largeur"
+    private var angledSketch: [LayoutPoint] {
+        guard sketch.count >= 4, referenceAngles.count == sketch.count - 3 else { return sketch }
+        var result = [sketch[0], sketch[1]]
+        for vertex in 1..<(sketch.count - 1) {
+            let originalIncoming = sketch[vertex] - sketch[vertex - 1]
+            let originalOutgoing = sketch[vertex + 1] - sketch[vertex]
+            let incoming = result[vertex] - result[vertex - 1]
+            guard incoming.length > 0, originalOutgoing.length > 0 else { return sketch }
+            let angle = vertex - 1 < referenceAngles.count ? referenceAngles[vertex - 1] : interiorAngle(at: vertex, in: sketch)
+            guard angle > 5, angle < 355 else { return sketch }
+            let turn = LayoutGeometry.cross(originalIncoming, originalOutgoing) >= 0 ? 1.0 : -1.0
+            let direction = atan2(incoming.y, incoming.x) + turn * (.pi - angle * .pi / 180)
+            result.append(result[vertex] + LayoutPoint(x: cos(direction), y: sin(direction)) * originalOutgoing.length)
+        }
+        return result
+    }
+    private func acceptSketch(_ raw: [LayoutPoint]) {
+        guard raw.count >= 3 else { sketch = []; measuredSides = []; return }
+        let bounds = LayoutBounds(points: raw), factor = 4000 / max(1, max(bounds.width, bounds.height))
+        let normalized = raw.map { LayoutPoint(x: ($0.x - bounds.min.x) * factor, y: ($0.y - bounds.min.y) * factor) }
+        sketch = LayoutGeometry.area(normalized) < 0 ? Array(normalized.reversed()) : normalized
+        measuredSides = LayoutGeometry.edges(sketch).map { ($0.b - $0.a).length.rounded() }
+        referenceAngles = sketch.count >= 4 ? (1...(sketch.count - 3)).map { interiorAngle(at: $0, in: sketch).rounded() } : []
+    }
+    private func interiorAngle(at index: Int, in points: [LayoutPoint]) -> Double {
+        let incoming = points[index - 1] - points[index], outgoing = points[(index + 1) % points.count] - points[index]
+        let cosine = max(-1, min(1, LayoutGeometry.dot(incoming, outgoing) / max(0.0001, incoming.length * outgoing.length)))
+        return acos(cosine) * 180 / .pi
     }
 }
 
@@ -297,5 +382,154 @@ struct LayoutContourPreview: View {
                 }
             }
         }
+    }
+}
+
+func vertexName(_ index: Int) -> String {
+    let alphabet = Array("ABCDEFGHIJKLMNOPQRSTUVWXYZ")
+    return index < alphabet.count ? String(alphabet[index]) : "P\(index + 1)"
+}
+
+func toneColor(_ tone: LayoutEdgeTone) -> Color {
+    switch tone {
+    case .blue: return .blue
+    case .orange: return .orange
+    case .purple: return .purple
+    case .green: return .green
+    }
+}
+
+func correctionColor(_ correction: LayoutDimensionCorrection) -> Color {
+    if correction.difference > 50 { return .red }
+    if correction.difference >= 20 { return .orange }
+    return .yellow
+}
+
+struct LayoutCorrectionDetail: View {
+    @Environment(\.dismiss) private var dismiss
+    let correction: LayoutDimensionCorrection
+    let edgeCount: Int
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("Cote \(vertexName(correction.edgeIndex))–\(vertexName((correction.edgeIndex + 1) % max(1, edgeCount)))") {
+                    LabeledContent("Mesure saisie", value: layoutCM(correction.original))
+                    LabeledContent("Mesure retenue", value: layoutCM(correction.corrected))
+                    LabeledContent("Écart", value: layoutCM(correction.difference))
+                    LabeledContent("Différence", value: correction.percentage.formatted(.number.locale(Locale(identifier: "fr_FR")).precision(.fractionLength(0...2))) + " %")
+                }
+                Section {
+                    if correction.difference > 50 {
+                        Label("L’écart dépasse 5 cm. Il est recommandé de refaire cette mesure avant de poursuivre.", systemImage: "exclamationmark.octagon.fill")
+                            .foregroundStyle(.red)
+                    } else {
+                        Text("La forme a été refermée automatiquement en répartissant le léger écart de mesure entre ses côtés.")
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+            .navigationTitle("Correction de mesure").navigationBarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Fermer") { dismiss() } } }
+        }
+    }
+}
+
+struct LayoutMeasuredPreview: View {
+    let contour: [LayoutPoint]
+    let tones: [LayoutEdgeTone]
+    let corrections: [LayoutDimensionCorrection]
+    let onCorrection: (LayoutDimensionCorrection) -> Void
+    var body: some View {
+        GeometryReader { proxy in
+            let transform = LayoutViewport(bounds: paddedBounds, size: proxy.size, zoom: 1, pan: .zero)
+            ZStack {
+                Canvas { context, _ in
+                    context.fill(layoutPath(contour, transform: transform), with: .color(.teal.opacity(0.08)))
+                    for index in contour.indices {
+                        let a = contour[index], b = contour[(index + 1) % contour.count]
+                        let color = toneColor(tones.indices.contains(index) ? tones[index] : .blue)
+                        var side = Path(); side.move(to: transform.screen(a)); side.addLine(to: transform.screen(b))
+                        context.stroke(side, with: .color(color), lineWidth: 3)
+                        let pa = transform.screen(a), pb = transform.screen(b), label = labelPosition(a: a, b: b, transform: transform)
+                        let offset = CGSize(width: label.x - (pa.x + pb.x) / 2, height: label.y - (pa.y + pb.y) / 2)
+                        let da = CGPoint(x: pa.x + offset.width, y: pa.y + offset.height)
+                        let db = CGPoint(x: pb.x + offset.width, y: pb.y + offset.height)
+                        var dimension = Path()
+                        dimension.move(to: pa); dimension.addLine(to: da)
+                        dimension.move(to: pb); dimension.addLine(to: db)
+                        dimension.move(to: da); dimension.addLine(to: db)
+                        context.stroke(dimension, with: .color(color.opacity(0.65)), lineWidth: 0.8)
+                        context.draw(Text(vertexName(index)).font(.caption.bold()).foregroundStyle(.primary),
+                                     at: transform.screen(a), anchor: .bottomTrailing)
+                    }
+                }
+                ForEach(contour.indices, id: \.self) { index in
+                    let a = contour[index], b = contour[(index + 1) % contour.count]
+                    let position = labelPosition(a: a, b: b, transform: transform)
+                    let correction = corrections.first { $0.edgeIndex == index }
+                    Button {
+                        if let correction { onCorrection(correction) }
+                    } label: {
+                        HStack(spacing: 3) {
+                            Text("\(vertexName(index))–\(vertexName((index + 1) % contour.count))  \(layoutCM((b - a).length))")
+                                .font(.caption2.monospacedDigit())
+                            if let correction {
+                                Image(systemName: correction.symbol).foregroundStyle(correctionColor(correction))
+                            }
+                        }
+                        .padding(.horizontal, 5).padding(.vertical, 3)
+                        .background(.regularMaterial, in: Capsule())
+                        .foregroundStyle(toneColor(tones.indices.contains(index) ? tones[index] : .blue))
+                    }
+                    .buttonStyle(.plain).allowsHitTesting(correction != nil)
+                    .position(position)
+                }
+            }
+        }
+    }
+    private var paddedBounds: LayoutBounds {
+        let bounds = LayoutBounds(points: contour), padding = max(bounds.width, bounds.height) * 0.22
+        return .init(min: .init(x: bounds.min.x - padding, y: bounds.min.y - padding),
+                     max: .init(x: bounds.max.x + padding, y: bounds.max.y + padding))
+    }
+    private func labelPosition(a: LayoutPoint, b: LayoutPoint, transform: LayoutViewport) -> CGPoint {
+        let midpoint = transform.screen((a + b) * 0.5), vector = b - a
+        let length = max(1, vector.length), outward = LayoutGeometry.area(contour) >= 0 ? 1.0 : -1.0
+        let normal = CGSize(width: outward * vector.y / length * 25, height: outward * vector.x / length * 25)
+        return .init(x: midpoint.x + normal.width, y: midpoint.y + normal.height)
+    }
+}
+
+struct LayoutSketchPad: View {
+    let onComplete: ([LayoutPoint]) -> Void
+    @State private var stroke: [LayoutPoint] = []
+    var body: some View {
+        GeometryReader { proxy in
+            Canvas { context, _ in
+                var path = Path()
+                if let first = stroke.first {
+                    path.move(to: .init(x: first.x, y: first.y))
+                    for point in stroke.dropFirst() { path.addLine(to: .init(x: point.x, y: point.y)) }
+                }
+                context.stroke(path, with: .color(.teal), style: StrokeStyle(lineWidth: 4, lineCap: .round, lineJoin: .round))
+            }
+            .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 14))
+            .overlay {
+                if stroke.isEmpty { Text("Dessinez ici").foregroundStyle(.secondary) }
+            }
+            .contentShape(Rectangle())
+            .gesture(DragGesture(minimumDistance: 0).onChanged { value in
+                let point = LayoutPoint(x: min(max(0, value.location.x), proxy.size.width),
+                                        y: proxy.size.height - min(max(0, value.location.y), proxy.size.height))
+                if stroke.last.map({ ($0 - point).length > 3 }) ?? true { stroke.append(point) }
+            }.onEnded { _ in
+                var tolerance = 12.0
+                var simplified = LayoutGeometry.simplifiedStroke(stroke, tolerance: tolerance)
+                while simplified.count > 12 { tolerance += 5; simplified = LayoutGeometry.simplifiedStroke(stroke, tolerance: tolerance) }
+                onComplete(simplified)
+                stroke = simplified
+            })
+        }
+        .accessibilityLabel("Zone de dessin du plafond")
     }
 }
