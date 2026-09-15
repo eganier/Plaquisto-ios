@@ -297,6 +297,7 @@ enum WorkCategory: String, Codable, CaseIterable, Identifiable {
 enum WorkType: String, Codable, CaseIterable, Identifiable {
     case ceilingOnFurring = "plafond-fourrures"
     case ceilingOnRailsAndStuds = "plafond-rails-montants"
+    case modularCeiling = "plafond-modulaire"
     case peripheralLiningStuds = "doublage-peripherique-rails-montants"
     case distributionPartition = "cloison-de-distribution"
     case alveolarPartition = "cloison-de-distribution-alveolaire"
@@ -308,7 +309,7 @@ enum WorkType: String, Codable, CaseIterable, Identifiable {
     var id: String { rawValue }
     var category: WorkCategory {
         switch self {
-        case .ceilingOnFurring, .ceilingOnRailsAndStuds: .ceilings
+        case .ceilingOnFurring, .ceilingOnRailsAndStuds, .modularCeiling: .ceilings
         case .peripheralLiningStuds, .peripheralLiningBonded, .peripheralLiningFurrings, .peripheralLiningAdhesiveFacing: .wallInsulation
         case .distributionPartition, .alveolarPartition: .partitions
         case .openings: .openings
@@ -318,6 +319,7 @@ enum WorkType: String, Codable, CaseIterable, Identifiable {
         switch self {
         case .ceilingOnFurring: "Plafond sur fourrures"
         case .ceilingOnRailsAndStuds: "Plafond sur ossature rails et montants"
+        case .modularCeiling: "Plafond modulaire en dalles"
         case .peripheralLiningStuds: "Doublage périphérique — Rails et montants"
         case .distributionPartition: "Cloison de distribution — Rails et montants"
         case .alveolarPartition: "Cloison de distribution alvéolaire"
@@ -331,6 +333,7 @@ enum WorkType: String, Codable, CaseIterable, Identifiable {
         switch self {
         case .ceilingOnFurring: "Plafond sur fourrures"
         case .ceilingOnRailsAndStuds: "Plafond sur ossature rails et montants"
+        case .modularCeiling: "Plafond modulaire en dalles"
         case .peripheralLiningStuds: "Doublage périphérique sur rails et montants"
         case .distributionPartition: "Cloison de distribution"
         case .alveolarPartition: "Cloison de distribution alvéolaire"
@@ -347,6 +350,8 @@ enum WorkType: String, Codable, CaseIterable, Identifiable {
         switch self {
         case .ceilingOnFurring, .ceilingOnRailsAndStuds:
             "Plafond"
+        case .modularCeiling:
+            "Plafond modulaire"
         case .peripheralLiningStuds, .peripheralLiningBonded, .peripheralLiningFurrings, .peripheralLiningAdhesiveFacing:
             "Doublage périphérique"
         case .distributionPartition, .alveolarPartition:
@@ -365,6 +370,7 @@ enum WorkType: String, Codable, CaseIterable, Identifiable {
 enum WorkConfiguration: Codable, Equatable {
     case ceiling(CeilingConfiguration)
     case railStudCeiling(RailStudCeilingConfiguration)
+    case modularCeiling(ModularCeilingConfiguration)
     case peripheralLining(DoublageConfiguration)
     case distributionPartition(CloisonDistributionConfiguration)
     case alveolarPartition(AlveolarPartitionConfiguration)
@@ -374,7 +380,7 @@ enum WorkConfiguration: Codable, Equatable {
     case openings(OpeningConfiguration)
 
     private enum CodingKeys: String, CodingKey { case kind, data }
-    private enum Kind: String, Codable { case ceiling, railStudCeiling, peripheralLining, distributionPartition, alveolarPartition, bondedLining, furringLining, adhesiveFacing, openings }
+    private enum Kind: String, Codable { case ceiling, railStudCeiling, modularCeiling, peripheralLining, distributionPartition, alveolarPartition, bondedLining, furringLining, adhesiveFacing, openings }
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
@@ -383,6 +389,8 @@ enum WorkConfiguration: Codable, Equatable {
             self = .ceiling(try container.decode(CeilingConfiguration.self, forKey: .data))
         case .railStudCeiling:
             self = .railStudCeiling(try container.decode(RailStudCeilingConfiguration.self, forKey: .data))
+        case .modularCeiling:
+            self = .modularCeiling(try container.decode(ModularCeilingConfiguration.self, forKey: .data))
         case .peripheralLining:
             self = .peripheralLining(try container.decode(DoublageConfiguration.self, forKey: .data))
         case .distributionPartition:
@@ -408,6 +416,9 @@ enum WorkConfiguration: Codable, Equatable {
             try container.encode(configuration, forKey: .data)
         case .railStudCeiling(let configuration):
             try container.encode(Kind.railStudCeiling, forKey: .kind)
+            try container.encode(configuration, forKey: .data)
+        case .modularCeiling(let configuration):
+            try container.encode(Kind.modularCeiling, forKey: .kind)
             try container.encode(configuration, forKey: .data)
         case .peripheralLining(let configuration):
             try container.encode(Kind.peripheralLining, forKey: .kind)
@@ -450,6 +461,11 @@ struct WorkItem: Identifiable, Equatable {
 
     var railStudCeilingConfiguration: RailStudCeilingConfiguration? {
         guard case .railStudCeiling(let configuration) = payload else { return nil }
+        return configuration
+    }
+
+    var modularCeilingConfiguration: ModularCeilingConfiguration? {
+        guard case .modularCeiling(let configuration) = payload else { return nil }
         return configuration
     }
 
@@ -511,6 +527,10 @@ struct WorkItem: Identifiable, Equatable {
 
     init(id: UUID, projectID: UUID, name: String, type: WorkType, railStudCeilingConfiguration: RailStudCeilingConfiguration, createdAt: Date, updatedAt: Date) {
         self.init(id: id, projectID: projectID, name: name, type: type, payload: .railStudCeiling(railStudCeilingConfiguration), createdAt: createdAt, updatedAt: updatedAt)
+    }
+
+    init(id: UUID, projectID: UUID, name: String, type: WorkType, modularCeilingConfiguration: ModularCeilingConfiguration, createdAt: Date, updatedAt: Date) {
+        self.init(id: id, projectID: projectID, name: name, type: type, payload: .modularCeiling(modularCeilingConfiguration), createdAt: createdAt, updatedAt: updatedAt)
     }
 
     init(id: UUID, projectID: UUID, name: String, type: WorkType, doublageConfiguration: DoublageConfiguration, createdAt: Date, updatedAt: Date) {

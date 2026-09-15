@@ -143,6 +143,17 @@ enum CombinedQuantityCalculator {
                 for item in ceiling.quantities { add(name: item.name, quantity: item.quantity, unit: item.unit) }
                 continue
             }
+            if work.type == .modularCeiling, let ceiling = work.modularCeilingConfiguration {
+                let quantities = ModularCeilingCalculator.calculate(ceiling)
+                totalArea += quantities.area
+                add(name: "Dalles modulaires \(ceiling.tileFormat.title)", quantity: Double(quantities.orderedTiles), unit: "unité(s)")
+                add(name: "Profilés porteurs T24 · 3,60 m", quantity: Double(quantities.mainRunnerBars), unit: "unité(s)")
+                add(name: "Entretoises T24 · 1,20 m", quantity: Double(quantities.crossTees1200Ordered), unit: "unité(s)")
+                add(name: "Entretoises T24 · 0,60 m", quantity: Double(quantities.crossTees600Ordered), unit: "unité(s)")
+                add(name: "Cornières de rive · 3,00 m", quantity: Double(quantities.perimeterAngleBars), unit: "unité(s)")
+                add(name: "Suspentes + fixations", quantity: Double(quantities.hangers), unit: "unité(s)")
+                continue
+            }
             if work.type == .peripheralLiningStuds, let doublage = work.doublageConfiguration {
                 totalArea += doublage.area
                 for item in doublage.quantities {
@@ -257,6 +268,7 @@ private extension WorkItem {
             guard let configuration = ceilingConfiguration else { return 0 }
             return configuration.length * configuration.width
         case .ceilingOnRailsAndStuds: return railStudCeilingConfiguration?.effectiveArea ?? 0
+        case .modularCeiling: return modularCeilingConfiguration?.area ?? 0
         case .peripheralLiningStuds: return doublageConfiguration?.area ?? 0
         case .distributionPartition: return cloisonDistributionConfiguration?.area ?? 0
         case .alveolarPartition: return alveolarPartitionConfiguration?.area ?? 0

@@ -50,6 +50,78 @@ final class ProjectStoreTests: XCTestCase {
         XCTAssertEqual(works.first?.ceilingConfiguration?.length, 12)
     }
 
+    func testModularCeilingUsesMetricCountsFromTheReferenceExample() {
+        let configuration = ModularCeilingConfiguration(
+            length: 8,
+            width: 5,
+            tileFormat: .square600,
+            tileThicknessMM: 20,
+            plenumCM: 15,
+            wastePercent: 5
+        )
+
+        let result = ModularCeilingCalculator.calculate(configuration)
+
+        XCTAssertEqual(result.area, 40)
+        XCTAssertEqual(result.installedTiles, 126)
+        XCTAssertEqual(result.fullTiles, 84)
+        XCTAssertEqual(result.cutTiles, 42)
+        XCTAssertEqual(result.orderedTiles, 133)
+        XCTAssertEqual(result.mainRunnerLines, 4)
+        XCTAssertEqual(result.mainRunnerLength, 32)
+        XCTAssertEqual(result.mainRunnerBars, 10)
+        XCTAssertEqual(result.crossTees1200Useful, 65)
+        XCTAssertEqual(result.crossTees1200Ordered, 69)
+        XCTAssertEqual(result.crossTees600Useful, 56)
+        XCTAssertEqual(result.crossTees600Ordered, 59)
+        XCTAssertEqual(result.perimeterAngleBars, 10)
+        XCTAssertEqual(result.hangers, 28)
+    }
+
+    func testRectangularModularTilesDoNotUseSixHundredMillimeterCrossTees() {
+        let configuration = ModularCeilingConfiguration(
+            length: 8,
+            width: 5,
+            tileFormat: .rectangle600x1200,
+            tileThicknessMM: 20,
+            plenumCM: 15,
+            wastePercent: 5
+        )
+
+        let result = ModularCeilingCalculator.calculate(configuration)
+
+        XCTAssertEqual(result.installedTiles, 70)
+        XCTAssertEqual(result.crossTees600Useful, 0)
+        XCTAssertEqual(result.crossTees600Ordered, 0)
+        XCTAssertEqual(result.crossTees1200Useful, 65)
+    }
+
+    func testModularCeilingSurvivesAStoreReload() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let fileURL = directory.appendingPathComponent("projects.json")
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let store = ProjectStore(fileURL: fileURL)
+        let projectID = try store.createProject(name: "Bureaux", client: "", address: "", notes: "")
+        let configuration = ModularCeilingConfiguration(
+            length: 6.4,
+            width: 4.2,
+            tileFormat: .rectangle600x1200,
+            tileThicknessMM: 20,
+            plenumCM: 18,
+            wastePercent: 7
+        )
+        let workID = try store.createWork(
+            projectID: projectID,
+            name: "Bureau - Plafond modulaire",
+            type: .modularCeiling,
+            modularCeilingConfiguration: configuration
+        )
+
+        let reloaded = ProjectStore(fileURL: fileURL)
+        XCTAssertEqual(reloaded.project(id: projectID)?.works.first(where: { $0.id == workID })?.modularCeilingConfiguration, configuration)
+    }
+
     func testDefaultWorkNameUsesTheFirstAvailableNumber() throws {
         let fileURL = FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID().uuidString).json")
         defer { try? FileManager.default.removeItem(at: fileURL) }

@@ -549,6 +549,14 @@ private struct SavedWorkView: View {
                     do { try store.updateWork(currentWork, railStudCeilingConfiguration: configuration); dismiss() }
                     catch { errorMessage = "Les modifications n’ont pas pu être enregistrées." }
                 }
+            case .modularCeiling:
+                ModularCeilingConfiguratorView(
+                    initialConfiguration: currentWork.modularCeilingConfiguration,
+                    startsAtResult: true
+                ) { configuration in
+                    do { try store.updateWork(currentWork, modularCeilingConfiguration: configuration); dismiss() }
+                    catch { errorMessage = "Les modifications n’ont pas pu être enregistrées." }
+                }
             case .peripheralLiningStuds:
                 DoublageConfiguratorHost(
                     initialConfiguration: currentWork.doublageConfiguration,
@@ -619,6 +627,8 @@ private struct WorkConfiguratorContainer: View {
                     CeilingConfiguratorView { configuration in save(configuration: configuration) }
                 case .ceilingOnRailsAndStuds:
                     RailStudCeilingConfiguratorView { configuration in save(railStudCeilingConfiguration: configuration) }
+                case .modularCeiling:
+                    ModularCeilingConfiguratorView { configuration in save(modularCeilingConfiguration: configuration) }
                 case .peripheralLiningStuds:
                     DoublageConfiguratorHost { configuration in save(doublageConfiguration: configuration) }
                 case .distributionPartition:
@@ -662,6 +672,18 @@ private struct WorkConfiguratorContainer: View {
     private func save(railStudCeilingConfiguration: RailStudCeilingConfiguration) {
         do {
             _ = try store.createWork(projectID: projectID, name: workName, type: workType, railStudCeilingConfiguration: railStudCeilingConfiguration)
+            finish()
+        } catch { errorMessage = "L’ouvrage n’a pas pu être enregistré." }
+    }
+
+    private func save(modularCeilingConfiguration: ModularCeilingConfiguration) {
+        do {
+            _ = try store.createWork(
+                projectID: projectID,
+                name: workName,
+                type: workType,
+                modularCeilingConfiguration: modularCeilingConfiguration
+            )
             finish()
         } catch { errorMessage = "L’ouvrage n’a pas pu être enregistré." }
     }
