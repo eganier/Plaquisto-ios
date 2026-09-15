@@ -125,16 +125,24 @@ struct PartitionHeightToolView: View {
                 Picker("Système rail / montant", selection: $selectedFrame) {
                     ForEach(frames, id: \.self) { Text($0).tag($0) }
                 }
-                Picker("Montants", selection: $doubled) {
-                    Text("Simples").tag(false)
-                    Text("Doublés").tag(true)
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Entraxe des montants").font(.subheadline.weight(.semibold))
+                    Picker("Entraxe des montants", selection: $spacing) {
+                        Text("40 cm").tag(0.40)
+                        Text("60 cm").tag(0.60)
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.segmented)
                 }
-                .pickerStyle(.segmented)
-                Picker("Entraxe", selection: $spacing) {
-                    Text("40 cm").tag(0.40)
-                    Text("60 cm").tag(0.60)
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Configuration des montants").font(.subheadline.weight(.semibold))
+                    Picker("Configuration des montants", selection: $doubled) {
+                        Text("Simples").tag(false)
+                        Text("Doublés").tag(true)
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.segmented)
                 }
-                .pickerStyle(.segmented)
                 Picker("Parements", selection: $layers) {
                     ForEach(verifyLayers, id: \.self) { Text(layerTitle($0)).tag($0) }
                 }
