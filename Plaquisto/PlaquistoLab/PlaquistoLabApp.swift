@@ -4,7 +4,7 @@ import SwiftUI
 struct PlaquistoLabApp: App {
     var body: some Scene {
         WindowGroup {
-            ToolsHomeView()
+            ToolsHomeView(enablesExperimentalLayout: true)
         }
     }
 }

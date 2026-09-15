@@ -23,7 +23,7 @@ struct ToolDefinition: Identifiable, Hashable {
     let category: ToolCategory
     let keywords: [String]
     let destination: ToolDestination
-    var isAvailable: Bool { true }
+    var isAvailable: Bool { destination != .layout }
 
     var searchableText: String {
         ([title, shortDescription, category.rawValue] + keywords)

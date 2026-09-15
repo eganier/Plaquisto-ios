@@ -2,6 +2,7 @@ import SwiftUI
 
 struct ToolsHomeView: View {
     var onOpenAccount: (() -> Void)?
+    var enablesExperimentalLayout = false
     @StateObject private var technicalStore = ToolTechnicalStore()
     @State private var query = ""
 
@@ -42,11 +43,12 @@ struct ToolsHomeView: View {
         VStack(alignment: .leading, spacing: 10) {
             Text(title).font(.title3.bold()).foregroundStyle(.secondary)
             ForEach(tools) { tool in
+                let isAvailable = tool.isAvailable || (enablesExperimentalLayout && tool.destination == .layout)
                 NavigationLink(value: tool.destination) {
-                    ToolCard(tool: tool)
+                    ToolCard(tool: tool, isAvailable: isAvailable)
                 }
                 .buttonStyle(.plain)
-                .disabled(!tool.isAvailable)
+                .disabled(!isAvailable)
             }
         }
     }
@@ -54,23 +56,24 @@ struct ToolsHomeView: View {
 
 private struct ToolCard: View {
     let tool: ToolDefinition
+    let isAvailable: Bool
 
     var body: some View {
         HStack(spacing: 14) {
             Image(systemName: tool.icon)
                 .font(.title2)
-                .foregroundStyle(tool.isAvailable ? Color.accentColor : .secondary)
+                .foregroundStyle(isAvailable ? Color.accentColor : .secondary)
                 .frame(width: 42, height: 42)
-                .background(Color.accentColor.opacity(tool.isAvailable ? 0.12 : 0.05), in: RoundedRectangle(cornerRadius: 12))
+                .background(Color.accentColor.opacity(isAvailable ? 0.12 : 0.05), in: RoundedRectangle(cornerRadius: 12))
             VStack(alignment: .leading, spacing: 4) {
                 HStack {
                     Text(tool.title).font(.headline)
-                    if !tool.isAvailable { Text("AVEC ASTRA").font(.caption2.bold()).foregroundStyle(.purple) }
+                    if !isAvailable { Text("AVEC ASTRA").font(.caption2.bold()).foregroundStyle(.purple) }
                 }
                 Text(tool.shortDescription).font(.subheadline).foregroundStyle(.secondary)
             }
             Spacer()
-            if tool.isAvailable { Image(systemName: "chevron.right").font(.caption.bold()).foregroundStyle(.tertiary) }
+            if isAvailable { Image(systemName: "chevron.right").font(.caption.bold()).foregroundStyle(.tertiary) }
         }
         .padding(14)
         .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 18))
