@@ -207,7 +207,7 @@ struct ModularCeilingConfiguratorView: View {
             .padding(.vertical, 12)
             .background(.bar)
         }
-        .navigationTitle("Plafond modulaire")
+        .navigationTitle("Plafond modulaire (bêta)")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             if isEditing {

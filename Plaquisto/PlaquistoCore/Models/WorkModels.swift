@@ -319,7 +319,7 @@ enum WorkType: String, Codable, CaseIterable, Identifiable {
         switch self {
         case .ceilingOnFurring: "Plafond sur fourrures"
         case .ceilingOnRailsAndStuds: "Plafond sur ossature rails et montants"
-        case .modularCeiling: "Plafond modulaire en dalles"
+        case .modularCeiling: "Plafond modulaire en dalles (bêta)"
         case .peripheralLiningStuds: "Doublage périphérique — Rails et montants"
         case .distributionPartition: "Cloison de distribution — Rails et montants"
         case .alveolarPartition: "Cloison de distribution alvéolaire"
