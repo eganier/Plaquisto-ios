@@ -75,28 +75,57 @@ struct SheetLayoutView: View {
         .navigationTitle("Calepinage 2D").navigationBarTitleDisplayMode(.inline)
         .background(Color(.systemGroupedBackground))
         .toolbar {
-            ToolbarItemGroup(placement: .topBarTrailing) {
-                Button { model.undo(); selectedVertex = nil } label: { Image(systemName: "arrow.uturn.backward") }.disabled(!model.canUndo).accessibilityLabel("Annuler la modification")
-                Button { model.redo(); selectedVertex = nil } label: { Image(systemName: "arrow.uturn.forward") }.disabled(!model.canRedo).accessibilityLabel("Rétablir la modification")
-                Menu {
-                    Button("Nouveau support", systemImage: "plus") { sheet = .newSurface }
-                    Button("Liste des découpes", systemImage: "list.number") { sheet = .pieces }.disabled(model.result == nil)
-                } label: { Image(systemName: "ellipsis.circle") }.accessibilityLabel("Options du calepinage")
+            if model.document != nil {
+                ToolbarItemGroup(placement: .topBarTrailing) {
+                    Button("Enregistrer") { model.saveCurrentAndClose(); selectedVertex = nil }
+                    Menu {
+                        Button("Retour aux calepinages", systemImage: "list.bullet") { model.startNew(); selectedVertex = nil }
+                        Button("Nouveau support", systemImage: "plus") { sheet = .newSurface }
+                        Button("Liste des découpes", systemImage: "list.number") { sheet = .pieces }.disabled(model.result == nil)
+                        Divider()
+                        Button { model.undo(); selectedVertex = nil } label: { Label("Annuler la modification", systemImage: "arrow.uturn.backward") }.disabled(!model.canUndo)
+                        Button { model.redo(); selectedVertex = nil } label: { Label("Rétablir la modification", systemImage: "arrow.uturn.forward") }.disabled(!model.canRedo)
+                    } label: { Image(systemName: "ellipsis.circle") }.accessibilityLabel("Options du calepinage")
+                }
             }
         }
         .sheet(item: $sheet) { destination in sheetContent(destination) }
     }
 
     private var entry: some View {
-        VStack(spacing: 22) {
-            Image(systemName: "square.grid.3x3").font(.system(size: 55)).foregroundStyle(.teal)
-            Text("Créer le support").font(.title2.bold())
-            Text("Dessinez un mur ou un plafond, puis ajustez la pose et consultez chaque découpe.")
-                .foregroundStyle(.secondary).multilineTextAlignment(.center)
-            Button("Saisir manuellement") { sheet = .newSurface }.buttonStyle(.borderedProminent).tint(.teal)
-            Button("Importer un ouvrage depuis Chantier (à venir)") {}.disabled(true)
-            if let error = model.saveError { Text(error).font(.footnote).foregroundStyle(.orange) }
-        }.padding(30).frame(maxWidth: .infinity, maxHeight: .infinity)
+        List {
+            Section("Calepinages sauvegardés") {
+                if model.savedDocuments.isEmpty {
+                    ContentUnavailableView("Aucun calepinage", systemImage: "square.grid.3x3",
+                                           description: Text("Créez votre premier mur ou plafond."))
+                } else {
+                    ForEach(model.savedDocuments) { saved in
+                        Button { model.open(saved) } label: {
+                            HStack(spacing: 12) {
+                                Image(systemName: saved.document.surface.kind == .wall ? "rectangle.portrait" : "rectangle")
+                                    .foregroundStyle(.teal).frame(width: 30)
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text(saved.title).font(.headline).foregroundStyle(.primary)
+                                    Text("\(saved.document.surface.kind.rawValue) · \(layoutCM(saved.document.surface.bounds.width)) × \(layoutCM(saved.document.surface.bounds.height))")
+                                        .font(.caption).foregroundStyle(.secondary)
+                                }
+                                Spacer()
+                                Image(systemName: "chevron.right").font(.caption.bold()).foregroundStyle(.tertiary)
+                            }
+                        }.buttonStyle(.plain)
+                    }
+                    .onDelete { offsets in
+                        let documents = offsets.map { model.savedDocuments[$0] }
+                        for document in documents { model.delete(document) }
+                    }
+                }
+            }
+            Section {
+                Button { sheet = .newSurface } label: { Label("Nouveau calepinage", systemImage: "plus") }
+                Button {} label: { Label("Importer un ouvrage depuis Chantier (à venir)", systemImage: "square.and.arrow.down") }.disabled(true)
+            }
+            if let error = model.saveError { Section { Text(error).font(.footnote).foregroundStyle(.orange) } }
+        }
     }
 
     private func editor(_ document: LayoutDocument) -> some View {
@@ -267,7 +296,7 @@ struct SheetLayoutView: View {
     @ViewBuilder private func sheetContent(_ destination: LayoutEditorSheet) -> some View {
         switch destination {
         case .newSurface:
-            LayoutSurfaceForm { document in model.apply(document); zoom = 1; pan = .zero; selectedVertex = nil }
+            LayoutSurfaceForm { document in model.startNew(); model.apply(document); zoom = 1; pan = .zero; selectedVertex = nil }
         case .settings:
             if let document = model.document, let layer = document.layers.first {
                 LayoutSettingsForm(layer: layer) { value in var copy = document; copy.layers[0] = value; model.apply(copy) }.environmentObject(catalogue)

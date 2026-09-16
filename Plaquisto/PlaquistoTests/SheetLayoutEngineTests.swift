@@ -181,10 +181,25 @@ final class SheetLayoutEngineTests: XCTestCase {
         editor.apply(changed)
         editor.undo(); XCTAssertEqual(editor.document, initial)
         editor.redo(); XCTAssertEqual(editor.document, changed)
-        let reloaded = LayoutEditorModel(defaults: defaults)
-        XCTAssertEqual(reloaded.document, changed)
         var dragged = changed; dragged.surface.contour.swapAt(1, 2)
         editor.preview(dragged); editor.finishGesture(from: changed)
         XCTAssertEqual(editor.document, changed)
+
+        editor.saveCurrentAndClose()
+        XCTAssertNil(editor.document)
+        XCTAssertEqual(editor.savedDocuments.count, 1)
+
+        let reloaded = LayoutEditorModel(defaults: defaults)
+        XCTAssertNil(reloaded.document)
+        XCTAssertEqual(reloaded.savedDocuments.count, 1)
+        reloaded.open(reloaded.savedDocuments[0])
+        XCTAssertEqual(reloaded.document, changed)
+
+        var renamed = changed
+        renamed.surface.name = "Salon"
+        reloaded.apply(renamed)
+        reloaded.saveCurrentAndClose()
+        XCTAssertEqual(reloaded.savedDocuments.count, 1)
+        XCTAssertEqual(reloaded.savedDocuments[0].title, "Salon")
     }
 }

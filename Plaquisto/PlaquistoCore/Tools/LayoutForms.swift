@@ -108,6 +108,7 @@ struct LayoutSurfaceForm: View {
                 }
                 Section { Text("Toutes les cotes sont en centimètres. Pour un rampant de plafond, renseignez les longueurs mesurées dans le plan incliné.").font(.footnote).foregroundStyle(.secondary) }
             }
+            .scrollDismissesKeyboard(.interactively)
             .navigationTitle("Créer le support").navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Annuler") { dismiss() } }
@@ -206,6 +207,7 @@ struct LayoutOpeningForm: View {
                 }
                 if existing != nil, let onDelete { Section { Button("Supprimer l’ouverture", role: .destructive) { onDelete(); dismiss() } } }
             }
+            .scrollDismissesKeyboard(.interactively)
             .navigationTitle(existing == nil ? "Nouvelle ouverture" : "Modifier l’ouverture").navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Annuler") { dismiss() } }
@@ -260,6 +262,7 @@ struct LayoutVertexForm: View {
                 }
                 if let message { Section { Text(message).foregroundStyle(.red) } }
             }
+            .scrollDismissesKeyboard(.interactively)
             .navigationTitle("Modifier le contour").navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Annuler") { dismiss() } }
@@ -307,6 +310,7 @@ struct LayoutSettingsForm: View {
                 }
                 Section { Text("Calepinage géométrique d’une couche. Les règles de joints et la réutilisation des chutes ne sont pas appliquées.").font(.footnote).foregroundStyle(.secondary) }
             }
+            .scrollDismissesKeyboard(.interactively)
             .navigationTitle("Plaques et pose").navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Annuler") { dismiss() } }
