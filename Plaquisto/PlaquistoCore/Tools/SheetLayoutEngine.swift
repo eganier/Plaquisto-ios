@@ -25,7 +25,7 @@ struct LayoutDimensionCorrection: Codable, Equatable, Identifiable {
     var id: Int { edgeIndex }
     var difference: Double { abs(corrected - original) }
     var percentage: Double { original > 0 ? difference / original * 100 : 0 }
-    var symbol: String { difference > 50 ? "exclamationmark.octagon.fill" : "exclamationmark.triangle.fill" }
+    var symbol: String { severity() == .red ? "exclamationmark.octagon.fill" : "exclamationmark.triangle.fill" }
 }
 struct Surface2D: Codable, Equatable, Identifiable {
     var id = UUID()
@@ -38,11 +38,14 @@ struct Surface2D: Codable, Equatable, Identifiable {
     var localFrame: LayoutLocalFrame? = nil
     var edgeTones: [LayoutEdgeTone] = []
     var dimensionCorrections: [LayoutDimensionCorrection] = []
+    var contourIntent: LayoutContourIntent? = nil
+    // Retain measurements belonging to an earlier topology when adding/removing vertices.
+    var previousContourIntents: [LayoutContourIntent] = []
     var bounds: LayoutBounds { .init(points: contour) }
 }
 extension Surface2D {
     private enum CodingKeys: String, CodingKey {
-        case id, name, kind, contour, openings, provenance, sourceIdentifier, localFrame, edgeTones, dimensionCorrections
+        case id, name, kind, contour, openings, provenance, sourceIdentifier, localFrame, edgeTones, dimensionCorrections, contourIntent, previousContourIntents
     }
     init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
@@ -56,6 +59,8 @@ extension Surface2D {
         localFrame = try values.decodeIfPresent(LayoutLocalFrame.self, forKey: .localFrame)
         edgeTones = try values.decodeIfPresent([LayoutEdgeTone].self, forKey: .edgeTones) ?? []
         dimensionCorrections = try values.decodeIfPresent([LayoutDimensionCorrection].self, forKey: .dimensionCorrections) ?? []
+        contourIntent = try values.decodeIfPresent(LayoutContourIntent.self, forKey: .contourIntent)
+        previousContourIntents = try values.decodeIfPresent([LayoutContourIntent].self, forKey: .previousContourIntents) ?? []
     }
 }
 struct LayoutVector3: Codable, Equatable {

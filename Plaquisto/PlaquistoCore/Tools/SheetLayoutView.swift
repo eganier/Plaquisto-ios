@@ -66,6 +66,7 @@ struct SheetLayoutView: View {
     @GestureState private var magnification = 1.0
     @State private var drag: LayoutDragState?
     @State private var selectedVertex: Int?
+    @State private var polygonSelection: LayoutPolygonSelection?
 
     var body: some View {
         Group {
@@ -90,6 +91,17 @@ struct SheetLayoutView: View {
             }
         }
         .sheet(item: $sheet) { destination in sheetContent(destination) }
+        .sheet(item:$polygonSelection) { selection in
+            if let document = model.document {
+                if case .correction(let i) = selection, let correction = document.surface.dimensionCorrections.first(where:{$0.edgeIndex == i}) {
+                    LayoutCorrectionDetail(correction:correction, edgeCount:document.surface.contour.count)
+                } else {
+                    LayoutConstraintForm(selection:selection, surface:document.surface) { surface in
+                        var copy = document; copy.surface = surface; model.apply(copy)
+                    }
+                }
+            }
+        }
     }
 
     private var entry: some View {
@@ -148,7 +160,9 @@ struct SheetLayoutView: View {
             Picker("Action sur le plan", selection: $mode) { ForEach(LayoutInteraction.allCases, id: \.self) { Text($0.rawValue) } }
                 .pickerStyle(.segmented).padding(.horizontal)
             GeometryReader { proxy in
-                let viewport = LayoutViewport(bounds: drag?.document.surface.bounds ?? document.surface.bounds, size: proxy.size, zoom: zoom * magnification, pan: pan)
+                let bounds = drag?.document.surface.bounds ?? document.surface.bounds
+                let margin = max(bounds.width,bounds.height)*0.2
+                let viewport = LayoutViewport(bounds:.init(min:bounds.min - .init(x:margin,y:margin),max:bounds.max + .init(x:margin,y:margin)), size: proxy.size, zoom: zoom * magnification, pan: pan)
                 Canvas { context, size in draw(context: &context, size: size, document: document, viewport: viewport) }
                     .background(Color(.secondarySystemGroupedBackground))
                     .contentShape(Rectangle())
@@ -157,6 +171,7 @@ struct SheetLayoutView: View {
                     })
                     .simultaneousGesture(SpatialTapGesture().onEnded { value in tapped(value.location, document: document, viewport: viewport) })
                     .simultaneousGesture(MagnifyGesture().updating($magnification) { value, state, _ in state = value.magnification }.onEnded { value in zoom = min(8, max(0.4, zoom * value.magnification)) })
+                    .overlay { LayoutPolygonAnnotations(surface:document.surface, viewport:viewport) { polygonSelection = $0 } }
                     .overlay(alignment: .topTrailing) {
                         Button { zoom = 1; pan = .zero } label: { Image(systemName: "arrow.up.left.and.arrow.down.right").padding(12).background(.regularMaterial, in: Circle()) }
                             .padding(8).accessibilityLabel("Recentrer le plan")
@@ -215,18 +230,7 @@ struct SheetLayoutView: View {
             context.draw(Text(opening.kind.rawValue).font(.system(size: 10, weight: .semibold)).foregroundStyle(.orange), at: viewport.screen(opening.bounds.center))
         }
         for i in surface.contour.indices {
-            let a = surface.contour[i], b = surface.contour[(i + 1) % surface.contour.count]
-            if (b - a).length * viewport.scale > 48 {
-                let center = viewport.screen((a + b) * 0.5)
-                let tone = surface.edgeTones.indices.contains(i) ? toneColor(surface.edgeTones[i]) : .secondary
-                let correction = surface.dimensionCorrections.first { $0.edgeIndex == i }
-                context.draw(Text("\(vertexName(i))–\(vertexName((i + 1) % surface.contour.count)) · \(layoutCM((b - a).length))")
-                    .font(.system(size: 10, weight: .medium)).foregroundStyle(tone), at: .init(x: center.x, y: center.y - 12))
-                if let correction {
-                    context.draw(Text(Image(systemName: correction.symbol)).foregroundStyle(correctionColor(correction)),
-                                 at: .init(x: center.x + 52, y: center.y - 12))
-                }
-            }
+            let a = surface.contour[i]
             if mode == .contour {
                 let p = viewport.screen(a), radius = selectedVertex == i ? 8.0 : 6.0
                 context.fill(Path(ellipseIn: CGRect(x: p.x - radius, y: p.y - radius, width: radius * 2, height: radius * 2)), with: .color(selectedVertex == i ? .orange : .teal))
@@ -245,16 +249,6 @@ struct SheetLayoutView: View {
         }
     }
     private func tapped(_ p: CGPoint, document: LayoutDocument, viewport: LayoutViewport) {
-        if let correction = document.surface.dimensionCorrections.min(by: { first, second in
-            let a1 = document.surface.contour[first.edgeIndex], b1 = document.surface.contour[(first.edgeIndex + 1) % document.surface.contour.count]
-            let a2 = document.surface.contour[second.edgeIndex], b2 = document.surface.contour[(second.edgeIndex + 1) % document.surface.contour.count]
-            let p1 = viewport.screen((a1 + b1) * 0.5), p2 = viewport.screen((a2 + b2) * 0.5)
-            return hypot(p1.x - p.x, p1.y - p.y) < hypot(p2.x - p.x, p2.y - p.y)
-        }) {
-            let a = document.surface.contour[correction.edgeIndex], b = document.surface.contour[(correction.edgeIndex + 1) % document.surface.contour.count]
-            let center = viewport.screen((a + b) * 0.5)
-            if hypot(center.x - p.x, center.y - p.y) < 42 { sheet = .correction(correction.edgeIndex); return }
-        }
         if mode == .contour {
             selectedVertex = nearestVertex(p, document: document, viewport: viewport)
             if let selectedVertex { sheet = .vertex(selectedVertex) }
@@ -314,7 +308,7 @@ struct SheetLayoutView: View {
             }
         case .vertex(let index):
             if let document = model.document, document.surface.contour.indices.contains(index) {
-                LayoutVertexForm(index: index, contour: document.surface.contour) { p in var copy = document; copy.surface.contour = p; model.apply(copy); selectedVertex = nil }
+                LayoutVertexForm(index: index, contour: document.surface.contour) { p in model.editVertices(p); selectedVertex = nil }
             }
         case .correction(let index):
             if let correction = model.document?.surface.dimensionCorrections.first(where: { $0.edgeIndex == index }) {

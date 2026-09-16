@@ -12,14 +12,12 @@ struct LayoutSurfaceForm: View {
     @State private var lowerLength = 2000.0
     @State private var upperLength = 2000.0
     @State private var mirrored = false
-    @State private var sketch: [LayoutPoint] = []
-    @State private var measuredSides: [Double] = []
-    @State private var referenceAngles: [Double] = []
+    @State private var manualSurface: Surface2D?
+    @State private var showingDrawing = false
     @State private var selectedCorrection: LayoutDimensionCorrection?
     private var generated: (contour: [LayoutPoint], corrections: [LayoutDimensionCorrection]) {
         if kind == .ceiling, preset == .freeform {
-            guard sketch.count >= 3, measuredSides.count == sketch.count else { return ([], []) }
-            return (try? LayoutGeometry.closedMeasuredContour(sketch: angledSketch, lengths: measuredSides)) ?? ([], [])
+            return (manualSurface?.contour ?? [], manualSurface?.dimensionCorrections ?? [])
         }
         return (preset.contour(length: length, height: height, secondaryHeight: second, mirrored: mirrored,
                                lowerLength: lowerLength), [])
@@ -38,7 +36,7 @@ struct LayoutSurfaceForm: View {
         length >= 10 && height >= 10 && length <= 100_000 && height <= 100_000
             && (!(preset == .slope || preset == .lShape) || second >= height)
             && (preset != .lShape || (lowerLength >= 10 && upperLength >= 10 && abs(lowerLength + upperLength - length) < 0.1))
-            && (preset != .freeform || (sketch.count >= 3 && measuredSides.allSatisfy { $0 >= 10 }))
+            && (preset != .freeform || manualSurface != nil)
             && (try? LayoutGeometry.validate(contour)) != nil
     }
     var body: some View {
@@ -51,33 +49,9 @@ struct LayoutSurfaceForm: View {
                 }
                 if preset == .freeform, kind == .ceiling {
                     Section("Dessiner le plafond") {
-                        LayoutSketchPad { points in acceptSketch(points) }.frame(height: 230)
-                        Text("Tracez le contour en un seul geste. Plaquisto le transforme en côtés rectilignes que vous pourrez coter.")
+                        Button(manualSurface == nil ? "Dessiner le contour" : "Modifier le contour et les mesures", systemImage: "pencil.and.outline") { showingDrawing = true }
+                        Text("Dessinez en grand, puis touchez les cotes et les angles du plan pour renseigner vos mesures.")
                             .font(.footnote).foregroundStyle(.secondary)
-                    }
-                    if measuredSides.count >= 3 {
-                        Section("Cotes du plafond") {
-                            ForEach(measuredSides.indices, id: \.self) { index in
-                                LayoutDimensionField(title: "\(vertexName(index))–\(vertexName((index + 1) % measuredSides.count))", millimetres: $measuredSides[index], tint: toneColor(tones[index]))
-                            }
-                            if !referenceAngles.isEmpty {
-                                ForEach(referenceAngles.indices, id: \.self) { index in
-                                    HStack {
-                                        Text("Angle \(vertexName(index))–\(vertexName(index + 1))–\(vertexName(index + 2))")
-                                        Spacer()
-                                        TextField("90", value: $referenceAngles[index], format: .number.precision(.fractionLength(0...1)))
-                                            .keyboardType(.decimalPad).multilineTextAlignment(.trailing).frame(width: 80)
-                                        Text("°").foregroundStyle(.secondary)
-                                    }
-                                }
-                            }
-                        }
-                        if contour.isEmpty {
-                            Section {
-                                Label("Ces mesures ne permettent pas de refermer proprement la forme. Vérifiez les cotes ou redessinez le plafond.", systemImage: "exclamationmark.octagon.fill")
-                                    .foregroundStyle(.red)
-                            }
-                        }
                     }
                 } else {
                     Section("Dimensions") {
@@ -114,44 +88,17 @@ struct LayoutSurfaceForm: View {
                 ToolbarItem(placement: .cancellationAction) { Button("Annuler") { dismiss() } }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Créer") {
-                        onCreate(.init(surface: .init(name: name.isEmpty ? kind.rawValue : name, kind: kind, contour: contour,
-                                                      edgeTones: tones, dimensionCorrections: generated.corrections)))
+                        var surface = preset == .freeform ? manualSurface! : Surface2D(name:kind.rawValue, kind:kind, contour:contour, edgeTones:tones)
+                        surface.name = name.isEmpty ? kind.rawValue : name
+                        onCreate(.init(surface:surface))
                         dismiss()
                     }.disabled(!valid)
                 }
             }
             .onChange(of: kind) { _, value in if !LayoutPreset.available(for: value).contains(preset) { preset = .rectangle } }
             .sheet(item: $selectedCorrection) { LayoutCorrectionDetail(correction: $0, edgeCount: contour.count) }
+            .fullScreenCover(isPresented:$showingDrawing) { LayoutManualContourEditor(surface:manualSurface) { manualSurface = $0 } }
         }
-    }
-    private var angledSketch: [LayoutPoint] {
-        guard sketch.count >= 4, referenceAngles.count == sketch.count - 3 else { return sketch }
-        var result = [sketch[0], sketch[1]]
-        for vertex in 1..<(sketch.count - 1) {
-            let originalIncoming = sketch[vertex] - sketch[vertex - 1]
-            let originalOutgoing = sketch[vertex + 1] - sketch[vertex]
-            let incoming = result[vertex] - result[vertex - 1]
-            guard incoming.length > 0, originalOutgoing.length > 0 else { return sketch }
-            let angle = vertex - 1 < referenceAngles.count ? referenceAngles[vertex - 1] : interiorAngle(at: vertex, in: sketch)
-            guard angle > 5, angle < 355 else { return sketch }
-            let turn = LayoutGeometry.cross(originalIncoming, originalOutgoing) >= 0 ? 1.0 : -1.0
-            let direction = atan2(incoming.y, incoming.x) + turn * (.pi - angle * .pi / 180)
-            result.append(result[vertex] + LayoutPoint(x: cos(direction), y: sin(direction)) * originalOutgoing.length)
-        }
-        return result
-    }
-    private func acceptSketch(_ raw: [LayoutPoint]) {
-        guard raw.count >= 3 else { sketch = []; measuredSides = []; return }
-        let bounds = LayoutBounds(points: raw), factor = 4000 / max(1, max(bounds.width, bounds.height))
-        let normalized = raw.map { LayoutPoint(x: ($0.x - bounds.min.x) * factor, y: ($0.y - bounds.min.y) * factor) }
-        sketch = LayoutGeometry.area(normalized) < 0 ? Array(normalized.reversed()) : normalized
-        measuredSides = LayoutGeometry.edges(sketch).map { ($0.b - $0.a).length.rounded() }
-        referenceAngles = sketch.count >= 4 ? (1...(sketch.count - 3)).map { interiorAngle(at: $0, in: sketch).rounded() } : []
-    }
-    private func interiorAngle(at index: Int, in points: [LayoutPoint]) -> Double {
-        let incoming = points[index - 1] - points[index], outgoing = points[(index + 1) % points.count] - points[index]
-        let cosine = max(-1, min(1, LayoutGeometry.dot(incoming, outgoing) / max(0.0001, incoming.length * outgoing.length)))
-        return acos(cosine) * 180 / .pi
     }
     private var totalLengthBinding: Binding<Double> {
         Binding(get: { length }, set: { value in
@@ -437,9 +384,12 @@ func toneColor(_ tone: LayoutEdgeTone) -> Color {
 }
 
 func correctionColor(_ correction: LayoutDimensionCorrection) -> Color {
-    if correction.difference > 50 { return .red }
-    if correction.difference >= 20 { return .orange }
-    return .yellow
+    switch correction.severity() {
+    case .none: return .secondary
+    case .yellow: return .yellow
+    case .orange: return .orange
+    case .red: return .red
+    }
 }
 
 struct LayoutCorrectionDetail: View {
@@ -452,12 +402,12 @@ struct LayoutCorrectionDetail: View {
                 Section("Cote \(vertexName(correction.edgeIndex))–\(vertexName((correction.edgeIndex + 1) % max(1, edgeCount)))") {
                     LabeledContent("Mesure saisie", value: layoutCM(correction.original))
                     LabeledContent("Mesure retenue", value: layoutCM(correction.corrected))
-                    LabeledContent("Écart", value: layoutCM(correction.difference))
+                    LabeledContent("Correction", value: "\(correction.correctionDelta >= 0 ? "+" : "")\(layoutCM(correction.correctionDelta))")
                     LabeledContent("Différence", value: correction.percentage.formatted(.number.locale(Locale(identifier: "fr_FR")).precision(.fractionLength(0...2))) + " %")
                 }
                 Section {
-                    if correction.difference > 50 {
-                        Label("L’écart dépasse 5 cm. Il est recommandé de refaire cette mesure avant de poursuivre.", systemImage: "exclamationmark.octagon.fill")
+                    if correction.severity() == .red {
+                        Label("Écart important. Nous vous recommandons de vérifier et reprendre cette mesure sur chantier.", systemImage: "exclamationmark.octagon.fill")
                             .foregroundStyle(.red)
                     } else {
                         Text("La forme a été refermée automatiquement en répartissant le léger écart de mesure entre ses côtés.")
@@ -540,31 +490,48 @@ struct LayoutMeasuredPreview: View {
 struct LayoutSketchPad: View {
     let onComplete: ([LayoutPoint]) -> Void
     @State private var stroke: [LayoutPoint] = []
+    @State private var drawing = false
+    @State private var closed = false
+    @State private var message: String?
+    private let configuration = PolygonBeautificationConfiguration.standard
     var body: some View {
         GeometryReader { proxy in
             Canvas { context, _ in
                 var path = Path()
                 if let first = stroke.first {
-                    path.move(to: .init(x: first.x, y: first.y))
-                    for point in stroke.dropFirst() { path.addLine(to: .init(x: point.x, y: point.y)) }
+                    path.move(to: .init(x: first.x, y: proxy.size.height - first.y))
+                    for point in stroke.dropFirst() { path.addLine(to: .init(x: point.x, y: proxy.size.height - point.y)) }
+                    if closed { path.closeSubpath() }
                 }
                 context.stroke(path, with: .color(.teal), style: StrokeStyle(lineWidth: 4, lineCap: .round, lineJoin: .round))
+                if let first = stroke.first {
+                    context.stroke(Path(ellipseIn:CGRect(x:first.x-12,y:proxy.size.height-first.y-12,width:24,height:24)),with:.color(.teal.opacity(0.5)),style:StrokeStyle(lineWidth:1,dash:[3,3]))
+                }
             }
             .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 14))
             .overlay {
                 if stroke.isEmpty { Text("Dessinez ici").foregroundStyle(.secondary) }
             }
+            .overlay(alignment:.bottom) { if let message { Text(message).font(.footnote).foregroundStyle(.red).padding().background(.regularMaterial,in:RoundedRectangle(cornerRadius:12)) } }
             .contentShape(Rectangle())
             .gesture(DragGesture(minimumDistance: 0).onChanged { value in
+                if !drawing { stroke = []; closed = false; message = nil; drawing = true }
                 let point = LayoutPoint(x: min(max(0, value.location.x), proxy.size.width),
                                         y: proxy.size.height - min(max(0, value.location.y), proxy.size.height))
-                if stroke.last.map({ ($0 - point).length > 3 }) ?? true { stroke.append(point) }
-            }.onEnded { _ in
-                var tolerance = 12.0
-                var simplified = LayoutGeometry.simplifiedStroke(stroke, tolerance: tolerance)
-                while simplified.count > 12 { tolerance += 5; simplified = LayoutGeometry.simplifiedStroke(stroke, tolerance: tolerance) }
-                onComplete(simplified)
-                stroke = simplified
+                if stroke.count < configuration.maximumSamples, stroke.last.map({ ($0 - point).length >= configuration.samplingDistance }) ?? true { stroke.append(point) }
+            }.onEnded { value in
+                drawing = false
+                guard stroke.count < configuration.maximumSamples else {
+                    message = "Ce tracé est trop long. Redessinez le contour en un geste plus court."
+                    return
+                }
+                let end = LayoutPoint(x:min(max(0,value.location.x),proxy.size.width),y:proxy.size.height-min(max(0,value.location.y),proxy.size.height))
+                if stroke.count < configuration.maximumSamples { stroke.append(end) }
+                do {
+                    let polygon = try LayoutStrokeBeautifier.polygon(from:stroke)
+                    withAnimation(.easeOut(duration:0.18)) { stroke = polygon; closed = true }
+                    onComplete(polygon)
+                } catch { message = error.localizedDescription }
             })
         }
         .accessibilityLabel("Zone de dessin du plafond")

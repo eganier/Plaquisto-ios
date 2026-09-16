@@ -202,4 +202,139 @@ final class SheetLayoutEngineTests: XCTestCase {
         XCTAssertEqual(reloaded.savedDocuments.count, 1)
         XCTAssertEqual(reloaded.savedDocuments[0].title, "Salon")
     }
+
+    private func noisyStroke(_ polygon: [LayoutPoint], noise: Double = 2, finishGap: Double = 3) -> [LayoutPoint] {
+        var points: [LayoutPoint] = []
+        for (index, edge) in LayoutGeometry.edges(polygon).enumerated() {
+            let vector = edge.b-edge.a, count = max(3,Int(vector.length/5))
+            let normal = LayoutPoint(x:-vector.y,y:vector.x) * (1/max(1,vector.length))
+            for step in 0..<count {
+                let jitter = sin(Double(step*7+index))*noise
+                points.append(edge.a + vector*(Double(step)/Double(count)) + normal*jitter)
+            }
+        }
+        points.append(polygon[0] + .init(x:finishGap,y:0))
+        return points
+    }
+
+    func testBeautificationPreservesRectangleLAndIrregularDiagonals() throws {
+        let rectangle = LayoutBounds(min:.zero,max:.init(x:300,y:220)).polygon
+        let l: [LayoutPoint] = [.zero,.init(x:300,y:0),.init(x:300,y:100),.init(x:150,y:100),.init(x:150,y:260),.init(x:0,y:260)]
+        let pentagon: [LayoutPoint] = [.zero,.init(x:280,y:30),.init(x:320,y:180),.init(x:140,y:280),.init(x:-50,y:150)]
+        for shape in [rectangle,l,pentagon] {
+            let raw = noisyStroke(shape,noise:3)
+            let result = try LayoutStrokeBeautifier.polygon(from:raw)
+            XCTAssertEqual(result.count,shape.count)
+            XCTAssertNoThrow(try LayoutGeometry.validate(result))
+            XCTAssertEqual(abs(LayoutGeometry.area(result))/abs(LayoutGeometry.area(shape)),1,accuracy:0.08)
+            for vertex in shape { XCTAssertLessThan(result.map { ($0-vertex).length }.min()!,14) }
+            XCTAssertEqual(result,try LayoutStrokeBeautifier.polygon(from:raw))
+        }
+    }
+
+    func testBeautificationNoiseMicroHookAndStartInMiddleOfSide() throws {
+        let rectangle = LayoutBounds(min:.zero,max:.init(x:320,y:220)).polygon
+        var raw = noisyStroke(rectangle,noise:5)
+        raw.insert(contentsOf:[.init(x:100,y:0),.init(x:104,y:7),.init(x:106,y:0)],at:20)
+        XCTAssertEqual(try LayoutStrokeBeautifier.polygon(from:raw).count,4)
+        let midStart:[LayoutPoint] = [.init(x:150,y:0),.init(x:300,y:0),.init(x:300,y:220),.init(x:0,y:220),.zero]
+        XCTAssertEqual(try LayoutStrokeBeautifier.polygon(from:noisyStroke(midStart)).count,4)
+    }
+
+    func testBeautificationDoesNotLimitToTwelveCornersAndRejectsOpenOrStrangeStrokes() throws {
+        let star = (0..<16).map { i -> LayoutPoint in
+            let a = Double(i)*2 * .pi/16, r = i%2 == 0 ? 180.0 : 125.0
+            return .init(x:200+cos(a)*r,y:200+sin(a)*r)
+        }
+        XCTAssertEqual(try LayoutStrokeBeautifier.polygon(from:noisyStroke(star,noise:1)).count,16)
+        for raw in [[],[LayoutPoint.zero],[.zero,.zero,.zero,.zero], [.zero,.init(x:100,y:0),.init(x:200,y:0),.init(x:300,y:0)]] {
+            XCTAssertThrowsError(try LayoutStrokeBeautifier.polygon(from:raw))
+        }
+        let crossed:[LayoutPoint] = [.zero,.init(x:200,y:200),.init(x:200,y:0),.init(x:0,y:200)]
+        XCTAssertThrowsError(try LayoutStrokeBeautifier.polygon(from:noisyStroke(crossed)))
+        XCTAssertThrowsError(try LayoutStrokeBeautifier.polygon(from:[.zero,.init(x:100,y:100),.init(x:.nan,y:0),.zero]))
+        let rectangle = LayoutBounds(min:.zero,max:.init(x:300,y:200)).polygon
+        XCTAssertEqual(try LayoutStrokeBeautifier.polygon(from:noisyStroke(rectangle,finishGap:16)).count,4)
+        XCTAssertThrowsError(try LayoutStrokeBeautifier.polygon(from:Array(noisyStroke(rectangle).dropLast(30))))
+    }
+
+    private func measuredRectangle() -> LayoutContourIntent {
+        var intent = LayoutContourIntent(sketch:LayoutBounds(min:.zero,max:.init(x:4000,y:3000)).polygon)
+        intent.userMeasuredLengths = [4000,3000,4000,3000]
+        intent.userAnglesDegrees = [90,90,90,90]
+        return intent
+    }
+
+    func testSolverConsistentAndDistributedCorrectionsAtAllSeverities() throws {
+        let exact = try LayoutPolygonSolver.resolve(measuredRectangle())
+        XCTAssertTrue(exact.corrections.isEmpty)
+        for (delta,severity) in [(16.0,LayoutCorrectionSeverity.yellow),(30.0,.yellow),(70.0,.orange),(140.0,.red)] {
+            var intent = measuredRectangle(); intent.userMeasuredLengths[0] = 4000+delta
+            let before = intent
+            let resolved = try LayoutPolygonSolver.resolve(intent)
+            XCTAssertEqual(intent,before)
+            XCTAssertNoThrow(try LayoutGeometry.validate(resolved.contour))
+            XCTAssertEqual(LayoutGeometry.edges(resolved.contour).reduce(LayoutPoint.zero) { $0 + $1.b-$1.a }.length,0,accuracy:0.001)
+            let bottom = try XCTUnwrap(resolved.corrections.first { $0.edgeIndex == 0 })
+            let top = try XCTUnwrap(resolved.corrections.first { $0.edgeIndex == 2 })
+            XCTAssertEqual(bottom.correctionDelta,-delta/2,accuracy:0.2)
+            XCTAssertEqual(top.correctionDelta,delta/2,accuracy:0.2)
+            XCTAssertEqual(top.severity(),severity)
+            XCTAssertEqual(bottom.percentage,abs(bottom.correctionDelta)/bottom.original*100,accuracy:0.000001)
+        }
+    }
+
+    func testCorrectionBoundariesAndSignedDelta() {
+        for (difference,severity) in [(0.0,LayoutCorrectionSeverity.none),(0.05,.none),(1,.yellow),(19.99,.yellow),(20,.orange),(50,.orange),(50.01,.red)] {
+            let correction = LayoutDimensionCorrection(edgeIndex:0,original:4000,corrected:4000-difference)
+            XCTAssertEqual(correction.severity(),severity)
+            XCTAssertEqual(correction.correctionDelta,-difference,accuracy:0.00001)
+        }
+    }
+
+    func testSolverLengthAngleReflexAndVertexEditsPreserveIntent() throws {
+        let sketch:[LayoutPoint] = [.zero,.init(x:4000,y:0),.init(x:4140,y:3000),.init(x:0,y:3000)]
+        var intent = LayoutContourIntent(sketch:sketch)
+        intent.userMeasuredLengths = LayoutGeometry.edges(sketch).map { ($0.b-$0.a).length }
+        intent.userAnglesDegrees[1] = 90
+        let resolved = try LayoutPolygonSolver.resolve(intent)
+        XCTAssertEqual(LayoutPolygonSolver.interiorAngle(at:1,in:resolved.contour),90,accuracy:0.01)
+        intent.userMeasuredLengths[0] = 3850
+        let edited = try LayoutPolygonSolver.resolve(intent)
+        XCTAssertEqual(LayoutPolygonSolver.interiorAngle(at:1,in:edited.contour),90,accuracy:0.01)
+        XCTAssertEqual(intent.userMeasuredLengths[0],3850)
+        XCTAssertEqual(intent.sketch,sketch)
+        let roundTrip = try JSONDecoder().decode(LayoutContourIntent.self,from:JSONEncoder().encode(intent))
+        XCTAssertEqual(intent,roundTrip)
+        var movable = LayoutContourIntent(sketch:sketch)
+        movable.userVertexPositions[2] = .init(x:4300,y:3150)
+        let moved = try LayoutPolygonSolver.resolve(movable)
+        XCTAssertEqual(moved.contour[2].x,4300,accuracy:0.1)
+        XCTAssertEqual(moved.contour[2].y,3150,accuracy:0.1)
+        let l:[LayoutPoint] = [.zero,.init(x:4000,y:0),.init(x:4000,y:2000),.init(x:2000,y:2000),.init(x:2000,y:4000),.init(x:0,y:4000)]
+        XCTAssertEqual(LayoutPolygonSolver.interiorAngle(at:3,in:l),270,accuracy:0.00001)
+        var reflex = LayoutContourIntent(sketch:l); reflex.userAnglesDegrees[3] = 265
+        let reflexResult = try LayoutPolygonSolver.resolve(reflex)
+        XCTAssertEqual(LayoutPolygonSolver.interiorAngle(at:3,in:reflexResult.contour),265,accuracy:0.01)
+        var impossible = measuredRectangle(); impossible.userAnglesDegrees = [60,60,60,60]
+        XCTAssertThrowsError(try LayoutPolygonSolver.resolve(impossible))
+    }
+
+    @MainActor func testSavedLibraryPreservesPolygonConstraintsAndUpdatesWithoutDuplicates() throws {
+        let name = "polygon-library-\(UUID())", defaults = UserDefaults(suiteName:name)!
+        defer { defaults.removePersistentDomain(forName:name) }
+        let intent = measuredRectangle()
+        var s = surface(); try s.resolve(intent)
+        let model = LayoutEditorModel(defaults:defaults)
+        model.apply(.init(surface:s)); model.saveCurrentAndClose()
+        model.startNew(); model.apply(.init(surface:surface(.lShape))); model.saveCurrentAndClose()
+        let restored = LayoutEditorModel(defaults:defaults)
+        XCTAssertNil(restored.document)
+        XCTAssertEqual(restored.savedDocuments.count,2)
+        let saved = try XCTUnwrap(restored.savedDocuments.first { $0.document.surface.contourIntent != nil })
+        restored.open(saved)
+        XCTAssertEqual(restored.document?.surface.contourIntent,intent)
+        restored.saveCurrentAndClose()
+        XCTAssertEqual(restored.savedDocuments.count,2)
+    }
 }

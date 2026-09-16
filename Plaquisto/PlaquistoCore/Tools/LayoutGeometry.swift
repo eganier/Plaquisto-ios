@@ -48,38 +48,17 @@ enum LayoutGeometry {
     static func cross(_ a: LayoutPoint, _ b: LayoutPoint) -> Double { a.x * b.y - a.y * b.x }
     static func dot(_ a: LayoutPoint, _ b: LayoutPoint) -> Double { a.x * b.x + a.y * b.y }
 
-    // Keeps the directions suggested by the sketch and distributes the closing
-    // error over every measured side with a least-squares correction.
+    // Compatibility entry point for older measured contours. Both numerical
+    // editing and reconstruction now use the same constraint solver.
     static func closedMeasuredContour(sketch: [LayoutPoint], lengths: [Double]) throws -> ([LayoutPoint], [LayoutDimensionCorrection]) {
         guard sketch.count >= 3, sketch.count == lengths.count, lengths.allSatisfy({ $0 >= 10 && $0.isFinite }) else {
             throw LayoutGeometryError.invalidContour
         }
-        let directions = edges(sketch).map { edge -> LayoutPoint in
-            let vector = edge.b - edge.a
-            return vector * (1 / max(epsilon, vector.length))
-        }
-        let error = zip(directions, lengths).reduce(LayoutPoint.zero) { $0 + $1.0 * $1.1 }
-        let xx = directions.reduce(0) { $0 + $1.x * $1.x }
-        let xy = directions.reduce(0) { $0 + $1.x * $1.y }
-        let yy = directions.reduce(0) { $0 + $1.y * $1.y }
-        let determinant = xx * yy - xy * xy
-        guard abs(determinant) > 1e-8 else { throw LayoutGeometryError.invalidContour }
-        let lambda = LayoutPoint(x: (yy * error.x - xy * error.y) / determinant,
-                                 y: (xx * error.y - xy * error.x) / determinant)
-        let corrected = zip(directions, lengths).map { direction, length in
-            length - dot(direction, lambda)
-        }
-        guard corrected.allSatisfy({ $0 >= 10 && $0.isFinite }) else { throw LayoutGeometryError.invalidContour }
-        var points = [LayoutPoint.zero]
-        for index in 0..<(directions.count - 1) {
-            points.append(points[index] + directions[index] * corrected[index])
-        }
-        try validate(points)
-        let corrections = lengths.indices.compactMap { index -> LayoutDimensionCorrection? in
-            guard abs(corrected[index] - lengths[index]) > 0.05 else { return nil }
-            return .init(edgeIndex: index, original: lengths[index], corrected: corrected[index])
-        }
-        return (points, corrections)
+        var intent = LayoutContourIntent(sketch:sketch)
+        intent.userMeasuredLengths = lengths.map { $0 }
+        intent.userAnglesDegrees = sketch.indices.map { LayoutPolygonSolver.interiorAngle(at:$0,in:sketch) }
+        let resolved = try LayoutPolygonSolver.resolve(intent)
+        return (resolved.contour,resolved.corrections)
     }
 
     static func simplifiedStroke(_ points: [LayoutPoint], tolerance: Double) -> [LayoutPoint] {
