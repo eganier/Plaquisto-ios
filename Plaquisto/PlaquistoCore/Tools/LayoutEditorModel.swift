@@ -53,9 +53,12 @@ final class LayoutEditorModel: ObservableObject {
     private let draftKey = "plaquisto.tools.layout.draft.v1"
     private let libraryKey = "plaquisto.tools.layout.library.v1"
     private var currentSavedID: UUID?
+    private let persistsStandaloneLibrary: Bool
 
-    init(defaults: UserDefaults = .standard) {
+    init(defaults: UserDefaults = .standard, persistsStandaloneLibrary: Bool = true) {
         self.defaults = defaults
+        self.persistsStandaloneLibrary = persistsStandaloneLibrary
+        guard persistsStandaloneLibrary else { return }
         if let data = defaults.data(forKey: libraryKey) {
             savedDocuments = (try? JSONDecoder().decode([SavedLayoutDocument].self, from: data)) ?? []
         }
@@ -79,13 +82,14 @@ final class LayoutEditorModel: ObservableObject {
     func startNew() {
         calculation?.cancel()
         calculation = nil
-        defaults.removeObject(forKey: draftKey)
+        if persistsStandaloneLibrary { defaults.removeObject(forKey: draftKey) }
         currentSavedID = nil
         document = nil
         past = []; future = []; result = nil; error = nil; isCalculating = false; updateHistory()
     }
 
     func saveCurrentAndClose() {
+        guard persistsStandaloneLibrary else { return }
         guard let document else { return }
         if let currentSavedID, let index = savedDocuments.firstIndex(where: { $0.id == currentSavedID }) {
             savedDocuments[index].document = document
@@ -197,6 +201,7 @@ final class LayoutEditorModel: ObservableObject {
     }
     private func updateHistory() { canUndo = !past.isEmpty; canRedo = !future.isEmpty }
     private func persistDraft() {
+        guard persistsStandaloneLibrary else { return }
         do {
             if let document { defaults.set(try JSONEncoder().encode(document), forKey: draftKey) }
             saveError = nil

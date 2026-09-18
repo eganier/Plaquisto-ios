@@ -2,6 +2,41 @@
 
 Mise à jour : 18 septembre 2026. Branche de travail : `codex/tools-lab-improvements`.
 
+## Structure des projets — premier lot livré, 18 septembre
+
+- Pièces identifiées, ouvrages propriétaires, composants et plans de calepinage
+  persistés. Un ouvrage sans géométrie reste global : aucun mur n'est inventé à
+  partir de sa seule surface. Documentation : `docs/IMPLEMENTATION_STRUCTURE_PROJETS.md`.
+- Parcours pièce → ouvrage → composants → plans des deux côtés d'une cloison.
+  Toute la cloison est comptée dans sa pièce propriétaire ; l'autre pièce affiche
+  un lien. Déduplication des ouvrages dans les quantitatifs.
+- Contour, ouvertures géométriques et ossature uniques pour une cloison ; plaques
+  et électricité propres à chaque côté. Un décalage d'ossature de +5 cm côté A
+  apparaît à −5 cm côté B. Confirmation avant application aux deux côtés ; contrôle
+  de révision empêchant un ancien éditeur de rétablir une ossature périmée.
+- **Plafond et mur adjacent sont des composants distincts** : ne jamais modifier
+  automatiquement la longueur du mur lors d'une correction du plafond. Le futur
+  raccordement géométrique devra proposer le changement et demander confirmation.
+  Ce lien inter-composants n'est pas encore actif.
+- Nouveau fichier `projects-v2.json`, écrit atomiquement ; l'ancien `projects.json`
+  reste intact et n'est pas importé. Aucun fichier utilisateur supprimé.
+- Copie des projets/ouvrages avec nouvelles identités et réaffectation des liens.
+  Éditeur embarqué isolé de la bibliothèque et du brouillon autonome des outils.
+- Correction du lancement du formulaire de création : transmission d'un brouillon
+  immuable évitant un nom vide au premier affichage. Vérification réelle dans le
+  simulateur : création Bureau/Salon, ouvrage cloison, composant Mur A, deux plans,
+  confirmation d'ossature commune et lien depuis Salon sans ouvrage compté deux fois.
+  Le projet local « Test organisation » reste disponible pour contrôle.
+- Validation finale : **143 tests réussis, zéro échec** ; compilation iOS par la
+  session de tests et compilation Lab réussies. Logs :
+  `/tmp/plaquisto-structure-verified.log`, `/tmp/plaquisto-structure-lab-verified.log`.
+  Résultats : `Test-Plaquisto-2026.09.18_23-45-23-+0200.xcresult`.
+  Contrôles sur simulateur uniquement, pas d'installation iPhone pour ce lot.
+- À poursuivre : raccordement du scan 3D aux composants, identité commune des
+  ouvertures, métrés multi-composants vers les calculateurs, provenance détaillée
+  des fournitures, photos et observations vocales. La navigation complète depuis
+  le scan n'est donc pas encore livrée.
+
 ## Intégration des outils Lab dans Plaquisto iOS — 18 septembre
 
 - Catalogue partagé : Calepinage 2D accessible dans iOS comme dans Lab ; retrait du

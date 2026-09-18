@@ -942,3 +942,14 @@ Projet
 Le scan 3D observe et alimente cette structure, mais ne la remplace pas. Le plan de calepinage organise un composant, mais n’est pas le composant. Le quantitatif agrège des contributions traçables, sans recopier les ouvrages et sans compter deux fois les cloisons partagées.
 
 Le résultat attendu est une application dans laquelle les mêmes identifiants relient la réalité scannée, le composant physique, le dessin 2D et le calcul métier. C’est cette continuité qui doit permettre à l’utilisateur de passer naturellement du plan 3D au calepinage, puis au quantitatif d’un ouvrage, d’une pièce ou du projet complet.
+# Précision prioritaire — propagation entre composants (18 septembre 2026)
+
+Une correction du contour d'un plafond **ne modifie pas automatiquement** la
+longueur d'un mur adjacent. Plaquisto présente les dimensions concernées, anciennes
+et proposées, et demande confirmation. En cas de refus, le mur reste inchangé et
+l'écart est signalé. La correction locale du plafond est conservée.
+
+À distinguer des deux côtés d'une même cloison : ils représentent une seule
+ossature physique. Son décalage est partagé en miroir (+5 cm vers la droite d'un
+côté = 5 cm vers la gauche de l'autre), avec avertissement et confirmation lors
+de l'enregistrement de la modification d'ossature.

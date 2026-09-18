@@ -418,11 +418,14 @@ final class SheetLayoutEngineTests: XCTestCase {
         let work = try XCTUnwrap(loaded.project(id:id)?.works.first)
         XCTAssertEqual(work.layoutDocument,doc)
         let duplicateID = try loaded.duplicateWork(projectID:id,workID:work.id)
-        XCTAssertEqual(loaded.project(id:id)?.works.first{$0.id == duplicateID}?.layoutDocument,doc)
+        let copied = try XCTUnwrap(loaded.project(id:id)?.works.first{$0.id == duplicateID}?.layoutDocument)
+        XCTAssertEqual(copied.surface.contour,doc.surface.contour)
+        XCTAssertNotEqual(copied.surface.id,doc.surface.id)
+        XCTAssertNotEqual(copied.layers[0].id,doc.layers[0].id)
         var changed = doc; changed.layers[0].offset.x = 100
         try loaded.updateLinkedLayout(projectID:id,workID:work.id,document:changed)
         XCTAssertEqual(loaded.project(id:id)?.works.first{$0.id == work.id}?.layoutNeedsRecalculation,true)
-        XCTAssertEqual(loaded.project(id:id)?.works.first{$0.id == duplicateID}?.layoutDocument,doc)
+        XCTAssertEqual(loaded.project(id:id)?.works.first{$0.id == duplicateID}?.layoutDocument,copied)
     }
     func testDrawingScalePreservesShapeAnglesAndPins() throws {
         var s = surface(width:2000,height:1500)

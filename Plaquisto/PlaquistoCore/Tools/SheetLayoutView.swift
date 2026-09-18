@@ -206,9 +206,20 @@ struct LayoutSavedThumbnail: View {
 struct SheetLayoutView: View {
     var initialDocument: LayoutDocument? = nil
     var onSaveDocument: ((LayoutDocument) throws -> Void)? = nil
+    var requiredSupportKind: LayoutSupportKind? = nil
+    var sharedPartitionFraming = false
     @Environment(\.dismiss) private var dismiss
     @State private var loadedInitial = false
-    @StateObject private var model = LayoutEditorModel()
+    @StateObject private var model: LayoutEditorModel
+    init(initialDocument: LayoutDocument? = nil, onSaveDocument: ((LayoutDocument) throws -> Void)? = nil, requiredSupportKind: LayoutSupportKind? = nil, sharedPartitionFraming: Bool = false) {
+        self.initialDocument = initialDocument
+        self.onSaveDocument = onSaveDocument
+        self.requiredSupportKind = requiredSupportKind
+        self.sharedPartitionFraming = sharedPartitionFraming
+        _model = StateObject(wrappedValue: LayoutEditorModel(persistsStandaloneLibrary: onSaveDocument == nil))
+    }
+    @State private var linkedSaveError: String?
+    @State private var pendingSharedFrameSave: LayoutDocument?
     @EnvironmentObject private var catalogue: ToolTechnicalStore
     @State private var mode = LayoutInteraction.move
     @State private var sheet: LayoutEditorSheet?
@@ -257,8 +268,10 @@ struct SheetLayoutView: View {
                 }
                 ToolbarItemGroup(placement: .topBarTrailing) {
                     Button("Enregistrer") {
-                        if let onSaveDocument, let document = model.document {
-                            do { try onSaveDocument(document); dismiss() } catch { return }
+                        if onSaveDocument != nil, let document = model.document {
+                            if sharedPartitionFraming && initialDocument?.layers.first?.furring != document.layers.first?.furring {
+                                pendingSharedFrameSave = document
+                            } else { saveLinked(document) }
                         } else { model.saveCurrentAndClose(); selectedVertex = nil }
                     }
                     Menu {
@@ -277,6 +290,18 @@ struct SheetLayoutView: View {
             }
         }
         .sheet(item: $sheet) { destination in sheetContent(destination) }
+        .confirmationDialog("Modifier l’ossature des deux côtés ?", isPresented: Binding(get: { pendingSharedFrameSave != nil }, set: { if !$0 { pendingSharedFrameSave = nil } }), titleVisibility: .visible) {
+            Button("Appliquer aux deux côtés") {
+                if let document = pendingSharedFrameSave { saveLinked(document) }
+                pendingSharedFrameSave = nil
+            }
+            Button("Revenir au plan", role: .cancel) { pendingSharedFrameSave = nil }
+        } message: {
+            Text("Cette cloison possède une seule ossature. Votre modification s’appliquera aussi à l’autre côté, en miroir : 5 cm vers la droite ici correspondent à 5 cm vers la gauche de l’autre côté. Les calepinages de plaques restent propres à chaque côté et peuvent nécessiter une vérification.")
+        }
+        .alert("Enregistrement impossible", isPresented: Binding(get: { linkedSaveError != nil }, set: { if !$0 { linkedSaveError = nil } })) {
+            Button("OK") { linkedSaveError = nil }
+        } message: { Text(linkedSaveError ?? "") }
         .alert("Renommer le calepinage",isPresented:Binding(get:{renamingSaved != nil},set:{if !$0 { renamingSaved = nil }})) {
             TextField("Nom du calepinage",text:$savedName)
             Button("Annuler",role:.cancel) { renamingSaved = nil }
@@ -324,12 +349,17 @@ struct SheetLayoutView: View {
         }
     }
 
+    private func saveLinked(_ document: LayoutDocument) {
+        do { try onSaveDocument?(document); dismiss() }
+        catch { linkedSaveError = "Le plan n’a pas pu être enregistré dans son composant. \(error.localizedDescription)" }
+    }
+
     private var entry: some View {
         List {
-            Section("Calepinages sauvegardés") {
+            Section(onSaveDocument == nil ? "Calepinages sauvegardés" : "Contour du composant") {
                 if model.savedDocuments.isEmpty {
-                    ContentUnavailableView("Aucun calepinage", systemImage: "square.grid.3x3",
-                                           description: Text("Créez votre premier mur ou plafond."))
+                    ContentUnavailableView(onSaveDocument == nil ? "Aucun calepinage" : "Support à définir", systemImage: "square.grid.3x3",
+                                           description: Text(onSaveDocument == nil ? "Créez votre premier mur ou plafond." : "Dessinez le contour ou choisissez une forme et renseignez ses dimensions."))
                 } else {
                     ForEach(model.savedDocuments) { saved in
                         Button { model.open(saved) } label: {
@@ -355,7 +385,9 @@ struct SheetLayoutView: View {
             }
             Section {
                 Button { sheet = .newSurface } label: { Label("Nouveau calepinage", systemImage: "plus") }
-                Button {} label: { Label("Importer un ouvrage depuis Projets (à venir)", systemImage: "square.and.arrow.down") }.disabled(true)
+                if onSaveDocument == nil {
+                    Button {} label: { Label("Importer un ouvrage depuis Projets (à venir)", systemImage: "square.and.arrow.down") }.disabled(true)
+                }
             }
             if let error = model.saveError { Section { Text(error).font(.footnote).foregroundStyle(.orange) } }
         }
@@ -484,6 +516,10 @@ struct SheetLayoutView: View {
                 Text(addingSpot ? "Touchez le plan pour ajouter un spot. Répétez pour en placer plusieurs, puis touchez Terminer." : mode.hint).font(.caption).foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal)
             }
             if let saveError = model.saveError { Text(saveError).font(.caption).foregroundStyle(.orange).padding(.horizontal) }
+            if mode == .framing && sharedPartitionFraming {
+                Label("Ossature commune : tout décalage sera appliqué en miroir sur l’autre côté à l’enregistrement.", systemImage: "arrow.left.arrow.right")
+                    .font(.caption).foregroundStyle(.orange).padding(.horizontal)
+            }
             if mode == .lighting { lightingControls(document) }
             if let warning = model.lightingWarning {
                 Button { sheet = .lighting } label: { Label(warning,systemImage:"exclamationmark.triangle") }
@@ -860,7 +896,7 @@ struct SheetLayoutView: View {
     @ViewBuilder private func sheetContent(_ destination: LayoutEditorSheet) -> some View {
         switch destination {
         case .newSurface:
-            LayoutSurfaceForm { document in model.startNew(); model.apply(document); zoom = 1; pan = .zero; selectedVertex = nil }
+            LayoutSurfaceForm(requiredKind: requiredSupportKind) { document in model.startNew(); model.apply(document); zoom = 1; pan = .zero; selectedVertex = nil }
         case .settings:
             if let document = model.document, let layer = document.layers.first {
                 LayoutSettingsForm(layer: layer, surface:document.surface) { value in var copy = document; copy.layers[0] = value; model.apply(copy) }.environmentObject(catalogue)

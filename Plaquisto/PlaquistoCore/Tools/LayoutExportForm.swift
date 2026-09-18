@@ -44,7 +44,7 @@ struct LayoutExportForm: View {
             .toolbar { ToolbarItem(placement:.cancellationAction) { Button("Fermer") { dismiss() } } }
             .fullScreenCover(isPresented:$configuring) {
                 if let projectID {
-                    WorkConfiguratorContainer(projectID:projectID,workName:type.generatedName(roomName:roomName),workType:type,onFinished:{ configuring = false; dismiss() },layoutDocument:document)
+                    WorkConfiguratorContainer(projectID:projectID,workName:type.generatedName(roomName:roomName),workType:type,onFinished:{ configuring = false; dismiss() },layoutDocument:document,newRoomName:roomName)
                 }
             }
         }

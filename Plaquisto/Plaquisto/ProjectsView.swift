@@ -98,6 +98,17 @@ private struct ProjectDetailView: View {
                         if !project.address.isEmpty { LabeledContent("Adresse", value: project.address) }
                         if !project.notes.isEmpty { Text(project.notes).foregroundStyle(.secondary) }
                     }
+                    Section("Pièces") {
+                        ForEach(project.rooms) { room in
+                            NavigationLink { ProjectRoomDetailView(projectID: projectID, roomID: room.id) } label: {
+                                VStack(alignment: .leading) {
+                                    Text(room.name)
+                                    Text("\(project.ownedWorks(in: room.id).count) ouvrages").font(.caption).foregroundStyle(.secondary)
+                                }
+                            }
+                        }
+                        NavigationLink("Organiser les pièces et les ouvrages") { ProjectRoomOrganizationView(projectID: projectID) }
+                    }
                     Section("Ouvrages") {
                         if project.works.isEmpty {
                             Text("Aucun ouvrage enregistré.").foregroundStyle(.secondary)
@@ -123,13 +134,19 @@ private struct ProjectDetailView: View {
                                             }
                                         }
                                     }
-                                    if work.layoutDocument != nil {
+                                    if work.layoutDocument != nil && !work.isPartition {
                                         NavigationLink { LinkedLayoutView(work:work) } label: {
                                             Label("Calepinage 2D existant",systemImage:"square.grid.3x3").font(.caption).foregroundStyle(.teal)
                                         }
                                         if work.layoutNeedsRecalculation == true {
                                             Label("Calepinage modifié : ouvrez l’ouvrage pour recalculer son quantitatif.",systemImage:"exclamationmark.triangle.fill").font(.caption).foregroundStyle(.orange)
                                         }
+                                    }
+                                    NavigationLink {
+                                        WorkComponentsView(projectID: projectID, workID: work.id)
+                                    } label: {
+                                        Label("Composants d’ouvrage (\(work.components.count))", systemImage: "square.stack.3d.up")
+                                            .font(.caption)
                                     }
                                     if let conflict = store.openingJoineryConflict(
                                         projectID: projectID,
@@ -215,7 +232,7 @@ private struct ProjectDetailView: View {
     private func duplicateWork(_ work: WorkItem) { do { try store.duplicateWork(projectID: projectID, workID: work.id) } catch { errorMessage = "L’ouvrage n’a pas pu être dupliqué." } }
     private func renameWork(_ work: WorkItem, roomName: String) {
         do {
-            try store.renameWork(projectID: projectID, workID: work.id, roomName: roomName)
+            try store.renameWorkTitle(projectID: projectID, workID: work.id, title: roomName)
             workToRename = nil
         } catch {
             errorMessage = "Ce nom est vide ou déjà utilisé dans ce projet."
@@ -235,6 +252,202 @@ private struct ProjectDetailView: View {
     }
 }
 
+private struct ProjectRoomOrganizationView: View {
+    @EnvironmentObject private var store: ProjectStore
+    let projectID: UUID
+    @State private var name = ""
+    @State private var area = ""
+    @State private var error = ""
+    @State private var renamingRoom: ProjectRoomRecord?
+    @State private var renamedRoom = ""
+    private var project: ProjectItem? { store.project(id: projectID) }
+    var body: some View {
+        Form {
+            Section("Ajouter une pièce") {
+                TextField("Nom de la pièce", text: $name)
+                TextField("Surface au sol en m² (facultatif)", text: $area).keyboardType(.decimalPad)
+                Button("Ajouter") {
+                    do {
+                        let value = area.isEmpty ? nil : Double(area.replacingOccurrences(of: ",", with: "."))
+                        guard area.isEmpty || value != nil else { error = "Surface invalide."; return }
+                        try store.createRoom(projectID: projectID, name: name, floorAreaM2: value)
+                        name = ""; area = ""; error = ""
+                    } catch { self.error = "Vérifiez le nom et la surface de la pièce." }
+                }.disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+            if let project {
+                Section("Pièces existantes") {
+                    ForEach(project.rooms) { room in
+                        Button { renamingRoom = room; renamedRoom = room.name } label: {
+                            HStack {
+                                Text(room.name)
+                                Spacer()
+                                if let area = room.floorAreaM2 { Text("\(area.formatted()) m²").foregroundStyle(.secondary) }
+                                Image(systemName: "pencil").font(.caption)
+                            }
+                        }
+                    }
+                }
+                Section("Pièce propriétaire des ouvrages") {
+                    ForEach(project.works) { work in
+                        Picker(work.name, selection: Binding<UUID?>(get: { work.roomID }, set: { value in
+                            guard let value else { return }
+                            let adjacent = work.isPartition ? Array(Set(work.linkedRoomIDs + [work.roomID].compactMap { $0 }).subtracting([value])) : []
+                            do { try store.assignWork(projectID: projectID, workID: work.id, ownerRoomID: value, adjacentRoomIDs: adjacent) }
+                            catch { self.error = "Rattachement impossible." }
+                        })) {
+                            Text("À rattacher").tag(nil as UUID?)
+                            ForEach(project.rooms) { Text($0.name).tag(Optional($0.id)) }
+                        }
+                        .disabled(work.openingConfiguration?.sourceWorkID != nil)
+                    }
+                }
+            }
+            if !error.isEmpty { Text(error).foregroundStyle(.red) }
+        }.navigationTitle("Organisation")
+            .alert("Renommer la pièce", isPresented: Binding(get: { renamingRoom != nil }, set: { if !$0 { renamingRoom = nil } })) {
+                TextField("Nom", text: $renamedRoom)
+                Button("Annuler", role: .cancel) { renamingRoom = nil }
+                Button("Enregistrer") {
+                    guard let room = renamingRoom else { return }
+                    do { try store.renameRoom(projectID: projectID, roomID: room.id, name: renamedRoom); renamingRoom = nil }
+                    catch { self.error = "Ce nom de pièce est vide ou déjà utilisé." }
+                }
+            }
+    }
+}
+
+private struct ProjectRoomDetailView: View {
+    @EnvironmentObject private var store: ProjectStore
+    let projectID: UUID
+    let roomID: UUID
+    var body: some View {
+        if let project = store.project(id: projectID), let room = project.rooms.first(where: { $0.id == roomID }) {
+            List {
+                Section("Ouvrages de la pièce") {
+                    ForEach(project.ownedWorks(in: roomID)) { work in
+                        NavigationLink(work.name) { WorkComponentsView(projectID: projectID, workID: work.id) }
+                    }
+                }
+                if !project.linkedWorks(in: roomID).isEmpty {
+                    Section("Cloisons liées — comptées dans leur pièce propriétaire") {
+                        ForEach(project.linkedWorks(in: roomID)) { work in
+                            NavigationLink(work.name) { WorkComponentsView(projectID: projectID, workID: work.id) }
+                        }
+                    }
+                }
+                NavigationLink("Quantitatif de la pièce") {
+                    CombinedQuantityView(works: project.ownedWorks(in: roomID), title: room.name)
+                }
+            }.navigationTitle(room.name)
+        }
+    }
+}
+
+private struct WorkComponentsView: View {
+    @EnvironmentObject private var store: ProjectStore
+    let projectID: UUID
+    let workID: UUID
+    @State private var name = ""
+    @State private var error = ""
+    private var project: ProjectItem? { store.project(id: projectID) }
+    private var work: WorkItem? { project?.works.first { $0.id == workID } }
+    var body: some View {
+        if let work, let project {
+            List {
+                Section {
+                    NavigationLink("Configuration et quantitatif de l’ouvrage") { SavedWorkView(work: work) }
+                    Text("Le quantitatif est calculé dans le formulaire de l’ouvrage. Les métrés de plusieurs composants ne sont pas encore regroupés automatiquement.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                if [.distributionPartition, .alveolarPartition].contains(work.type) {
+                    Section {
+                        Label("L’ossature est commune aux deux côtés. Décaler de 5 cm vers la droite ici la décale de 5 cm vers la gauche depuis l’autre pièce.", systemImage: "arrow.left.arrow.right")
+                            .font(.footnote).foregroundStyle(.secondary)
+                    }
+                    Section("Pièces voisines de la cloison") {
+                        ForEach(project.rooms.filter { $0.id != work.roomID }) { room in
+                            Toggle(room.name, isOn: Binding(get: { work.linkedRoomIDs.contains(room.id) }, set: { enabled in
+                                guard let owner = work.roomID else { error = "Rattachez d’abord la cloison à sa pièce propriétaire."; return }
+                                var links = work.linkedRoomIDs.filter { $0 != room.id }
+                                if enabled { links.append(room.id) }
+                                // Choose the smaller room only on initial association. Later changes
+                                // keep explicit ownership, so an area edit cannot move quantities silently.
+                                let candidates = [owner] + links
+                                let firstAssociation = enabled && work.linkedRoomIDs.isEmpty && work.components.allSatisfy { $0.plans.isEmpty }
+                                let selectedOwner = firstAssociation ? (store.suggestedPartitionOwner(projectID: projectID, roomIDs: candidates) ?? owner) : owner
+                                do { try store.assignWork(projectID: projectID, workID: workID, ownerRoomID: selectedOwner, adjacentRoomIDs: candidates.filter { $0 != selectedOwner }) }
+                                catch { self.error = "Modification impossible." }
+                            }))
+                        }
+                    }
+                }
+                ForEach(work.components) { component in
+                    Section(component.name) {
+                        if component.surface == nil { Text("Contour à renseigner").foregroundStyle(.secondary) }
+                        if [.distributionPartition, .alveolarPartition].contains(work.type) {
+                            ForEach(project.rooms.filter { $0.id == work.roomID || work.linkedRoomIDs.contains($0.id) }) { room in
+                                componentLink(component, side: room.id, title: "Côté \(room.name)")
+                            }
+                        } else {
+                            componentLink(component, side: nil, title: "Plan de calepinage")
+                        }
+                    }
+                }
+                Section("Ajouter un composant d’ouvrage") {
+                    TextField("Exemple : Mur A", text: $name)
+                    Button("Ajouter le composant") {
+                        do { try store.addComponent(projectID: projectID, workID: workID, name: name); name = ""; error = "" }
+                        catch { self.error = "Nom vide ou déjà utilisé." }
+                    }.disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+                if !error.isEmpty { Text(error).foregroundStyle(.red) }
+            }.navigationTitle(work.name)
+        }
+    }
+    private func componentLink(_ component: WorkComponentRecord, side: UUID?, title: String) -> some View {
+        let plan = component.plans.first { $0.sideRoomID == side } ?? ComponentLayoutPlan(sideRoomID: side)
+        return NavigationLink {
+            ComponentPlanEditorView(projectID: projectID, workID: workID, component: component, side: side,
+                kind: work?.type.category == .ceilings ? .ceiling : .wall, sharedFraming: work?.isPartition == true)
+        } label: {
+            VStack(alignment: .leading) {
+                Label(title, systemImage: "square.grid.3x3")
+                if component.plans.contains(where: { $0.sideRoomID == side }) && plan.geometryRevision != component.geometryRevision {
+                    Text("Contour ou ossature modifié — calepinage à vérifier").font(.caption).foregroundStyle(.orange)
+                }
+            }
+        }
+    }
+}
+
+private struct ComponentPlanEditorView: View {
+    @EnvironmentObject private var store: ProjectStore
+    @StateObject private var catalogue = ToolTechnicalStore()
+    let projectID: UUID
+    let workID: UUID
+    let side: UUID?
+    let kind: LayoutSupportKind
+    let sharedFraming: Bool
+    @State private var openedComponent: WorkComponentRecord
+
+    init(projectID: UUID, workID: UUID, component: WorkComponentRecord, side: UUID?, kind: LayoutSupportKind, sharedFraming: Bool) {
+        self.projectID = projectID; self.workID = workID; self.side = side
+        self.kind = kind; self.sharedFraming = sharedFraming
+        _openedComponent = State(initialValue: component)
+    }
+
+    var body: some View {
+        let plan = openedComponent.plans.first { $0.sideRoomID == side } ?? ComponentLayoutPlan(sideRoomID: side)
+        SheetLayoutView(initialDocument: openedComponent.document(for: plan), onSaveDocument: { document in
+            try store.saveComponentPlan(projectID: projectID, workID: workID, componentID: openedComponent.id,
+                sideRoomID: side, document: document, expectedGeometryRevision: openedComponent.geometryRevision)
+        }, requiredSupportKind: kind, sharedPartitionFraming: sharedFraming)
+        .environmentObject(catalogue)
+        .task { await catalogue.load() }
+    }
+}
+
 private struct RenameWorkView: View {
     @Environment(\.dismiss) private var dismiss
     let work: WorkItem
@@ -244,15 +457,15 @@ private struct RenameWorkView: View {
     init(work: WorkItem, onSave: @escaping (String) -> Void) {
         self.work = work
         self.onSave = onSave
-        _roomName = State(initialValue: work.inferredRoomName)
+        _roomName = State(initialValue: work.name)
     }
 
     var body: some View {
         NavigationStack {
             Form {
-                Section("Pièce concernée") {
-                    TextField("Exemple : Salon", text: $roomName)
-                    LabeledContent("Nom de l’ouvrage", value: work.type.generatedName(roomName: roomName))
+                Section("Nom de l’ouvrage") {
+                    TextField("Nom", text: $roomName)
+                    Text("Renommer l’ouvrage ne change pas sa pièce de rattachement.").font(.caption).foregroundStyle(.secondary)
                 }
             }
             .navigationTitle("Renommer")
@@ -323,8 +536,13 @@ private struct NewWorkView: View {
     @State private var roomName = ""
     @State private var category = WorkCategory.ceilings
     @State private var type = WorkType.ceilingOnFurring
-    @State private var configuring = false
-    @State private var resolvedWorkName = ""
+    private struct Draft: Identifiable {
+        let id = UUID()
+        let name: String
+        let type: WorkType
+        let roomName: String
+    }
+    @State private var configurationDraft: Draft?
     @State private var activeAlert: NewWorkAlert?
 
     private let columns = [
@@ -393,8 +611,8 @@ private struct NewWorkView: View {
                     ToolbarItem(placement: .confirmationAction) { Button("Configurer") { prepareConfiguration() }.disabled(!canConfigure) }
                 }
             }
-            .fullScreenCover(isPresented: $configuring) {
-                WorkConfiguratorContainer(projectID: projectID, workName: resolvedWorkName, workType: type) { dismiss() }
+            .fullScreenCover(item: $configurationDraft) { draft in
+                WorkConfiguratorContainer(projectID: projectID, workName: draft.name, workType: draft.type, onFinished: { dismiss() }, newRoomName: draft.roomName)
             }
             .alert(item: $activeAlert) { alert in
                 switch alert {
@@ -419,6 +637,11 @@ private struct NewWorkView: View {
         VStack(alignment: .leading, spacing: 10) {
             Text("Pièce concernée")
                 .font(.headline)
+            if let rooms = store.project(id: projectID)?.rooms, !rooms.isEmpty {
+                Menu("Choisir une pièce existante") {
+                    ForEach(rooms) { room in Button(room.name) { roomName = room.name } }
+                }
+            }
             TextField("Exemple : Salon", text: $roomName)
                 .textFieldStyle(.plain)
                 .padding(16)
@@ -486,11 +709,11 @@ private struct NewWorkView: View {
             return
         }
         do {
-            _ = try store.createWork(
+            _ = try store.createConfiguredWork(
                 projectID: projectID,
                 name: workName,
                 type: .openings,
-                openingConfiguration: configuration
+                payload: .openings(configuration), roomID: nil, newRoomName: effectiveRoomName
             )
             dismiss()
         } catch {
@@ -499,8 +722,7 @@ private struct NewWorkView: View {
     }
 
     private func openConfigurator(with workName: String) {
-        resolvedWorkName = workName
-        configuring = true
+        configurationDraft = Draft(name: workName, type: type, roomName: roomName)
     }
 }
 
@@ -536,7 +758,7 @@ private extension WorkCategory {
     }
 }
 
-private struct SavedWorkView: View {
+struct SavedWorkView: View {
     @EnvironmentObject private var store: ProjectStore
     @Environment(\.dismiss) private var dismiss
     let work: WorkItem
@@ -627,6 +849,8 @@ struct WorkConfiguratorContainer: View {
     let workType: WorkType
     let onFinished: () -> Void
     var layoutDocument: LayoutDocument? = nil
+    var roomID: UUID? = nil
+    var newRoomName: String? = nil
     @State private var errorMessage = ""
 
     var body: some View {
@@ -672,107 +896,23 @@ struct WorkConfiguratorContainer: View {
         .alert("Enregistrement impossible", isPresented: Binding(get: { !errorMessage.isEmpty }, set: { if !$0 { errorMessage = "" } })) { Button("OK") {} } message: { Text(errorMessage) }
     }
 
-    private func save(configuration: CeilingConfiguration) {
-        if layoutDocument != nil { saveLayout(.ceiling(configuration)); return }
-        do {
-            _ = try store.createWork(projectID: projectID, name: workName, type: workType, configuration: configuration)
-            finish()
-        } catch { errorMessage = "L’ouvrage n’a pas pu être enregistré." }
-    }
+    private func save(configuration: CeilingConfiguration) { savePayload(.ceiling(configuration)) }
+    private func save(railStudCeilingConfiguration: RailStudCeilingConfiguration) { savePayload(.railStudCeiling(railStudCeilingConfiguration)) }
+    private func save(modularCeilingConfiguration: ModularCeilingConfiguration) { savePayload(.modularCeiling(modularCeilingConfiguration)) }
+    private func save(doublageConfiguration: DoublageConfiguration) { savePayload(.peripheralLining(doublageConfiguration)) }
+    private func save(cloisonDistributionConfiguration: CloisonDistributionConfiguration) { savePayload(.distributionPartition(cloisonDistributionConfiguration)) }
+    private func save(alveolarPartitionConfiguration: AlveolarPartitionConfiguration) { savePayload(.alveolarPartition(alveolarPartitionConfiguration)) }
+    private func save(bondedLiningConfiguration: BondedLiningConfiguration) { savePayload(.bondedLining(bondedLiningConfiguration)) }
+    private func save(furringLiningConfiguration: FurringLiningConfiguration) { savePayload(.furringLining(furringLiningConfiguration)) }
+    private func save(adhesiveFacingConfiguration: AdhesiveFacingConfiguration) { savePayload(.adhesiveFacing(adhesiveFacingConfiguration)) }
+    private func save(openingConfiguration: OpeningConfiguration) { savePayload(.openings(openingConfiguration)) }
 
-    private func save(railStudCeilingConfiguration: RailStudCeilingConfiguration) {
-        if layoutDocument != nil { saveLayout(.railStudCeiling(railStudCeilingConfiguration)); return }
+    private func savePayload(_ payload: WorkConfiguration) {
         do {
-            _ = try store.createWork(projectID: projectID, name: workName, type: workType, railStudCeilingConfiguration: railStudCeilingConfiguration)
+            try store.createConfiguredWork(projectID: projectID, name: workName, type: workType,
+                payload: payload, roomID: roomID, newRoomName: newRoomName, document: layoutDocument)
             finish()
-        } catch { errorMessage = "L’ouvrage n’a pas pu être enregistré." }
-    }
-
-    private func save(modularCeilingConfiguration: ModularCeilingConfiguration) {
-        do {
-            _ = try store.createWork(
-                projectID: projectID,
-                name: workName,
-                type: workType,
-                modularCeilingConfiguration: modularCeilingConfiguration
-            )
-            finish()
-        } catch { errorMessage = "L’ouvrage n’a pas pu être enregistré." }
-    }
-
-    private func save(doublageConfiguration: DoublageConfiguration) {
-        if layoutDocument != nil { saveLayout(.peripheralLining(doublageConfiguration)); return }
-        do {
-            _ = try store.createWork(projectID: projectID, name: workName, type: workType, doublageConfiguration: doublageConfiguration)
-            finish()
-        } catch { errorMessage = "L’ouvrage n’a pas pu être enregistré." }
-    }
-
-    private func save(cloisonDistributionConfiguration: CloisonDistributionConfiguration) {
-        if layoutDocument != nil { saveLayout(.distributionPartition(cloisonDistributionConfiguration)); return }
-        do {
-            _ = try store.createWork(
-                projectID: projectID,
-                name: workName,
-                type: workType,
-                cloisonDistributionConfiguration: cloisonDistributionConfiguration
-            )
-            finish()
-        } catch { errorMessage = "L’ouvrage n’a pas pu être enregistré." }
-    }
-
-    private func save(alveolarPartitionConfiguration: AlveolarPartitionConfiguration) {
-        do {
-            _ = try store.createWork(
-                projectID: projectID,
-                name: workName,
-                type: workType,
-                alveolarPartitionConfiguration: alveolarPartitionConfiguration
-            )
-            finish()
-        } catch { errorMessage = "L’ouvrage n’a pas pu être enregistré." }
-    }
-
-    private func save(bondedLiningConfiguration: BondedLiningConfiguration) {
-        do {
-            _ = try store.createWork(projectID: projectID, name: workName, type: workType, bondedLiningConfiguration: bondedLiningConfiguration)
-            finish()
-        } catch { errorMessage = "L’ouvrage n’a pas pu être enregistré." }
-    }
-
-    private func save(furringLiningConfiguration: FurringLiningConfiguration) {
-        if layoutDocument != nil { saveLayout(.furringLining(furringLiningConfiguration)); return }
-        do {
-            _ = try store.createWork(projectID: projectID, name: workName, type: workType, furringLiningConfiguration: furringLiningConfiguration)
-            finish()
-        } catch { errorMessage = "L’ouvrage n’a pas pu être enregistré." }
-    }
-
-    private func saveLayout(_ payload:WorkConfiguration) {
-        guard let layoutDocument else { return }
-        do {
-            try store.createLayoutWork(projectID:projectID,name:workName,type:workType,payload:payload,document:layoutDocument)
-            finish()
-        } catch { errorMessage = error.localizedDescription }
-    }
-
-    private func save(adhesiveFacingConfiguration: AdhesiveFacingConfiguration) {
-        do {
-            _ = try store.createWork(projectID: projectID, name: workName, type: workType, adhesiveFacingConfiguration: adhesiveFacingConfiguration)
-            finish()
-        } catch { errorMessage = "L’ouvrage n’a pas pu être enregistré." }
-    }
-
-    private func save(openingConfiguration: OpeningConfiguration) {
-        do {
-            _ = try store.createWork(
-                projectID: projectID,
-                name: workName,
-                type: workType,
-                openingConfiguration: openingConfiguration
-            )
-            finish()
-        } catch { errorMessage = "L’ouvrage n’a pas pu être enregistré." }
+        } catch { errorMessage = "L’ouvrage n’a pas pu être enregistré. \(error.localizedDescription)" }
     }
 
     private func finish() {

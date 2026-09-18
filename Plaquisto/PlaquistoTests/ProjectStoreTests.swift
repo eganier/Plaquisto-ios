@@ -3,6 +3,178 @@ import XCTest
 
 @MainActor
 final class ProjectStoreTests: XCTestCase {
+    private func componentDocument(kind: LayoutSupportKind = .wall) -> LayoutDocument {
+        LayoutDocument(surface: Surface2D(name: "Mur A", kind: kind, contour: [
+            .init(x: 0, y: 0), .init(x: 4000, y: 0), .init(x: 4000, y: 2500), .init(x: 0, y: 2500)
+        ]), layers: [.init(furring: .init(parallelToBoards: true, spacing: 600, offset: 100))])
+    }
+
+    func testConfiguredWorkCreatesExplicitRoomAtomicallyAndRenameKeepsIdentity() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("projects.json")
+        let store = ProjectStore(fileURL: url)
+        let projectID = try store.createProject(name: "Maison", client: "", address: "", notes: "")
+        let workID = try store.createConfiguredWork(projectID: projectID, name: "Salon - Doublage périphérique",
+            type: .peripheralLiningStuds, payload: .peripheralLining(.init(height: 2.5, enteredLength: 12)), roomID: nil, newRoomName: "Salon")
+        let room = try XCTUnwrap(store.project(id: projectID)?.rooms.first)
+        XCTAssertEqual(store.project(id: projectID)?.works.first?.roomID, room.id)
+        try store.renameRoom(projectID: projectID, roomID: room.id, name: "Séjour")
+        XCTAssertEqual(store.project(id: projectID)?.works.first?.id, workID)
+        XCTAssertEqual(store.project(id: projectID)?.works.first?.name, "Séjour - Doublage périphérique")
+        XCTAssertThrowsError(try store.createConfiguredWork(projectID: projectID, name: "Séjour - Doublage périphérique",
+            type: .peripheralLiningStuds, payload: .peripheralLining(.init()), roomID: nil, newRoomName: "Pièce fantôme"))
+        XCTAssertEqual(store.project(id: projectID)?.rooms.count, 1)
+        let reloaded = ProjectStore(fileURL: url)
+        XCTAssertEqual(reloaded.project(id: projectID)?.rooms.first?.id, room.id)
+        XCTAssertEqual(reloaded.project(id: projectID)?.ownedWorks(in: room.id).map(\.id), [workID])
+    }
+
+    func testFourComponentsKeepWholeWorkQuantityAndUnknownGeometry() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("projects.json")
+        let store = ProjectStore(fileURL: url)
+        let projectID = try store.createProject(name: "Maison", client: "", address: "", notes: "")
+        let id = try store.createWork(projectID: projectID, name: "Doublage", type: .peripheralLiningStuds,
+            doublageConfiguration: .init(height: 2.5, enteredLength: 16))
+        var componentIDs: [UUID] = []
+        for name in ["Mur A", "Mur B", "Mur C", "Mur D"] { componentIDs.append(try store.addComponent(projectID: projectID, workID: id, name: name)) }
+        try store.saveComponentPlan(projectID: projectID, workID: id, componentID: componentIDs[0], sideRoomID: nil, document: componentDocument())
+        let work = try XCTUnwrap(ProjectStore(fileURL: url).project(id: projectID)?.works.first)
+        XCTAssertEqual(work.components.count, 4)
+        XCTAssertNotNil(work.components[0].surface)
+        XCTAssertNil(work.components[1].surface)
+        XCTAssertNil(work.layoutDocument, "A multi-component work must never expose one arbitrary wall as its total layout")
+        XCTAssertEqual(work.doublageConfiguration?.area, 40)
+        XCTAssertEqual(work.components[0].document(for: work.components[0].plans[0]), componentDocumentIdentityAdjusted(work.components[0]))
+        XCTAssertThrowsError(try store.saveComponentPlan(projectID: projectID, workID: id, componentID: componentIDs[0], sideRoomID: nil,
+            document: componentDocument(), expectedGeometryRevision: 0))
+        XCTAssertThrowsError(try store.saveComponentPlan(projectID: projectID, workID: id, componentID: componentIDs[0], sideRoomID: nil,
+            document: componentDocument(kind: .ceiling)))
+    }
+
+    private func componentDocumentIdentityAdjusted(_ component: WorkComponentRecord) -> LayoutDocument? {
+        guard let surface = component.surface, let plan = component.plans.first else { return nil }
+        var layers = plan.layers; layers[0].furring = component.framing
+        return LayoutDocument(surface: surface, layers: layers, lighting: plan.lighting)
+    }
+
+    func testPartitionOwnerSidesSharedGeometryAndCopyLinks() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("projects.json")
+        let store = ProjectStore(fileURL: url)
+        let projectID = try store.createProject(name: "Maison", client: "", address: "", notes: "")
+        let bureau = try store.createRoom(projectID: projectID, name: "Bureau", floorAreaM2: 9)
+        let salon = try store.createRoom(projectID: projectID, name: "Salon", floorAreaM2: 30)
+        let id = try store.createWork(projectID: projectID, name: "Cloison", type: .distributionPartition, cloisonDistributionConfiguration: .init())
+        XCTAssertEqual(store.suggestedPartitionOwner(projectID: projectID, roomIDs: [salon, bureau]), bureau)
+        try store.assignWork(projectID: projectID, workID: id, ownerRoomID: bureau, adjacentRoomIDs: [salon])
+        let componentID = try store.addComponent(projectID: projectID, workID: id, name: "Cloison A")
+        var document = componentDocument()
+        document.surface.openings = [.init(kind: .window, contour: [.init(x: 500, y: 900), .init(x: 1000, y: 900), .init(x: 1000, y: 1500), .init(x: 500, y: 1500)])]
+        try store.saveComponentPlan(projectID: projectID, workID: id, componentID: componentID, sideRoomID: bureau, document: document)
+        var component = try XCTUnwrap(store.project(id: projectID)?.works.first?.components.first)
+        let opposite = try XCTUnwrap(component.document(for: .init(sideRoomID: salon)))
+        XCTAssertEqual(opposite.surface.openings[0].id, document.surface.openings[0].id)
+        XCTAssertEqual(opposite.surface.openings[0].contour[0].x, -500)
+        XCTAssertEqual(opposite.surface.mirroredComponentSide(), document.surface)
+        XCTAssertEqual(opposite.layers[0].furring?.offset, -100)
+        try store.saveComponentPlan(projectID: projectID, workID: id, componentID: componentID, sideRoomID: salon, document: opposite)
+        component = try XCTUnwrap(store.project(id: projectID)?.works.first?.components.first)
+        XCTAssertEqual(component.geometryRevision, 1, "Opening the opposite side must not modify physical geometry")
+        XCTAssertEqual(component.plans.count, 2)
+        XCTAssertTrue(component.plans.allSatisfy { $0.layers.allSatisfy { $0.furring == nil } })
+        XCTAssertEqual(store.project(id: projectID)?.ownedWorks(in: bureau).count, 1)
+        XCTAssertEqual(store.project(id: projectID)?.ownedWorks(in: salon).count, 0)
+        XCTAssertEqual(store.project(id: projectID)?.linkedWorks(in: salon).map(\.id), [id])
+        var changed = document; changed.surface.contour[1].x = 4100
+        try store.saveComponentPlan(projectID: projectID, workID: id, componentID: componentID, sideRoomID: bureau, document: changed)
+        component = try XCTUnwrap(store.project(id: projectID)?.works.first?.components.first)
+        XCTAssertEqual(component.plans.first { $0.sideRoomID == salon }?.geometryRevision, 1)
+        XCTAssertEqual(component.geometryRevision, 2)
+        let copyID = try store.duplicateProject(id: projectID)
+        let copied = try XCTUnwrap(ProjectStore(fileURL: url).project(id: copyID))
+        let copyWork = try XCTUnwrap(copied.works.first)
+        XCTAssertNotEqual(copyWork.id, id)
+        XCTAssertEqual(copied.rooms.first { $0.name == "Bureau" }?.id, copyWork.roomID)
+        XCTAssertNotEqual(copyWork.components[0].id, componentID)
+        XCTAssertTrue(copyWork.components[0].plans.allSatisfy { copied.rooms.map(\.id).contains($0.sideRoomID!) })
+        XCTAssertNotEqual(copyWork.components[0].surface?.openings[0].id, document.surface.openings[0].id)
+    }
+
+    func testFutureArchiveCannotBeOverwritten() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let url = directory.appendingPathComponent("projects.json")
+        let data = Data("{\"schemaVersion\":999,\"projects\":[]}".utf8)
+        try data.write(to: url)
+        let store = ProjectStore(fileURL: url)
+        XCTAssertNotNil(store.lastError)
+        XCTAssertThrowsError(try store.createProject(name: "Test", client: "", address: "", notes: ""))
+        XCTAssertEqual(try Data(contentsOf: url), data)
+    }
+
+    func testMovingSharedFrameRightOnOneSideMovesItLeftOnTheOtherAfterReload() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("projects.json")
+        let store = ProjectStore(fileURL: url)
+        let projectID = try store.createProject(name: "Maison", client: "", address: "", notes: "")
+        let a = try store.createRoom(projectID: projectID, name: "A", floorAreaM2: 9)
+        let b = try store.createRoom(projectID: projectID, name: "B", floorAreaM2: 20)
+        let workID = try store.createWork(projectID: projectID, name: "Cloison", type: .distributionPartition, cloisonDistributionConfiguration: .init())
+        try store.assignWork(projectID: projectID, workID: workID, ownerRoomID: a, adjacentRoomIDs: [b])
+        let componentID = try store.addComponent(projectID: projectID, workID: workID, name: "Cloison A")
+        var first = componentDocument()
+        first.lighting = .init(count: 1, positions: [.init(x: 700, y: 400)], kinds: [.socket])
+        try store.saveComponentPlan(projectID: projectID, workID: workID, componentID: componentID, sideRoomID: a, document: first)
+        var component = try XCTUnwrap(store.project(id: projectID)?.works.first?.components.first)
+        let beforeB = try XCTUnwrap(component.document(for: .init(sideRoomID: b)))
+        XCTAssertNil(beforeB.lighting, "A socket must not appear on the opposite side")
+        try store.saveComponentPlan(projectID: projectID, workID: workID, componentID: componentID, sideRoomID: b, document: beforeB)
+        let beforeRevision = component.geometryRevision
+        first.layers[0].furring?.offset += 50 // 5 cm right as seen from A.
+        try store.saveComponentPlan(projectID: projectID, workID: workID, componentID: componentID, sideRoomID: a, document: first, expectedGeometryRevision: beforeRevision)
+        component = try XCTUnwrap(ProjectStore(fileURL: url).project(id: projectID)?.works.first?.components.first)
+        let planA = try XCTUnwrap(component.plans.first { $0.sideRoomID == a })
+        let planB = try XCTUnwrap(component.plans.first { $0.sideRoomID == b })
+        let afterA = try XCTUnwrap(component.document(for: planA))
+        var afterB = try XCTUnwrap(component.document(for: planB))
+        XCTAssertEqual(afterA.layers[0].furring?.offset, 150)
+        XCTAssertEqual(afterB.layers[0].furring?.offset, -150)
+        let frameA = try LayoutFurringEngine.calculate(surface: afterA.surface, layer: afterA.layers[0])
+        let frameB = try LayoutFurringEngine.calculate(surface: afterB.surface, layer: afterB.layers[0])
+        XCTAssertEqual(frameA.lines.map { $0.start.x }.sorted(), frameB.lines.map { -$0.start.x }.sorted())
+        XCTAssertEqual((afterB.layers[0].furring?.offset ?? 0) - (beforeB.layers[0].furring?.offset ?? 0), -50)
+        XCTAssertEqual(afterA.surface, first.surface, "Moving framing must not modify the contour")
+        XCTAssertEqual(afterA.lighting, first.lighting)
+        XCTAssertNil(afterB.lighting)
+        XCTAssertEqual(component.geometryRevision, beforeRevision + 1)
+        XCTAssertLessThan(planB.geometryRevision, component.geometryRevision)
+        XCTAssertThrowsError(try store.saveComponentPlan(projectID: projectID, workID: workID, componentID: componentID, sideRoomID: b, document: beforeB, expectedGeometryRevision: beforeRevision))
+        // The reverse direction works too: right 5 cm on B restores the initial A offset.
+        afterB.layers[0].furring?.offset += 50
+        try store.saveComponentPlan(projectID: projectID, workID: workID, componentID: componentID, sideRoomID: b, document: afterB, expectedGeometryRevision: component.geometryRevision)
+        component = try XCTUnwrap(ProjectStore(fileURL: url).project(id: projectID)?.works.first?.components.first)
+        XCTAssertEqual(component.document(for: planA)?.layers[0].furring?.offset, 100)
+    }
+
+    func testLinkedLayoutDoesNotWriteToStandaloneDraftOrLibrary() throws {
+        let suite = "linked-layout-test-\(UUID())"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let draft = Data("preserve".utf8)
+        defaults.set(draft, forKey: "plaquisto.tools.layout.draft.v1")
+        let model = LayoutEditorModel(defaults: defaults, persistsStandaloneLibrary: false)
+        model.apply(componentDocument())
+        model.startNew()
+        XCTAssertEqual(defaults.data(forKey: "plaquisto.tools.layout.draft.v1"), draft)
+        XCTAssertNil(defaults.data(forKey: "plaquisto.tools.layout.library.v1"))
+    }
+
     func testProjectDuplicationRelinksOpeningsToCopiedWorksAfterReload() throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -198,6 +370,9 @@ final class ProjectStoreTests: XCTestCase {
 
         XCTAssertEqual(result.totalArea, 26)
         XCTAssertEqual(result.supplies.first(where: { $0.name == "Fourrure F45" })?.quantity, 52)
+        let union = CombinedQuantityCalculator.calculate(works: [first, first, second], catalogue: catalogue)
+        XCTAssertEqual(union.totalArea, result.totalArea)
+        XCTAssertEqual(union.supplies.first(where: { $0.name == "Fourrure F45" })?.quantity, 52)
     }
 
     func testDuplicatingAProjectCopiesItsWorksWithNewIdentities() throws {
@@ -480,7 +655,7 @@ final class ProjectStoreTests: XCTestCase {
         XCTAssertEqual(result.supplies.first(where: { $0.name == "Rails" })?.quantity ?? 0, 32, accuracy: 0.001)
     }
 
-    func testLegacyProjectsAreMigratedToTheNewConfigurationFormat() throws {
+    func testLegacyArchiveIsNotSilentlyImportedOrOverwritten() throws {
         struct LegacyWork: Encodable {
             let id: UUID
             let projectID: UUID
@@ -536,9 +711,11 @@ final class ProjectStoreTests: XCTestCase {
 
         let store = ProjectStore(fileURL: fileURL)
 
-        XCTAssertEqual(store.project(id: projectID)?.works.first?.ceilingConfiguration?.length, 6)
-        XCTAssertEqual(store.project(id: projectID)?.works.last?.doublageConfiguration?.area, 20)
-        XCTAssertNil(store.lastError)
+        XCTAssertNil(store.project(id: projectID))
+        XCTAssertNotNil(store.lastError)
+        let original = try Data(contentsOf: fileURL)
+        XCTAssertThrowsError(try store.createProject(name: "Nouveau", client: "", address: "", notes: ""))
+        XCTAssertEqual(try Data(contentsOf: fileURL), original)
     }
 
     func testWorkTypesAreAssignedToTheirFutureCategories() {

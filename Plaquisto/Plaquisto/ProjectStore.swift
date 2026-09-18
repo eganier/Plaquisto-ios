@@ -15,6 +15,11 @@ final class ProjectStore: ObservableObject {
     private let fileURL: URL
     private let encoder: JSONEncoder
     private let decoder: JSONDecoder
+    private var storageIsReadable = true
+    private struct Archive: Codable {
+        var schemaVersion = 2
+        var projects: [ProjectItem]
+    }
 
     init(fileURL: URL? = nil) {
         encoder = JSONEncoder()
@@ -27,12 +32,185 @@ final class ProjectStore: ObservableObject {
         } else {
             let directory = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
                 .appendingPathComponent("Plaquisto", isDirectory: true)
-            self.fileURL = directory.appendingPathComponent("projects.json")
+            self.fileURL = directory.appendingPathComponent("projects-v2.json")
         }
         load()
     }
 
     func project(id: UUID) -> ProjectItem? { projects.first { $0.id == id } }
+
+    /// One transaction for forms: room creation/selection, work and optional plan.
+    @discardableResult
+    func createConfiguredWork(projectID: UUID, name: String, type: WorkType, payload: WorkConfiguration,
+                              roomID: UUID?, newRoomName: String?, document: LayoutDocument? = nil) throws -> UUID {
+        var next = projects
+        guard let i = next.firstIndex(where: { $0.id == projectID }) else { throw StoreError.projectNotFound }
+        try validateWorkName(name, in: next[i])
+        var owner = roomID
+        if case .openings(let opening) = payload, let reference = opening.sourceWorkID {
+            guard let source = next[i].works.first(where: { $0.id == reference }) else { throw StoreError.workNotFound }
+            owner = source.roomID
+        } else if owner == nil, let roomName = newRoomName?.trimmed, !roomName.isEmpty {
+            // This is the explicit room field submitted by the user, never an ouvrage-name parser.
+            if let existing = next[i].rooms.first(where: { $0.name.normalizedForComparison == roomName.normalizedForComparison }) {
+                owner = existing.id
+            } else {
+                let room = ProjectRoomRecord(name: roomName)
+                next[i].rooms.append(room); owner = room.id
+            }
+        }
+        if let owner { guard next[i].rooms.contains(where: { $0.id == owner }) else { throw StoreError.invalidStructure } }
+        let now = Date()
+        var work = WorkItem(id: UUID(), projectID: projectID, name: name.trimmed, type: type, payload: payload, createdAt: now, updatedAt: now)
+        work.roomID = owner
+        work.layoutDocument = document
+        work.layoutNeedsRecalculation = document == nil ? nil : false
+        next[i].works.insert(work, at: 0); next[i].updatedAt = now
+        try commit(next)
+        return work.id
+    }
+
+    func renameRoom(projectID: UUID, roomID: UUID, name: String) throws {
+        var next = projects
+        guard let i = next.firstIndex(where: { $0.id == projectID }),
+              let j = next[i].rooms.firstIndex(where: { $0.id == roomID }) else { throw StoreError.projectNotFound }
+        guard !name.trimmed.isEmpty, !next[i].rooms.contains(where: { $0.id != roomID && $0.name.normalizedForComparison == name.normalizedForComparison }) else { throw StoreError.invalidWorkName }
+        let oldName = next[i].rooms[j].name
+        next[i].rooms[j].name = name.trimmed
+        for k in next[i].works.indices where next[i].works[k].roomID == roomID {
+            let work = next[i].works[k]
+            if work.name == work.type.generatedName(roomName: oldName) {
+                next[i].works[k].name = work.type.generatedName(roomName: name.trimmed)
+            }
+        }
+        next[i].updatedAt = Date()
+        try commit(next)
+    }
+
+    func renameWorkTitle(projectID: UUID, workID: UUID, title: String) throws {
+        var next = projects
+        guard let i = next.firstIndex(where: { $0.id == projectID }),
+              let j = next[i].works.firstIndex(where: { $0.id == workID }) else { throw StoreError.workNotFound }
+        try validateWorkName(title, in: next[i], excluding: workID)
+        next[i].works[j].name = title.trimmed
+        next[i].works[j].updatedAt = Date(); next[i].updatedAt = Date()
+        try commit(next)
+    }
+
+    @discardableResult
+    func createRoom(projectID: UUID, name: String, floorAreaM2: Double? = nil) throws -> UUID {
+        var next = projects
+        guard let i = next.firstIndex(where: { $0.id == projectID }) else { throw StoreError.projectNotFound }
+        guard !name.trimmed.isEmpty,
+              !next[i].rooms.contains(where: { $0.name.normalizedForComparison == name.normalizedForComparison }),
+              floorAreaM2.map({ $0.isFinite && $0 > 0 }) ?? true else { throw StoreError.invalidWorkName }
+        let room = ProjectRoomRecord(name: name.trimmed, floorAreaM2: floorAreaM2)
+        next[i].rooms.append(room)
+        next[i].updatedAt = Date()
+        try commit(next)
+        return room.id
+    }
+
+    /// Explicit ownership; never inferred again from display names.
+    func assignWork(projectID: UUID, workID: UUID, ownerRoomID: UUID, adjacentRoomIDs: [UUID] = []) throws {
+        var next = projects
+        guard let i = next.firstIndex(where: { $0.id == projectID }),
+              let j = next[i].works.firstIndex(where: { $0.id == workID }) else { throw StoreError.workNotFound }
+        let roomIDs = Set(next[i].rooms.map(\.id))
+        guard roomIDs.contains(ownerRoomID), Set(adjacentRoomIDs).isSubset(of: roomIDs) else { throw StoreError.invalidStructure }
+        if let sourceID = next[i].works[j].openingConfiguration?.sourceWorkID {
+            guard next[i].works.first(where: { $0.id == sourceID })?.roomID == ownerRoomID else { throw StoreError.invalidStructure }
+        }
+        let isPartition = [.distributionPartition, .alveolarPartition].contains(next[i].works[j].type)
+        guard adjacentRoomIDs.isEmpty || isPartition else { throw StoreError.invalidStructure }
+        next[i].works[j].roomID = ownerRoomID
+        next[i].works[j].linkedRoomIDs = Array(Set(adjacentRoomIDs).subtracting([ownerRoomID])).sorted { $0.uuidString < $1.uuidString }
+        if isPartition {
+            for k in next[i].works[j].components.indices {
+                if next[i].works[j].components[k].referenceSideRoomID == nil {
+                    next[i].works[j].components[k].referenceSideRoomID = ownerRoomID
+                }
+                for p in next[i].works[j].components[k].plans.indices where next[i].works[j].components[k].plans[p].sideRoomID == nil {
+                    next[i].works[j].components[k].plans[p].sideRoomID = ownerRoomID
+                }
+            }
+        }
+        // Auxiliary openings inherit the reference work's owner, never count in the adjacent room.
+        for k in next[i].works.indices where next[i].works[k].openingConfiguration?.sourceWorkID == workID {
+            next[i].works[k].roomID = ownerRoomID
+        }
+        next[i].updatedAt = Date()
+        try commit(next)
+    }
+
+    func suggestedPartitionOwner(projectID: UUID, roomIDs: [UUID]) -> UUID? {
+        guard let project = project(id: projectID) else { return nil }
+        let rooms = project.rooms.filter { roomIDs.contains($0.id) }
+        guard rooms.count == Set(roomIDs).count, rooms.allSatisfy({ $0.floorAreaM2 != nil }) else { return nil }
+        return rooms.sorted {
+            if $0.floorAreaM2 == $1.floorAreaM2 { return $0.id.uuidString < $1.id.uuidString }
+            return $0.floorAreaM2! < $1.floorAreaM2!
+        }.first?.id
+    }
+
+    @discardableResult
+    func addComponent(projectID: UUID, workID: UUID, name: String) throws -> UUID {
+        var next = projects
+        guard let i = next.firstIndex(where: { $0.id == projectID }),
+              let j = next[i].works.firstIndex(where: { $0.id == workID }) else { throw StoreError.workNotFound }
+        guard !name.trimmed.isEmpty,
+              !next[i].works[j].components.contains(where: { $0.name.normalizedForComparison == name.normalizedForComparison }) else { throw StoreError.invalidWorkName }
+        let component = WorkComponentRecord(name: name.trimmed)
+        next[i].works[j].components.append(component)
+        next[i].updatedAt = Date()
+        try commit(next)
+        return component.id
+    }
+
+    /// Geometry belongs to the component; finishing and electrical layout belong to its side.
+    func saveComponentPlan(projectID: UUID, workID: UUID, componentID: UUID, sideRoomID: UUID?, document: LayoutDocument, expectedGeometryRevision: Int? = nil) throws {
+        var next = projects
+        guard let i = next.firstIndex(where: { $0.id == projectID }),
+              let j = next[i].works.firstIndex(where: { $0.id == workID }),
+              let k = next[i].works[j].components.firstIndex(where: { $0.id == componentID }) else { throw StoreError.workNotFound }
+        let work = next[i].works[j]
+        let isPartition = [.distributionPartition, .alveolarPartition].contains(work.type)
+        if isPartition {
+            guard let sideRoomID, sideRoomID == work.roomID || work.linkedRoomIDs.contains(sideRoomID) else { throw StoreError.invalidStructure }
+        } else if sideRoomID != nil { throw StoreError.invalidStructure }
+        guard !document.layers.isEmpty else { throw StoreError.invalidStructure }
+        let expectedKind: LayoutSupportKind = work.type.category == .ceilings ? .ceiling : .wall
+        guard document.surface.kind == expectedKind else { throw StoreError.invalidStructure }
+        for layer in document.layers { _ = try SheetLayoutEngine.calculate(surface: document.surface, layer: layer) }
+        var component = work.components[k]
+        if let expectedGeometryRevision, expectedGeometryRevision != component.geometryRevision { throw StoreError.staleGeometry }
+        if component.referenceSideRoomID == nil { component.referenceSideRoomID = sideRoomID }
+        let opposite = component.isOppositeSide(sideRoomID)
+        let surface = opposite ? document.surface.mirroredComponentSide() : document.surface
+        var framing = document.layers.first?.furring
+        if opposite { framing?.offset.negate() }
+        // The revision protects the whole shared support, including its physical frame.
+        // An old editor must never restore the old frame after the opposite side moved it.
+        if component.surface != surface || component.framing != framing {
+            component.surface = surface
+            component.framing = framing
+            component.geometryRevision += 1
+        }
+        let index = component.plans.firstIndex { $0.sideRoomID == sideRoomID }
+        var plan = index.map { component.plans[$0] } ?? ComponentLayoutPlan(sideRoomID: sideRoomID)
+        plan.layers = document.layers
+        for index in plan.layers.indices { plan.layers[index].furring = nil }
+        plan.lighting = document.lighting
+        plan.geometryRevision = component.geometryRevision
+        if let index { component.plans[index] = plan } else { component.plans.append(plan) }
+        next[i].works[j].components[k] = component
+        if !work.isPartition && work.components.count == 1 {
+            next[i].works[j].layoutNeedsRecalculation = true
+        }
+        next[i].works[j].updatedAt = Date()
+        next[i].updatedAt = Date()
+        try commit(next)
+    }
 
     func createLayoutWork(projectID:UUID,name:String,type:WorkType,payload:WorkConfiguration,document:LayoutDocument) throws {
         var next = projects
@@ -48,7 +226,8 @@ final class ProjectStore: ObservableObject {
     func updateLinkedLayout(projectID:UUID,workID:UUID,document:LayoutDocument) throws {
         var next = projects
         guard let i = next.firstIndex(where:{$0.id == projectID}), let j = next[i].works.firstIndex(where:{$0.id == workID}) else { throw StoreError.workNotFound }
-        guard next[i].works[j].layoutDocument != document else { return }
+        guard let current = next[i].works[j].layoutDocument else { throw StoreError.invalidStructure }
+        guard current != document else { return }
         next[i].works[j].layoutDocument = document
         next[i].works[j].layoutNeedsRecalculation = true
         next[i].works[j].updatedAt = Date(); next[i].updatedAt = Date()
@@ -258,6 +437,7 @@ final class ProjectStore: ObservableObject {
         let projectID = UUID()
         let now = Date()
         let copiedIDs = Dictionary(uniqueKeysWithValues: source.works.map { ($0.id, UUID()) })
+        let roomIDs = Dictionary(uniqueKeysWithValues: source.rooms.map { ($0.id, UUID()) })
         let copiedWorks = source.works.map { work in
             var payload = work.payload
             if case .openings(var configuration) = payload {
@@ -266,9 +446,13 @@ final class ProjectStore: ObservableObject {
             }
             var copy = WorkItem(id: copiedIDs[work.id]!, projectID: projectID, name: work.name, type: work.type, payload: payload, createdAt: now, updatedAt: now)
             copy.layoutDocument = work.layoutDocument; copy.layoutNeedsRecalculation = work.layoutNeedsRecalculation
+            copy.roomID = work.roomID.flatMap { roomIDs[$0] }
+            copy.linkedRoomIDs = work.linkedRoomIDs.compactMap { roomIDs[$0] }
+            copy.components = copiedComponents(work.components, roomIDs: roomIDs)
             return copy
         }
-        let copy = ProjectItem(id: projectID, name: copyName, client: source.client, address: source.address, notes: source.notes, works: copiedWorks, createdAt: now, updatedAt: now)
+        var copy = ProjectItem(id: projectID, name: copyName, client: source.client, address: source.address, notes: source.notes, works: copiedWorks, createdAt: now, updatedAt: now)
+        copy.rooms = source.rooms.map { ProjectRoomRecord(id: roomIDs[$0.id]!, name: $0.name, floorAreaM2: $0.floorAreaM2) }
         next.insert(copy, at: projectIndex + 1)
         try commit(next)
         return projectID
@@ -534,6 +718,10 @@ final class ProjectStore: ObservableObject {
         guard let projectIndex = next.firstIndex(where: { $0.id == work.projectID }),
               let workIndex = next[projectIndex].works.firstIndex(where: { $0.id == work.id }) else { throw StoreError.workNotFound }
         next[projectIndex].works[workIndex].payload = .openings(openingConfiguration)
+        if let sourceID = openingConfiguration.sourceWorkID {
+            guard let source = next[projectIndex].works.first(where: { $0.id == sourceID }) else { throw StoreError.workNotFound }
+            next[projectIndex].works[workIndex].roomID = source.roomID
+        }
         if let roomName = openingRoomName(for: openingConfiguration, in: next[projectIndex]), !roomName.isEmpty {
             let generatedName = WorkType.openings.generatedName(roomName: roomName)
             if !next[projectIndex].works.contains(where: {
@@ -606,6 +794,9 @@ final class ProjectStore: ObservableObject {
         let now = Date()
         var copy = WorkItem(id: UUID(), projectID: projectID, name: copyName, type: source.type, payload: source.payload, createdAt: now, updatedAt: now)
         copy.layoutDocument = source.layoutDocument; copy.layoutNeedsRecalculation = source.layoutNeedsRecalculation
+        copy.roomID = source.roomID
+        copy.linkedRoomIDs = source.linkedRoomIDs
+        copy.components = copiedComponents(source.components, roomIDs: Dictionary(uniqueKeysWithValues: next[projectIndex].rooms.map { ($0.id, $0.id) }))
         next[projectIndex].works.insert(copy, at: workIndex + 1)
         next[projectIndex].updatedAt = now
         try commit(next)
@@ -616,6 +807,12 @@ final class ProjectStore: ObservableObject {
         var next = projects
         guard let projectIndex = next.firstIndex(where: { $0.id == projectID }) else { throw StoreError.projectNotFound }
         next[projectIndex].works.removeAll { $0.id == workID }
+        for i in next[projectIndex].works.indices {
+            guard case .openings(var configuration) = next[projectIndex].works[i].payload,
+                  configuration.sourceWorkID == workID else { continue }
+            configuration.sourceWorkID = nil
+            next[projectIndex].works[i].payload = .openings(configuration)
+        }
         next[projectIndex].updatedAt = Date()
         try commit(next)
     }
@@ -641,17 +838,23 @@ final class ProjectStore: ObservableObject {
     private func load() {
         guard FileManager.default.fileExists(atPath: fileURL.path) else { return }
         do {
-            projects = try decoder.decode([ProjectItem].self, from: Data(contentsOf: fileURL))
+            let archive = try decoder.decode(Archive.self, from: Data(contentsOf: fileURL))
+            guard archive.schemaVersion == 2 else { throw StoreError.invalidStructure }
+            try validateStructure(archive.projects)
+            projects = archive.projects
             lastError = nil
         } catch {
+            storageIsReadable = false
             lastError = "Les projets enregistrés n’ont pas pu être ouverts."
         }
     }
 
     private func commit(_ next: [ProjectItem]) throws {
+        guard storageIsReadable else { throw StoreError.invalidStructure }
         do {
+            try validateStructure(next)
             try FileManager.default.createDirectory(at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
-            try encoder.encode(next).write(to: fileURL, options: .atomic)
+            try encoder.encode(Archive(projects: next)).write(to: fileURL, options: .atomic)
             projects = next
             lastError = nil
         } catch {
@@ -660,7 +863,73 @@ final class ProjectStore: ObservableObject {
         }
     }
 
-    private enum StoreError: Error { case projectNotFound, workNotFound, invalidWorkName, duplicateWorkName }
+    private func copiedComponents(_ components: [WorkComponentRecord], roomIDs: [UUID: UUID]) -> [WorkComponentRecord] {
+        components.map { source in
+            var copy = source
+            copy.id = UUID()
+            copy.referenceSideRoomID = source.referenceSideRoomID.flatMap { roomIDs[$0] }
+            copy.surface?.id = UUID()
+            copy.surface?.openings = source.surface?.openings.map { opening in
+                var result = opening; result.id = UUID(); return result
+            } ?? []
+            copy.plans = source.plans.map { original in
+                var plan = original
+                plan.id = UUID()
+                plan.sideRoomID = original.sideRoomID.flatMap { roomIDs[$0] }
+                plan.layers = original.layers.map { layer in var result = layer; result.id = UUID(); return result }
+                return plan
+            }
+            return copy
+        }
+    }
+
+    private func validateStructure(_ projects: [ProjectItem]) throws {
+        var ids = Set<UUID>()
+        func claim(_ id: UUID) throws { guard ids.insert(id).inserted else { throw StoreError.invalidStructure } }
+        for project in projects {
+            try claim(project.id)
+            let rooms = Set(project.rooms.map(\.id))
+            let workIDs = Set(project.works.map(\.id))
+            for room in project.rooms {
+                try claim(room.id)
+                guard !room.name.trimmed.isEmpty, room.floorAreaM2.map({ $0.isFinite && $0 > 0 }) ?? true else { throw StoreError.invalidStructure }
+            }
+            for work in project.works {
+                try claim(work.id)
+                if let source = work.openingConfiguration?.sourceWorkID {
+                    guard source != work.id, workIDs.contains(source) else { throw StoreError.invalidStructure }
+                }
+                guard work.projectID == project.id,
+                      work.roomID.map({ rooms.contains($0) }) ?? true,
+                      Set(work.linkedRoomIDs).isSubset(of: rooms),
+                      work.roomID.map({ !work.linkedRoomIDs.contains($0) }) ?? work.linkedRoomIDs.isEmpty else { throw StoreError.invalidStructure }
+                for component in work.components {
+                    try claim(component.id)
+                    var sides = Set<UUID?>()
+                    for plan in component.plans {
+                        try claim(plan.id)
+                        guard sides.insert(plan.sideRoomID).inserted,
+                              plan.sideRoomID.map({ $0 == work.roomID || work.linkedRoomIDs.contains($0) }) ?? true,
+                              plan.geometryRevision <= component.geometryRevision else { throw StoreError.invalidStructure }
+                    }
+                }
+            }
+        }
+    }
+
+    private enum StoreError: Error, LocalizedError {
+        case projectNotFound, workNotFound, invalidWorkName, duplicateWorkName, invalidStructure, staleGeometry
+        var errorDescription: String? {
+            switch self {
+            case .staleGeometry: "Le contour ou l’ossature commune a changé depuis l’ouverture de ce plan. Revenez au composant puis rouvrez son calepinage."
+            case .invalidStructure: "Les données ou leurs liens sont incompatibles. Aucune modification n’a été enregistrée."
+            case .projectNotFound: "Projet introuvable."
+            case .workNotFound: "Ouvrage ou composant introuvable."
+            case .invalidWorkName: "Renseignez un nom valide."
+            case .duplicateWorkName: "Ce nom est déjà utilisé."
+            }
+        }
+    }
 }
 
 private extension String {

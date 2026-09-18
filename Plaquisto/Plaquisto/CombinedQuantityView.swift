@@ -73,10 +73,12 @@ struct CombinedQuantityView: View {
                 List {
                     Section("Ouvrages inclus") {
                         ForEach(works) { work in
+                            NavigationLink { SavedWorkView(work: work) } label: {
                             if work.type == .openings {
                                 LabeledContent(work.name, value: "\(work.openingConfiguration?.openings.count ?? 0) ouverture(s)")
                             } else {
                                 LabeledContent(work.name, value: format(work.area) + " m²")
+                            }
                             }
                         }
                         LabeledContent("Surface totale", value: format(summary.totalArea) + " m²").fontWeight(.semibold)
@@ -128,7 +130,8 @@ enum CombinedQuantityCalculator {
             totals[key] = CombinedSupply(name: name, quantity: previous + quantity, unit: unit)
         }
 
-        for work in works {
+        var includedWorkIDs = Set<UUID>()
+        for work in works where includedWorkIDs.insert(work.id).inserted {
             if work.type == .openings, let configuration = work.openingConfiguration {
                 let results = configuration.openings.map {
                     OpeningQuantityCalculator.calculate($0, context: configuration.context)

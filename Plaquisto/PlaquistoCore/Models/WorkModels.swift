@@ -453,8 +453,35 @@ struct WorkItem: Identifiable, Equatable {
     var payload: WorkConfiguration
     let createdAt: Date
     var updatedAt: Date
-    var layoutDocument: LayoutDocument? = nil
+    /// Compatibility facade for the existing single-support configurators.
+    /// The persisted source of truth is always the component, never a second copy.
+    var layoutDocument: LayoutDocument? {
+        get {
+            guard components.count == 1, components[0].plans.count == 1 else { return nil }
+            return components[0].document(for: components[0].plans[0])
+        }
+        set {
+            guard let newValue else { return }
+            guard components.isEmpty || (components.count == 1 && components[0].plans.count <= 1) else { return }
+            var component = components.first ?? WorkComponentRecord(name: newValue.surface.name)
+            if component.surface != newValue.surface { component.geometryRevision += 1 }
+            component.surface = newValue.surface
+            var plan = component.plans.first ?? ComponentLayoutPlan(sideRoomID: isPartition ? roomID : nil)
+            component.referenceSideRoomID = component.referenceSideRoomID ?? plan.sideRoomID
+            plan.layers = newValue.layers; plan.lighting = newValue.lighting
+            component.framing = plan.layers.first?.furring
+            for i in plan.layers.indices { plan.layers[i].furring = nil }
+            plan.geometryRevision = component.geometryRevision
+            component.plans = [plan]
+            components = [component]
+        }
+    }
+    var isPartition: Bool { type == .distributionPartition || type == .alveolarPartition }
     var layoutNeedsRecalculation: Bool? = nil
+    /// Ownership drives quantities. Adjacent rooms only expose a navigation link.
+    var roomID: UUID? = nil
+    var linkedRoomIDs: [UUID] = []
+    var components: [WorkComponentRecord] = []
 
     var ceilingConfiguration: CeilingConfiguration? {
         guard case .ceiling(let configuration) = payload else { return nil }
@@ -566,7 +593,7 @@ struct WorkItem: Identifiable, Equatable {
 
 extension WorkItem: Codable {
     private enum CodingKeys: String, CodingKey {
-        case id, projectID, name, type, payload, configuration, doublageConfiguration, createdAt, updatedAt, layoutDocument, layoutNeedsRecalculation
+        case id, projectID, name, type, payload, configuration, doublageConfiguration, createdAt, updatedAt, layoutDocument, layoutNeedsRecalculation, roomID, linkedRoomIDs, components
     }
 
     init(from decoder: Decoder) throws {
@@ -577,8 +604,10 @@ extension WorkItem: Codable {
         type = try container.decode(WorkType.self, forKey: .type)
         createdAt = try container.decode(Date.self, forKey: .createdAt)
         updatedAt = try container.decode(Date.self, forKey: .updatedAt)
-        layoutDocument = try container.decodeIfPresent(LayoutDocument.self,forKey:.layoutDocument)
         layoutNeedsRecalculation = try container.decodeIfPresent(Bool.self,forKey:.layoutNeedsRecalculation)
+        roomID = try container.decodeIfPresent(UUID.self, forKey: .roomID)
+        linkedRoomIDs = try container.decodeIfPresent([UUID].self, forKey: .linkedRoomIDs) ?? []
+        components = try container.decodeIfPresent([WorkComponentRecord].self, forKey: .components) ?? []
 
         if let current = try container.decodeIfPresent(WorkConfiguration.self, forKey: .payload) {
             payload = current
@@ -587,6 +616,9 @@ extension WorkItem: Codable {
             payload = .peripheralLining(legacy)
         } else {
             payload = .ceiling(try container.decode(CeilingConfiguration.self, forKey: .configuration))
+        }
+        if components.isEmpty, let document = try container.decodeIfPresent(LayoutDocument.self, forKey: .layoutDocument) {
+            layoutDocument = document
         }
     }
 
@@ -599,8 +631,10 @@ extension WorkItem: Codable {
         try container.encode(payload, forKey: .payload)
         try container.encode(createdAt, forKey: .createdAt)
         try container.encode(updatedAt, forKey: .updatedAt)
-        try container.encodeIfPresent(layoutDocument,forKey:.layoutDocument)
         try container.encodeIfPresent(layoutNeedsRecalculation,forKey:.layoutNeedsRecalculation)
+        try container.encodeIfPresent(roomID, forKey: .roomID)
+        try container.encode(linkedRoomIDs, forKey: .linkedRoomIDs)
+        try container.encode(components, forKey: .components)
     }
 }
 
@@ -613,4 +647,78 @@ struct ProjectItem: Identifiable, Codable, Equatable {
     var works: [WorkItem]
     let createdAt: Date
     var updatedAt: Date
+    var rooms: [ProjectRoomRecord] = []
+
+    func ownedWorks(in roomID: UUID) -> [WorkItem] { works.filter { $0.roomID == roomID } }
+    func linkedWorks(in roomID: UUID) -> [WorkItem] {
+        works.filter { $0.roomID != roomID && $0.linkedRoomIDs.contains(roomID) }
+    }
+}
+
+/// Independent of RoomPlan: this identity survives rescans and room renaming.
+struct ProjectRoomRecord: Identifiable, Codable, Equatable {
+    var id = UUID()
+    var name: String
+    var floorAreaM2: Double? = nil
+}
+
+/// A physical part of an ouvrage, not a second ouvrage or a quantity snapshot.
+/// No geometry is invented when only the total work area is known.
+struct WorkComponentRecord: Identifiable, Codable, Equatable {
+    var id = UUID()
+    var name: String
+    var surface: Surface2D? = nil
+    var geometryRevision = 0
+    var plans: [ComponentLayoutPlan] = []
+    var referenceSideRoomID: UUID? = nil
+    var framing: LayoutFurringSettings? = nil
+
+    func isOppositeSide(_ sideRoomID: UUID?) -> Bool {
+        guard let referenceSideRoomID, let sideRoomID else { return false }
+        return referenceSideRoomID != sideRoomID
+    }
+
+    func document(for plan: ComponentLayoutPlan) -> LayoutDocument? {
+        guard let surface else { return nil }
+        let opposite = isOppositeSide(plan.sideRoomID)
+        var layers = plan.layers
+        if !layers.isEmpty {
+            var settings = framing
+            if opposite { settings?.offset.negate() }
+            layers[0].furring = settings
+        }
+        return LayoutDocument(surface: opposite ? surface.mirroredComponentSide() : surface, layers: layers, lighting: plan.lighting)
+    }
+}
+
+extension Surface2D {
+    /// An involution around the component's fixed local origin. IDs and edge indices
+    /// stay stable; the same window cannot drift between the two partition sides.
+    func mirroredComponentSide() -> Surface2D {
+        func mirror(_ point: LayoutPoint) -> LayoutPoint { .init(x: -point.x, y: point.y) }
+        func mirroredIntent(_ source: LayoutContourIntent) -> LayoutContourIntent {
+            var result = source
+            result.sketch = source.sketch.map(mirror)
+            result.userVertexPositions = source.userVertexPositions.map { $0.map(mirror) }
+            return result
+        }
+        var result = self
+        result.contour = contour.map(mirror)
+        result.openings = openings.map { opening in var copy = opening; copy.contour = opening.contour.map(mirror); return copy }
+        result.contourIntent = contourIntent.map(mirroredIntent)
+        result.previousContourIntents = previousContourIntents.map(mirroredIntent)
+        if let frame = localFrame {
+            result.localFrame?.axisX = .init(x: -frame.axisX.x, y: -frame.axisX.y, z: -frame.axisX.z)
+        }
+        return result
+    }
+}
+
+/// Partition sides have distinct plans but share the component's physical contour.
+struct ComponentLayoutPlan: Identifiable, Codable, Equatable {
+    var id = UUID()
+    var sideRoomID: UUID? = nil
+    var layers: [LayoutLayer] = [.init()]
+    var lighting: LayoutLighting? = nil
+    var geometryRevision = 0
 }

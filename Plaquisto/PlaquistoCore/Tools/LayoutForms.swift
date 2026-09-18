@@ -2,6 +2,7 @@ import SwiftUI
 
 struct LayoutSurfaceForm: View {
     @Environment(\.dismiss) private var dismiss
+    var requiredKind: LayoutSupportKind? = nil
     var onCreate: (LayoutDocument) -> Void
     @State private var name = ""
     @State private var kind = LayoutSupportKind.wall
@@ -46,7 +47,7 @@ struct LayoutSurfaceForm: View {
             Form {
                 Section("Support") {
                     TextField("Pièce (facultatif)", text: $name)
-                    Picker("Type", selection: $kind) { ForEach(LayoutSupportKind.allCases, id: \.self) { Text($0.rawValue) } }.pickerStyle(.segmented)
+                    Picker("Type", selection: $kind) { ForEach(LayoutSupportKind.allCases, id: \.self) { Text($0.rawValue) } }.pickerStyle(.segmented).disabled(requiredKind != nil)
                     Picker("Forme", selection: $preset) { ForEach(LayoutPreset.available(for: kind), id: \.self) { Text($0.rawValue) } }
                 }
                 if preset == .freeform {
@@ -86,6 +87,7 @@ struct LayoutSurfaceForm: View {
             }
             .scrollDismissesKeyboard(.interactively)
             .navigationTitle("Créer le support").navigationBarTitleDisplayMode(.inline)
+            .onAppear { if let requiredKind { kind = requiredKind } }
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Annuler") { dismiss() } }
                 ToolbarItem(placement: .confirmationAction) {
