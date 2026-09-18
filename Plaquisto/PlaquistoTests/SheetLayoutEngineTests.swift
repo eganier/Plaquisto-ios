@@ -412,7 +412,8 @@ final class SheetLayoutEngineTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at:url) }
         let store = ProjectStore(fileURL:url)
         let id = try store.createProject(name:"Test",client:"",address:"",notes:"")
-        let doc = LayoutDocument(surface:surface())
+        var doc = LayoutDocument(surface:surface())
+        doc.surface.kind = .ceiling
         try store.createLayoutWork(projectID:id,name:"Salon - Plafond",type:.ceilingOnFurring,payload:.ceiling(LayoutWorkGeometry.ceiling(doc)),document:doc)
         let loaded = ProjectStore(fileURL:url)
         let work = try XCTUnwrap(loaded.project(id:id)?.works.first)

@@ -134,8 +134,8 @@ private struct ProjectDetailView: View {
                                             }
                                         }
                                     }
-                                    if work.layoutDocument != nil && !work.isPartition {
-                                        NavigationLink { LinkedLayoutView(work:work) } label: {
+                                    if work.layoutDocument != nil && !work.isPartition, let component = work.components.first {
+                                        NavigationLink { ComponentPlanEditorView(projectID: work.projectID, workID: work.id, component: component, side: nil, kind: work.type.category == .ceilings ? .ceiling : .wall, sharedFraming: false) } label: {
                                             Label("Calepinage 2D existant",systemImage:"square.grid.3x3").font(.caption).foregroundStyle(.teal)
                                         }
                                         if work.layoutNeedsRecalculation == true {
@@ -392,6 +392,16 @@ private struct WorkComponentsView: View {
                         } else {
                             componentLink(component, side: nil, title: "Plan de calepinage")
                         }
+                        if component.surface?.kind == .ceiling {
+                            NavigationLink("Murs reliés au plafond") {
+                                CeilingWallLinksView(projectID: projectID, componentID: component.id)
+                            }
+                        }
+                        ForEach((project.ceilingWallLinks ?? []).filter { $0.ceilingComponentID == component.id || $0.wallComponentID == component.id }) { link in
+                            if let warning = ComponentAdjacency.warning(for: link, in: project) {
+                                Label(warning, systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(.orange)
+                            }
+                        }
                     }
                 }
                 Section("Ajouter un composant d’ouvrage") {
@@ -442,9 +452,104 @@ private struct ComponentPlanEditorView: View {
         SheetLayoutView(initialDocument: openedComponent.document(for: plan), onSaveDocument: { document in
             try store.saveComponentPlan(projectID: projectID, workID: workID, componentID: openedComponent.id,
                 sideRoomID: side, document: document, expectedGeometryRevision: openedComponent.geometryRevision)
-        }, requiredSupportKind: kind, sharedPartitionFraming: sharedFraming)
+        }, requiredSupportKind: kind, sharedPartitionFraming: sharedFraming, reviewLinkedDocument: { document in
+            try store.reviewComponentPlan(projectID: projectID, componentID: openedComponent.id, document: document)
+        }, saveReviewedDocument: { document, review, decision in
+            try store.saveComponentPlan(projectID: projectID, workID: workID, componentID: openedComponent.id,
+                sideRoomID: side, document: document, expectedGeometryRevision: openedComponent.geometryRevision,
+                adjacencyDecision: decision, reviewedAdjacency: review)
+        })
         .environmentObject(catalogue)
         .task { await catalogue.load() }
+    }
+}
+
+private struct CeilingWallLinksView: View {
+    @EnvironmentObject private var store: ProjectStore
+    let projectID: UUID
+    let componentID: UUID
+    @State private var edge = 0
+    @State private var selectedWall: UUID?
+    @State private var error: String?
+    @State private var removing: CeilingWallLink?
+    private var project: ProjectItem? { store.project(id: projectID) }
+    private func edgeTitle(_ index: Int, count: Int) -> String {
+        "Bord \(vertexName(index))–\(vertexName((index + 1) % count))"
+    }
+    var body: some View {
+        if let project, let work = project.works.first(where: { $0.components.contains { $0.id == componentID } }),
+           let ceiling = work.components.first(where: { $0.id == componentID })?.surface {
+            Form {
+                Section {
+                    Text("Identifiez le mur qui correspond à toute la longueur du bord. Ce lien n’ajuste aucune dimension à sa création. Le scan pourra ensuite fournir ces correspondances depuis sa géométrie 3D.")
+                        .font(.footnote).foregroundStyle(.secondary)
+                    LayoutContourPreview(contours: [ceiling.contour], numbered: true, alphabetic: true)
+                        .overlay {
+                            Canvas { context, size in
+                                if ceiling.contour.indices.contains(edge) {
+                                    let viewport = LayoutViewport(bounds: ceiling.bounds, size: size, zoom: 1, pan: .zero)
+                                    var line = Path()
+                                    line.move(to: viewport.screen(ceiling.contour[edge]))
+                                    line.addLine(to: viewport.screen(ceiling.contour[(edge + 1) % ceiling.contour.count]))
+                                    context.stroke(line, with: .color(.orange), lineWidth: 4)
+                                }
+                            }.allowsHitTesting(false)
+                        }
+                        .frame(height: 180)
+                        .accessibilityLabel("Contour du plafond. \(edgeTitle(edge, count: ceiling.contour.count)) sélectionné en orange.")
+                }
+                Section("Correspondances") {
+                    ForEach((project.ceilingWallLinks ?? []).filter { $0.ceilingComponentID == componentID }) { link in
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text(edgeTitle(link.edgeIndex, count: link.ceilingVertexCount))
+                            Text(project.works.flatMap(\.components).first(where: { $0.id == link.wallComponentID })?.name ?? "Mur")
+                                .foregroundStyle(.secondary)
+                            if let warning = ComponentAdjacency.warning(for: link, in: project) {
+                                Label(warning, systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(.orange)
+                            }
+                            Button("Retirer le lien", role: .destructive) { removing = link }
+                        }
+                    }
+                }
+                if let roomID = work.roomID {
+                    Section("Identifier ou remplacer un lien") {
+                        Picker("Bord du plafond", selection: $edge) {
+                            ForEach(ceiling.contour.indices, id: \.self) { i in
+                                let length = ComponentAdjacency.wallSpan(of: ceiling, edge: i) ?? 0
+                                Text("\(edgeTitle(i, count: ceiling.contour.count)) · \((length / 10).formatted(.number.precision(.fractionLength(1)))) cm").tag(i)
+                            }
+                        }
+                        Picker("Mur correspondant", selection: $selectedWall) {
+                            Text("Choisir un composant").tag(nil as UUID?)
+                            ForEach(project.works.filter { $0.roomID == roomID || $0.linkedRoomIDs.contains(roomID) }) { candidate in
+                                ForEach(candidate.components.filter { $0.surface?.kind == .wall }) { wall in
+                                    Text("\(candidate.name) — \(wall.name)").tag(Optional(wall.id))
+                                }
+                            }
+                        }
+                        Button("Confirmer la correspondance") {
+                            guard let selectedWall else { return }
+                            do {
+                                try store.linkCeilingToWall(projectID: projectID, ceilingComponentID: componentID,
+                                    edgeIndex: edge, wallComponentID: selectedWall, roomID: roomID)
+                                error = nil
+                            } catch { self.error = error.localizedDescription }
+                        }.disabled(selectedWall == nil)
+                    }
+                } else { Text("Rattachez d’abord l’ouvrage à une pièce.").foregroundStyle(.secondary) }
+                if let error { Text(error).foregroundStyle(.red) }
+            }.navigationTitle("Liens plafond–mur")
+                .confirmationDialog("Retirer cette correspondance ?", isPresented: Binding(get: { removing != nil }, set: { if !$0 { removing = nil } }), titleVisibility: .visible) {
+                    Button("Retirer le lien", role: .destructive) {
+                        if let removing {
+                            do { try store.removeCeilingWallLink(projectID: projectID, linkID: removing.id) }
+                            catch { self.error = error.localizedDescription }
+                        }
+                        removing = nil
+                    }
+                    Button("Annuler", role: .cancel) { removing = nil }
+                } message: { Text("Les deux composants et leurs dimensions seront conservés.") }
+        }
     }
 }
 

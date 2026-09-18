@@ -9,6 +9,182 @@ final class ProjectStoreTests: XCTestCase {
         ]), layers: [.init(furring: .init(parallelToBoards: true, spacing: 600, offset: 100))])
     }
 
+    @MainActor private struct AdjacencyFixture {
+        let store: ProjectStore
+        let url: URL
+        let projectID: UUID
+        let roomID: UUID
+        let ceilingWorkID: UUID
+        let wallWorkID: UUID
+        let ceilingID: UUID
+        let wallID: UUID
+        var project: ProjectItem { store.project(id: projectID)! }
+        var ceiling: WorkComponentRecord { project.works.first { $0.id == ceilingWorkID }!.components[0] }
+        var wall: WorkComponentRecord { project.works.first { $0.id == wallWorkID }!.components[0] }
+        func resizedCeiling(_ width: Double) -> LayoutDocument {
+            var result = ceiling.document(for: ceiling.plans[0])!
+            result.surface.contour[1].x = width; result.surface.contour[2].x = width
+            return result
+        }
+        func save(_ document: LayoutDocument, decision: ComponentAdjacencyDecision = .undecided, review: ComponentAdjacencyReview? = nil) throws {
+            try store.saveComponentPlan(projectID: projectID, workID: ceilingWorkID, componentID: ceilingID,
+                sideRoomID: nil, document: document, expectedGeometryRevision: ceiling.geometryRevision,
+                adjacencyDecision: decision, reviewedAdjacency: review)
+        }
+        func review(_ document: LayoutDocument) throws -> ComponentAdjacencyReview {
+            try store.reviewComponentPlan(projectID: projectID, componentID: ceilingID, document: document)
+        }
+    }
+
+    private func adjacencyFixture() throws -> AdjacencyFixture {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("projects.json"), store = ProjectStore(fileURL: url)
+        let projectID = try store.createProject(name: "Relations", client: "", address: "", notes: "")
+        let roomID = try store.createRoom(projectID: projectID, name: "Salon")
+        var wall = componentDocument()
+        wall.surface.openings = [.init(kind: .window, contour: [.init(x: 500, y: 500), .init(x: 1500, y: 500), .init(x: 1500, y: 1500), .init(x: 500, y: 1500)])]
+        let wallWorkID = try store.createConfiguredWork(projectID: projectID, name: "Doublage", type: .peripheralLiningStuds,
+            payload: .peripheralLining(.init(height: 2.5, enteredLength: 4)), roomID: roomID, newRoomName: nil, document: wall)
+        let ceilingWorkID = try store.createConfiguredWork(projectID: projectID, name: "Plafond", type: .ceilingOnFurring,
+            payload: .ceiling(.init(length: 4, width: 2.5)), roomID: roomID, newRoomName: nil, document: componentDocument(kind: .ceiling))
+        let project = try XCTUnwrap(store.project(id: projectID))
+        let ceilingID = try XCTUnwrap(project.works.first { $0.id == ceilingWorkID }?.components.first?.id)
+        let wallID = try XCTUnwrap(project.works.first { $0.id == wallWorkID }?.components.first?.id)
+        try store.linkCeilingToWall(projectID: projectID, ceilingComponentID: ceilingID, edgeIndex: 0,
+                                   wallComponentID: wallID, roomID: roomID)
+        return .init(store: store, url: url, projectID: projectID, roomID: roomID,
+            ceilingWorkID: ceilingWorkID, wallWorkID: wallWorkID, ceilingID: ceilingID, wallID: wallID)
+    }
+
+    func testCeilingWallChangeRequiresDecisionAndRefusalPreservesWallAfterReload() throws {
+        let f = try adjacencyFixture(), before = f.project, wall = f.wall
+        let document = f.resizedCeiling(4200), review = try f.review(document)
+        XCTAssertEqual(review.changes.count, 1)
+        XCTAssertEqual(review.changes.first?.oldLengthMM, 4000)
+        XCTAssertEqual(review.changes.first?.proposedLengthMM, 4200)
+        XCTAssertTrue(review.canApply)
+        XCTAssertThrowsError(try f.save(document))
+        XCTAssertEqual(f.project, before, "No partial save before confirmation")
+        XCTAssertThrowsError(try f.store.updateLinkedLayout(projectID: f.projectID, workID: f.ceilingWorkID, document: document))
+        XCTAssertEqual(f.project, before, "Legacy layout entry must not bypass confirmation")
+        try f.save(document, decision: .keepWalls, review: review)
+        XCTAssertEqual(f.wall, wall)
+        XCTAssertEqual(f.ceiling.surface?.bounds.width, 4200)
+        let reloaded = try XCTUnwrap(ProjectStore(fileURL: f.url).project(id: f.projectID))
+        XCTAssertEqual(reloaded.works.flatMap(\.components), f.project.works.flatMap(\.components))
+        XCTAssertEqual(reloaded.ceilingWallLinks, f.project.ceilingWallLinks)
+        XCTAssertNotNil(ComponentAdjacency.warning(for: reloaded.ceilingWallLinks![0], in: reloaded))
+        XCTAssertTrue(try f.review(document).changes.isEmpty, "Do not repeatedly ask after an explicit refusal with no further change")
+    }
+
+    func testAcceptedCeilingWallChangeIsAtomicAndPreservesOpeningsAndFrame() throws {
+        let f = try adjacencyFixture(), beforeWall = f.wall
+        let document = f.resizedCeiling(4200), review = try f.review(document)
+        try f.save(document, decision: .applyWalls, review: review)
+        XCTAssertEqual(f.wall.surface?.bounds.width, 4200)
+        XCTAssertEqual(f.wall.surface?.bounds.height, 2500)
+        XCTAssertEqual(f.wall.surface?.openings, beforeWall.surface?.openings)
+        XCTAssertEqual(f.wall.framing, beforeWall.framing)
+        XCTAssertEqual(f.wall.plans, beforeWall.plans, "Dependent plans are invalidated, not rewritten or scaled")
+        XCTAssertEqual(f.wall.geometryRevision, beforeWall.geometryRevision + 1)
+        XCTAssertLessThan(f.wall.plans[0].geometryRevision, f.wall.geometryRevision)
+        XCTAssertNil(ComponentAdjacency.warning(for: f.project.ceilingWallLinks![0], in: f.project))
+        XCTAssertEqual(f.project.works.first { $0.id == f.wallWorkID }?.doublageConfiguration?.enteredLength, 4,
+                       "Business quantity is marked stale, not silently overwritten")
+        XCTAssertEqual(f.project.works.first { $0.id == f.wallWorkID }?.layoutNeedsRecalculation, true)
+        let reloaded = try XCTUnwrap(ProjectStore(fileURL: f.url).project(id: f.projectID))
+        XCTAssertEqual(reloaded.works.flatMap(\.components), f.project.works.flatMap(\.components))
+        XCTAssertEqual(reloaded.ceilingWallLinks, f.project.ceilingWallLinks)
+    }
+
+    func testStaleCeilingWallConfirmationCannotOverwriteNewWallGeometryOrLinks() throws {
+        let f = try adjacencyFixture(), document = f.resizedCeiling(4200), review = try f.review(document)
+        var changedWall = try XCTUnwrap(f.wall.document(for: f.wall.plans[0]))
+        changedWall.layers[0].furring?.offset += 50
+        try f.store.saveComponentPlan(projectID: f.projectID, workID: f.wallWorkID, componentID: f.wallID,
+            sideRoomID: nil, document: changedWall, expectedGeometryRevision: f.wall.geometryRevision)
+        let before = f.project
+        XCTAssertThrowsError(try f.save(document, decision: .applyWalls, review: review))
+        XCTAssertEqual(f.project, before)
+        let fresh = try f.review(document)
+        try f.store.removeCeilingWallLink(projectID: f.projectID, linkID: fresh.changes[0].id)
+        XCTAssertThrowsError(try f.save(document, decision: .applyWalls, review: fresh))
+        XCTAssertEqual(f.ceiling.surface?.bounds.width, 4000)
+    }
+
+    func testCeilingTopologyEditRequiresRebindingEvenWhenVertexCountIsRestored() throws {
+        let f = try adjacencyFixture()
+        var document = f.resizedCeiling(4200)
+        document.surface = try document.surface.changingVertex(insertAfter: 0, point: .init(x: 2000, y: 0))
+        document.surface = try document.surface.changingVertex(remove: 1)
+        XCTAssertEqual(document.surface.contour.count, 4)
+        let review = try f.review(document)
+        XCTAssertEqual(review.changes.count, 1)
+        XCTAssertFalse(review.canApply)
+        XCTAssertThrowsError(try f.save(document, decision: .applyWalls, review: review))
+        try f.save(document, decision: .keepWalls, review: review)
+        XCTAssertEqual(f.wall.surface?.bounds.width, 4000)
+        XCTAssertNotNil(ComponentAdjacency.warning(for: f.project.ceilingWallLinks![0], in: f.project))
+        let copiedID = try f.store.duplicateProject(id: f.projectID)
+        let copied = try XCTUnwrap(f.store.project(id: copiedID))
+        XCTAssertNotNil(ComponentAdjacency.warning(for: copied.ceilingWallLinks![0], in: copied))
+    }
+
+    func testCeilingWallLinksRemapOnProjectCopyButNotOnSingleWorkCopyOrDelete() throws {
+        let f = try adjacencyFixture()
+        let copyID = try f.store.duplicateProject(id: f.projectID)
+        let copy = try XCTUnwrap(ProjectStore(fileURL: f.url).project(id: copyID))
+        let link = try XCTUnwrap(copy.ceilingWallLinks?.first)
+        XCTAssertNotEqual(link.id, f.project.ceilingWallLinks![0].id)
+        XCTAssertNotEqual(link.ceilingComponentID, f.ceilingID)
+        XCTAssertNotEqual(link.wallComponentID, f.wallID)
+        XCTAssertTrue(copy.rooms.contains { $0.id == link.roomID })
+        XCTAssertNil(ComponentAdjacency.warning(for: link, in: copy))
+        let duplicateID = try f.store.duplicateWork(projectID: f.projectID, workID: f.wallWorkID)
+        let duplicate = try XCTUnwrap(f.project.works.first { $0.id == duplicateID })
+        XCTAssertFalse(f.project.ceilingWallLinks!.contains { $0.wallComponentID == duplicate.components[0].id })
+        try f.store.deleteWork(projectID: f.projectID, workID: f.wallWorkID)
+        XCTAssertTrue(f.project.ceilingWallLinks!.isEmpty)
+        XCTAssertEqual(f.project.works.first { $0.id == duplicateID }?.components[0], duplicate.components[0])
+    }
+
+    func testWallAdjustmentBlocksOpeningElectricityAndLockedContours() throws {
+        let f = try adjacencyFixture()
+        let tooShort = f.resizedCeiling(1000), review = try f.review(tooShort)
+        XCTAssertFalse(review.canApply, "A window cannot be silently cropped")
+        XCTAssertNotNil(review.changes[0].reason)
+        var wall = f.wall
+        wall.surface?.openings = []
+        wall.plans[0].lighting = .init(count: 1, positions: [.init(x: 3900, y: 1500)], kinds: [.socket])
+        XCTAssertThrowsError(try ComponentAdjacency.resizedWall(wall, width: 3000))
+        wall.plans[0].lighting = nil
+        var intent = LayoutContourIntent(sketch: wall.surface!.contour)
+        intent.lockedLengthIndices = [0]; intent.userMeasuredLengths[0] = 4000
+        wall.surface?.contourIntent = intent
+        XCTAssertThrowsError(try ComponentAdjacency.resizedWall(wall, width: 4200))
+        XCTAssertEqual(f.wall.surface?.bounds.width, 4000)
+    }
+
+    func testSlopingCeilingUsesHorizontalWallSpanAndAdapterRequiresExplicitEvidence() throws {
+        var surface = componentDocument(kind: .ceiling).surface
+        surface.localFrame = .init(origin: .init(x: 0, y: 0, z: 0),
+            axisX: .init(x: 0.8, y: 0.6, z: 0), axisY: .init(x: 0, y: 0, z: 1))
+        XCTAssertEqual(ComponentAdjacency.wallSpan(of: surface, edge: 0)!, 3200, accuracy: 0.001)
+        let f = try adjacencyFixture()
+        XCTAssertThrowsError(try f.store.linkCeilingToWall(projectID: f.projectID, ceilingComponentID: f.ceilingID,
+            edgeIndex: 0, wallComponentID: f.wallID, roomID: f.roomID, origin: .scan))
+        try f.store.linkCeilingToWall(projectID: f.projectID, ceilingComponentID: f.ceilingID,
+            edgeIndex: 0, wallComponentID: f.wallID, roomID: f.roomID, origin: .scan, sourceObservationID: "scan-room/ceiling-edge/wall")
+        XCTAssertEqual(f.project.ceilingWallLinks?.first?.origin, .scan)
+        let otherRoom = try f.store.createRoom(projectID: f.projectID, name: "Autre")
+        XCTAssertThrowsError(try f.store.linkCeilingToWall(projectID: f.projectID, ceilingComponentID: f.ceilingID,
+            edgeIndex: 0, wallComponentID: f.wallID, roomID: otherRoom))
+        try f.store.assignWork(projectID: f.projectID, workID: f.ceilingWorkID, ownerRoomID: otherRoom)
+        XCTAssertFalse(try f.review(f.resizedCeiling(4200)).canApply, "A moved work must not propagate across unrelated rooms")
+        XCTAssertNotNil(ComponentAdjacency.warning(for: f.project.ceilingWallLinks![0], in: f.project))
+    }
+
     func testConfiguredWorkCreatesExplicitRoomAtomicallyAndRenameKeepsIdentity() throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: directory) }

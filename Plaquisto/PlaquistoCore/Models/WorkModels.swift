@@ -648,6 +648,8 @@ struct ProjectItem: Identifiable, Codable, Equatable {
     let createdAt: Date
     var updatedAt: Date
     var rooms: [ProjectRoomRecord] = []
+    // Optional keeps existing v2 archives readable. Relations are explicit, not inferred from lengths.
+    var ceilingWallLinks: [CeilingWallLink]? = nil
 
     func ownedWorks(in roomID: UUID) -> [WorkItem] { works.filter { $0.roomID == roomID } }
     func linkedWorks(in roomID: UUID) -> [WorkItem] {

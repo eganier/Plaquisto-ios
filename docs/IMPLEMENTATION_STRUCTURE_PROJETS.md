@@ -1,6 +1,6 @@
 # Structure des projets — premier lot implémenté
 
-Date : 18 septembre 2026. Branche : `codex/tools-lab-improvements`.
+Mise à jour : 19 septembre 2026. Branche : `codex/tools-lab-improvements`.
 
 Ce document décrit le code de ce lot, pas l'ensemble de l'architecture cible.
 L'intégration complète au scan 3D et aux médias reste à réaliser.
@@ -48,9 +48,63 @@ Un refus conserve leurs dimensions et laisse un écart à vérifier ; il ne doit
 annuler la correction locale demandée, ni masquer cet écart. L'acceptation doit
 être une transaction validée et invalider seulement les plans dépendants.
 
-Ce lot ne propage aucune modification entre composants distincts. Le dialogue de
-propagation sera ajouté avec les relations d'adjacence du scan, pas simulé sans
-relation géométrique connue.
+Le lot complémentaire du 19 septembre implémente cette confirmation pour les
+relations explicitement enregistrées. Il ne déduit pas les relations du scan à
+ce stade : voir ci-dessous le contrat d'acquisition et ses limites.
+
+### Liens plafond–mur et confirmation — 19 septembre
+
+`ProjectItem.ceilingWallLinks` enregistre une correspondance entre un bord de
+composant plafond et **la longueur entière** d'un composant mur, dans une pièce
+identifiée. Chaque lien conserve son UUID, les UUID des deux composants, celui
+du support plafond, le jeton de topologie, l'indice du bord et sa provenance
+(`manual` ou `scan`, avec référence d'observation obligatoire dans ce dernier cas).
+Ni les noms ni la similitude des longueurs ne servent à deviner une correspondance.
+Les contacts partiels et ambigus ne doivent pas être enregistrés comme des
+correspondances de pleine longueur.
+
+Le futur adaptateur LiDAR pourra appeler `linkCeilingToWall` après identification
+spatiale des supports. L'API accepte des identités et des données métier, sans
+type RoomPlan ou ARKit. Le choix métier de l'ouvrage (doublage, cloison, technique
+d'ossature) reste distinct de la géométrie mesurée. La création automatique des
+ouvrages depuis le scan et la sélection 3D ne sont pas activées par ce lot.
+
+Pour tester ou rectifier un lien dès maintenant, la page des composants d'un
+plafond propose **Murs reliés au plafond** : aperçu avec bord sélectionné en
+orange, choix du bord et d'un mur de la même pièce (cloison liée incluse).
+Confirmer la correspondance ne redimensionne rien. Le retrait d'un lien demande
+confirmation et conserve les deux composants.
+
+À l'enregistrement d'un plafond dont un bord lié a changé de longueur :
+
+- proposition ancienne/nouvelle longueur, en cm, pour les murs concernés ;
+- **Appliquer aux murs et enregistrer** : transaction unique, révisions des murs
+  incrémentées, plans dépendants et quantitatifs signalés à vérifier ;
+- **Enregistrer le plafond uniquement** : modification locale conservée, murs
+  inchangés, écart visible sur les composants après rechargement ;
+- **Revenir au plan** : aucune écriture ;
+- une confirmation périmée (mur ou lien changé entre-temps) est refusée.
+
+La première règle de propagation est volontairement conservatrice : murs
+rectangulaires, origine gauche conservée et bord droit déplacé. Les hauteurs,
+dimensions/positions des ouvertures, ossatures et points électriques ne sont
+pas mises à l'échelle. Un contour complexe, une contrainte verrouillée ou une
+ouverture/implantation électrique qui sortirait du mur impose un ajustement
+manuel ; le plafond peut toujours être enregistré seul. Si le plafond possède
+un repère 3D, la proposition utilise la **projection horizontale** de son bord,
+pas la longueur développée d'un rampant. Sans repère 3D, le lien manuel utilise
+la longueur 2D déclarée : il ne reconstitue pas une pente inconnue.
+
+`Surface2D.topologyID` change lors d'un ajout/retrait de sommet. Une nouvelle
+forme, une topologie modifiée (même avec le même nombre final de sommets) ou un
+changement de pièce rend le lien à vérifier : jamais de report sur un autre bord
+par simple indice. Un changement du mur ne redimensionne pas le plafond ; il
+fait apparaître un écart, sans propagation en chaîne.
+
+La copie complète du projet réaffecte ces liens aux nouveaux composants et
+pièces. Copier uniquement un ouvrage ne crée pas de lien implicite avec les
+voisins. Supprimer un ouvrage détache ses liens sans toucher aux autres murs.
+Le champ optionnel garde lisibles les archives v2 dépourvues de relations.
 
 ### Un seul composant de cloison, deux points de vue
 
@@ -139,3 +193,17 @@ cloison propriétaire Bureau, composant Mur A, édition/enregistrement des deux
 côtés, confirmation d'ossature commune, puis affichage du lien dans Salon.
 Le projet de contrôle « Test organisation » est conservé. Aucune installation
 sur iPhone physique n'a été effectuée pour cette validation.
+
+Complément du 19 septembre : **150 tests réussis**, compilations iOS et Lab
+réussies. Nouveaux tests : absence de propagation sans décision, refus persisté,
+acceptation atomique, préservation des ouvertures/ossatures, confirmation périmée,
+ajout puis retrait de sommet, copie/détachement des liens, protection des points
+électriques et contraintes, projection horizontale d'un rampant et preuve de
+provenance de scan obligatoire. Les anciennes archives v2 restent lisibles.
+
+Contrôle UI : création réelle du plafond dans le projet de test, lien A–B → Mur A,
+correction de 400 à 420 cm, écran de confirmation puis refus ; retour au composant
+avec l'écart 420/400 visible. Le scénario d'acceptation est validé par les tests
+automatisés. Une seconde correction UI à 430 cm a rencontré une erreur du moteur
+de découpe polygonal, avant l'enregistrement ; ce cas distinct est consigné dans
+`PROJECT_STATE.md`. Aucun contour invalide n'a été enregistré.

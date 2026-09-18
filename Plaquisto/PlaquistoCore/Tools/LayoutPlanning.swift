@@ -333,6 +333,7 @@ extension Surface2D {
         }
         try LayoutGeometry.validate(points)
         var copy = self, intent = LayoutContourIntent(sketch:points)
+        copy.topologyID = UUID()
         var locks: [Int] = []
         for i in points.indices {
             guard let source = indices[i] else { continue }

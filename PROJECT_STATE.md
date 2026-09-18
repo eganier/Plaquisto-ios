@@ -1,6 +1,44 @@
 # Plaquisto — état du développement
 
-Mise à jour : 18 septembre 2026. Branche de travail : `codex/tools-lab-improvements`.
+Mise à jour : 19 septembre 2026. Branche de travail : `codex/tools-lab-improvements`.
+
+## Relations plafond–mur et confirmation — 19 septembre
+
+- Relations explicites entre un bord de plafond et la longueur entière d'un
+  composant mur, dans une pièce. Identités métier, origine manuelle ou observation
+  de scan ; aucune déduction par noms ou égalité des longueurs. API indépendante
+  de RoomPlan prête à recevoir les correspondances d'un futur adaptateur LiDAR.
+- Parcours composant plafond → **Murs reliés au plafond** : aperçu du bord,
+  association explicite et retrait confirmé. La création du lien ne redimensionne rien.
+- Enregistrement d'un plafond modifié : écran des anciennes/nouvelles longueurs,
+  **Appliquer aux murs et enregistrer**, **Enregistrer le plafond uniquement** ou
+  **Revenir au plan**. Refus conservé comme écart visible après rechargement.
+  Validation et écritures atomiques ; une confirmation périmée est refusée.
+- Ajustement limité aux murs rectangulaires sans contraintes verrouillées, bord
+  droit déplacé depuis l'origine canonique gauche. Aucun déplacement des ouvertures,
+  points électriques ou ossatures. Une réduction les faisant sortir du support
+  impose une correction manuelle. Plans/quantitatifs concernés signalés à vérifier.
+- Longueur horizontale calculée depuis le repère 3D lorsqu'il est disponible.
+  Changement de topologie ou de pièce : lien à vérifier, pas de report aveugle vers
+  un autre bord. Copie de projet : liens réaffectés ; copie d'ouvrage seul : aucun
+  lien implicite ; suppression d'ouvrage : seuls ses liens sont retirés.
+- **150 tests réussis, zéro échec**, compilations iOS et Lab simulateur réussies.
+  Logs `/tmp/plaquisto-adjacency-tests-final.log` et
+  `/tmp/plaquisto-adjacency-lab-final.log` ; résultat
+  `Test-Plaquisto-2026.09.19_00-09-32-+0200.xcresult`.
+- Contrôle UI réel du simulateur : projet local « Test organisation », Bureau -
+  Plafond / Plafond A relié à Bureau - Cloison / Mur A, correction A–B de 400 à
+  420 cm, confirmation affichée, refus choisi : plafond 420 cm et mur 400 cm,
+  avertissement d'écart visible. Projet de contrôle conservé. Pas d'installation iPhone.
+- Limite observée hors de la propagation : une seconde correction A–B à 430 cm
+  dans ce contour devenu trapézoïdal déclenche une erreur de découpe du moteur
+  existant. Aucun enregistrement supplémentaire effectué ; retour au dernier état
+  420/400. À reproduire/corriger dans le moteur polygonal séparément. L'acceptation
+  transactionnelle est couverte par les tests automatisés, pas validée via ce second
+  scénario UI bloqué par la découpe.
+- Restent à implémenter : détection des correspondances dans le scan, création des
+  ouvrages/composants depuis ses observations et navigation depuis la scène 3D.
+  Contrat et limites détaillés dans `docs/IMPLEMENTATION_STRUCTURE_PROJETS.md`.
 
 ## Structure des projets — premier lot livré, 18 septembre
 
@@ -17,7 +55,8 @@ Mise à jour : 18 septembre 2026. Branche de travail : `codex/tools-lab-improvem
 - **Plafond et mur adjacent sont des composants distincts** : ne jamais modifier
   automatiquement la longueur du mur lors d'une correction du plafond. Le futur
   raccordement géométrique devra proposer le changement et demander confirmation.
-  Ce lien inter-composants n'est pas encore actif.
+  Ce lien inter-composants n'était pas encore actif dans ce premier lot ; voir
+  l'implémentation complémentaire du 19 septembre ci-dessus.
 - Nouveau fichier `projects-v2.json`, écrit atomiquement ; l'ancien `projects.json`
   reste intact et n'est pas importé. Aucun fichier utilisateur supprimé.
 - Copie des projets/ouvrages avec nouvelles identités et réaffectation des liens.

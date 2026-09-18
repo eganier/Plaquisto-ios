@@ -208,18 +208,30 @@ struct SheetLayoutView: View {
     var onSaveDocument: ((LayoutDocument) throws -> Void)? = nil
     var requiredSupportKind: LayoutSupportKind? = nil
     var sharedPartitionFraming = false
+    var reviewLinkedDocument: ((LayoutDocument) throws -> ComponentAdjacencyReview)? = nil
+    var saveReviewedDocument: ((LayoutDocument, ComponentAdjacencyReview, ComponentAdjacencyDecision) throws -> Void)? = nil
     @Environment(\.dismiss) private var dismiss
     @State private var loadedInitial = false
     @StateObject private var model: LayoutEditorModel
-    init(initialDocument: LayoutDocument? = nil, onSaveDocument: ((LayoutDocument) throws -> Void)? = nil, requiredSupportKind: LayoutSupportKind? = nil, sharedPartitionFraming: Bool = false) {
+    init(initialDocument: LayoutDocument? = nil, onSaveDocument: ((LayoutDocument) throws -> Void)? = nil, requiredSupportKind: LayoutSupportKind? = nil, sharedPartitionFraming: Bool = false,
+         reviewLinkedDocument: ((LayoutDocument) throws -> ComponentAdjacencyReview)? = nil,
+         saveReviewedDocument: ((LayoutDocument, ComponentAdjacencyReview, ComponentAdjacencyDecision) throws -> Void)? = nil) {
         self.initialDocument = initialDocument
         self.onSaveDocument = onSaveDocument
         self.requiredSupportKind = requiredSupportKind
         self.sharedPartitionFraming = sharedPartitionFraming
+        self.reviewLinkedDocument = reviewLinkedDocument
+        self.saveReviewedDocument = saveReviewedDocument
         _model = StateObject(wrappedValue: LayoutEditorModel(persistsStandaloneLibrary: onSaveDocument == nil))
     }
     @State private var linkedSaveError: String?
     @State private var pendingSharedFrameSave: LayoutDocument?
+    private struct PendingAdjacency: Identifiable {
+        let id = UUID()
+        var document: LayoutDocument
+        var review: ComponentAdjacencyReview
+    }
+    @State private var pendingAdjacency: PendingAdjacency?
     @EnvironmentObject private var catalogue: ToolTechnicalStore
     @State private var mode = LayoutInteraction.move
     @State private var sheet: LayoutEditorSheet?
@@ -290,6 +302,34 @@ struct SheetLayoutView: View {
             }
         }
         .sheet(item: $sheet) { destination in sheetContent(destination) }
+        .sheet(item: $pendingAdjacency) { pending in
+            NavigationStack {
+                Form {
+                    Section {
+                        Text("La correction du plafond concerne les murs reliés ci-dessous. Aucun mur n’est modifié sans votre accord.")
+                    }
+                    ForEach(pending.review.changes) { change in
+                        Section(change.wallName) {
+                            LabeledContent("Longueur actuelle", value: "\((change.oldLengthMM / 10).formatted(.number.precision(.fractionLength(1)))) cm")
+                            if let length = change.proposedLengthMM {
+                                LabeledContent("Longueur proposée", value: "\((length / 10).formatted(.number.precision(.fractionLength(1)))) cm")
+                            }
+                            if let reason = change.reason { Label(reason, systemImage: "exclamationmark.triangle").foregroundStyle(.orange) }
+                        }
+                    }
+                    Section {
+                        Button("Appliquer aux murs et enregistrer") { finishReviewedSave(pending, decision: .applyWalls) }
+                            .disabled(!pending.review.canApply)
+                        Button("Enregistrer le plafond uniquement") { finishReviewedSave(pending, decision: .keepWalls) }
+                    } footer: {
+                        Text("Conserver les murs laisse un écart à vérifier. Si vous les ajustez, leur bord droit est déplacé ; les hauteurs, ouvertures, ossatures et points électriques restent en place. Leurs calepinages seront à vérifier.")
+                    }
+                }
+                .navigationTitle("Ajuster les murs ?").navigationBarTitleDisplayMode(.inline)
+                .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Revenir au plan") { pendingAdjacency = nil } } }
+                .interactiveDismissDisabled()
+            }
+        }
         .confirmationDialog("Modifier l’ossature des deux côtés ?", isPresented: Binding(get: { pendingSharedFrameSave != nil }, set: { if !$0 { pendingSharedFrameSave = nil } }), titleVisibility: .visible) {
             Button("Appliquer aux deux côtés") {
                 if let document = pendingSharedFrameSave { saveLinked(document) }
@@ -350,8 +390,23 @@ struct SheetLayoutView: View {
     }
 
     private func saveLinked(_ document: LayoutDocument) {
-        do { try onSaveDocument?(document); dismiss() }
+        do {
+            if let review = try reviewLinkedDocument?(document), !review.changes.isEmpty {
+                pendingAdjacency = .init(document: document, review: review)
+                return
+            }
+            try onSaveDocument?(document); dismiss()
+        }
         catch { linkedSaveError = "Le plan n’a pas pu être enregistré dans son composant. \(error.localizedDescription)" }
+    }
+
+    private func finishReviewedSave(_ pending: PendingAdjacency, decision: ComponentAdjacencyDecision) {
+        pendingAdjacency = nil
+        do {
+            guard let saveReviewedDocument else { return }
+            try saveReviewedDocument(pending.document, pending.review, decision)
+            dismiss()
+        } catch { linkedSaveError = "Aucune modification enregistrée. \(error.localizedDescription)" }
     }
 
     private var entry: some View {

@@ -167,8 +167,48 @@ final class ProjectStore: ObservableObject {
         return component.id
     }
 
+    /// Called by a scan adapter after an explicit 3D match, or by a user identifying a full-span boundary.
+    /// Registers evidence only: never resizes either component.
+    func linkCeilingToWall(projectID: UUID, ceilingComponentID: UUID, edgeIndex: Int, wallComponentID: UUID,
+                           roomID: UUID, origin: CeilingWallLink.Origin = .manual, sourceObservationID: String? = nil) throws {
+        var next = projects
+        guard let i = next.firstIndex(where: { $0.id == projectID }),
+              let ceilingWork = next[i].works.first(where: { $0.components.contains { $0.id == ceilingComponentID } }),
+              let wallWork = next[i].works.first(where: { $0.components.contains { $0.id == wallComponentID } }),
+              let ceiling = ceilingWork.components.first(where: { $0.id == ceilingComponentID })?.surface,
+              let wall = wallWork.components.first(where: { $0.id == wallComponentID })?.surface,
+              ceilingWork.roomID == roomID, wallWork.roomID == roomID || wallWork.linkedRoomIDs.contains(roomID),
+              ceiling.kind == .ceiling, wall.kind == .wall,
+              ComponentAdjacency.wallSpan(of: ceiling, edge: edgeIndex) != nil,
+              origin != .scan || sourceObservationID?.isEmpty == false else { throw StoreError.invalidStructure }
+        var links = next[i].ceilingWallLinks ?? []
+        // Rebinding this edge is explicit. One complete wall span per room, no overlapping partial links.
+        links.removeAll { $0.ceilingComponentID == ceilingComponentID && $0.edgeIndex == edgeIndex }
+        guard !links.contains(where: { $0.roomID == roomID && $0.wallComponentID == wallComponentID }) else { throw StoreError.invalidStructure }
+        links.append(.init(roomID: roomID, ceilingComponentID: ceilingComponentID, wallComponentID: wallComponentID,
+            ceilingSurfaceID: ceiling.id, ceilingTopologyID: ceiling.topologyID, ceilingVertexCount: ceiling.contour.count,
+            edgeIndex: edgeIndex, origin: origin, sourceObservationID: sourceObservationID))
+        next[i].ceilingWallLinks = links; next[i].updatedAt = Date()
+        try commit(next)
+    }
+
+    func removeCeilingWallLink(projectID: UUID, linkID: UUID) throws {
+        var next = projects
+        guard let i = next.firstIndex(where: { $0.id == projectID }) else { throw StoreError.projectNotFound }
+        next[i].ceilingWallLinks?.removeAll { $0.id == linkID }
+        next[i].updatedAt = Date()
+        try commit(next)
+    }
+
+    func reviewComponentPlan(projectID: UUID, componentID: UUID, document: LayoutDocument) throws -> ComponentAdjacencyReview {
+        guard let project = project(id: projectID) else { throw StoreError.projectNotFound }
+        return ComponentAdjacency.review(project: project, componentID: componentID, proposed: document.surface)
+    }
+
     /// Geometry belongs to the component; finishing and electrical layout belong to its side.
-    func saveComponentPlan(projectID: UUID, workID: UUID, componentID: UUID, sideRoomID: UUID?, document: LayoutDocument, expectedGeometryRevision: Int? = nil) throws {
+    /// The local edit and explicitly accepted adjacent changes commit atomically.
+    func saveComponentPlan(projectID: UUID, workID: UUID, componentID: UUID, sideRoomID: UUID?, document: LayoutDocument, expectedGeometryRevision: Int? = nil,
+                           adjacencyDecision: ComponentAdjacencyDecision = .undecided, reviewedAdjacency: ComponentAdjacencyReview? = nil) throws {
         var next = projects
         guard let i = next.firstIndex(where: { $0.id == projectID }),
               let j = next[i].works.firstIndex(where: { $0.id == workID }),
@@ -187,6 +227,24 @@ final class ProjectStore: ObservableObject {
         if component.referenceSideRoomID == nil { component.referenceSideRoomID = sideRoomID }
         let opposite = component.isOppositeSide(sideRoomID)
         let surface = opposite ? document.surface.mirroredComponentSide() : document.surface
+        let adjacency = ComponentAdjacency.review(project: next[i], componentID: componentID, proposed: surface)
+        if !adjacency.changes.isEmpty {
+            guard adjacencyDecision != .undecided else { throw StoreError.adjacencyConfirmationRequired }
+            guard reviewedAdjacency == adjacency else { throw StoreError.staleAdjacency }
+            if adjacencyDecision == .applyWalls {
+                guard adjacency.canApply else { throw StoreError.invalidStructure }
+                // Do not implicitly cascade into other ceilings touching the same wall.
+                for change in adjacency.changes {
+                    guard let w = next[i].works.firstIndex(where: { $0.components.contains { $0.id == change.link.wallComponentID } }),
+                          let c = next[i].works[w].components.firstIndex(where: { $0.id == change.link.wallComponentID }),
+                          let adjusted = change.proposedSurface else { throw StoreError.invalidStructure }
+                    next[i].works[w].components[c].surface = adjusted
+                    next[i].works[w].components[c].geometryRevision += 1
+                    next[i].works[w].layoutNeedsRecalculation = true
+                    next[i].works[w].updatedAt = Date()
+                }
+            }
+        } else if let reviewedAdjacency, reviewedAdjacency != adjacency { throw StoreError.staleAdjacency }
         var framing = document.layers.first?.furring
         if opposite { framing?.offset.negate() }
         // The revision protects the whole shared support, including its physical frame.
@@ -224,14 +282,11 @@ final class ProjectStore: ObservableObject {
     }
 
     func updateLinkedLayout(projectID:UUID,workID:UUID,document:LayoutDocument) throws {
-        var next = projects
-        guard let i = next.firstIndex(where:{$0.id == projectID}), let j = next[i].works.firstIndex(where:{$0.id == workID}) else { throw StoreError.workNotFound }
-        guard let current = next[i].works[j].layoutDocument else { throw StoreError.invalidStructure }
+        guard let work = project(id: projectID)?.works.first(where: { $0.id == workID }),
+              let current = work.layoutDocument, let component = work.components.first else { throw StoreError.invalidStructure }
         guard current != document else { return }
-        next[i].works[j].layoutDocument = document
-        next[i].works[j].layoutNeedsRecalculation = true
-        next[i].works[j].updatedAt = Date(); next[i].updatedAt = Date()
-        try commit(next)
+        try saveComponentPlan(projectID: projectID, workID: workID, componentID: component.id,
+            sideRoomID: component.plans.first?.sideRoomID, document: document, expectedGeometryRevision: component.geometryRevision)
     }
 
     func workNameExists(projectID: UUID, name: String, excluding workID: UUID? = nil) -> Bool {
@@ -438,6 +493,7 @@ final class ProjectStore: ObservableObject {
         let now = Date()
         let copiedIDs = Dictionary(uniqueKeysWithValues: source.works.map { ($0.id, UUID()) })
         let roomIDs = Dictionary(uniqueKeysWithValues: source.rooms.map { ($0.id, UUID()) })
+        let componentIDs = Dictionary(uniqueKeysWithValues: source.works.flatMap(\.components).map { ($0.id, UUID()) })
         let copiedWorks = source.works.map { work in
             var payload = work.payload
             if case .openings(var configuration) = payload {
@@ -448,11 +504,23 @@ final class ProjectStore: ObservableObject {
             copy.layoutDocument = work.layoutDocument; copy.layoutNeedsRecalculation = work.layoutNeedsRecalculation
             copy.roomID = work.roomID.flatMap { roomIDs[$0] }
             copy.linkedRoomIDs = work.linkedRoomIDs.compactMap { roomIDs[$0] }
-            copy.components = copiedComponents(work.components, roomIDs: roomIDs)
+            copy.components = copiedComponents(work.components, roomIDs: roomIDs, componentIDs: componentIDs)
             return copy
         }
         var copy = ProjectItem(id: projectID, name: copyName, client: source.client, address: source.address, notes: source.notes, works: copiedWorks, createdAt: now, updatedAt: now)
         copy.rooms = source.rooms.map { ProjectRoomRecord(id: roomIDs[$0.id]!, name: $0.name, floorAreaM2: $0.floorAreaM2) }
+        copy.ceilingWallLinks = try source.ceilingWallLinks?.map { link in
+            var result = link
+            guard let room = roomIDs[link.roomID], let ceilingID = componentIDs[link.ceilingComponentID],
+                  let wallID = componentIDs[link.wallComponentID],
+                  let sourceSurface = source.works.flatMap(\.components).first(where: { $0.id == link.ceilingComponentID })?.surface,
+                  let copiedSurface = copiedWorks.flatMap(\.components).first(where: { $0.id == ceilingID })?.surface else { throw StoreError.invalidStructure }
+            result.id = UUID(); result.roomID = room
+            result.ceilingComponentID = ceilingID; result.wallComponentID = wallID
+            // Preserve a deliberately invalid topology link as invalid; don't accidentally repair it on copy.
+            if link.ceilingSurfaceID == sourceSurface.id { result.ceilingSurfaceID = copiedSurface.id }
+            return result
+        }
         next.insert(copy, at: projectIndex + 1)
         try commit(next)
         return projectID
@@ -806,6 +874,8 @@ final class ProjectStore: ObservableObject {
     func deleteWork(projectID: UUID, workID: UUID) throws {
         var next = projects
         guard let projectIndex = next.firstIndex(where: { $0.id == projectID }) else { throw StoreError.projectNotFound }
+        let removedComponents = Set(next[projectIndex].works.first(where: { $0.id == workID })?.components.map(\.id) ?? [])
+        next[projectIndex].ceilingWallLinks?.removeAll { removedComponents.contains($0.ceilingComponentID) || removedComponents.contains($0.wallComponentID) }
         next[projectIndex].works.removeAll { $0.id == workID }
         for i in next[projectIndex].works.indices {
             guard case .openings(var configuration) = next[projectIndex].works[i].payload,
@@ -863,10 +933,10 @@ final class ProjectStore: ObservableObject {
         }
     }
 
-    private func copiedComponents(_ components: [WorkComponentRecord], roomIDs: [UUID: UUID]) -> [WorkComponentRecord] {
+    private func copiedComponents(_ components: [WorkComponentRecord], roomIDs: [UUID: UUID], componentIDs: [UUID: UUID] = [:]) -> [WorkComponentRecord] {
         components.map { source in
             var copy = source
-            copy.id = UUID()
+            copy.id = componentIDs[source.id] ?? UUID()
             copy.referenceSideRoomID = source.referenceSideRoomID.flatMap { roomIDs[$0] }
             copy.surface?.id = UUID()
             copy.surface?.openings = source.surface?.openings.map { opening in
@@ -914,13 +984,27 @@ final class ProjectStore: ObservableObject {
                     }
                 }
             }
+            var edges = Set<String>(), walls = Set<String>()
+            let components = project.works.flatMap(\.components)
+            for link in project.ceilingWallLinks ?? [] {
+                try claim(link.id)
+                guard rooms.contains(link.roomID), link.ceilingComponentID != link.wallComponentID,
+                      components.first(where: { $0.id == link.ceilingComponentID })?.surface?.kind == .ceiling,
+                      components.first(where: { $0.id == link.wallComponentID })?.surface?.kind == .wall,
+                      link.edgeIndex >= 0, link.edgeIndex < link.ceilingVertexCount, link.ceilingVertexCount >= 3,
+                      link.origin != .scan || link.sourceObservationID?.isEmpty == false,
+                      edges.insert("\(link.ceilingComponentID)/\(link.edgeIndex)").inserted,
+                      walls.insert("\(link.roomID)/\(link.wallComponentID)").inserted else { throw StoreError.invalidStructure }
+            }
         }
     }
 
     private enum StoreError: Error, LocalizedError {
-        case projectNotFound, workNotFound, invalidWorkName, duplicateWorkName, invalidStructure, staleGeometry
+        case projectNotFound, workNotFound, invalidWorkName, duplicateWorkName, invalidStructure, staleGeometry, adjacencyConfirmationRequired, staleAdjacency
         var errorDescription: String? {
             switch self {
+            case .adjacencyConfirmationRequired: "Des murs sont reliés à ce plafond. Confirmez leurs nouvelles longueurs depuis le plan du composant, ou choisissez de conserver les murs."
+            case .staleAdjacency: "Un mur ou un lien a changé depuis votre confirmation. Vérifiez à nouveau les longueurs proposées."
             case .staleGeometry: "Le contour ou l’ossature commune a changé depuis l’ouverture de ce plan. Revenez au composant puis rouvrez son calepinage."
             case .invalidStructure: "Les données ou leurs liens sont incompatibles. Aucune modification n’a été enregistrée."
             case .projectNotFound: "Projet introuvable."

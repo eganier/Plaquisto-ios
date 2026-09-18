@@ -41,11 +41,13 @@ struct Surface2D: Codable, Equatable, Identifiable {
     var contourIntent: LayoutContourIntent? = nil
     // Retain measurements belonging to an earlier topology when adding/removing vertices.
     var previousContourIntents: [LayoutContourIntent] = []
+    // Changes whenever vertices are inserted/removed, even if the final count is unchanged.
+    var topologyID: UUID? = nil
     var bounds: LayoutBounds { .init(points: contour) }
 }
 extension Surface2D {
     private enum CodingKeys: String, CodingKey {
-        case id, name, kind, contour, openings, provenance, sourceIdentifier, localFrame, edgeTones, dimensionCorrections, contourIntent, previousContourIntents
+        case id, name, kind, contour, openings, provenance, sourceIdentifier, localFrame, edgeTones, dimensionCorrections, contourIntent, previousContourIntents, topologyID
     }
     init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
@@ -61,6 +63,7 @@ extension Surface2D {
         dimensionCorrections = try values.decodeIfPresent([LayoutDimensionCorrection].self, forKey: .dimensionCorrections) ?? []
         contourIntent = try values.decodeIfPresent(LayoutContourIntent.self, forKey: .contourIntent)
         previousContourIntents = try values.decodeIfPresent([LayoutContourIntent].self, forKey: .previousContourIntents) ?? []
+        topologyID = try values.decodeIfPresent(UUID.self, forKey: .topologyID)
     }
 }
 struct LayoutVector3: Codable, Equatable {

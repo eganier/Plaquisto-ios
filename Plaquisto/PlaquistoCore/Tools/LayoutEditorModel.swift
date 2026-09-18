@@ -182,6 +182,7 @@ final class LayoutEditorModel: ObservableObject {
             } else {
                 copy.surface.previousContourIntents.append(copy.surface.editableIntent)
                 copy.surface.contour = points
+                copy.surface.topologyID = UUID()
                 copy.surface.contourIntent = .init(sketch:points)
                 copy.surface.dimensionCorrections = []
                 copy.surface.edgeTones = points.indices.map { [.blue,.orange,.purple,.green,.teal][$0%5] }
