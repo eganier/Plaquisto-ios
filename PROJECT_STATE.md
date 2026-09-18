@@ -2,6 +2,21 @@
 
 Mise à jour : 19 septembre 2026. Branche de travail : `codex/tools-lab-improvements`.
 
+## Livraison sur iPhone et GitHub — 19 septembre, 00 h 27
+
+- Code livré : `60860b5`, poussé sur `origin/codex/tools-lab-improvements`.
+  Pas de fusion sur `main`.
+- Compilation Debug iPhone signée réussie, cible **Plaquisto iOS** (`fr.plaquisto.app`).
+  Log : `/tmp/plaquisto-ios-device-20260919.log`.
+- Installation physique confirmée à 00 h 26 sur l'iPhone 16 Pro, séquence **2320**.
+  Lancement confirmé à 00 h 26 min 56 s. Plaquisto Lab n'a pas été remplacé.
+  Résultats : `/tmp/plaquisto-ios-install-20260919.json` et
+  `/tmp/plaquisto-ios-launch-20260919.json`.
+- Aucun effacement de données réalisé lors de cette installation. Le nouveau
+  stockage projets v2 reste distinct des anciennes sauvegardes, comme décrit ci-dessous.
+  Les vérifications fonctionnelles de ce lot restent les 150 tests et le contrôle
+  UI simulateur ; aucun nouveau scan LiDAR physique n'a été exécuté lors du déploiement.
+
 ## Relations plafond–mur et confirmation — 19 septembre
 
 - Relations explicites entre un bord de plafond et la longueur entière d'un
