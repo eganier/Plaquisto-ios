@@ -75,6 +75,7 @@ struct CeilingConfiguratorView: View {
     @State private var configurationExpanded = false
     private let onSave: (CeilingConfiguration) -> Void
     private let isEditing: Bool
+    private let preserveInitialSpacing: Bool
 
     private let stepNames = ["Dimensions", "Support", "Isolation", "Plénum et entraxe", "Fixation", "Parements", "Bandes à joint", "Résultat"]
     private let spacingChoices = [0.4, 0.5, 0.6]
@@ -82,6 +83,7 @@ struct CeilingConfiguratorView: View {
     init(
         initialConfiguration: CeilingConfiguration = CeilingConfiguration(),
         startsAtResult: Bool = false,
+        preserveInitialSpacing: Bool = false,
         onSave: @escaping (CeilingConfiguration) -> Void = { _ in }
     ) {
         _step = State(initialValue: startsAtResult ? 7 : 0)
@@ -113,6 +115,7 @@ struct CeilingConfiguratorView: View {
         _shouldApplyDefaultInsulation = State(initialValue: !startsAtResult && initialConfiguration.insulationID.isEmpty)
         self.onSave = onSave
         self.isEditing = startsAtResult
+        self.preserveInitialSpacing = preserveInitialSpacing
     }
 
     private var catalogue: CeilingCataloguePayload? { store.catalogue }
@@ -394,7 +397,7 @@ struct CeilingConfiguratorView: View {
                 applyDefaultInsulationIfAvailable()
                 shouldApplyDefaultInsulation = false
             }
-            normalizeCeilingShapeSelections()
+            normalizeCeilingShapeSelections(preservingSpacing:isEditing || preserveInitialSpacing)
             plenum = max(plenum, minimumPlenum)
             trackedMinimumPlenum = minimumPlenum
             normalizeFacingAllocations()
@@ -947,7 +950,7 @@ struct CeilingConfiguratorView: View {
         if step == 4 { ensureFacingAllocations() }
     }
 
-    private func normalizeCeilingShapeSelections() {
+    private func normalizeCeilingShapeSelections(preservingSpacing:Bool = false) {
         if !supports.contains(support) {
             support = supports.first ?? ""
             fixingSystemID = ""
@@ -969,7 +972,9 @@ struct CeilingConfiguratorView: View {
 
         if insulationLayers == 2 { prepareSecondInsulationDefault() }
         normalizeInsulationLocations()
-        selectedSpacing = maximumSpacing ?? 0.4
+        if !preservingSpacing || !spacingChoices.contains(selectedSpacing) {
+            selectedSpacing = maximumSpacing ?? 0.4
+        }
     }
 
     private func isGlassWool(_ value: String) -> Bool {

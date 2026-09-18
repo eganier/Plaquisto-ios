@@ -3,6 +3,26 @@ import XCTest
 
 @MainActor
 final class ProjectStoreTests: XCTestCase {
+    func testProjectDuplicationRelinksOpeningsToCopiedWorksAfterReload() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("projects.json")
+        let store = ProjectStore(fileURL: url)
+        let projectID = try store.createProject(name: "Test duplication", client: "", address: "", notes: "")
+        let sourceID = try store.createWork(projectID: projectID, name: "Salon - Doublage périphérique",
+            type: .peripheralLiningStuds, doublageConfiguration: .init(height: 2.6, enteredLength: 4))
+        let openingID = try store.createWork(projectID: projectID, name: "Salon - Ouvertures",
+            type: .openings, openingConfiguration: .init(sourceWorkID: sourceID))
+        let copyID = try store.duplicateProject(id: projectID)
+        let reloaded = ProjectStore(fileURL: url)
+        let copy = try XCTUnwrap(reloaded.project(id: copyID))
+        let copiedSource = try XCTUnwrap(copy.works.first { $0.type == .peripheralLiningStuds })
+        let copiedOpening = try XCTUnwrap(copy.works.first { $0.type == .openings })
+        XCTAssertNotEqual(copiedSource.id, sourceID)
+        XCTAssertEqual(copiedOpening.openingConfiguration?.sourceWorkID, copiedSource.id)
+        XCTAssertEqual(reloaded.project(id: projectID)?.works.first { $0.id == openingID }?.openingConfiguration?.sourceWorkID, sourceID)
+    }
+
     func testProjectsAndWorksSurviveAStoreReload() throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         let fileURL = directory.appendingPathComponent("projects.json")

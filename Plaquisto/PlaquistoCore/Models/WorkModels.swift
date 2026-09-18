@@ -453,6 +453,8 @@ struct WorkItem: Identifiable, Equatable {
     var payload: WorkConfiguration
     let createdAt: Date
     var updatedAt: Date
+    var layoutDocument: LayoutDocument? = nil
+    var layoutNeedsRecalculation: Bool? = nil
 
     var ceilingConfiguration: CeilingConfiguration? {
         guard case .ceiling(let configuration) = payload else { return nil }
@@ -564,7 +566,7 @@ struct WorkItem: Identifiable, Equatable {
 
 extension WorkItem: Codable {
     private enum CodingKeys: String, CodingKey {
-        case id, projectID, name, type, payload, configuration, doublageConfiguration, createdAt, updatedAt
+        case id, projectID, name, type, payload, configuration, doublageConfiguration, createdAt, updatedAt, layoutDocument, layoutNeedsRecalculation
     }
 
     init(from decoder: Decoder) throws {
@@ -575,6 +577,8 @@ extension WorkItem: Codable {
         type = try container.decode(WorkType.self, forKey: .type)
         createdAt = try container.decode(Date.self, forKey: .createdAt)
         updatedAt = try container.decode(Date.self, forKey: .updatedAt)
+        layoutDocument = try container.decodeIfPresent(LayoutDocument.self,forKey:.layoutDocument)
+        layoutNeedsRecalculation = try container.decodeIfPresent(Bool.self,forKey:.layoutNeedsRecalculation)
 
         if let current = try container.decodeIfPresent(WorkConfiguration.self, forKey: .payload) {
             payload = current
@@ -595,6 +599,8 @@ extension WorkItem: Codable {
         try container.encode(payload, forKey: .payload)
         try container.encode(createdAt, forKey: .createdAt)
         try container.encode(updatedAt, forKey: .updatedAt)
+        try container.encodeIfPresent(layoutDocument,forKey:.layoutDocument)
+        try container.encodeIfPresent(layoutNeedsRecalculation,forKey:.layoutNeedsRecalculation)
     }
 }
 

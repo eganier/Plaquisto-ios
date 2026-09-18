@@ -11,10 +11,25 @@ struct LayoutCatalogFormat: Identifiable, Hashable {
 }
 
 struct SavedLayoutDocument: Codable, Equatable, Identifiable {
-    var id = UUID()
+    var id: UUID
     var document: LayoutDocument
-    var updatedAt = Date()
+    var createdAt: Date
+    var updatedAt: Date
     var title: String { document.surface.name }
+
+    init(id:UUID = UUID(), document:LayoutDocument, createdAt:Date = Date(), updatedAt:Date? = nil) {
+        self.id = id; self.document = document; self.createdAt = createdAt
+        self.updatedAt = updatedAt ?? createdAt
+    }
+    private enum CodingKeys:String,CodingKey { case id,document,createdAt,updatedAt }
+    init(from decoder:Decoder) throws {
+        let values = try decoder.container(keyedBy:CodingKeys.self)
+        id = try values.decode(UUID.self,forKey:.id)
+        document = try values.decode(LayoutDocument.self,forKey:.document)
+        updatedAt = try values.decode(Date.self,forKey:.updatedAt)
+        // Older libraries recorded only their last save date; keep that known date.
+        createdAt = try values.decodeIfPresent(Date.self,forKey:.createdAt) ?? updatedAt
+    }
 }
 
 @MainActor
@@ -27,6 +42,9 @@ final class LayoutEditorModel: ObservableObject {
     @Published private(set) var canUndo = false
     @Published private(set) var canRedo = false
     @Published private(set) var saveError: String?
+    @Published private(set) var isOptimizing = false
+    @Published private(set) var optimizationMessage: String?
+    @Published private(set) var lightingWarning: String?
     private var past: [LayoutDocument] = []
     private var future: [LayoutDocument] = []
     private var calculation: Task<Void, Never>?
@@ -54,6 +72,7 @@ final class LayoutEditorModel: ObservableObject {
     func open(_ saved: SavedLayoutDocument) {
         currentSavedID = saved.id
         document = saved.document
+        document?.layers = saved.document.layers.map { $0.forSurface(saved.document.surface) }
         past = []; future = []; updateHistory(); recalculate()
     }
 
@@ -83,31 +102,65 @@ final class LayoutEditorModel: ObservableObject {
     }
 
     func delete(_ saved: SavedLayoutDocument) {
+        let previous = savedDocuments
         savedDocuments.removeAll { $0.id == saved.id }
-        persistLibrary()
+        if !persistLibrary() { savedDocuments = previous }
+    }
+
+    func rename(_ saved:SavedLayoutDocument, to title:String) {
+        let name = title.trimmingCharacters(in:.whitespacesAndNewlines)
+        guard !name.isEmpty, let index = savedDocuments.firstIndex(where:{$0.id == saved.id}) else { return }
+        let previous = savedDocuments
+        savedDocuments[index].document.surface.name = name
+        savedDocuments[index].updatedAt = Date()
+        if !persistLibrary() { savedDocuments = previous }
     }
 
     func apply(_ newValue: LayoutDocument) {
+        var newValue = newValue
+        newValue.layers = newValue.layers.map { $0.forSurface(newValue.surface) }
         guard newValue != document else { return }
         if let document { past.append(document); if past.count > 100 { past.removeFirst() } }
         future = []; document = newValue; updateHistory(); persistDraft(); recalculate()
     }
 
-    func preview(_ value: LayoutDocument) { document = value; recalculate(delay: true) }
+    func preview(_ value: LayoutDocument) {
+        calculation?.cancel(); revision += 1; isCalculating = false
+        document = value
+    }
+    func cancelGesture(restoring original:LayoutDocument) {
+        document = original
+        recalculate()
+    }
+
+    func optimize(furring:Bool) {
+        guard let original = document, let layer = original.layers.first, !isOptimizing else { return }
+        isOptimizing = true; optimizationMessage = nil
+        Task {
+            let worker = Task.detached(priority:.userInitiated) {
+                try LayoutPlanning.optimize(surface:original.surface,layer:layer,furring:furring)
+            }
+            do {
+                let value = try await worker.value
+                guard document == original else { isOptimizing = false; return }
+                var copy = original; copy.layers[0] = value; apply(copy)
+                optimizationMessage = value == layer ? "Aucune meilleure position trouvée parmi les positions testées." : "Meilleure position testée appliquée. Vous pouvez annuler cette modification."
+            } catch { optimizationMessage = error.localizedDescription }
+            isOptimizing = false
+        }
+    }
 
     func finishGesture(from original: LayoutDocument) {
         guard var updated = document, updated != original else { return }
         do {
             if updated.surface.contour != original.surface.contour {
-                var intent = original.surface.editableIntent
-                for i in updated.surface.contour.indices where updated.surface.contour[i] != original.surface.contour[i] {
-                    intent.userVertexPositions[i] = updated.surface.contour[i]
-                }
-                try updated.surface.resolve(intent)
+                updated.surface = try original.surface.movingVertices(to:updated.surface.contour)
                 document = updated
             }
             try LayoutGeometry.validate(updated.surface.contour)
             for opening in updated.surface.openings { try LayoutGeometry.validate(opening.contour) }
+            if updated.lighting != original.lighting, let lighting = updated.lighting,
+               !LayoutPlanning.lightingFits(lighting,surface:updated.surface) { throw LayoutLightingEditError.invalidPlacement }
             past.append(original); if past.count > 100 { past.removeFirst() }; future = []
             updateHistory(); persistDraft(); recalculate()
         } catch {
@@ -121,15 +174,14 @@ final class LayoutEditorModel: ObservableObject {
         do {
             try LayoutGeometry.validate(points)
             if points.count == copy.surface.contour.count {
-                var intent = copy.surface.editableIntent
-                for i in points.indices where points[i] != copy.surface.contour[i] { intent.userVertexPositions[i] = points[i] }
-                try copy.surface.resolve(intent)
+                copy.surface = try copy.surface.movingVertices(to:points)
             } else {
                 copy.surface.previousContourIntents.append(copy.surface.editableIntent)
                 copy.surface.contour = points
                 copy.surface.contourIntent = .init(sketch:points)
                 copy.surface.dimensionCorrections = []
                 copy.surface.edgeTones = points.indices.map { [.blue,.orange,.purple,.green,.teal][$0%5] }
+                for i in copy.layers.indices { copy.layers[i].referenceEdge = nil }
             }
             apply(copy)
         } catch { saveError = error.localizedDescription }
@@ -160,6 +212,8 @@ final class LayoutEditorModel: ObservableObject {
     private func recalculate(delay: Bool = false) {
         calculation?.cancel(); revision += 1
         guard let document, let layer = document.layers.first else { return }
+        lightingWarning = document.lighting.map { LayoutPlanning.lightingFits($0,surface:document.surface) } == false
+            ? "Un spot empiète sur une ouverture, un bord ou un autre spot. Ouvrez Éclairage pour revoir la répartition." : nil
         let expectedRevision = revision
         isCalculating = true
         calculation = Task { [weak self] in
@@ -197,13 +251,14 @@ struct LayoutDimensionField: View {
     var tint: Color? = nil
     var unit = "cm"
     var displayScale = 0.1
+    var showsDoneButton = true
     @State private var text = ""
     @State private var editing = false
     var body: some View {
         HStack {
             Text(title).foregroundStyle(tint ?? Color.primary)
             Spacer(minLength: 12)
-            LayoutSelectAllTextField(text: $text, keyboardType: signed ? .numbersAndPunctuation : .decimalPad) { active in
+            LayoutSelectAllTextField(text: $text, keyboardType: signed ? .numbersAndPunctuation : .decimalPad, showsDoneButton:showsDoneButton) { active in
                 editing = active
                 if !active { synchronize() }
             }
@@ -226,6 +281,7 @@ struct LayoutDimensionField: View {
 private struct LayoutSelectAllTextField: UIViewRepresentable {
     @Binding var text: String
     let keyboardType: UIKeyboardType
+    var showsDoneButton = true
     let onEditingChanged: (Bool) -> Void
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
@@ -236,13 +292,15 @@ private struct LayoutSelectAllTextField: UIViewRepresentable {
         field.placeholder = "0"
         field.delegate = context.coordinator
         field.addTarget(context.coordinator, action: #selector(Coordinator.changed(_:)), for: .editingChanged)
-        let toolbar = UIToolbar()
-        toolbar.sizeToFit()
-        toolbar.items = [
-            UIBarButtonItem(systemItem: .flexibleSpace),
-            UIBarButtonItem(title: "Terminé", style: .done, target: context.coordinator, action: #selector(Coordinator.dismissKeyboard(_:)))
-        ]
-        field.inputAccessoryView = toolbar
+        if showsDoneButton {
+            let toolbar = UIToolbar()
+            toolbar.sizeToFit()
+            toolbar.items = [
+                UIBarButtonItem(systemItem: .flexibleSpace),
+                UIBarButtonItem(title: "Terminé", style: .done, target: context.coordinator, action: #selector(Coordinator.dismissKeyboard(_:)))
+            ]
+            field.inputAccessoryView = toolbar
+        }
         return field
     }
     func updateUIView(_ field: UITextField, context: Context) {

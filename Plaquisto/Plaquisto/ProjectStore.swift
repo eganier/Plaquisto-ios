@@ -34,6 +34,27 @@ final class ProjectStore: ObservableObject {
 
     func project(id: UUID) -> ProjectItem? { projects.first { $0.id == id } }
 
+    func createLayoutWork(projectID:UUID,name:String,type:WorkType,payload:WorkConfiguration,document:LayoutDocument) throws {
+        var next = projects
+        guard let i = next.firstIndex(where:{$0.id == projectID}) else { throw StoreError.projectNotFound }
+        try validateWorkName(name,in:next[i])
+        let now = Date()
+        var work = WorkItem(id:UUID(),projectID:projectID,name:name,type:type,payload:payload,createdAt:now,updatedAt:now)
+        work.layoutDocument = document; work.layoutNeedsRecalculation = false
+        next[i].works.append(work); next[i].updatedAt = now
+        try commit(next)
+    }
+
+    func updateLinkedLayout(projectID:UUID,workID:UUID,document:LayoutDocument) throws {
+        var next = projects
+        guard let i = next.firstIndex(where:{$0.id == projectID}), let j = next[i].works.firstIndex(where:{$0.id == workID}) else { throw StoreError.workNotFound }
+        guard next[i].works[j].layoutDocument != document else { return }
+        next[i].works[j].layoutDocument = document
+        next[i].works[j].layoutNeedsRecalculation = true
+        next[i].works[j].updatedAt = Date(); next[i].updatedAt = Date()
+        try commit(next)
+    }
+
     func workNameExists(projectID: UUID, name: String, excluding workID: UUID? = nil) -> Bool {
         guard let project = project(id: projectID) else { return false }
         let normalizedName = name.normalizedForComparison
@@ -56,7 +77,7 @@ final class ProjectStore: ObservableObject {
     }
 
     /// Contrôle les tapées des ouvertures liées avec la composition actuelle du
-    /// doublage. Le résultat est recalculé à chaque publication du chantier.
+    /// doublage. Le résultat est recalculé à chaque publication du projet.
     func openingJoineryConflict(projectID: UUID, referenceWorkID: UUID) -> OpeningJoineryConflict? {
         guard let project = project(id: projectID),
               let referenceWork = project.works.first(where: { $0.id == referenceWorkID }),
@@ -236,8 +257,16 @@ final class ProjectStore: ObservableObject {
         }
         let projectID = UUID()
         let now = Date()
+        let copiedIDs = Dictionary(uniqueKeysWithValues: source.works.map { ($0.id, UUID()) })
         let copiedWorks = source.works.map { work in
-            WorkItem(id: UUID(), projectID: projectID, name: work.name, type: work.type, payload: work.payload, createdAt: now, updatedAt: now)
+            var payload = work.payload
+            if case .openings(var configuration) = payload {
+                configuration.sourceWorkID = configuration.sourceWorkID.flatMap { copiedIDs[$0] }
+                payload = .openings(configuration)
+            }
+            var copy = WorkItem(id: copiedIDs[work.id]!, projectID: projectID, name: work.name, type: work.type, payload: payload, createdAt: now, updatedAt: now)
+            copy.layoutDocument = work.layoutDocument; copy.layoutNeedsRecalculation = work.layoutNeedsRecalculation
+            return copy
         }
         let copy = ProjectItem(id: projectID, name: copyName, client: source.client, address: source.address, notes: source.notes, works: copiedWorks, createdAt: now, updatedAt: now)
         next.insert(copy, at: projectIndex + 1)
@@ -410,6 +439,7 @@ final class ProjectStore: ObservableObject {
         guard let projectIndex = next.firstIndex(where: { $0.id == work.projectID }),
               let workIndex = next[projectIndex].works.firstIndex(where: { $0.id == work.id }) else { throw StoreError.workNotFound }
         next[projectIndex].works[workIndex].payload = .ceiling(configuration)
+        next[projectIndex].works[workIndex].layoutNeedsRecalculation = false
         next[projectIndex].works[workIndex].updatedAt = Date()
         next[projectIndex].updatedAt = Date()
         try commit(next)
@@ -420,6 +450,7 @@ final class ProjectStore: ObservableObject {
         guard let projectIndex = next.firstIndex(where: { $0.id == work.projectID }),
               let workIndex = next[projectIndex].works.firstIndex(where: { $0.id == work.id }) else { throw StoreError.workNotFound }
         next[projectIndex].works[workIndex].payload = .railStudCeiling(railStudCeilingConfiguration)
+        next[projectIndex].works[workIndex].layoutNeedsRecalculation = false
         next[projectIndex].works[workIndex].updatedAt = Date()
         next[projectIndex].updatedAt = Date()
         try commit(next)
@@ -440,6 +471,7 @@ final class ProjectStore: ObservableObject {
         guard let projectIndex = next.firstIndex(where: { $0.id == work.projectID }),
               let workIndex = next[projectIndex].works.firstIndex(where: { $0.id == work.id }) else { throw StoreError.workNotFound }
         next[projectIndex].works[workIndex].payload = .peripheralLining(doublageConfiguration)
+        next[projectIndex].works[workIndex].layoutNeedsRecalculation = false
         next[projectIndex].works[workIndex].updatedAt = Date()
         next[projectIndex].updatedAt = Date()
         try commit(next)
@@ -450,6 +482,7 @@ final class ProjectStore: ObservableObject {
         guard let projectIndex = next.firstIndex(where: { $0.id == work.projectID }),
               let workIndex = next[projectIndex].works.firstIndex(where: { $0.id == work.id }) else { throw StoreError.workNotFound }
         next[projectIndex].works[workIndex].payload = .distributionPartition(cloisonDistributionConfiguration)
+        next[projectIndex].works[workIndex].layoutNeedsRecalculation = false
         next[projectIndex].works[workIndex].updatedAt = Date()
         next[projectIndex].updatedAt = Date()
         try commit(next)
@@ -480,6 +513,7 @@ final class ProjectStore: ObservableObject {
         guard let projectIndex = next.firstIndex(where: { $0.id == work.projectID }),
               let workIndex = next[projectIndex].works.firstIndex(where: { $0.id == work.id }) else { throw StoreError.workNotFound }
         next[projectIndex].works[workIndex].payload = .furringLining(furringLiningConfiguration)
+        next[projectIndex].works[workIndex].layoutNeedsRecalculation = false
         next[projectIndex].works[workIndex].updatedAt = Date()
         next[projectIndex].updatedAt = Date()
         try commit(next)
@@ -570,7 +604,8 @@ final class ProjectStore: ObservableObject {
             number += 1
         }
         let now = Date()
-        let copy = WorkItem(id: UUID(), projectID: projectID, name: copyName, type: source.type, payload: source.payload, createdAt: now, updatedAt: now)
+        var copy = WorkItem(id: UUID(), projectID: projectID, name: copyName, type: source.type, payload: source.payload, createdAt: now, updatedAt: now)
+        copy.layoutDocument = source.layoutDocument; copy.layoutNeedsRecalculation = source.layoutNeedsRecalculation
         next[projectIndex].works.insert(copy, at: workIndex + 1)
         next[projectIndex].updatedAt = now
         try commit(next)
@@ -609,7 +644,7 @@ final class ProjectStore: ObservableObject {
             projects = try decoder.decode([ProjectItem].self, from: Data(contentsOf: fileURL))
             lastError = nil
         } catch {
-            lastError = "Les chantiers enregistrés n’ont pas pu être ouverts."
+            lastError = "Les projets enregistrés n’ont pas pu être ouverts."
         }
     }
 

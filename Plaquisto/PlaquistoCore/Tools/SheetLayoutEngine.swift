@@ -104,14 +104,120 @@ struct LayoutLayer: Codable, Equatable, Identifiable {
     var orientation = LayoutOrientation.vertical
     var offset = LayoutPoint.zero
     var catalogFormatID: String? = nil
+    // Optional fields keep previously saved documents readable without migration.
+    var referenceEdge: Int? = nil
+    var furring: LayoutFurringSettings? = nil
     var cellWidth: Double { orientation == .vertical ? min(sheetWidth, sheetLength) : max(sheetWidth, sheetLength) }
     var cellHeight: Double { orientation == .vertical ? max(sheetWidth, sheetLength) : min(sheetWidth, sheetLength) }
+    func forSupport(_ kind:LayoutSupportKind) -> Self {
+        guard kind == .wall else { return self }
+        var copy = self
+        copy.referenceEdge = nil
+        copy.furring?.parallelToBoards = orientation == .vertical
+        return copy
+    }
+    func forSurface(_ surface:Surface2D) -> Self {
+        var copy = forSupport(surface.kind)
+        if surface.kind == .wall && surface.bounds.height <= cellHeight + 0.001 { copy.offset.y = surface.bounds.min.y }
+        return copy
+    }
+}
+struct LayoutFurringSettings: Codable, Equatable {
+    var parallelToBoards = false
+    var spacing = 600.0
+    var offset = 0.0
+}
+
+// Engine and cut sheets stay in grid coordinates. Only the overview is transformed.
+// This prevents rotated cuts from being measured using a world-axis bounding box.
+struct LayoutGridFrame: Equatable {
+    var origin = LayoutPoint.zero
+    var angle = 0.0
+    func world(_ p: LayoutPoint) -> LayoutPoint {
+        origin + .init(x: cos(angle)*p.x - sin(angle)*p.y, y: sin(angle)*p.x + cos(angle)*p.y)
+    }
+    func local(_ p: LayoutPoint) -> LayoutPoint { vector(p-origin) }
+    func vector(_ p: LayoutPoint) -> LayoutPoint {
+        .init(x: cos(angle)*p.x + sin(angle)*p.y, y: -sin(angle)*p.x + cos(angle)*p.y)
+    }
+    static func make(surface: Surface2D, layer: LayoutLayer) -> Self {
+        guard surface.kind == .ceiling else { return .init() }
+        guard let i = layer.referenceEdge, surface.contour.indices.contains(i) else { return .init() }
+        let a = surface.contour[i], d = surface.contour[(i+1)%surface.contour.count]-a
+        return .init(origin: a, angle: atan2(d.y,d.x))
+    }
+}
+struct LayoutFurringContact: Equatable {
+    var point: LayoutPoint
+    var edgeIndex: Int
+    var distance: Double
+}
+struct LayoutFurringResult: Equatable {
+    var lines: [LayoutJoint] = []
+    var contacts: [LayoutFurringContact] = []
+}
+
+enum LayoutFurringEngine {
+    static func calculate(surface: Surface2D, layer: LayoutLayer) throws -> LayoutFurringResult {
+        guard let settings = layer.furring else { return .init() }
+        guard [400.0,500.0,600.0].contains(settings.spacing), settings.offset.isFinite else { throw LayoutGeometryError.invalidFormat }
+        // In grid coordinates the long side is X for horizontal boards, Y otherwise.
+        let alongX = surface.kind == .wall ? false : (layer.orientation == .horizontal) == settings.parallelToBoards
+        func across(_ p: LayoutPoint) -> Double { alongX ? p.y : p.x }
+        func along(_ p: LayoutPoint) -> Double { alongX ? p.x : p.y }
+        let b = surface.bounds
+        let low = across(b.min), high = across(b.max)
+        let step = settings.spacing
+        let offset = settings.offset.truncatingRemainder(dividingBy:step)
+        guard low.isFinite, high.isFinite, (high-low)/step <= 2000 else { throw LayoutGeometryError.tooLarge }
+        let first = Int(ceil((low-offset-0.001)/step)), last = Int(floor((high-offset+0.001)/step))
+        guard first <= last else { return .init() }
+        var result = LayoutFurringResult()
+        for index in first...last {
+            let coordinate = offset+Double(index)*step
+            var intersections: [LayoutPoint] = []
+            var contacts: [LayoutFurringContact] = []
+            for (loopIndex,loop) in ([surface.contour]+surface.openings.map(\.contour)).enumerated() {
+                for i in loop.indices {
+                    let a = loop[i], z = loop[(i+1)%loop.count], delta = across(z)-across(a)
+                    guard abs(delta) > 1e-8 else { continue }
+                    let t = (coordinate-across(a))/delta
+                    guard t >= -1e-8, t <= 1+1e-8 else { continue }
+                    let point = a+(z-a)*min(1,max(0,t))
+                    intersections.append(point)
+                    if loopIndex == 0 {
+                        contacts.append(.init(point:point,edgeIndex:i,distance:(point-a).length))
+                    }
+                }
+            }
+            let sorted = intersections.sorted { along($0) < along($1) }
+            var unique: [LayoutPoint] = []
+            for p in sorted where unique.last.map({(p-$0).length > 0.01}) ?? true { unique.append(p) }
+            var segments: [LayoutJoint] = []
+            func onBoundary(_ p:LayoutPoint,_ polygon:[LayoutPoint]) -> Bool {
+                LayoutGeometry.edges(polygon).contains { LayoutGeometry.distance(p,to:$0.a,$0.b) < 0.001 }
+            }
+            for (a,z) in zip(unique,unique.dropFirst()) {
+                let mid = (a+z)*0.5
+                if LayoutGeometry.contains(mid,in:surface.contour) || onBoundary(mid,surface.contour),
+                   !surface.openings.contains(where:{LayoutGeometry.contains(mid,in:$0.contour) && !onBoundary(mid,$0.contour)}) {
+                    segments.append(.init(start:a,end:z))
+                }
+            }
+            result.lines.append(contentsOf:segments)
+            result.contacts.append(contentsOf:contacts.filter { contact in
+                segments.contains { (contact.point-$0.start).length < 0.01 || (contact.point-$0.end).length < 0.01 }
+            })
+        }
+        return result
+    }
 }
 struct LayoutDocument: Codable, Equatable {
     var schemaVersion = 1
     var surface: Surface2D
     // V1 edits layer 1. Later layers can have independent formats and offsets.
     var layers: [LayoutLayer] = [.init()]
+    var lighting: LayoutLighting? = nil
 }
 struct LayoutCutPiece: Equatable, Identifiable {
     var id: String
@@ -151,15 +257,24 @@ struct LayoutJoint: Equatable {
 struct SheetLayoutResult: Equatable {
     var sheets: [LayoutSheetPlacement]
     var joints: [LayoutJoint]
+    var frame = LayoutGridFrame()
+    var furring = LayoutFurringResult()
     var netArea: Double { sheets.reduce(0) { $0 + $1.area } }
     var wasteArea: Double { sheets.reduce(0) { $0 + $1.wasteArea } }
     var pieceCount: Int { sheets.reduce(0) { $0 + $1.pieces.count } }
 }
 enum SheetLayoutEngine {
     static func calculate(surface: Surface2D, layer: LayoutLayer) throws -> SheetLayoutResult {
+        let layer = layer.forSurface(surface)
         try LayoutGeometry.validate(surface.contour)
         guard surface.openings.count <= 100 else { throw LayoutGeometryError.tooLarge }
         for opening in surface.openings { try LayoutGeometry.validate(opening.contour) }
+        let frame = LayoutGridFrame.make(surface:surface,layer:layer)
+        var surface = surface
+        surface.contour = surface.contour.map(frame.local)
+        surface.openings = surface.openings.map { opening in
+            var copy = opening; copy.contour = copy.contour.map(frame.local); return copy
+        }
         let w = layer.cellWidth, h = layer.cellHeight
         guard w.isFinite, h.isFinite, w >= 1, h >= 1, w <= 100_000, h <= 100_000,
               layer.offset.finite, abs(layer.offset.x) <= 1_000_000, abs(layer.offset.y) <= 1_000_000 else { throw LayoutGeometryError.invalidFormat }
@@ -209,14 +324,15 @@ enum SheetLayoutEngine {
         let joints = jointCandidates.keys.sorted().compactMap { key -> LayoutJoint? in
             guard let entry = jointCandidates[key], entry.1 > 1 else { return nil }; return entry.0
         }
-        return .init(sheets: sheets, joints: joints)
+        return .init(sheets: sheets, joints: joints, frame:frame,
+                     furring:try LayoutFurringEngine.calculate(surface:surface,layer:layer))
     }
 }
 
 enum LayoutPreset: String, CaseIterable {
     case rectangle = "Rectangle", slope = "Sous rampant", gable = "Pignon", lShape = "En L", freeform = "Dessiner la forme"
     static func available(for kind: LayoutSupportKind) -> [Self] {
-        kind == .wall ? [.rectangle, .slope, .lShape] : [.rectangle, .freeform]
+        kind == .wall ? [.rectangle, .slope, .lShape, .freeform] : [.rectangle, .freeform]
     }
     func contour(length: Double, height: Double, secondaryHeight: Double, mirrored: Bool = false,
                  lowerLength: Double? = nil) -> [LayoutPoint] {

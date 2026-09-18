@@ -8,6 +8,9 @@ struct PlaquistoApp: App {
         WindowGroup {
             PlaquistoRootView()
                 .environmentObject(projectStore)
+                #if DEBUG
+                .environment(\.beforeAfterAccount, BeforeAfterAccountContext(allowsLabWatermarkControl: true))
+                #endif
         }
     }
 }
@@ -19,7 +22,7 @@ private struct PlaquistoRootView: View {
     var body: some View {
         TabView(selection: $selectedTab) {
             ProjectsHomeView { showingAccount = true }
-                .tabItem { Label("Chantiers", systemImage: "building.2") }
+                .tabItem { Label("Projets", systemImage: "building.2") }
                 .tag(AppTab.projects)
 
             ScannerDebugView(onOpenAccount: { showingAccount = true })

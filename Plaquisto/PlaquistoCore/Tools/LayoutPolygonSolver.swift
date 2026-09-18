@@ -1,5 +1,57 @@
 import Foundation
 
+extension Surface2D {
+    /// A drag edits the sketch, not a permanently pinned vertex on the old sketch.
+    /// Only visible angle/length locks may move neighbouring vertices.
+    func movingVertices(to points: [LayoutPoint]) throws -> Surface2D {
+        guard points.count == contour.count else { throw LayoutGeometryError.invalidContour }
+        try LayoutGeometry.validate(points)
+        guard LayoutGeometry.area(points) * LayoutGeometry.area(contour) > 0 else {
+            throw LayoutPolygonError.incompatibleConstraints
+        }
+        guard points != contour else { return self }
+        let previous = editableIntent
+        var intent = previous
+        intent.sketch = points
+        // Old drags were saved as invisible persistent pins. Replace them with
+        // the current gesture's temporary targets, without losing measured locks.
+        intent.userVertexPositions = points.indices.map { points[$0] != contour[$0] ? points[$0] : nil }
+        var configuration = GeometryResolutionConfiguration.standard
+        configuration.measuredLengthWeight = 0
+        configuration.sketchLengthWeight = 0
+        configuration.sketchDirectionWeight = 0
+        configuration.sketchPositionWeight = 0.2
+        let resolved = try LayoutPolygonSolver.resolve(intent, configuration:configuration)
+        var copy = self
+        copy.previousContourIntents.append(previous)
+        copy.contour = resolved.contour
+        copy.dimensionCorrections = resolved.corrections
+        intent.sketch = resolved.contour
+        intent.userVertexPositions = Array(repeating:nil,count:points.count)
+        copy.contourIntent = intent
+        return copy
+    }
+
+    var canScaleDrawing: Bool {
+        provenance == "manual" && contourIntent.map { $0.userMeasuredLengths.allSatisfy { $0 == nil } } == true
+    }
+    func scaledDrawing(by factor: Double) throws -> Surface2D {
+        guard canScaleDrawing, factor.isFinite, factor >= 0.05, factor <= 20 else { throw LayoutGeometryError.invalidFormat }
+        let origin = bounds.min
+        func scale(_ p: LayoutPoint) -> LayoutPoint { origin+(p-origin)*factor }
+        var copy = self
+        copy.contour = contour.map(scale)
+        try LayoutGeometry.validate(copy.contour)
+        copy.openings = openings.map { opening in var o = opening; o.contour = o.contour.map(scale); return o }
+        if var intent = contourIntent {
+            intent.sketch = intent.sketch.map(scale)
+            intent.userVertexPositions = intent.userVertexPositions.map { $0.map(scale) }
+            copy.contourIntent = intent
+        }
+        return copy
+    }
+}
+
 // Capture/beautification distances are screen points; resolved geometry is millimetres.
 struct PolygonBeautificationConfiguration {
     static let standard = Self()
@@ -24,6 +76,7 @@ struct GeometryResolutionConfiguration {
     var measuredLengthWeight = 1.0
     var sketchLengthWeight = 0.08
     var sketchDirectionWeight = 0.04
+    var sketchPositionWeight = 0.0
     var manualAngleWeight = 100.0
     var manualVertexWeight = 100.0
     var maximumAngleResidualDegrees = 0.25
@@ -54,7 +107,7 @@ enum LayoutPolygonError: Error, LocalizedError {
 }
 
 enum LayoutStrokeBeautifier {
-    static func polygon(from raw: [LayoutPoint], configuration c: PolygonBeautificationConfiguration = .standard) throws -> [LayoutPoint] {
+    static func polygon(from raw: [LayoutPoint], kind:LayoutSupportKind = .ceiling, configuration c: PolygonBeautificationConfiguration = .standard) throws -> [LayoutPoint] {
         guard raw.count >= 4, raw.count <= c.maximumSamples, raw.allSatisfy(\.finite) else { throw LayoutPolygonError.shortStroke }
         var points: [LayoutPoint] = []
         for point in raw where points.last.map({ ($0 - point).length >= c.samplingDistance }) ?? true { points.append(point) }
@@ -118,9 +171,46 @@ enum LayoutStrokeBeautifier {
             return .init(x: cos(use), y: sin(use))
         }
         let lengths = LayoutGeometry.edges(cleaned).map { ($0.b - $0.a).length }
-        if let snapped = try? LayoutPolygonSolver.closeDirections(directions, lengths: lengths, origin: cleaned[0], minimum: c.minimumSegment / 2),
+        if kind == .wall, let snapped = try? LayoutPolygonSolver.closeDirections(directions, lengths: lengths, origin: cleaned[0], minimum: c.minimumSegment / 2),
            zip(snapped, cleaned).allSatisfy({ ($0 - $1).length < c.simplificationDistance * 2 }) { cleaned = snapped }
-        return cleaned
+        return try alignedToGround(cleaned,squareGroundCorners:kind == .wall)
+    }
+
+    /// Applied only when lifting the finger after a new sketch, never when
+    /// editing measured/locked geometry. Rigid rotation first; conservative
+    /// cleanup of the two convex ground corners second.
+    static func alignedToGround(_ polygon:[LayoutPoint], squareGroundCorners:Bool = false, cornerToleranceDegrees:Double = 8) throws -> [LayoutPoint] {
+        try LayoutGeometry.validate(polygon)
+        var points = polygon
+        if LayoutGeometry.area(points) < 0 { points.reverse() }
+        guard let edge = groundEdge(points), let base = points.firstIndex(of:edge.a) else { return points }
+        points = Array(points[base...])+Array(points[..<base])
+        let origin = points[0], vector = points[1]-origin, angle = -atan2(vector.y,vector.x)
+        let aligned = points.map { p -> LayoutPoint in
+            let v = p-origin
+            return .init(x:v.x*cos(angle)-v.y*sin(angle),y:v.x*sin(angle)+v.y*cos(angle))
+        }
+        var result = aligned
+        result[0] = .zero; result[1] = .init(x:vector.length,y:0)
+        if squareGroundCorners && result.count >= 4 {
+            // Project the upper neighbour, keeping the ground segment intact.
+            if abs(LayoutPolygonSolver.interiorAngle(at:0,in:aligned)-90) <= cornerToleranceDegrees,
+               aligned.last!.y > 0 { result[result.count-1].x = 0 }
+            if abs(LayoutPolygonSolver.interiorAngle(at:1,in:aligned)-90) <= cornerToleranceDegrees,
+               aligned[2].y > 0 { result[2].x = vector.length }
+            if (try? LayoutGeometry.validate(result)) == nil || LayoutGeometry.area(result) <= 0 { return aligned }
+        }
+        return result
+    }
+
+    static func groundEdge(_ polygon:[LayoutPoint]) -> (a:LayoutPoint,b:LayoutPoint)? {
+        guard polygon.count >= 3 else { return nil }
+        let points = LayoutGeometry.area(polygon) < 0 ? Array(polygon.reversed()) : polygon
+        let width = LayoutBounds(points:points).width
+        return LayoutGeometry.edges(points).filter {
+            let v = $0.b-$0.a
+            return v.x > abs(v.y) && v.length >= width*0.15
+        }.min { ($0.a.y+$0.b.y) < ($1.a.y+$1.b.y) }.map { ($0.a,$0.b) }
     }
 
     // Iterative RDP avoids recursive stack growth on adversarial scribbles.
@@ -147,6 +237,7 @@ struct LayoutContourIntent: Codable, Equatable {
     var userMeasuredLengths: [Double?]
     var userAnglesDegrees: [Double?]
     var userVertexPositions: [LayoutPoint?]
+    var lockedLengthIndices: [Int]? = nil
     init(sketch: [LayoutPoint]) {
         self.sketch = sketch
         userMeasuredLengths = Array(repeating: nil, count: sketch.count)
@@ -192,10 +283,14 @@ enum LayoutPolygonSolver {
                 result.append((residual * weight, derivative.map { ($0.0, $0.1 * weight) }))
             }
             for i in 0..<n {
+                if c.sketchPositionWeight > 0 {
+                    add(values[2*i] - reference[i].x, [(2*i, 1)], c.sketchPositionWeight)
+                    add(values[2*i+1] - reference[i].y, [(2*i+1, 1)], c.sketchPositionWeight)
+                }
                 let next = (i + 1) % n, d = point(next) - point(i), length = max(1e-9, d.length), u = d * (1 / length)
                 add(length - targets[i] / scale,
                     [(2*i, -u.x), (2*i+1, -u.y), (2*next, u.x), (2*next+1, u.y)],
-                    intent.userMeasuredLengths[i] == nil ? c.sketchLengthWeight : c.measuredLengthWeight)
+                    intent.lockedLengthIndices?.contains(i) == true ? 100 : (intent.userMeasuredLengths[i] == nil ? c.sketchLengthWeight : c.measuredLengthWeight))
                 let source = reference[next] - reference[i], sourceLength = max(1e-9, source.length)
                 let sourceAngle = atan2(source.y, source.x)
                 let difference = wrapped(atan2(d.y, d.x) - sourceAngle)
@@ -251,6 +346,10 @@ enum LayoutPolygonSolver {
         guard LayoutGeometry.area(contour) * LayoutGeometry.area(intent.sketch) > 0,
               LayoutGeometry.edges(contour).allSatisfy({ ($0.b - $0.a).length >= c.minimumLength }) else { throw LayoutPolygonError.incompatibleConstraints }
         for i in 0..<n {
+            if intent.lockedLengthIndices?.contains(i) == true, let length = intent.userMeasuredLengths[i],
+               abs((contour[(i+1)%n]-contour[i]).length-length) > 0.5 {
+                throw LayoutPolygonError.incompatibleConstraints
+            }
             if let angle = intent.userAnglesDegrees[i], abs(interiorAngle(at: i, in: contour) - angle) > c.maximumAngleResidualDegrees {
                 throw LayoutPolygonError.incompatibleConstraints
             }

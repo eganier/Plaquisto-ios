@@ -5,6 +5,8 @@ enum ToolCategory: String, CaseIterable, Identifiable {
     case partitions = "Cloisons & doublages"
     case ceilings = "Plafonds"
     case layout = "Traçage & calepinage"
+    case angles = "Mesure d’angle"
+    case photos = "Photos chantier"
     case site = "Calculs chantier"
 
     var id: String { rawValue }
@@ -12,7 +14,7 @@ enum ToolCategory: String, CaseIterable, Identifiable {
 
 enum ToolDestination: String, Hashable {
     case thermal, ceilingSpan, partitionHeight, furringSpacing
-    case layout, liningHeight, vat, arch
+    case layout, liningHeight, vat, arch, wallAngle, exteriorWallAngle, beforeAfter
 }
 
 struct ToolDefinition: Identifiable, Hashable {
@@ -23,7 +25,7 @@ struct ToolDefinition: Identifiable, Hashable {
     let category: ToolCategory
     let keywords: [String]
     let destination: ToolDestination
-    var isAvailable: Bool { destination != .layout }
+    var isAvailable: Bool { true }
 
     var searchableText: String {
         ([title, shortDescription, category.rawValue] + keywords)
@@ -35,6 +37,7 @@ struct ToolDefinition: Identifiable, Hashable {
 
 enum ToolCatalog {
     static let all: [ToolDefinition] = [
+        .init(id: "before-after", title: "Montage avant / après", shortDescription: "Superposez deux photos avec une aide au cadrage et créez un montage prêt à partager.", icon: "rectangle.on.rectangle.angled", category: .photos, keywords: ["avant après", "photo chantier", "comparatif", "rénovation", "export", "partage"], destination: .beforeAfter),
         .init(id: "thermal", title: "Résistance thermique", shortDescription: "Calculer R, l’épaisseur ou le lambda d’un isolant.", icon: "thermometer.medium", category: .isolation, keywords: ["R", "lambda", "épaisseur", "isolant"], destination: .thermal),
         .init(id: "furring-spacing", title: "Entraxe des fourrures selon l’isolant", shortDescription: "Identifier l’entraxe recommandé entre fourrures selon la masse surfacique de l’isolant.", icon: "arrow.left.and.right", category: .ceilings, keywords: ["fourrure", "laine", "densité", "poids", "masse surfacique"], destination: .furringSpacing),
         .init(id: "partition-height", title: "Hauteur de cloison", shortDescription: "Vérifier ou rechercher une configuration compatible.", icon: "rectangle.split.3x1", category: .partitions, keywords: ["montant", "rail", "entraxe", "BA13"], destination: .partitionHeight),
@@ -42,6 +45,8 @@ enum ToolCatalog {
         .init(id: "ceiling-span", title: "Plafond autoportant", shortDescription: "Vérifier une portée ou trouver les montages compatibles.", icon: "rectangle.topthird.inset.filled", category: .ceilings, keywords: ["portée", "montant", "plafond", "autoportant"], destination: .ceilingSpan),
         .init(id: "layout", title: "Calepinage 2D", shortDescription: "Positionner les plaques, joints, coupes et ouvertures.", icon: "square.grid.3x3", category: .layout, keywords: ["plaque", "joint", "découpe", "mur", "plafond"], destination: .layout),
         .init(id: "arch", title: "Gabarit d’arche", shortDescription: "Tracer une arche et obtenir sa table de points.", icon: "pencil.and.ruler", category: .layout, keywords: ["arc", "ellipse", "gabarit", "courbe"], destination: .arch),
+        .init(id: "wall-angle", title: "Angle intérieur", shortDescription: "0–180°", icon: "angle", category: .angles, keywords: ["angle entre deux murs", "équerre", "degrés", "triangle", "mètre"], destination: .wallAngle),
+        .init(id: "exterior-wall-angle", title: "Angle extérieur", shortDescription: "180–360°", icon: "angle", category: .angles, keywords: ["réflexe", "rentrant", "degrés", "triangle", "mètre", "murs"], destination: .exteriorWallAngle),
         .init(id: "vat", title: "Calcul de TVA", shortDescription: "Passer de HT à TTC ou de TTC à HT.", icon: "percent", category: .site, keywords: ["prix", "HT", "TTC", "TVA"], destination: .vat)
     ]
 
@@ -49,6 +54,66 @@ enum ToolCatalog {
         let normalized = query.folding(options: [.diacriticInsensitive, .caseInsensitive], locale: .current).lowercased()
         guard !normalized.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return all }
         return all.filter { $0.searchableText.contains(normalized) }
+    }
+}
+
+enum WallAngleError: Error, LocalizedError, Equatable {
+    case invalidEqualSide, invalidOppositeSide, impossibleTriangle
+    var errorDescription: String? {
+        switch self {
+        case .invalidEqualSide: return "La distance L doit être supérieure à 0."
+        case .invalidOppositeSide: return "La distance entre les repères doit être supérieure à 0."
+        case .impossibleTriangle: return "Cette mesure est impossible : la distance entre les repères doit être inférieure à deux fois la distance mesurée sur les murs."
+        }
+    }
+}
+enum WallAngleKind {
+    case interior, exterior
+    var title: String { self == .interior ? "Angle intérieur" : "Angle extérieur" }
+    var range: String { self == .interior ? "0–180°" : "180–360°" }
+    var explanation: String {
+        self == .interior ? "Le plus petit angle entre les deux murs." : "L’angle restant autour du sommet, supérieur à 180°."
+    }
+    var equalSideTitle: String {
+        self == .interior ? "L · Distance sur chaque mur" : "L · Distance sur les prolongements"
+    }
+    var measurementHelp: String {
+        if self == .interior {
+            return "Mesurez directement entre les deux murs."
+        }
+        return "Prolongez l’alignement des deux murs dans le vide, puis mesurez entre les deux prolongements."
+    }
+}
+
+struct WallAngleResult: Equatable {
+    let interiorDegrees: Double
+    let exteriorDegrees: Double
+    func degrees(for kind: WallAngleKind) -> Double {
+        kind == .interior ? interiorDegrees : exteriorDegrees
+    }
+}
+
+enum WallAngleCalculator {
+    static func calculate(equalSide:Double, oppositeSide:Double) throws -> WallAngleResult {
+        guard equalSide.isFinite, equalSide > 0 else { throw WallAngleError.invalidEqualSide }
+        guard oppositeSide.isFinite, oppositeSide > 0 else { throw WallAngleError.invalidOppositeSide }
+        // Divide first to avoid overflowing 2 × L for extreme inputs.
+        let ratio = (oppositeSide/equalSide)/2
+        guard ratio.isFinite, ratio > 0, ratio < 1 else { throw WallAngleError.impossibleTriangle }
+        let degrees = 2 * asin(min(1,max(0,ratio))) * 180 / .pi
+        guard degrees.isFinite, degrees > 0, degrees < 180 else { throw WallAngleError.impossibleTriangle }
+        let exterior = 360 - degrees
+        guard exterior > 180, exterior < 360 else { throw WallAngleError.impossibleTriangle }
+        return WallAngleResult(interiorDegrees: degrees, exteriorDegrees: exterior)
+    }
+    // Compatibility entry point: the geometry and validation live only in calculate.
+    static func angle(equalSide:Double, oppositeSide:Double) throws -> Double {
+        try calculate(equalSide:equalSide, oppositeSide:oppositeSide).interiorDegrees
+    }
+    static func formattedDegrees(_ value:Double, signed:Bool = false) -> String {
+        let rounded = (value*10).rounded()/10
+        let number = (rounded == 0 ? 0 : value).formatted(.number.locale(Locale(identifier:"fr_FR")).precision(.fractionLength(1)))
+        return (signed && rounded > 0 ? "+" : "") + number + "°"
     }
 }
 

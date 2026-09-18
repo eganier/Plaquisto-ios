@@ -2,7 +2,6 @@ import SwiftUI
 
 struct ToolsHomeView: View {
     var onOpenAccount: (() -> Void)?
-    var enablesExperimentalLayout = false
     @StateObject private var technicalStore = ToolTechnicalStore()
     @State private var query = ""
 
@@ -43,7 +42,7 @@ struct ToolsHomeView: View {
         VStack(alignment: .leading, spacing: 10) {
             Text(title).font(.title3.bold()).foregroundStyle(.secondary)
             ForEach(tools) { tool in
-                let isAvailable = tool.isAvailable || (enablesExperimentalLayout && tool.destination == .layout)
+                let isAvailable = tool.isAvailable
                 NavigationLink(value: tool.destination) {
                     ToolCard(tool: tool, isAvailable: isAvailable)
                 }
@@ -60,7 +59,14 @@ private struct ToolCard: View {
 
     var body: some View {
         HStack(spacing: 14) {
-            Image(systemName: tool.icon)
+            Group {
+                if tool.destination == .wallAngle || tool.destination == .exteriorWallAngle {
+                    WallAngleIcon(kind: tool.destination == .wallAngle ? .interior : .exterior)
+                        .padding(4)
+                } else {
+                    Image(systemName: tool.icon)
+                }
+            }
                 .font(.title2)
                 .foregroundStyle(isAvailable ? Color.accentColor : .secondary)
                 .frame(width: 42, height: 42)
@@ -68,7 +74,6 @@ private struct ToolCard: View {
             VStack(alignment: .leading, spacing: 4) {
                 HStack {
                     Text(tool.title).font(.headline)
-                    if !isAvailable { Text("AVEC ASTRA").font(.caption2.bold()).foregroundStyle(.purple) }
                 }
                 Text(tool.shortDescription).font(.subheadline).foregroundStyle(.secondary)
             }
@@ -93,6 +98,9 @@ private struct ToolDestinationView: View {
         case .liningHeight: LiningHeightToolView()
         case .vat: VATToolView()
         case .arch: ArchTemplateToolView()
+        case .wallAngle: WallAngleToolView()
+        case .exteriorWallAngle: WallAngleToolView(kind: .exterior)
+        case .beforeAfter: BeforeAfterHomeView()
         }
     }
 }
