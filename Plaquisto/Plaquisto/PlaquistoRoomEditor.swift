@@ -302,10 +302,44 @@ struct PlaquistoRoomEditor: View {
 }
 
 /// One editable room in plan; original capture and unsaved edits stay separate.
+private struct SurveyPlanManipulation {
+    enum Handle { case start, end, body, door }
+    let handle: Handle
+    let wall: PlaquistoWall
+    let touch: RoomPoint
+    let door: PlaquistoOpening?
+    var start: RoomPoint
+    var end: RoomPoint
+    var doorPosition: Double?
+    var preservesOpeningLocations: Bool {
+        guard handle == .start || handle == .end else { return false }
+        let v = end-start, axis = wall.direction
+        return abs(v.x*axis.z-v.z*axis.x) < 1e-6 && v.x*axis.x+v.z*axis.z > 0
+    }
+    var preview: PlaquistoWall {
+        var copy = wall
+        copy.start = start; copy.end = end
+        copy.length.manualValue = hypot(end.x-start.x,end.z-start.z)
+        copy.length.manuallyValidated = true
+        return copy
+    }
+}
+
+private struct SurveyPlanUndoState {
+    var document: PlaquistoRoomDocument
+    var draftWall: PlaquistoWall?
+    var selected: UUID?
+    var selectedDoor: UUID?
+    var firstPoint: RoomPoint?
+    var drawingPartition: Bool
+}
+
 struct SurveyPlanEditor: View {
     @Environment(\.dismiss) private var dismiss
     let original: PlaquistoRoomDocument
     let ceilingNumbers:[String:Int]
+    let initiallyConfigureCeilings: Bool
+    @State private var openedCeilingConfigurator = false
     let onSave: (PlaquistoRoomDocument) throws -> Void
     @State private var document: PlaquistoRoomDocument
     @State private var ceilingChoices: [WallCeilingEstimate.Proposal] = []
@@ -327,33 +361,61 @@ struct SurveyPlanEditor: View {
     @State private var openingPosition = 0.0
     @State private var deletingOpening = false
     @State private var mergingWith: UUID?
+    @State private var mergeCandidateIDs: Set<UUID> = []
     @State private var error: String?
     @State private var discard = false
     @State private var proposal: WallCeilingEstimate.Proposal?
     @State private var zoom = 1.0
     @State private var offset = CGSize.zero
     @GestureState private var pinch = 1.0
-    @State private var dragging: (start: RoomPoint, current: RoomPoint)?
-    init(document: PlaquistoRoomDocument, ceilingNumbers:[String:Int]=[:], onSave: @escaping (PlaquistoRoomDocument) throws -> Void) {
+    @GestureState private var planDrag = CGSize.zero
+    @State private var panning = false
+    @State private var cancelledByPinch = false
+    @State private var manipulation: SurveyPlanManipulation?
+    @State private var draftWall: PlaquistoWall?
+    @State private var history: [SurveyPlanUndoState] = []
+    @State private var fixedStart = true
+    @State private var snapping = true
+    @State private var snapResult: SurveyPlanSnapping.Result?
+    @State private var fittedPoints: [RoomPoint]?
+    init(document: PlaquistoRoomDocument, ceilingNumbers:[String:Int]=[:], initiallyConfigureCeilings: Bool = false, onSave: @escaping (PlaquistoRoomDocument) throws -> Void) {
         original = document; self.onSave = onSave; self.ceilingNumbers=ceilingNumbers
+        self.initiallyConfigureCeilings = initiallyConfigureCeilings
         _document = State(initialValue: document)
     }
-    private var wall: PlaquistoWall? { document.room.walls.first { $0.id == selected } }
+    private var wall: PlaquistoWall? { draftWall ?? document.room.walls.first { $0.id == selected } }
+    private var hasChanges: Bool { document != original || draftWall != nil || firstPoint != nil }
     var body: some View {
         NavigationStack {
             VStack(spacing: 0) {
                 HStack {
-                    Button { drawingPartition.toggle(); splittingCeiling=nil; firstPoint = nil } label: {
-                        Label(drawingPartition ? "Annuler le tracé" : "Cloison", systemImage: "plus.square")
+                    Button {
+                        drawingPartition = !(drawingPartition || draftWall != nil)
+                        draftWall=nil; splittingCeiling=nil; firstPoint=nil; selected=nil; selectedDoor=nil; snapResult=nil
+                    } label: {
+                        Label(drawingPartition || draftWall != nil ? "Annuler le tracé" : "Cloison", systemImage: "plus.square")
                     }.tint(drawingPartition ? .orange : .accentColor)
                     Spacer()
                     ceilingMenu
                     Spacer()
-                    Button { zoom = 1; offset = .zero } label: { Image(systemName: "scope") }
+                    Button { fittedPoints=document.room.walls.flatMap { [$0.start,$0.effectiveEnd] }; zoom = 1; offset = .zero } label: { Image(systemName: "scope") }
                         .accessibilityLabel("Recentrer le plan")
                 }.buttonStyle(.bordered).padding()
+                HStack {
+                    Button("Annuler le dernier geste",systemImage:"arrow.uturn.backward") {
+                        if let previous=history.popLast() {
+                            document=previous.document; draftWall=previous.draftWall
+                            selected=previous.selected; selectedDoor=previous.selectedDoor
+                            firstPoint=previous.firstPoint; drawingPartition=previous.drawingPartition
+                            snapResult=nil; manipulation=nil; syncFields()
+                        }
+                    }.disabled(history.isEmpty || manipulation != nil)
+                    Spacer()
+                    Toggle("Aimantation",isOn:$snapping).toggleStyle(.button)
+                        .onChange(of:snapping) { _,_ in snapResult=nil }
+                }.font(.caption).padding(.horizontal).padding(.bottom,6)
                 Text(splittingCeiling != nil ? "Séparer \(document.room.ceilings.first(where: { $0.id == splittingCeiling }).map { CeilingPlanNaming.title($0,in:document.room,numbers:ceilingNumbers) } ?? "le plafond") : touchez deux points pour tracer une limite traversant la zone orange." :
-                     (drawingPartition ? "Touchez les deux extrémités de la nouvelle cloison." : "Touchez un mur ou une ouverture pour le modifier. Le scan d’origine est conservé."))
+                     (draftWall != nil ? "Ajustez les poignées ou la longueur, puis touchez Ajouter." : drawingPartition ? "Touchez les deux extrémités de la nouvelle cloison." : "Touchez un segment pour le sélectionner. Glissez son centre ou ses poignées ; glissez le fond pour déplacer la vue."))
                     .font(.caption).foregroundStyle(.secondary).padding(.horizontal)
                 if splittingCeiling != nil {
                     Button("Annuler le découpage") { splittingCeiling=nil; firstPoint=nil }
@@ -362,20 +424,26 @@ struct SurveyPlanEditor: View {
                 controls
             }
             .background(Color(.systemGroupedBackground))
-            .navigationTitle("Modifier le plan")
+            .navigationTitle(initiallyConfigureCeilings ? "Configurer les plafonds" : "Modifier le plan")
+            .task {
+                if initiallyConfigureCeilings && !openedCeilingConfigurator {
+                    openedCeilingConfigurator = true
+                    prepareCeiling()
+                }
+            }
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Annuler") { if document != original { discard = true } else { dismiss() } }
+                    Button("Annuler") { if hasChanges { discard = true } else { dismiss() } }
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Enregistrer") {
                         do { try document.validate(); try onSave(document); dismiss() }
                         catch { self.error = error.localizedDescription }
-                    }.disabled(document == original)
+                    }.disabled(document == original || draftWall != nil || firstPoint != nil || manipulation != nil)
                 }
             }
-            .interactiveDismissDisabled(document != original)
+            .interactiveDismissDisabled(hasChanges)
             .alert("Abandonner les modifications ?", isPresented: $discard) {
                 Button("Continuer l’édition", role: .cancel) { }
                 Button("Abandonner", role: .destructive) { dismiss() }
@@ -401,7 +469,7 @@ struct SurveyPlanEditor: View {
             }
             .sheet(item: $proposal) { proposal in
                 WallCeilingEstimateView(document: document, proposal: proposal,ceilingNumbers:ceilingNumbers,
-                    appliesToPlan:true) { document = $0 }
+                    appliesToPlan:true) { commitDocument($0) }
             }
             .sheet(isPresented:$choosingCeiling,onDismiss:{
                 proposal = pendingCeiling; pendingCeiling = nil
@@ -419,11 +487,28 @@ struct SurveyPlanEditor: View {
 
     private var ceilingMenu: some View {
         Button { prepareCeiling() } label: { Label("Plafonds",systemImage:"square.3.layers.3d") }
+            .disabled(drawingPartition || draftWall != nil || manipulation != nil)
     }
 
     private var controls: some View {
         VStack(spacing: 10) {
-            if let opening=document.room.openings.first(where: { $0.id==selectedDoor }) {
+            if let draftWall {
+                HStack {
+                    number("Longueur du tracé",value:$length)
+                    number("Hauteur",value:$height)
+                    Button("Ajuster") { resizeSelectedWall() }
+                }
+                Button(fixedStart ? "Départ fixe · inverser" : "Arrivée fixe · inverser",systemImage:"arrow.left.arrow.right") { fixedStart.toggle() }
+                    .font(.caption)
+                Button("Ajouter la cloison",systemImage:"plus") {
+                    do {
+                        let a = fixedStart ? draftWall.start : draftWall.effectiveEnd-draftWall.direction*(length/100)
+                        let b = fixedStart ? draftWall.start+draftWall.direction*(length/100) : draftWall.effectiveEnd
+                        let next = try SurveyPlanEditing.addingPartition(document,start:a,end:b,height:height/100)
+                        commitDocument(next); self.draftWall=nil; selected=next.room.walls.last?.id; snapResult=nil; syncFields()
+                    } catch { self.error=error.localizedDescription }
+                }.buttonStyle(.borderedProminent)
+            } else if let opening=document.room.openings.first(where: { $0.id==selectedDoor }) {
                 HStack {
                     Text(opening.kind.title).font(.headline)
                     Spacer()
@@ -443,12 +528,15 @@ struct SurveyPlanEditor: View {
                     .font(.caption2).foregroundStyle(.secondary)
             } else if let wall {
                 HStack {
-                    number("Longueur", value: $length)
+                    number("Longueur du tracé", value: $length)
                     number("Hauteur maxi", value: $height)
-                    Button("Appliquer") {
-                        edit { try SurveyPlanEditing.changingWall(document, id: wall.id, start: wall.start,
-                            end: wall.start+wall.direction*(length/100), height: height/100) }
-                    }
+                    Button("Appliquer") { resizeSelectedWall() }
+                }
+                Button(fixedStart ? "Départ fixe · inverser" : "Arrivée fixe · inverser",systemImage:"arrow.left.arrow.right") { fixedStart.toggle() }.font(.caption)
+                if SurveyPlanEditing.isDesignedPartition(wall,in:document) {
+                    Text("Cloison ajoutée : les murs supports restent fixes.").font(.caption2).foregroundStyle(.secondary)
+                } else {
+                    Text("Correction du relevé : les murs raccordés suivent le sommet déplacé.").font(.caption2).foregroundStyle(.secondary)
                 }
                 HStack {
                     Picker("Largeur de porte", selection: $doorWidth) {
@@ -474,9 +562,7 @@ struct SurveyPlanEditor: View {
                     Text("Le profil scanné est conservé ; changer la hauteur le redimensionne proportionnellement.")
                         .font(.caption2).foregroundStyle(.secondary)
                 }
-                let candidates=document.room.walls.filter {
-                    $0.id != wall.id && (try? SurveyPlanEditing.mergingWalls(document,first:wall.id,second:$0.id)) != nil
-                }
+                let candidates=document.room.walls.filter { mergeCandidateIDs.contains($0.id) }
                 Menu {
                     ForEach(candidates) { candidate in
                         let index=document.room.walls.firstIndex { $0.id==candidate.id } ?? 0
@@ -503,9 +589,41 @@ struct SurveyPlanEditor: View {
         }
     }
     private func edit(_ action: () throws -> PlaquistoRoomDocument) {
-        do { document = try action(); syncFields() } catch { self.error = error.localizedDescription }
+        do { commitDocument(try action()); syncFields() } catch { self.error = error.localizedDescription }
+    }
+    private func commitDocument(_ next: PlaquistoRoomDocument) {
+        guard next != document else { return }
+        remember()
+        document=next
+    }
+    private func remember() {
+        history.append(.init(document:document,draftWall:draftWall,selected:selected,selectedDoor:selectedDoor,
+            firstPoint:firstPoint,drawingPartition:drawingPartition))
+        if history.count > 30 { history.removeFirst() }
+    }
+    private func resizeSelectedWall() {
+        guard let wall else { return }
+        let a = fixedStart ? wall.start : wall.effectiveEnd-wall.direction*(length/100)
+        let b = fixedStart ? wall.start+wall.direction*(length/100) : wall.effectiveEnd
+        do {
+            if draftWall != nil {
+                let next=try SurveyPlanEditing.addingPartition(document,start:a,end:b,height:height/100)
+                remember()
+                draftWall=next.room.walls.last
+            } else {
+                commitDocument(try SurveyPlanEditing.changingWall(document,id:wall.id,start:a,end:b,height:height/100,preserveOpeningLocations:true))
+            }
+            syncFields()
+        } catch { self.error=error.localizedDescription }
     }
     private func syncFields() {
+        // Merge validation can be expensive on a large scan. Recompute only
+        // after selection/commit, never for every finger-movement preview.
+        if let wall, draftWall == nil {
+            mergeCandidateIDs = Set(document.room.walls.filter {
+                $0.id != wall.id && (try? SurveyPlanEditing.mergingWalls(document,first:wall.id,second:$0.id)) != nil
+            }.map(\.id))
+        } else { mergeCandidateIDs=[] }
         if let wall { length = wall.length.effectiveValue*100; height = wall.height.effectiveValue*100 }
         if let opening=document.room.openings.first(where:{ $0.id==selectedDoor }) {
             openingWidth=opening.width.effectiveValue*100
@@ -522,28 +640,31 @@ struct SurveyPlanEditor: View {
             choosingCeiling = true
         } catch { self.error = error.localizedDescription }
     }
-    private func tap(_ p: RoomPoint, tolerance: Double) {
+    private func tap(_ p: RoomPoint, tolerance: Double, scale: Double) {
         if let ceilingID=splittingCeiling {
             if let start=firstPoint {
                 do {
-                    document=try WallCeilingEstimate.split(document,ceilingID:ceilingID,from:start,to:p)
+                    commitDocument(try WallCeilingEstimate.split(document,ceilingID:ceilingID,from:start,to:p))
                     splittingCeiling=nil; firstPoint=nil
                 } catch { self.error=error.localizedDescription; firstPoint=nil }
             } else { firstPoint=snappedToWall(p,tolerance:min(0.15,tolerance)) }
             return
         }
         if drawingPartition {
-            let p = snappedToWall(p, tolerance: min(0.15, tolerance))
+            let p = snappedPoint(p,anchor:firstPoint,tolerance:min(0.15,tolerance))
             if let firstPoint {
                 do {
-                    document = try SurveyPlanEditing.addingPartition(document, start: firstPoint, end: p,
+                    let next = try SurveyPlanEditing.addingPartition(document, start: firstPoint, end: p,
                         height: SurveyPlanEditing.suggestedHeight(in: document.room, at: firstPoint))
-                    selected = document.room.walls.last?.id; selectedDoor = nil
+                    remember()
+                    draftWall = next.room.walls.last; selectedDoor = nil; fixedStart=true
                     drawingPartition = false; self.firstPoint = nil; syncFields()
                 } catch { self.error = error.localizedDescription }
             } else { firstPoint = p }
             return
         }
+        guard draftWall == nil else { return }
+        if let wall, (centerHandle(wall,scale:scale)-p).horizontalLength < 22/scale { return }
         if let opening = document.room.openings.min(by: { ($0.center-p).horizontalLength < ($1.center-p).horizontalLength }),
            (opening.center-p).horizontalLength < tolerance {
             selectedDoor = opening.id; selected = opening.wallID; syncFields(); return
@@ -565,35 +686,108 @@ struct SurveyPlanEditor: View {
         let along = min(wall.length.effectiveValue, max(0, delta.x*wall.direction.x+delta.z*wall.direction.z))
         return wall.start+wall.direction*along
     }
-    private func finishDrag(from a: RoomPoint, to b: RoomPoint, tolerance: Double) {
-        defer { dragging = nil }
-        if let door = document.room.openings.first(where: { $0.id == selectedDoor }), let wall,
-           (door.center-a).horizontalLength < tolerance {
-            let delta = b-wall.start
-            let position = min(max(0, wall.length.effectiveValue-door.width.effectiveValue),
-                max(0, delta.x*wall.direction.x+delta.z*wall.direction.z-door.width.effectiveValue/2))
-            edit { try SurveyPlanEditing.movingDoor(document, id: door.id, position: position) }
-        } else if let wall, distance(a, wall) < tolerance {
-            let nearStart = (a-wall.start).horizontalLength < tolerance
-            let nearEnd = (a-wall.effectiveEnd).horizontalLength < tolerance
-            let delta = b-a
-            edit { try SurveyPlanEditing.changingWall(document, id: wall.id,
-                start: nearStart ? b : (nearEnd ? wall.start : wall.start+delta),
-                end: nearEnd ? b : (nearStart ? wall.effectiveEnd : wall.effectiveEnd+delta),
-                height: wall.height.effectiveValue) }
+    private func adoptSnap(_ result: SurveyPlanSnapping.Result) {
+        if result.key != nil && result.key != snapResult?.key { UISelectionFeedbackGenerator().selectionChanged() }
+        snapResult = result.key == nil ? nil : result
+    }
+    private func snappedPoint(_ p: RoomPoint, anchor: RoomPoint?, tolerance: Double) -> RoomPoint {
+        let result = snapping ? SurveyPlanSnapping.snap(p,anchor:anchor,
+            walls:document.room.walls.filter { $0.id != wall?.id },tolerance:tolerance,latched:snapResult?.key)
+            : .init(point:p)
+        adoptSnap(result)
+        return result.point
+    }
+    private func centerHandle(_ wall: PlaquistoWall, scale: Double) -> RoomPoint {
+        (wall.start+wall.effectiveEnd)*0.5 + RoomPoint(x:-wall.direction.z,y:0,z:wall.direction.x)*(28/scale)
+    }
+    private func beginManipulation(at point: RoomPoint, tolerance: Double, scale: Double) {
+        guard splittingCeiling == nil, !drawingPartition, let wall else { return }
+        let door=document.room.openings.first { $0.id == selectedDoor }
+        let handle: SurveyPlanManipulation.Handle
+        if let door, (door.center-point).horizontalLength < tolerance { handle = .door }
+        else if (centerHandle(wall,scale:scale)-point).horizontalLength < tolerance { handle = .body }
+        else {
+            let a=(wall.start-point).horizontalLength, b=(wall.effectiveEnd-point).horizontalLength
+            if min(a,b) < tolerance { handle = a <= b ? .start : .end }
+            else if distance(point,wall) < tolerance { handle = .body }
+            else { return }
         }
+        manipulation = .init(handle:handle,wall:wall,touch:point,door:door,
+            start:wall.start,end:wall.effectiveEnd,doorPosition:door?.positionOnWall.effectiveValue)
+    }
+    private func updateManipulation(to point: RoomPoint, tolerance: Double) {
+        guard var move=manipulation else { return }
+        let delta=point-move.touch, original=move.wall
+        switch move.handle {
+        case .start:
+            move.start=snappedPoint(original.start+delta,anchor:original.effectiveEnd,tolerance:tolerance)
+        case .end:
+            move.end=snappedPoint(original.effectiveEnd+delta,anchor:original.start,tolerance:tolerance)
+        case .body:
+            var correction=RoomPoint.zero
+            if snapping {
+                let targets=document.room.walls.filter { $0.id != original.id }
+                let starts=[original.start+delta,original.effectiveEnd+delta]
+                let choices=starts.map { p in
+                    (source:p,result:SurveyPlanSnapping.snap(p,walls:targets,tolerance:tolerance,latched:snapResult?.key))
+                }.filter { $0.result.key != nil }
+                if let best=choices.min(by:{ ($0.result.point-$0.source).length < ($1.result.point-$1.source).length }) {
+                    correction=best.result.point-best.source; adoptSnap(best.result)
+                } else { snapResult=nil }
+            }
+            move.start=original.start+delta+correction; move.end=original.effectiveEnd+delta+correction
+        case .door:
+            if let door=move.door {
+                move.doorPosition=min(max(0,original.length.effectiveValue-door.width.effectiveValue),
+                    max(0,door.positionOnWall.effectiveValue+delta.x*original.direction.x+delta.z*original.direction.z))
+            }
+        }
+        manipulation=move
+    }
+    private func finishManipulation() {
+        guard let move=manipulation else { return }
+        defer { manipulation=nil; snapResult=nil }
+        if draftWall != nil {
+            do {
+                let next=try SurveyPlanEditing.addingPartition(document,start:move.start,end:move.end,height:move.wall.height.effectiveValue)
+                if move.start != move.wall.start || move.end != move.wall.effectiveEnd { remember(); draftWall=next.room.walls.last }
+                syncFields()
+            } catch { self.error=error.localizedDescription }
+            return
+        }
+        if move.handle == .door, let door=move.door, let position=move.doorPosition {
+            guard abs(position-door.positionOnWall.effectiveValue) > 1e-6 else { return }
+            edit { try SurveyPlanEditing.movingDoor(document,id:door.id,position:position) }
+        } else {
+            guard (move.start-move.wall.start).horizontalLength > 1e-6 ||
+                    (move.end-move.wall.effectiveEnd).horizontalLength > 1e-6 else { return }
+            edit { try SurveyPlanEditing.changingWall(document,id:move.wall.id,start:move.start,end:move.end,
+                height:move.wall.height.effectiveValue,preserveOpeningLocations:move.preservesOpeningLocations) }
+        }
+    }
+    private var previewWalls: [PlaquistoWall] {
+        guard let manipulation else { return document.room.walls + (draftWall.map { [$0] } ?? []) }
+        if draftWall != nil { return document.room.walls + [manipulation.preview] }
+        return SurveyPlanEditing.previewWalls(document,wall:manipulation.wall,start:manipulation.start,end:manipulation.end)
     }
     private var plan: some View {
         GeometryReader { proxy in
-            let points = document.room.walls.flatMap { [$0.start, $0.effectiveEnd] }
+            let points = fittedPoints ?? original.room.walls.flatMap { [$0.start, $0.effectiveEnd] }
+            let displayWalls = previewWalls
             let minX = points.map(\.x).min() ?? 0, maxX = points.map(\.x).max() ?? 4
             let minZ = points.map(\.z).min() ?? 0, maxZ = points.map(\.z).max() ?? 4
             let scale = max(1, min((proxy.size.width-116)/max(1,maxX-minX), (proxy.size.height-116)/max(1,maxZ-minZ))) * zoom * pinch
             let center = RoomPoint(x: (minX+maxX)/2, y: document.room.walls.first?.start.y ?? 0, z: (minZ+maxZ)/2)
-            let screen: (RoomPoint) -> CGPoint = { .init(x: proxy.size.width/2+($0.x-center.x)*scale+offset.width,
-                y: proxy.size.height/2+($0.z-center.z)*scale+offset.height) }
-            let world: (CGPoint) -> RoomPoint = { .init(x: ($0.x-proxy.size.width/2-offset.width)/scale+center.x,
-                y: center.y, z: ($0.y-proxy.size.height/2-offset.height)/scale+center.z) }
+            let limitX = max(0, proxy.size.width/2 + (maxX-minX)*scale/2 - 40)
+            let limitY = max(0, proxy.size.height/2 + (maxZ-minZ)*scale/2 - 40)
+            let baseDX = min(limitX, max(-limitX, offset.width))
+            let baseDY = min(limitY, max(-limitY, offset.height))
+            let dx = min(limitX, max(-limitX, baseDX + (panning && !cancelledByPinch ? planDrag.width : 0)))
+            let dy = min(limitY, max(-limitY, baseDY + (panning && !cancelledByPinch ? planDrag.height : 0)))
+            let screen: (RoomPoint) -> CGPoint = { .init(x: proxy.size.width/2+($0.x-center.x)*scale+dx,
+                y: proxy.size.height/2+($0.z-center.z)*scale+dy) }
+            let world: (CGPoint) -> RoomPoint = { .init(x: ($0.x-proxy.size.width/2-baseDX)/scale+center.x,
+                y: center.y, z: ($0.y-proxy.size.height/2-baseDY)/scale+center.z) }
             Canvas { context, _ in
                 var occupied:[CGRect]=[]
                 for ceiling in document.room.ceilings {
@@ -620,19 +814,35 @@ struct SurveyPlanEditor: View {
                         ArchitecturalPlanInk.ceilingLabel(context,title:CeilingPlanNaming.title(ceiling,in:document.room,numbers:ceilingNumbers),point:screen(point))
                     }
                 }
-                for wall in document.room.walls {
+                for wall in displayWalls {
                     let a = screen(wall.start), b = screen(wall.effectiveEnd)
                     var line = Path(); line.move(to: a); line.addLine(to: b)
-                    context.stroke(line, with: .color(wall.id == selected ? .orange : ArchitecturalPlanInk.wall), style: .init(lineWidth: 6, lineCap: .square))
+                    let active = wall.id == selected || wall.id == draftWall?.id
+                    context.stroke(line, with: .color(active ? .orange : ArchitecturalPlanInk.wall), style: .init(lineWidth: 6, lineCap: .square))
                     ArchitecturalPlanInk.dimension(context,a:a,b:b,meters:wall.length.effectiveValue,
-                        center:screen(center),occupied:&occupied,important:wall.id==selected)
-                    if wall.id == selected {
+                        center:screen(center),occupied:&occupied,important:active)
+                    if active {
                         for p in [a,b] { context.fill(Path(ellipseIn: CGRect(x:p.x-7,y:p.y-7,width:14,height:14)),with:.color(.orange)) }
+                        let handle=screen(centerHandle(wall,scale:scale)), mid=screen((wall.start+wall.effectiveEnd)*0.5)
+                        var leader=Path(); leader.move(to:mid); leader.addLine(to:handle)
+                        context.stroke(leader,with:.color(.orange.opacity(0.7)),lineWidth:1)
+                        context.fill(Path(ellipseIn:CGRect(x:handle.x-10,y:handle.y-10,width:20,height:20)),with:.color(.orange))
+                        context.draw(Text("✥").font(.system(size:14,weight:.bold)).foregroundColor(.black),at:handle)
+                        for (point,name) in [(a,"Départ"),(b,"Arrivée")] {
+                            context.draw(Text(name).font(.system(size:10,weight:.semibold)).foregroundColor(ArchitecturalPlanInk.wall),
+                                at:CGPoint(x:point.x,y:point.y-19))
+                        }
                     }
                 }
                 for door in document.room.openings {
-                    guard let wall = document.room.walls.first(where: { $0.id == door.wallID }) else { continue }
-                    let a = wall.start+wall.direction*door.positionOnWall.effectiveValue
+                    guard let wall = displayWalls.first(where: { $0.id == door.wallID }) else { continue }
+                    var position = manipulation?.handle == .door && manipulation?.door?.id == door.id
+                        ? manipulation?.doorPosition ?? door.positionOnWall.effectiveValue : door.positionOnWall.effectiveValue
+                    if manipulation?.preservesOpeningLocations == true, manipulation?.wall.id == wall.id {
+                        let delta = door.center-wall.start
+                        position = delta.x*wall.direction.x+delta.z*wall.direction.z-door.width.effectiveValue/2
+                    }
+                    let a = wall.start+wall.direction*position
                     ArchitecturalPlanInk.opening(context,a:screen(a),b:screen(a+wall.direction*door.width.effectiveValue),
                         window:door.kind == .window || door.kind == .glazedBay,selected:door.id==selectedDoor)
                 }
@@ -640,27 +850,51 @@ struct SurveyPlanEditor: View {
                     let p = screen(firstPoint)
                     context.fill(Path(ellipseIn: CGRect(x:p.x-6,y:p.y-6,width:12,height:12)),with:.color(.orange))
                 }
-                if let dragging {
-                    var line = Path(); line.move(to: screen(dragging.start)); line.addLine(to: screen(dragging.current))
-                    context.stroke(line, with: .color(.orange), style: .init(lineWidth: 2, dash: [4,3]))
+                if let snapResult {
+                    if let guide=snapResult.guide {
+                        var line=Path(); line.move(to:screen(guide)); line.addLine(to:screen(snapResult.point))
+                        context.stroke(line,with:.color(.blue),style:.init(lineWidth:1.5,dash:[5,3]))
+                    }
+                    let point=screen(snapResult.point)
+                    context.stroke(Path(ellipseIn:CGRect(x:point.x-11,y:point.y-11,width:22,height:22)),with:.color(.blue),lineWidth:2)
+                    context.draw(Text(snapResult.title ?? "").font(.system(size:12,weight:.bold)).foregroundColor(.blue),
+                        at:CGPoint(x:point.x,y:point.y-35))
                 }
             }
             .contentShape(Rectangle())
             .background(ArchitecturalPlanInk.paper)
-            .gesture(SpatialTapGesture().onEnded { tap(world($0.location), tolerance: 25/scale) })
             .simultaneousGesture(MagnifyGesture().updating($pinch) { value,state,_ in state = value.magnification }
+                .onChanged { _ in cancelledByPinch = true; manipulation=nil; snapResult=nil; panning = false }
                 .onEnded { zoom = min(8,max(0.5,zoom*$0.magnification)) })
-            .simultaneousGesture(DragGesture(minimumDistance: 8).onChanged { value in
-                dragging = (world(value.startLocation), world(value.location))
+            .gesture(DragGesture(minimumDistance: 8).updating($planDrag) { value,state,_ in state = value.translation }.onChanged { value in
+                guard !cancelledByPinch else { return }
+                if manipulation == nil && !panning { beginManipulation(at:world(value.startLocation),tolerance:22/scale,scale:scale) }
+                panning = manipulation == nil
+                if manipulation != nil { updateManipulation(to:world(value.location),tolerance:min(0.15,12/scale)) }
             }.onEnded { value in
-                let a = world(value.startLocation), b = world(value.location)
-                if splittingCeiling == nil, !drawingPartition, let wall, distance(a,wall) < 25/scale { finishDrag(from:a,to:b,tolerance:25/scale) }
-                else {
-                    offset.width = min(proxy.size.width/2,max(-proxy.size.width/2,offset.width+value.translation.width))
-                    offset.height = min(proxy.size.height/2,max(-proxy.size.height/2,offset.height+value.translation.height))
-                    dragging = nil
+                defer { panning = false; cancelledByPinch = false }
+                guard !cancelledByPinch else { return }
+                // Very quick drags can end before SwiftUI delivers onChanged.
+                // Resolve their initial target too, instead of treating every
+                // such gesture as viewport navigation.
+                if manipulation == nil && !panning {
+                    beginManipulation(at:world(value.startLocation),tolerance:22/scale,scale:scale)
                 }
-            })
+                if manipulation != nil {
+                    updateManipulation(to:world(value.location),tolerance:min(0.15,12/scale))
+                    finishManipulation()
+                }
+                else {
+                    offset.width = min(limitX,max(-limitX,baseDX+value.translation.width))
+                    offset.height = min(limitY,max(-limitY,baseDY+value.translation.height))
+                }
+            }.exclusively(before:SpatialTapGesture().onEnded { tap(world($0.location), tolerance:25/scale,scale:scale) }))
+            .onChange(of: pinch) { _, value in
+                if value == 1 && planDrag == .zero { cancelledByPinch = false }
+            }
+            .onChange(of: planDrag) { _, value in
+                if value == .zero && pinch == 1 { cancelledByPinch = false }
+            }
             .clipped()
         }
     }
@@ -684,8 +918,14 @@ enum ArchitecturalPlanInk {
         }
         return point
     }
-    static let paper=Color(red:0.975,green:0.97,blue:0.95)
-    static let wall=Color(red:0.22,green:0.24,blue:0.28)
+    static let paper=Color(uiColor: UIColor { traits in
+        traits.userInterfaceStyle == .dark ? UIColor(red:0.11,green:0.12,blue:0.13,alpha:1)
+            : UIColor(red:0.975,green:0.97,blue:0.95,alpha:1)
+    })
+    static let wall=Color(uiColor: UIColor { traits in
+        traits.userInterfaceStyle == .dark ? UIColor(red:0.85,green:0.86,blue:0.88,alpha:1)
+            : UIColor(red:0.22,green:0.24,blue:0.28,alpha:1)
+    })
     static func dimension(_ context:GraphicsContext, a:CGPoint, b:CGPoint, meters:Double,
                           center:CGPoint, occupied:inout [CGRect], important:Bool=false) {
         let length=hypot(b.x-a.x,b.y-a.y)
@@ -1079,6 +1319,7 @@ struct WallCeilingEstimateView: View {
 }
 
 struct RoomDomainScene: UIViewRepresentable {
+    @Environment(\.colorScheme) private var colorScheme
     let room: PlaquistoRoomModel
     @Binding var selected: UUID?
     let ceilingMode: Int
@@ -1096,6 +1337,7 @@ struct RoomDomainScene: UIViewRepresentable {
     }
     func updateUIView(_ view:SCNView,context:Context) {
         update(view,coordinator:context.coordinator)
+        MaquetteStyle.updateBackground(view, dark: colorScheme == .dark)
     }
     func update(_ view:SCNView,coordinator:Coordinator) {
         let previous=coordinator.parent

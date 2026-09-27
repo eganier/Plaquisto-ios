@@ -261,6 +261,7 @@ struct SheetLayoutView: View {
     @State private var pendingPartAction: (() -> Void)?
     @State private var cleanDocument: LayoutDocument?
     var initialDocument: LayoutDocument? = nil
+    var newDocumentConfiguration: WorkConfiguration? = nil
     var onSaveDocument: ((LayoutDocument) throws -> Void)? = nil
     var requiredSupportKind: LayoutSupportKind? = nil
     var sharedPartitionFraming = false
@@ -272,7 +273,8 @@ struct SheetLayoutView: View {
     init(initialDocument: LayoutDocument? = nil, onSaveDocument: ((LayoutDocument) throws -> Void)? = nil, requiredSupportKind: LayoutSupportKind? = nil, sharedPartitionFraming: Bool = false,
          reviewLinkedDocument: ((LayoutDocument) throws -> ComponentAdjacencyReview)? = nil,
          saveReviewedDocument: ((LayoutDocument, ComponentAdjacencyReview, ComponentAdjacencyDecision) throws -> Void)? = nil,
-         workbook: LayoutWorkbookNavigation? = nil) {
+         workbook: LayoutWorkbookNavigation? = nil, newDocumentConfiguration: WorkConfiguration? = nil) {
+        self.newDocumentConfiguration = newDocumentConfiguration
         self.workbook = workbook
         self.initialDocument = initialDocument
         self.onSaveDocument = onSaveDocument
@@ -699,6 +701,15 @@ struct SheetLayoutView: View {
                             .padding(8).accessibilityLabel("Aligner le bas sur l’axe horizontal")
                             .disabled(drag != nil || pinching || lightingRotationOriginal != nil)
                     }
+                    .overlay(alignment: .bottomTrailing) {
+                        if document.surface.kind == .ceiling {
+                            HStack(spacing: 8) {
+                                referenceWallButton(document, clockwise: false)
+                                referenceWallButton(document, clockwise: true)
+                            }.padding(8)
+                            .disabled(drag != nil || pinching || lightingRotationOriginal != nil || model.isOptimizing)
+                        }
+                    }
                     .onChange(of: proxy.size) { _, _ in
                         pan = viewport.constrainedPan(pan, contour: document.surface.contour)
                     }
@@ -829,6 +840,19 @@ struct SheetLayoutView: View {
             model.apply(copy); spotEditError = nil
         } catch { spotEditError = error.localizedDescription }
     }
+    private func referenceWallButton(_ document: LayoutDocument, clockwise: Bool) -> some View {
+        Button {
+            guard !document.layers.isEmpty else { return }
+            var copy = document
+            copy.layers[0].referenceEdge = LayoutPlanning.nextReferenceEdge(document.surface,
+                current: document.layers[0].referenceEdge, clockwise: clockwise)
+            model.apply(copy)
+            UISelectionFeedbackGenerator().selectionChanged()
+        } label: {
+            Image(systemName: clockwise ? "arrow.clockwise" : "arrow.counterclockwise")
+                .frame(width: 44, height: 44).background(.regularMaterial, in: Circle())
+        }.accessibilityLabel(clockwise ? "Mur de référence suivant, sens horaire" : "Mur de référence précédent, sens antihoraire")
+    }
 
     private func draw(context: inout GraphicsContext, size: CGSize, document: LayoutDocument, viewport: LayoutViewport) {
         let surface = document.surface
@@ -870,6 +894,13 @@ struct SheetLayoutView: View {
             }
         }
         context.stroke(layoutPath(surface.contour, transform: viewport), with: .color(.primary), lineWidth: 2)
+        if surface.kind == .ceiling, let edge = document.layers.first?.referenceEdge,
+           surface.contour.indices.contains(edge) {
+            var reference = Path()
+            reference.move(to: viewport.screen(surface.contour[edge]))
+            reference.addLine(to: viewport.screen(surface.contour[(edge+1)%surface.contour.count]))
+            context.stroke(reference, with: .color(.blue), lineWidth: 4)
+        }
         if let laying = try? surface.layingContour(), laying != surface.contour {
             context.stroke(layoutPath(laying,transform:viewport),with:.color(.orange),lineWidth:2.5)
         }
@@ -1102,7 +1133,13 @@ struct SheetLayoutView: View {
     @ViewBuilder private func sheetContent(_ destination: LayoutEditorSheet) -> some View {
         switch destination {
         case .newSurface:
-            LayoutSurfaceForm(requiredKind: requiredSupportKind) { document in model.startNew(); model.apply(document); zoom = 1; pan = .zero; selectedVertex = nil }
+            LayoutSurfaceForm(requiredKind: requiredSupportKind) { document in
+                model.startNew()
+                model.apply(newDocumentConfiguration.map {
+                    WorkLayoutDefaults.document(surface: document.surface, configuration: $0)
+                } ?? document)
+                zoom = 1; pan = .zero; selectedVertex = nil
+            }
         case .settings:
             if let document = model.document, let layer = document.layers.first {
                 LayoutSettingsForm(layer: layer, surface:document.surface) { value in var copy = document; copy.layers[0] = value; model.apply(copy) }.environmentObject(catalogue)

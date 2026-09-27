@@ -1,5 +1,48 @@
 # Plaquisto — état du développement
 
+## Ergonomie relevé, gestes et initialisation du calepinage — 27 septembre 2026
+
+- Branche `codex/survey-layout-usability`, depuis `origin/main` après la PR #2.
+  Aucun changement de l’acquisition RoomPlan ou des données du scan initial.
+- Onglet Plafonds : état vide explicite et accès direct au choix de zone puis au
+  configurateur. L’enregistrement du plan reste explicite. Mode sombre harmonisé
+  pour le papier du plan, les murs, les fonds de scène et les miniatures en cache.
+- Éditeur 2D : déplacement de vue en direct ; sélection puis translation du
+  segment ou redimensionnement par poignées. Nouvelle cloison en deux appuis,
+  brouillon ajustable, longueur/hauteur et choix de l’extrémité fixe avant Ajouter.
+  Aimants aux extrémités, aux murs, parallèles/perpendiculaires aux directions du
+  scan (pas aux axes mondiaux), avec hystérésis, guide et retour haptique.
+  Aimantation désactivable et annulation du dernier geste. Les appuis et drags
+  sont exclusifs ; un drag très bref est traité même sans callback intermédiaire.
+- Une cloison projetée reste indépendante du contour scanné, même si son départ
+  touche un angle du relevé. Une correction du mur scanné prévisualise les
+  jonctions effectivement déplacées. Refus des nouveaux croisements et
+  chevauchements colinéaires ; jonctions en T permises. Les portes suivent une
+  translation et gardent leur emplacement lors d’un allongement colinéaire.
+  Validation lourde au relâchement ; recherche des fusions hors boucle de drag.
+- Recommandations et relecture de l’agent au profil artisan/SketchUp intégrées.
+  Il s’agit d’un profil simulé, non d’un essai terrain avec un artisan réel.
+- Nouveaux calepinages de plafond : grand côté des plaques perpendiculaire au
+  bord le plus long, format 120×240 cm, fourrures visibles à 60 cm. Depuis un
+  ouvrage : reprise du format couvrant la plus grande surface cumulée et de
+  l’entraxe configuré. Aucun écrasement des calepinages déjà enregistrés.
+  Deux boutons ronds font défiler le mur de référence dans les deux sens.
+- Formulaire plafond horizontal : entraxe présenté avant le plénum à l’étape 4.
+- Vérification : 289 tests réussis, dont 11 nouveaux tests sur orientation,
+  import des réglages, conservation des plans, thème et gestes/géométrie.
+  Logs : `/tmp/plaquisto-gestures-verified.log` et compilation iPhone signée
+  `/tmp/plaquisto-usability-device.log` (réussie). Preuve autonome compilation,
+  sauvegarde/relecture : `/tmp/plaquisto-gestures-proof.log`.
+- Essais sur simulateur : création provisoire et ajout, translation par corps et
+  poignée centrale sans déplacement du contour, allongement, aimantation au mur,
+  annulation et désactivation des aimants, plan sombre, accès direct aux plafonds.
+  Le pincement multi-touch et les vibrations restent à vérifier sur iPhone.
+  Option de preuve : `Tests/run-room-model-proof.sh <simulateur> --configure-ceilings`.
+- Pas d’installation iPhone, commit, push ou fusion pour ce lot à ce stade.
+  Réemploi des chutes/quinconce non implémentés dans ce lot : portée limitée au
+  calepinage affiché, minimum fixe de 20 cm (sans réglage utilisateur), appui sur
+  deux fourrures ou périphérie + une fourrure, décalage adapté aux fourrures.
+
 ## Préréglage des plafonds après scan — 27 septembre 2026
 
 - Expérimentation isolée sur `codex/ceiling-auto-fit`, issue de `origin/main`

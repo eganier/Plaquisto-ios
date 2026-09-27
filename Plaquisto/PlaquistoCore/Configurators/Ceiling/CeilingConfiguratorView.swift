@@ -79,7 +79,7 @@ struct CeilingConfiguratorView: View {
     private let preserveInitialSpacing: Bool
     private let lockScannedGeometry: Bool
 
-    private let stepNames = ["Dimensions", "Support", "Isolation", "Plénum et entraxe", "Fixation", "Parements", "Bandes à joint", "Résultat"]
+    private let stepNames = ["Dimensions", "Support", "Isolation", "Entraxe et plénum", "Fixation", "Parements", "Bandes à joint", "Résultat"]
     private let spacingChoices = [0.4, 0.5, 0.6]
 
     init(
@@ -681,6 +681,19 @@ struct CeilingConfiguratorView: View {
             }
 
         case 3:
+            Section("Entraxe des fourrures") {
+                Picker("Entraxe", selection: $selectedSpacing) {
+                    ForEach(spacingChoices, id: \.self) { spacing in Text("\(Int(spacing * 100)) cm").tag(spacing) }
+                }
+                .pickerStyle(.segmented)
+                LabeledContent("Maximum recommandé", value: maximumSpacing.map { "\(Int($0 * 100)) cm" } ?? "Non couvert")
+            }
+            if spacingIsAboveRecommendation {
+                Section {
+                    Label("L’entraxe choisi dépasse la valeur maximale recommandée pour cette configuration.", systemImage: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.orange)
+                }
+            }
             Section {
                 LabeledContent("Plénum minimal calculé", value: "\(format(minimumPlenum)) cm")
                 MeasureField(label: "Marge supplémentaire", value: additionalPlenumBinding, unit: "cm")
@@ -695,19 +708,6 @@ struct CeilingConfiguratorView: View {
                       systemImage: "info.circle")
                 Text("Vous pouvez ajouter une marge pour le passage de gaines, de canalisations ou l’installation de spots.")
                     .foregroundStyle(.secondary)
-            }
-            Section("Entraxe des fourrures") {
-                Picker("Entraxe", selection: $selectedSpacing) {
-                    ForEach(spacingChoices, id: \.self) { spacing in Text("\(Int(spacing * 100)) cm").tag(spacing) }
-                }
-                .pickerStyle(.segmented)
-                LabeledContent("Maximum recommandé", value: maximumSpacing.map { "\(Int($0 * 100)) cm" } ?? "Non couvert")
-            }
-            if spacingIsAboveRecommendation {
-                Section {
-                    Label("L’entraxe choisi dépasse la valeur maximale recommandée pour cette configuration.", systemImage: "exclamationmark.triangle.fill")
-                        .foregroundStyle(.orange)
-                }
             }
 
         case 4:

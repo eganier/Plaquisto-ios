@@ -631,8 +631,9 @@ private struct ComponentPlanEditorView: View {
     }
 
     var body: some View {
-        let plan = openedComponent.plans.first { $0.sideRoomID == side } ?? ComponentLayoutPlan(sideRoomID: side)
-        SheetLayoutView(initialDocument: openedComponent.document(for: plan), onSaveDocument: { document in
+        let configuration = store.project(id: projectID)?.works.first { $0.id == workID }?.payload
+        let initial = openedComponent.initialDocument(sideRoomID:side,configuration:configuration)
+        SheetLayoutView(initialDocument: initial, onSaveDocument: { document in
             try store.saveComponentPlan(projectID: projectID, workID: workID, componentID: openedComponent.id,
                 sideRoomID: side, document: document, expectedGeometryRevision: openedComponent.geometryRevision,
                 newComponent: openedComponent)
@@ -644,7 +645,7 @@ private struct ComponentPlanEditorView: View {
                 sideRoomID: side, document: document, expectedGeometryRevision: openedComponent.geometryRevision,
                 adjacencyDecision: decision, reviewedAdjacency: review, newComponent: openedComponent)
             refreshOpenedComponent()
-        }, workbook: workbook)
+        }, workbook: workbook, newDocumentConfiguration: configuration)
         .environmentObject(catalogue)
         .task { await catalogue.load() }
     }

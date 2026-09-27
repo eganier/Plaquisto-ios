@@ -1,5 +1,41 @@
 import Foundation
 
+/// Initial values only: never applied to an existing component plan.
+enum WorkLayoutDefaults {
+    static func document(surface: Surface2D, configuration: WorkConfiguration) -> LayoutDocument {
+        var document = LayoutDocument.newSupport(surface)
+        var formats: [(id: String, area: Double)] = []
+        var spacing: Double?
+        switch configuration {
+        case .ceiling(let value):
+            formats = value.firstSkin.map { ($0.dimensionID, $0.area) }
+            spacing = value.selectedSpacing
+        case .railStudCeiling(let value):
+            formats = value.firstSkin.map { ($0.dimensionID, $0.area) }
+            spacing = 0.6 // This configurator uses fixed 60 cm stud centres.
+        case .peripheralLining(let value):
+            formats = value.firstSkin.map { ($0.formatID, $0.surface) }
+            spacing = value.spacing
+        case .furringLining(let value):
+            formats = value.firstSkin.map { ($0.formatID, $0.surface) }
+            spacing = value.furringSpacing
+        default: return .init(surface:surface)
+        }
+        let totals = formats.reduce(into: [String: Double]()) { $0[$1.id, default: 0] += max(0, $1.area) }
+        let primary = totals.keys.sorted().max { totals[$0, default: 0] < totals[$1, default: 0] }
+        if let primary {
+            let dimensions = primary.split(separator: "x").compactMap { Double($0) }
+            if dimensions.count == 2, dimensions.allSatisfy({ $0.isFinite && $0 > 0 && $0 <= 100_000 }) {
+                document.layers[0].sheetWidth = dimensions[0]
+                document.layers[0].sheetLength = dimensions[1]
+            }
+        }
+        // Never silently replace the ouvrage's technical spacing choice.
+        if let spacing, spacing.isFinite, spacing > 0 { document.layers[0].furring?.spacing = spacing * 1000 }
+        return document
+    }
+}
+
 enum LayoutVisibilityState: Int, CaseIterable {
     case visible, dimensioned, hidden
     var isVisible: Bool { self != .hidden }
@@ -26,6 +62,8 @@ extension LayoutDocument {
             layer.sheetWidth = 1200
             layer.sheetLength = 2400
             layer.furring?.spacing = 600
+            layer.referenceEdge = LayoutPlanning.longestReferenceEdge(surface)
+            layer.orientation = .vertical // Long dimension perpendicular to the reference wall.
         } else {
             let spacing = LayoutPlanning.compatibleSpacings(layer).last ?? 400
             layer.furring?.spacing = spacing
@@ -67,6 +105,25 @@ struct LayoutWallDimension: Identifiable {
 }
 
 enum LayoutPlanning {
+    static func longestReferenceEdge(_ surface: Surface2D) -> Int? {
+        surface.contour.indices.max {
+            (surface.contour[($0+1)%surface.contour.count]-surface.contour[$0]).length <
+            (surface.contour[($1+1)%surface.contour.count]-surface.contour[$1]).length
+        }
+    }
+
+    /// Layout coordinates are y-up. Traversal therefore follows polygon winding,
+    /// not array order (RoomPlan can supply either winding).
+    static func nextReferenceEdge(_ surface: Surface2D, current: Int?, clockwise: Bool) -> Int? {
+        let count = surface.contour.count
+        guard count > 1 else { return nil }
+        let current = current.flatMap { surface.contour.indices.contains($0) ? $0 : nil }
+            ?? longestReferenceEdge(surface) ?? 0
+        let ccw = LayoutGeometry.area(surface.contour) > 0
+        let step = clockwise == ccw ? -1 : 1
+        return (current + step + count) % count
+    }
+
     static func centeredLighting(_ lighting:LayoutLighting, selected:Set<Int>, surface:Surface2D) throws -> LayoutLighting {
         let points = selected.sorted().filter { lighting.positions.indices.contains($0) }.map { lighting.positions[$0] }
         guard !points.isEmpty else { return lighting }

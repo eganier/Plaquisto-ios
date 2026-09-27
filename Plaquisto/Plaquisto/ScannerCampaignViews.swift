@@ -26,6 +26,7 @@ struct ScannerCampaignWorkspaceView: View {
     @State private var creating = false
     @State private var savingSurvey = false
     @State private var choosingRoom = false
+    @State private var configuringCeilings = false
     @State private var editing: ProjectRoomScanCheckpoint?
     @State private var revision = Date()
     @State private var showsCeilings = false
@@ -60,6 +61,18 @@ struct ScannerCampaignWorkspaceView: View {
                     Text("Plafonds").tag(SurveySurfaceSource.Kind.ceiling)
                 }.pickerStyle(.segmented)
             }.padding()
+            if kind == .ceiling {
+                HStack {
+                    if !surfaces.contains(where: { $0.source.kind == .ceiling }) {
+                        Text("Les plafonds ne sont pas encore configurés.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Button("Configurer les plafonds", systemImage: "square.3.layers.3d") {
+                        openEditor(ceilings: true)
+                    }.buttonStyle(.bordered)
+                }.padding(.horizontal).padding(.bottom, 8)
+            }
             if survey.checkpoints.count > 1 && survey.checkpoints.contains(where: { $0.spatialLinkState == .needsLink }) {
                 Label("Raccord non confirmé : zones présentées séparément", systemImage: "exclamationmark.triangle")
                     .font(.caption).foregroundStyle(.orange).padding(.horizontal)
@@ -73,7 +86,7 @@ struct ScannerCampaignWorkspaceView: View {
                         claimed: [], onTap: toggle, showsCeilings: showsCeilings, resetToken: cameraReset)
                 }
             }.overlay(alignment: .bottomLeading) {
-                if chosen.isEmpty {
+                if chosen.isEmpty && (kind == .wall || surfaces.contains(where: { $0.source.kind == .ceiling })) {
                     Text(kind == .wall ? "Touchez les murs à inclure dans un ouvrage" : "Touchez les plafonds à inclure dans un ouvrage")
                         .font(.caption).padding(10).background(.regularMaterial, in: Capsule()).padding()
                 }
@@ -95,8 +108,7 @@ struct ScannerCampaignWorkspaceView: View {
             }
             HStack {
                 Button("Modifier le plan", systemImage: "pencil.and.outline") {
-                    if survey.checkpoints.count == 1 { editing = survey.checkpoints.first }
-                    else { choosingRoom = true }
+                    openEditor(ceilings: false)
                 }
                 Spacer()
                 if plan { Toggle("Cotes", isOn: $dimensions).fixedSize() }
@@ -132,8 +144,7 @@ struct ScannerCampaignWorkspaceView: View {
                 Divider()
                 Button("Tout désélectionner") { selectedKeys = [] }
                 Button("Créer ou modifier un plafond", systemImage: "square.3.layers.3d.top.filled") {
-                    if survey.checkpoints.count == 1 { editing = survey.checkpoints.first }
-                    else { choosingRoom = true }
+                    openEditor(ceilings: true)
                 }
                 NavigationLink("Contrôler le relevé et les raccords") {
                     if store.surveys.contains(where: { $0.id == draft.id }) {
@@ -176,7 +187,8 @@ struct ScannerCampaignWorkspaceView: View {
             }
         }
         .sheet(item: $editing) { checkpoint in
-            SurveyPlanEditor(document: checkpoint.document,ceilingNumbers:CeilingPlanNaming.numbers(in:survey)) { document in
+            SurveyPlanEditor(document: checkpoint.document,ceilingNumbers:CeilingPlanNaming.numbers(in:survey),
+                             initiallyConfigureCeilings: configuringCeilings) { document in
                 if store.surveys.contains(where: { $0.id == draft.id }) {
                     try store.updateSurveyRoom(surveyID: draft.id, checkpointID: checkpoint.id,
                         expectedDocument: checkpoint.document, document: document)
@@ -202,6 +214,11 @@ struct ScannerCampaignWorkspaceView: View {
         }
     }
 
+    private func openEditor(ceilings: Bool) {
+        configuringCeilings = ceilings
+        if survey.checkpoints.count == 1 { editing = survey.checkpoints.first }
+        else { choosingRoom = true }
+    }
 }
 
 private struct SurveyWorkspaceCreationFlow: View {

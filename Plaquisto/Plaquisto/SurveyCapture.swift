@@ -17,9 +17,42 @@ enum SurveyPlanEditing {
         }
     }
     static let doorWidths: [Double] = [0.73, 0.83, 0.93]
+    static func isDesignedPartition(_ wall: PlaquistoWall, in document: PlaquistoRoomDocument) -> Bool {
+        wall.provenance.source == .manual && document.wallWorkIntents?.contains(where: {
+            $0.wallID == wall.id && $0.use == .partition
+        }) == true
+    }
+
+    /// Cheap gesture preview. Uses exactly the same junction policy as commit,
+    /// but leaves validation and persistence to the end of the gesture.
+    static func previewWalls(_ document: PlaquistoRoomDocument, wall: PlaquistoWall,
+                             start: RoomPoint, end: RoomPoint) -> [PlaquistoWall] {
+        document.room.walls.map { existing in
+            var preview = existing
+            preview.start = existing.id == wall.id ? start : movedJunction(existing.start,
+                wall:wall, start:start, end:end, document:document)
+            preview.end = existing.id == wall.id ? end : movedJunction(existing.effectiveEnd,
+                wall:wall, start:start, end:end, document:document)
+            let delta = preview.end-preview.start
+            preview.length.manualValue = hypot(delta.x,delta.z)
+            preview.length.manuallyValidated = true
+            return preview
+        }
+    }
+
+    private static func movedJunction(_ point: RoomPoint, wall: PlaquistoWall,
+                                      start: RoomPoint, end: RoomPoint,
+                                      document: PlaquistoRoomDocument) -> RoomPoint {
+        // A projected partition never pulls the scanned shell along with it.
+        guard !isDesignedPartition(wall, in:document) else { return point }
+        if (point-wall.start).length < 0.03 { return start }
+        if (point-wall.effectiveEnd).length < 0.03 { return end }
+        return point
+    }
 
     static func changingWall(_ document: PlaquistoRoomDocument, id: UUID,
-                             start: RoomPoint, end: RoomPoint, height: Double) throws -> PlaquistoRoomDocument {
+                             start: RoomPoint, end: RoomPoint, height: Double,
+                             preserveOpeningLocations: Bool = false) throws -> PlaquistoRoomDocument {
         guard let old = document.room.walls.first(where: { $0.id == id }) else { throw Failure.missingWall }
         guard start.finite, end.finite, height.isFinite, height > 0, height <= 100,
               hypot(end.x-start.x, end.z-start.z) >= 0.1 else { throw Failure.invalidSize }
@@ -27,9 +60,7 @@ enum SurveyPlanEditing {
         let a = RoomPoint(x: start.x, y: old.start.y, z: start.z)
         let b = RoomPoint(x: end.x, y: old.end.y, z: end.z)
         func moved(_ p: RoomPoint) -> RoomPoint {
-            if (p-old.start).length < 0.03 { return a }
-            if (p-old.effectiveEnd).length < 0.03 { return b }
-            return p
+            movedJunction(p, wall:old, start:a, end:b, document:document)
         }
         var affected = Set<UUID>()
         for i in result.room.walls.indices {
@@ -50,6 +81,12 @@ enum SurveyPlanEditing {
         for i in result.room.openings.indices {
             guard let wallID = result.room.openings[i].wallID, affected.contains(wallID),
                   let wall = result.room.walls.first(where: { $0.id == wallID }) else { continue }
+            if preserveOpeningLocations, wallID == id {
+                let delta = document.room.openings[i].center-wall.start
+                let position = delta.x*wall.direction.x + delta.z*wall.direction.z-result.room.openings[i].width.effectiveValue/2
+                result.room.openings[i].positionOnWall.manualValue = abs(position) < 1e-8 ? 0 : position
+                result.room.openings[i].positionOnWall.manuallyValidated = true
+            }
             try validateOpening(result.room.openings[i], wall: wall)
             result.room.openings[i].center = openingCenter(result.room.openings[i], wall: wall)
         }
@@ -57,8 +94,8 @@ enum SurveyPlanEditing {
         // imperfections editable. T-junctions at segment endpoints are allowed.
         for i in result.room.walls.indices {
             for j in result.room.walls.indices where j > i {
-                if crosses(result.room.walls[i], result.room.walls[j]),
-                   !crosses(document.room.walls[i], document.room.walls[j]) { throw Failure.crossingWalls }
+                if conflicts(result.room.walls[i], result.room.walls[j]),
+                   !conflicts(document.room.walls[i], document.room.walls[j]) { throw Failure.crossingWalls }
             }
         }
         // Ceiling resizing is deliberately not implicit: the editor exposes an
@@ -75,6 +112,7 @@ enum SurveyPlanEditing {
         let wall = PlaquistoWall(start: start, end: .init(x: end.x, y: start.y, z: end.z),
             length: .init(rawValue: hypot(end.x-start.x, end.z-start.z), provenance: source, manuallyValidated: true),
             height: .init(rawValue: height, provenance: source, manuallyValidated: true), provenance: source)
+        guard !document.room.walls.contains(where: { conflicts(wall,$0) }) else { throw Failure.crossingWalls }
         result.room.walls.append(wall)
         result.wallWorkIntents = (result.wallWorkIntents ?? []) + [.init(wallID: wall.id, use: .partition)]
         try result.validate(); return result
@@ -240,12 +278,80 @@ enum SurveyPlanEditing {
                 > max(opening.sillHeight.effectiveValue, old.sillHeight.effectiveValue)
         }) else { throw Failure.overlappingOpening }
     }
-    private static func crosses(_ a: PlaquistoWall, _ b: PlaquistoWall) -> Bool {
+    private static func conflicts(_ a: PlaquistoWall, _ b: PlaquistoWall) -> Bool {
+        guard abs(a.start.y-b.start.y) < 0.1 else { return false }
         func side(_ p: RoomPoint, _ q: RoomPoint, _ r: RoomPoint) -> Double {
             (q.x-p.x)*(r.z-p.z)-(q.z-p.z)*(r.x-p.x)
         }
+        let direction = a.direction
+        if abs(side(a.start,a.effectiveEnd,b.start))/max(0.1,a.length.effectiveValue) < 0.001,
+           abs(side(a.start,a.effectiveEnd,b.effectiveEnd))/max(0.1,a.length.effectiveValue) < 0.001 {
+            let p = b.start-a.start, q = b.effectiveEnd-a.start
+            let x = p.x*direction.x+p.z*direction.z, y = q.x*direction.x+q.z*direction.z
+            return min(a.length.effectiveValue,max(x,y))-max(0,min(x,y)) > 0.001
+        }
         return side(a.start,a.effectiveEnd,b.start)*side(a.start,a.effectiveEnd,b.effectiveEnd) < -1e-10 &&
             side(b.start,b.effectiveEnd,a.start)*side(b.start,b.effectiveEnd,a.effectiveEnd) < -1e-10
+    }
+}
+
+/// Screen-tolerance snapping in the survey's own coordinate frame. No world-axis
+/// rounding and no mutation of the captured walls. Endpoints win over angles.
+enum SurveyPlanSnapping {
+    struct Result {
+        var point: RoomPoint
+        var key: String? = nil
+        var title: String? = nil
+        var guide: RoomPoint? = nil
+    }
+    static func snap(_ point: RoomPoint, anchor: RoomPoint? = nil, walls: [PlaquistoWall],
+                     tolerance: Double, latched: String? = nil) -> Result {
+        let walls = walls.filter { abs($0.start.y-point.y) < 0.1 }
+        func distance(_ a: RoomPoint, _ b: RoomPoint) -> Double { hypot(a.x-b.x,a.z-b.z) }
+        func threshold(_ key: String) -> Double { tolerance * (key == latched ? 1.5 : 1) }
+        func projection(_ p: RoomPoint, _ w: PlaquistoWall) -> RoomPoint {
+            let d = p-w.start, v = w.direction
+            return w.start+v*min(w.length.effectiveValue,max(0,d.x*v.x+d.z*v.z))
+        }
+        var ends: [(point:RoomPoint,key:String)] = []
+        for wall in walls {
+            ends += [(wall.start,"\(wall.id)/start"),(wall.effectiveEnd,"\(wall.id)/end")]
+        }
+        if let endpoint = ends.filter({ distance(point,$0.point) <= threshold($0.key) })
+            .min(by: { distance(point,$0.point) < distance(point,$1.point) }) {
+            return .init(point:.init(x:endpoint.point.x,y:point.y,z:endpoint.point.z),key:endpoint.key,title:"Extrémité")
+        }
+        if let anchor, distance(anchor,point) >= 0.1,
+           let reference = walls.min(by: { distance(anchor,projection(anchor,$0)) < distance(anchor,projection(anchor,$1)) }) {
+            let along = reference.direction
+            let directions = [along,RoomPoint(x:-along.z,y:0,z:along.x)]
+            for (i,axis) in directions.enumerated() {
+                let key = "\(reference.id)/axis/\(i)", delta = point-anchor
+                let projected = anchor+axis*(delta.x*axis.x+delta.z*axis.z)
+                guard distance(point,projected) <= threshold(key) else { continue }
+                // If the right-angle guide reaches a nearby wall, satisfy both
+                // constraints exactly instead of snapping to one then losing it.
+                for target in walls {
+                    let v = target.direction, d = target.start-anchor
+                    let denominator = axis.x*v.z-axis.z*v.x
+                    guard abs(denominator) > 1e-8 else { continue }
+                    let t = (d.x*v.z-d.z*v.x)/denominator
+                    let u = (d.x*axis.z-d.z*axis.x)/denominator
+                    let intersection = anchor+axis*t
+                    if u >= 0 && u <= target.length.effectiveValue,
+                       distance(intersection,point) <= threshold(key) {
+                        return .init(point:intersection,key:key,title:i == 0 ? "Parallèle · mur" : "90° · mur",guide:anchor)
+                    }
+                }
+                return .init(point:projected,key:key,title:i == 0 ? "Parallèle" : "90°",guide:anchor)
+            }
+        }
+        if let wall = walls.filter({ distance(point,projection(point,$0)) <= threshold("\($0.id)/wall") })
+            .min(by: { distance(point,projection(point,$0)) < distance(point,projection(point,$1)) }) {
+            let p = projection(point,wall)
+            return .init(point:.init(x:p.x,y:point.y,z:p.z),key:"\(wall.id)/wall",title:"Sur le mur")
+        }
+        return .init(point:point)
     }
 }
 

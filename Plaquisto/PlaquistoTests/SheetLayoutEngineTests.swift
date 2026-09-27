@@ -3,6 +3,72 @@ import SwiftUI
 @testable import Plaquisto
 
 final class SheetLayoutEngineTests: XCTestCase {
+    func testNewScannedCeilingBoardsArePerpendicularToLongestWall() throws {
+        var ceiling = surface(width: 5000, height: 3000)
+        ceiling.kind = .ceiling
+        let angle = 0.37
+        ceiling.contour = ceiling.contour.map { .init(x: cos(angle)*$0.x-sin(angle)*$0.y,
+                                                     y: sin(angle)*$0.x+cos(angle)*$0.y) }
+        let document = LayoutDocument.newSupport(ceiling)
+        let layer = try XCTUnwrap(document.layers.first)
+        let edge = try XCTUnwrap(layer.referenceEdge)
+        let wall = ceiling.contour[(edge+1)%ceiling.contour.count]-ceiling.contour[edge]
+        XCTAssertEqual(wall.length, 5000, accuracy: 0.001)
+        XCTAssertEqual(layer.orientation, .vertical)
+        let frame = LayoutGridFrame.make(surface: ceiling, layer: layer)
+        let boardLongDirection = frame.world(.init(x:0,y:1))-frame.origin
+        XCTAssertEqual(LayoutGeometry.dot(boardLongDirection,wall), 0, accuracy: 0.001)
+        XCTAssertFalse(try SheetLayoutEngine.calculate(surface: ceiling, layer: layer).furring.lines.isEmpty)
+        XCTAssertEqual(document.surface, ceiling)
+    }
+
+    func testReferenceWallCyclingRespectsWindingAndWraps() {
+        var ceiling = surface()
+        for _ in 0..<2 {
+            let ccw = LayoutGeometry.area(ceiling.contour) > 0
+            XCTAssertEqual(LayoutPlanning.nextReferenceEdge(ceiling,current:0,clockwise:true), ccw ? 3 : 1)
+            var current: Int? = 0
+            for _ in 0..<4 { current = LayoutPlanning.nextReferenceEdge(ceiling,current:current,clockwise:true) }
+            XCTAssertEqual(current,0)
+            let next = LayoutPlanning.nextReferenceEdge(ceiling,current:0,clockwise:true)
+            XCTAssertEqual(LayoutPlanning.nextReferenceEdge(ceiling,current:next,clockwise:false),0)
+            ceiling.contour.reverse()
+        }
+    }
+
+    func testOuvrageLayoutKeepsSpacingAndLargestCombinedFormatAllocation() throws {
+        var configuration = CeilingConfiguration()
+        configuration.selectedSpacing = 0.5
+        configuration.firstSkin = [
+            .init(facingID:"a",dimensionID:"1200x2400",area:10),
+            .init(facingID:"b",dimensionID:"1200x2500",area:8),
+            .init(facingID:"c",dimensionID:"1200x2500",area:8)
+        ]
+        var ceiling = surface(); ceiling.kind = .ceiling
+        let document = WorkLayoutDefaults.document(surface:ceiling,configuration:.ceiling(configuration))
+        let layer = try XCTUnwrap(document.layers.first)
+        XCTAssertEqual(layer.sheetWidth,1200)
+        XCTAssertEqual(layer.sheetLength,2500)
+        XCTAssertEqual(layer.furring?.spacing,500)
+        XCTAssertNotNil(layer.referenceEdge)
+        XCTAssertTrue(LayoutVisibilitySettings().framing.isVisible)
+    }
+
+    func testExistingComponentLayoutIsNotResetByOuvrageDefaults() throws {
+        var ceiling = surface(); ceiling.kind = .ceiling
+        let savedLayer = LayoutLayer(sheetWidth:900,sheetLength:3000,orientation:.horizontal,
+            offset:.init(x:73,y:41),referenceEdge:1)
+        var component = WorkComponentRecord(name:"Salon",surface:ceiling)
+        component.framing = .init(spacing:400,offset:62)
+        component.plans = [.init(sideRoomID:nil,layers:[savedLayer])]
+        let initial = try XCTUnwrap(component.initialDocument(sideRoomID:nil,configuration:.ceiling(.init())))
+        XCTAssertEqual(initial.layers[0].sheetLength,3000)
+        XCTAssertEqual(initial.layers[0].sheetWidth,900)
+        XCTAssertEqual(initial.layers[0].referenceEdge,1)
+        XCTAssertEqual(initial.layers[0].offset,savedLayer.offset)
+        XCTAssertEqual(initial.layers[0].furring,component.framing)
+    }
+
     func testLayingOffsetPresentationUsesSliderDirection() throws {
         XCTAssertEqual(LayoutLayingOffset.storedMillimetres(displayedCentimetres:-5),50)
         XCTAssertEqual(LayoutLayingOffset.storedMillimetres(displayedCentimetres:5),-50)

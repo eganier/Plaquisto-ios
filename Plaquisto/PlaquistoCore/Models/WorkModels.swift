@@ -757,6 +757,15 @@ struct WorkComponentRecord: Identifiable, Codable, Equatable {
         }
         return LayoutDocument(surface: opposite ? surface.mirroredComponentSide() : surface, layers: layers, lighting: plan.lighting)
     }
+
+    func initialDocument(sideRoomID: UUID?, configuration: WorkConfiguration?) -> LayoutDocument? {
+        if let saved = plans.first(where: { $0.sideRoomID == sideRoomID }) { return document(for: saved) }
+        guard let base = document(for: ComponentLayoutPlan(sideRoomID:sideRoomID)) else { return nil }
+        guard let configuration else { return base }
+        var result = WorkLayoutDefaults.document(surface:base.surface,configuration:configuration)
+        if framing != nil { result.layers[0].furring = base.layers.first?.furring }
+        return result
+    }
 }
 
 struct SurveySurfaceSource: Codable, Equatable, Hashable {

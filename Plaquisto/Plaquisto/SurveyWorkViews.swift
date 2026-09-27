@@ -13,8 +13,9 @@ import CryptoKit
         guard let data=try? encoder.encode(survey.checkpoints) else { return nil }
         return survey.id.uuidString+SHA256.hash(data:data).map { String(format:"%02x",$0) }.joined()
     }
-    static func image(for survey:ProjectSurveyRecord) -> UIImage? {
-        guard let key=key(for:survey) else { return nil }
+    static func image(for survey:ProjectSurveyRecord, dark: Bool = false) -> UIImage? {
+        guard let geometryKey=key(for:survey) else { return nil }
+        let key = geometryKey + (dark ? "/dark" : "/light")
         if let image=cache.object(forKey:key as NSString) { return image }
         let surfaces=SurveyWorkGeometry.surfaces(in:survey)
         guard !surfaces.isEmpty else { return nil }
@@ -25,6 +26,8 @@ import CryptoKit
         }
         SurveySceneRenderer.frame(scene,aspect:4.0/3.0)
         MaquetteStyle.installStudio(in:scene,quality:.economical)
+        scene.background.contents = MaquetteStyle.background.resolvedColor(with:
+            UITraitCollection(userInterfaceStyle:dark ? .dark : .light))
         let renderer=SCNRenderer(device:nil,options:nil)
         renderer.scene=scene; renderer.pointOfView=scene.rootNode.childNode(withName:"camera",recursively:false)
         if let camera=renderer.pointOfView?.camera { MaquetteStyle.configure(camera,quality:.economical) }
@@ -35,6 +38,7 @@ import CryptoKit
 }
 
 struct SurveyThumbnailView: View {
+    @Environment(\.colorScheme) private var colorScheme
     let survey:ProjectSurveyRecord
     @State private var preview:UIImage?
     var body:some View {
@@ -47,11 +51,11 @@ struct SurveyThumbnailView: View {
             }
         }
         .accessibilityHidden(true)
-        .task(id:survey) {
+        .task(id:"\(SurveyThumbnailRenderer.key(for:survey) ?? survey.id.uuidString)/\(colorScheme)") {
             preview=nil
             await Task.yield()
             guard !Task.isCancelled else { return }
-            preview=SurveyThumbnailRenderer.image(for:survey)
+            preview=SurveyThumbnailRenderer.image(for:survey,dark:colorScheme == .dark)
         }
     }
 }
@@ -658,6 +662,7 @@ private final class SurveyArchitecturalView: SCNView {
 }
 
 struct SurveySurfaceScene: UIViewRepresentable {
+    @Environment(\.colorScheme) private var colorScheme
     let survey: ProjectSurveyRecord
     let surfaces: [SurveyWorkSurface]
     let kind: SurveySurfaceSource.Kind
@@ -678,6 +683,7 @@ struct SurveySurfaceScene: UIViewRepresentable {
     }
     func updateUIView(_ view: SCNView, context: Context) {
         update(view,coordinator:context.coordinator)
+        MaquetteStyle.updateBackground(view, dark: colorScheme == .dark)
     }
     func update(_ view:SCNView,coordinator:Coordinator) {
         coordinator.onTap = onTap

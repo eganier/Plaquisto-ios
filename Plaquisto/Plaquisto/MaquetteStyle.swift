@@ -16,7 +16,15 @@ import UIKit
     }
     private struct Key: Hashable { let surface:Surface; let state:State; let translucent:Bool }
     private static var materials:[Key:SCNMaterial]=[:]
-    static let background=UIColor(red:0.965,green:0.957,blue:0.939,alpha:1)
+    static let background=UIColor { traits in
+        traits.userInterfaceStyle == .dark ? UIColor(red:0.10,green:0.11,blue:0.12,alpha:1)
+            : UIColor(red:0.965,green:0.957,blue:0.939,alpha:1)
+    }
+    static func updateBackground(_ view: SCNView, dark: Bool) {
+        let color = background.resolvedColor(with: UITraitCollection(userInterfaceStyle: dark ? .dark : .light))
+        view.backgroundColor = color
+        view.scene?.background.contents = color
+    }
     static func material(_ surface:Surface, state:State = .normal, translucent:Bool = false) -> SCNMaterial {
         let key=Key(surface:surface,state:state,translucent:translucent)
         if let existing=materials[key] { return existing }

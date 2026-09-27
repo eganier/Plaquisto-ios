@@ -25,8 +25,11 @@ import SwiftUI
     }
     var body: some Scene {
         WindowGroup {
-            if ProcessInfo.processInfo.arguments.contains("--ceiling-zones") {
-                SurveyPlanEditor(document:Self.ceilingZones()) { try PlaquistoRoomStore.save($0,to:Self.storage) }
+            if ProcessInfo.processInfo.arguments.contains("--ceiling-zones") || ProcessInfo.processInfo.arguments.contains("--configure-ceilings") {
+                SurveyPlanEditor(document:Self.ceilingZones(),
+                    initiallyConfigureCeilings:ProcessInfo.processInfo.arguments.contains("--configure-ceilings")) {
+                    try PlaquistoRoomStore.save($0,to:Self.storage)
+                }
             } else if ProcessInfo.processInfo.arguments.contains("--plan-editor"),
                let fixture=Bundle.main.url(forResource:"room",withExtension:"json"),
                let data=try? Data(contentsOf:fixture), let document=try? PlaquistoRoomDocument.decode(data) {
