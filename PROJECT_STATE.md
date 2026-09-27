@@ -49,8 +49,10 @@
   `/tmp/plaquisto-artisan-plan-ab.png`,
   `/tmp/plaquisto-artisan-salon-b-250-370.png`,
   `/tmp/plaquisto-artisan-memory-280.png`.
-  Version isolée sur sa branche ; ni installation iPhone, ni publication/fusion
-  GitHub demandées pour cette expérimentation.
+  Développement sur `codex/ceiling-auto-fit`, commit fonctionnel `cf442bf`.
+- Installation demandée ensuite et confirmée sur l’iPhone à 14 h 51 le
+  27 septembre, séquence 3228 (`/tmp/plaquisto-ceiling-fit-install.json`).
+  Lancement confirmé (`/tmp/plaquisto-ceiling-fit-launch.json`).
 
 ## Relevés dans les projets, plafonds multiples et plan d’architecte — 26 septembre 2026
 
