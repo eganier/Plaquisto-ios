@@ -601,7 +601,7 @@ struct SheetLayoutView: View {
                             Text("\((result.furring.lines.reduce(0){$0+($1.end-$1.start).length}/1000).formatted(.number.precision(.fractionLength(2)))) ml").font(.headline)
                             Text("\(document.surface.kind == .wall ? "Ossature" : "Fourrures") · \(result.furring.lines.count) tronçons").font(.caption).foregroundStyle(.secondary)
                         } else {
-                            Text("\(result.sheets.count) plaques").font(.headline)
+                            Text("\(result.purchasedSheetCount) plaques").font(.headline)
                             Text(layoutArea(result.netArea)).font(.caption).foregroundStyle(.secondary)
                         }
                     }
@@ -863,11 +863,11 @@ struct SheetLayoutView: View {
                 drawLiveGrids(context:&context,document:document,viewport:viewport)
             } else {
             for placement in result.sheets where visibility.sheets.isVisible {
-                for (index, piece) in placement.pieces.enumerated() {
+                for piece in placement.pieces {
                     var path = layoutPath(piece.contour.map(result.frame.world), transform: viewport)
                     for hole in piece.holes { path.addPath(layoutPath(hole.map(result.frame.world), transform: viewport)) }
                     let color = placement.isFull ? Color.teal : Color.blue
-                    context.fill(path, with: .color(color.opacity(placement.number % 2 == 0 ? 0.22 : 0.12)), style: FillStyle(eoFill: true))
+                    context.fill(path, with: .color(color.opacity((piece.stock?.number ?? placement.number) % 2 == 0 ? 0.22 : 0.12)), style: FillStyle(eoFill: true))
                     context.stroke(path, with: .color(color.opacity(0.75)), lineWidth: 1)
                     if visibility.sheets.showsDimensions {
                         for edge in LayoutGeometry.edges(piece.contour) {
@@ -875,7 +875,7 @@ struct SheetLayoutView: View {
                         }
                     }
                     if piece.bounds.width * viewport.scale > 20 && piece.bounds.height * viewport.scale > 20 {
-                        let label = placement.pieces.count > 1 ? "\(placement.number).\(index + 1)" : "\(placement.number)"
+                        let label = placement.label(for:piece)
                         context.draw(Text(label).font(.system(size: 12, weight: .semibold)).foregroundStyle(.primary), at: viewport.screen(result.frame.world(piece.labelPoint)))
                     }
                 }
@@ -942,7 +942,8 @@ struct SheetLayoutView: View {
     }
 
     private func drawLiveGrids(context:inout GraphicsContext,document:LayoutDocument,viewport:LayoutViewport) {
-        guard let layer = document.layers.first else { return }
+        guard let initialLayer = document.layers.first else { return }
+        let layer=initialLayer.forSurface(document.surface)
         let frame = LayoutGridFrame.make(surface:document.surface,layer:layer)
         let measured = document.surface.contour
         let laying = (try? document.surface.layingContour()) ?? measured
@@ -971,8 +972,16 @@ struct SheetLayoutView: View {
             }
         }
         if visibility.sheets.isVisible {
-            grid(step:layer.cellWidth,offset:layer.offset.x,vertical:true,color:.teal)
-            grid(step:layer.cellHeight,offset:layer.offset.y,vertical:false,color:.teal)
+            if LayoutBoardGrid.staggerDistance(layer)>0 {
+                var clipped=context; clipped.clip(to:boardClip,style:.init(eoFill:true))
+                for cell in (try? LayoutBoardGrid.cells(bounds:bounds,layer:layer)) ?? [] {
+                    let rectangle=LayoutBounds(min:cell.origin,max:cell.origin + .init(x:layer.cellWidth,y:layer.cellHeight))
+                    clipped.stroke(layoutPath(rectangle.polygon.map(frame.world),transform:viewport),with:.color(.teal),lineWidth:0.8)
+                }
+            } else {
+                grid(step:layer.cellWidth,offset:layer.offset.x,vertical:true,color:.teal)
+                grid(step:layer.cellHeight,offset:layer.offset.y,vertical:false,color:.teal)
+            }
         }
         if let f = layer.furring, visibility.framing.isVisible {
             grid(step:f.spacing,offset:f.offset,vertical:!LayoutPlanning.alongX(layer),color:.purple)
@@ -1071,7 +1080,7 @@ struct SheetLayoutView: View {
         guard !model.isCalculating, let result = model.result else { return }
         for placement in result.sheets {
             if let piece = placement.pieces.first(where: { $0.contains(result.frame.local(point)) }) {
-                sheet = .cut(.make(sheet:placement,piece:piece,lighting:document.lighting,frame:result.frame,wall:document.surface.kind == .wall)); return
+                sheet = .cut(.make(sheet:placement,piece:piece,lighting:document.lighting,frame:result.frame,wall:document.surface.kind == .wall,placements:result.sheets)); return
             }
         }
     }
@@ -1217,25 +1226,28 @@ struct SheetLayoutView: View {
                 List {
                     if let result = model.result {
                         Section {
-                            LabeledContent("Plaques brutes", value: "\(result.sheets.count)")
+                            LabeledContent("Plaques à acheter", value: "\(result.purchasedSheetCount)")
+                            LabeledContent("Plaques économisées par réemploi",value:"\(result.savedSheetCount)")
                             LabeledContent("Morceaux à poser", value: "\(result.pieceCount)")
                             LabeledContent("Surface nette", value: layoutArea(result.netArea))
                             LabeledContent("Isolant · surface de pose", value: layoutArea(result.netArea))
-                            LabeledContent("Chutes théoriques", value: layoutArea(result.wasteArea))
-                            Text("Une plaque brute par case de grille utilisée. Les chutes ne sont pas réaffectées à d’autres cases.").font(.footnote).foregroundStyle(.secondary)
+                            LabeledContent("Restes après découpe", value: layoutArea(result.wasteArea))
+                            Text("2-1 et 2-2 sont deux morceaux d’une même plaque. Réemploi conservateur : au moins 20 cm dans les deux directions et appuis vérifiés géométriquement. Les ouvertures ne sont pas considérées comme des appuis.").font(.footnote).foregroundStyle(.secondary)
                         }
-                        ForEach(result.sheets) { placement in
-                            Section("Plaque \(placement.number)\(placement.isFull ? " · entière" : " · découpée")") {
-                                ForEach(Array(placement.pieces.enumerated()), id: \.element.id) { index, piece in
+                        ForEach(Array(1..<(result.purchasedSheetCount+1)),id:\.self) { number in
+                            Section("Plaque \(number)") {
+                              ForEach(result.sheets) { placement in
+                                ForEach(placement.pieces.filter { ($0.stock?.number ?? placement.number)==number }) { piece in
                                     Button {
-                                        sheet = .cut(.make(sheet:placement,piece:piece,lighting:model.document?.lighting,frame:result.frame,wall:model.document?.surface.kind == .wall))
+                                        sheet = .cut(.make(sheet:placement,piece:piece,lighting:model.document?.lighting,frame:result.frame,wall:model.document?.surface.kind == .wall,placements:result.sheets))
                                     } label: {
                                         VStack(alignment: .leading) {
-                                            Text("Morceau \(index + 1) · \(layoutArea(piece.area))")
+                                            Text("\(placement.label(for:piece)) · \(layoutArea(piece.area))")
                                             Text("\(layoutCM(piece.bounds.width)) × \(layoutCM(piece.bounds.height))").font(.caption).foregroundStyle(.secondary)
                                         }
                                     }
                                 }
+                              }
                             }
                         }
                     }

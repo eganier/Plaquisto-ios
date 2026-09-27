@@ -381,7 +381,7 @@ enum LayoutPlanning {
         let initial = try SheetLayoutEngine.calculate(surface:surface,layer:layer)
         func score(_ result:SheetLayoutResult) -> (Double,Double) {
             if furring { return (result.furring.lines.reduce(0){$0+($1.end-$1.start).length},Double(result.furring.lines.count)) }
-            return (Double(result.sheets.count),result.wasteArea)
+            return (Double(result.purchasedSheetCount),result.wasteArea)
         }
         var bestScore = score(initial)
         let b = localSurface(surface,frame:.make(surface:surface,layer:layer)).bounds
@@ -396,6 +396,20 @@ enum LayoutPlanning {
             let value = score(result)
             if value.0+0.01 < bestScore.0 || (abs(value.0-bestScore.0) < 0.01 && value.1+0.01 < bestScore.1) { best = candidate; bestScore = value }
         } }
+        // Refine the stagger after the bounded offset search. Test only shifts
+        // compatible with the frame, without multiplying the entire search.
+        if !furring, layer.staggered == true {
+            let base = best
+            for shift in LayoutBoardGrid.staggerChoices(base).prefix(8) {
+                try Task.checkCancellation()
+                var candidate=base; candidate.staggerOffset=shift
+                guard let result=try? SheetLayoutEngine.calculate(surface:surface,layer:candidate) else { continue }
+                let value=score(result)
+                if value.0+0.01<bestScore.0 || (abs(value.0-bestScore.0)<0.01 && value.1+0.01<bestScore.1) {
+                    best=candidate; bestScore=value
+                }
+            }
+        }
         return best
     }
 }

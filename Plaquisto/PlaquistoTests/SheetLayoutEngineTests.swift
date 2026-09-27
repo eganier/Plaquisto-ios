@@ -3,6 +3,219 @@ import SwiftUI
 @testable import Plaquisto
 
 final class SheetLayoutEngineTests: XCTestCase {
+    private func offcutCeiling(_ width:Double=2400,_ height:Double=3000) -> Surface2D {
+        var value=surface(width:width,height:height); value.kind = .ceiling; return value
+    }
+    private var offcutLayer:LayoutLayer { .init(sheetLength:2400,furring:.init()) }
+
+    func testOffcutsReducePurchasedBoardsAndNumberRelatedPieces() throws {
+        let ceiling=offcutCeiling()
+        let result=try SheetLayoutEngine.calculate(surface:ceiling,layer:offcutLayer)
+        XCTAssertEqual(result.sheets.count,4)
+        XCTAssertEqual(result.purchasedSheetCount,3)
+        XCTAssertEqual(result.savedSheetCount,1)
+        XCTAssertEqual(result.netArea,7_200_000,accuracy:0.01)
+        XCTAssertEqual(result.wasteArea,1_440_000,accuracy:0.01)
+        XCTAssertEqual(result.sheets.flatMap(\.pieces).compactMap{$0.stock?.label},["1","2","3-1","3-2"])
+        XCTAssertEqual(result,try SheetLayoutEngine.calculate(surface:ceiling,layer:offcutLayer))
+        try assertCutStockIsFeasible(result)
+    }
+
+    func testOffcutMinimumIsFixedAndPeripheryIsAnEligibleSecondSupport() throws {
+        let atMinimum=try SheetLayoutEngine.calculate(surface:offcutCeiling(2400,2600),layer:offcutLayer)
+        XCTAssertEqual(atMinimum.purchasedSheetCount,3)
+        let tooSmall=try SheetLayoutEngine.calculate(surface:offcutCeiling(2400,2599),layer:offcutLayer)
+        XCTAssertEqual(tooSmall.purchasedSheetCount,4)
+        var noReuse=offcutLayer; noReuse.reuseOffcuts=false
+        XCTAssertEqual(try SheetLayoutEngine.calculate(surface:offcutCeiling(),layer:noReuse).purchasedSheetCount,4)
+        noReuse.reuseOffcuts=true; noReuse.furring=nil
+        XCTAssertEqual(try SheetLayoutEngine.calculate(surface:offcutCeiling(),layer:noReuse).purchasedSheetCount,4)
+    }
+
+    func testSupportCountingRejectsCornersAndCollinearFragments() {
+        let room=offcutCeiling(3000,3000)
+        let piece=LayoutCutPiece(id:"p",contour:LayoutBounds(min:.init(x:500,y:500),max:.init(x:1500,y:1500)).polygon,holes:[])
+        let first=LayoutJoint(start:.init(x:0,y:600),end:.init(x:3000,y:600))
+        let second=LayoutJoint(start:.init(x:0,y:1200),end:.init(x:3000,y:1200))
+        XCTAssertTrue(LayoutOffcutPacking.hasSupports(piece,surface:room,furring:.init(lines:[first,second])))
+        XCTAssertFalse(LayoutOffcutPacking.hasSupports(piece,surface:room,furring:.init(lines:[first])))
+        let split=[LayoutJoint(start:.init(x:500,y:600),end:.init(x:900,y:600)),
+                   LayoutJoint(start:.init(x:1100,y:600),end:.init(x:1500,y:600))]
+        XCTAssertFalse(LayoutOffcutPacking.hasSupports(piece,surface:room,furring:.init(lines:split)))
+        let corner=LayoutJoint(start:.zero,end:.init(x:500,y:500))
+        XCTAssertFalse(LayoutOffcutPacking.hasSupports(piece,surface:room,furring:.init(lines:[first,corner])))
+        var withOpening=room
+        withOpening.openings=[.init(kind:.other,contour:LayoutBounds(min:.init(x:1500,y:500),max:.init(x:2000,y:1500)).polygon)]
+        XCTAssertFalse(LayoutOffcutPacking.hasSupports(piece,surface:withOpening,furring:.init(lines:[first])))
+    }
+
+    func testSupportBoundaryRecognitionIsSymmetricAndDoesNotCountOneLineTwice() {
+        let room=offcutCeiling(3000,3000)
+        for rect in [LayoutBounds(min:.zero,max:.init(x:1200,y:200)),
+                     .init(min:.init(x:1800,y:2800),max:.init(x:3000,y:3000))] {
+            let piece=LayoutCutPiece(id:"p",contour:rect.polygon,holes:[])
+            let line=LayoutJoint(start:.init(x:0,y:rect.center.y),end:.init(x:3000,y:rect.center.y))
+            XCTAssertTrue(LayoutOffcutPacking.hasSupports(piece,surface:room,furring:.init(lines:[line])))
+        }
+        let piece=LayoutCutPiece(id:"p",contour:LayoutBounds(min:.init(x:500,y:0),max:.init(x:1500,y:200)).polygon,holes:[])
+        let only=LayoutJoint(start:.zero,end:.init(x:3000,y:0))
+        XCTAssertFalse(LayoutOffcutPacking.hasSupports(piece,surface:room,furring:.init(lines:[only])))
+    }
+
+    func testStaggerOffsetsFollowFurringInsteadOfAssumingHalfBoard() {
+        var layer=offcutLayer; layer.staggered=true
+        XCTAssertEqual(LayoutBoardGrid.staggerDistance(layer),1200)
+        layer.sheetLength=2500; layer.furring?.spacing=500
+        XCTAssertEqual(LayoutBoardGrid.staggerDistance(layer),1000)
+        layer.staggerOffset=1500
+        XCTAssertEqual(LayoutBoardGrid.staggerDistance(layer),1500)
+        layer.staggerOffset=1250
+        XCTAssertEqual(LayoutBoardGrid.staggerDistance(layer),1000)
+        layer.furring?.spacing=600
+        XCTAssertEqual(LayoutBoardGrid.staggerDistance(layer),0)
+    }
+
+    func testStaggerCoversSurfaceForBothOrientationsAndNegativeOffsets() throws {
+        let room=offcutCeiling(4300,3700)
+        for orientation in LayoutOrientation.allCases {
+            for offset in [LayoutPoint.zero,.init(x:-300,y:-500),.init(x:1450,y:2550)] {
+                var layer=offcutLayer; layer.orientation=orientation; layer.staggered=true; layer.offset=offset
+                let result=try SheetLayoutEngine.calculate(surface:room,layer:layer)
+                XCTAssertEqual(result.netArea,4300*3700,accuracy:0.1)
+                XCTAssertEqual(result.staggerDistance,1200)
+                let pieces=result.sheets.flatMap(\.pieces)
+                for i in pieces.indices { for j in pieces.indices where j>i {
+                    let a=pieces[i].bounds,b=pieces[j].bounds
+                    let overlap=max(0,min(a.max.x,b.max.x)-max(a.min.x,b.min.x))*max(0,min(a.max.y,b.max.y)-max(a.min.y,b.min.y))
+                    XCTAssertLessThan(overlap,0.01)
+                } }
+                try assertCutStockIsFeasible(result)
+            }
+        }
+    }
+
+    func testStaggerShortAxisPeriodPreservesAlternateStripParity() throws {
+        var layer=offcutLayer; layer.staggered=true
+        let room=offcutCeiling()
+        let original=try SheetLayoutEngine.calculate(surface:room,layer:layer)
+        layer.offset.x=1200
+        let shifted=try SheetLayoutEngine.calculate(surface:room,layer:layer)
+        XCTAssertNotEqual(original.sheets.map(\.origin),shifted.sheets.map(\.origin))
+        layer.offset.x=2400
+        XCTAssertEqual(original,try SheetLayoutEngine.calculate(surface:room,layer:layer))
+    }
+
+    func testStaggerJointsIncludeTJunctions() throws {
+        var layer=offcutLayer; layer.staggered=true
+        let result=try SheetLayoutEngine.calculate(surface:offcutCeiling(2400,3600),layer:layer)
+        let vertical=result.joints.filter{abs($0.start.x-1200)<0.01 && abs($0.end.x-1200)<0.01}
+        XCTAssertEqual(vertical.reduce(0){$0+($1.end-$1.start).length},3600,accuracy:0.01)
+        XCTAssertEqual(result.netArea,2400*3600,accuracy:0.01)
+    }
+
+    func testStaggerDoesNotIntroduceHorizontalJointIntoSingleHeightWall() throws {
+        var layer=offcutLayer; layer.staggered=true
+        let wall=surface(width:3600,height:2300)
+        let result=try SheetLayoutEngine.calculate(surface:wall,layer:layer)
+        XCTAssertEqual(result.staggerDistance,0)
+        XCTAssertEqual(result.sheets.count,3)
+        XCTAssertEqual(try SheetLayoutEngine.calculate(surface:surface(width:3600,height:4000),layer:layer).staggerDistance,1200)
+    }
+
+    func testPackingIsFeasibleForRotatedConcaveCeilingAndOpenings() throws {
+        var room=offcutCeiling(4700,4100)
+        room.contour=[.zero,.init(x:4700,y:0),.init(x:4300,y:2100),.init(x:2400,y:2100),.init(x:2400,y:4100),.init(x:0,y:4100)]
+        room.openings=[.init(kind:.other,contour:LayoutBounds(min:.init(x:600,y:600),max:.init(x:1500,y:1200)).polygon)]
+        let frame=LayoutGridFrame(origin:.init(x:80,y:90),angle:0.41)
+        room.contour=room.contour.map(frame.world)
+        room.openings[0].contour=room.openings[0].contour.map(frame.world)
+        var layer=offcutLayer; layer.referenceEdge=0; layer.staggered=true
+        let result=try SheetLayoutEngine.calculate(surface:room,layer:layer)
+        XCTAssertEqual(result.netArea,abs(LayoutGeometry.area(room.contour))-540000,accuracy:1)
+        try assertCutStockIsFeasible(result)
+    }
+
+    func testOffcutSettingsRoundTripAndLegacyLayerDecoding() throws {
+        var layer=offcutLayer; layer.staggered=true; layer.staggerOffset=600; layer.reuseOffcuts=false
+        let data=try JSONEncoder().encode(layer)
+        XCTAssertEqual(try JSONDecoder().decode(LayoutLayer.self,from:data),layer)
+        var legacy=try XCTUnwrap(JSONSerialization.jsonObject(with:data) as? [String:Any])
+        for key in ["staggered","staggerOffset","reuseOffcuts"] { legacy.removeValue(forKey:key) }
+        let decoded=try JSONDecoder().decode(LayoutLayer.self,from:JSONSerialization.data(withJSONObject:legacy))
+        XCTAssertNil(decoded.staggered); XCTAssertNil(decoded.reuseOffcuts)
+        XCTAssertEqual(LayoutBoardGrid.staggerDistance(decoded),0)
+    }
+
+    func testOptimizerScoresPurchasedStockAndKeepsStaggerOnTheFrame() throws {
+        let room=offcutCeiling(4300,3700)
+        var layer=offcutLayer; layer.staggered=true; layer.offset = .init(x:140,y:230)
+        let before=try SheetLayoutEngine.calculate(surface:room,layer:layer)
+        let optimized=try LayoutPlanning.optimize(surface:room,layer:layer,furring:false)
+        let after=try SheetLayoutEngine.calculate(surface:room,layer:optimized)
+        XCTAssertLessThanOrEqual(after.purchasedSheetCount,before.purchasedSheetCount)
+        XCTAssertTrue(LayoutPlanning.aligned(optimized))
+        XCTAssertTrue(LayoutBoardGrid.staggerChoices(optimized).contains(after.staggerDistance))
+        XCTAssertEqual(optimized.sheetWidth,layer.sheetWidth)
+        XCTAssertEqual(optimized.sheetLength,layer.sheetLength)
+        XCTAssertEqual(optimized.orientation,layer.orientation)
+        XCTAssertEqual(optimized.furring?.spacing,layer.furring?.spacing)
+        XCTAssertEqual(after.netArea,before.netArea,accuracy:0.1)
+        try assertCutStockIsFeasible(after)
+    }
+
+    func testCutDiagramPlacesSiblingAndSpotInActualPurchasedBoardCoordinates() throws {
+        let result=try SheetLayoutEngine.calculate(surface:offcutCeiling(),layer:offcutLayer)
+        let sheet=try XCTUnwrap(result.sheets.last)
+        let piece=try XCTUnwrap(sheet.pieces.first)
+        var lighting=LayoutLighting(); lighting.positions=[piece.bounds.center]
+        let selection=LayoutCutSelection.make(sheet:sheet,piece:piece,lighting:lighting,frame:result.frame,wall:false,placements:result.sheets)
+        XCTAssertEqual(selection.spots,[piece.bounds.center])
+        XCTAssertEqual(selection.relatedCuts.count,1)
+        let origin=try XCTUnwrap(piece.stock?.origin)
+        for sibling in selection.relatedCuts {
+            XCTAssertEqual(sibling.stock?.origin,origin)
+            let b=LayoutBounds(points:sibling.contour.map{$0-origin})
+            XCTAssertGreaterThanOrEqual(b.min.x,0)
+            XCTAssertGreaterThanOrEqual(b.min.y,0)
+            XCTAssertLessThanOrEqual(b.max.x,sheet.width)
+            XCTAssertLessThanOrEqual(b.max.y,sheet.height)
+            XCTAssertEqual(sibling.stock?.label,"3-1")
+        }
+    }
+
+    func testBoardGridRejectsInvalidAndExcessiveInputWithoutIntegerOverflow() {
+        let enormous=LayoutBounds(min:.zero,max:.init(x:1e100,y:1e100))
+        XCTAssertThrowsError(try LayoutBoardGrid.cells(bounds:enormous,layer:offcutLayer))
+        var layer=offcutLayer; layer.sheetWidth=1;layer.sheetLength=1
+        XCTAssertThrowsError(try LayoutBoardGrid.cells(bounds:offcutCeiling().bounds,layer:layer))
+        layer.sheetLength = .infinity
+        XCTAssertThrowsError(try LayoutBoardGrid.cells(bounds:offcutCeiling().bounds,layer:layer))
+        layer.sheetWidth=1200; layer.sheetLength=1e100; layer.staggered=true
+        XCTAssertEqual(LayoutBoardGrid.staggerDistance(layer),0)
+        XCTAssertThrowsError(try LayoutBoardGrid.cells(bounds:offcutCeiling().bounds,layer:layer))
+    }
+
+    private func assertCutStockIsFeasible(_ result:SheetLayoutResult,file:StaticString=#filePath,line:UInt=#line) throws {
+        var boxes:[Int:[LayoutBounds]]=[:],labels=Set<String>()
+        for sheet in result.sheets { for piece in sheet.pieces {
+            let stock=try XCTUnwrap(piece.stock,file:file,line:line)
+            XCTAssertTrue(labels.insert(stock.label).inserted,file:file,line:line)
+            let box=LayoutBounds(points:piece.contour.map{$0-stock.origin})
+            XCTAssertGreaterThanOrEqual(box.min.x,-0.01,file:file,line:line)
+            XCTAssertGreaterThanOrEqual(box.min.y,-0.01,file:file,line:line)
+            XCTAssertLessThanOrEqual(box.max.x,sheet.width+0.01,file:file,line:line)
+            XCTAssertLessThanOrEqual(box.max.y,sheet.height+0.01,file:file,line:line)
+            // Test fixtures have connected pieces per grid cell. Conservative
+            // envelopes assigned to different cells must never share material.
+            for other in boxes[stock.number,default:[]] {
+                let overlap=max(0,min(box.max.x,other.max.x)-max(box.min.x,other.min.x))*max(0,min(box.max.y,other.max.y)-max(box.min.y,other.min.y))
+                XCTAssertLessThan(overlap,0.1,file:file,line:line)
+            }
+            boxes[stock.number,default:[]].append(box)
+        } }
+        XCTAssertGreaterThanOrEqual(result.wasteArea,0,file:file,line:line)
+    }
+
     func testNewScannedCeilingBoardsArePerpendicularToLongestWall() throws {
         var ceiling = surface(width: 5000, height: 3000)
         ceiling.kind = .ceiling

@@ -1,5 +1,42 @@
 # Plaquisto — état du développement
 
+## Réemploi des chutes et quinconce — 27 septembre 2026
+
+- Lot précédent poussé directement sur `origin/main` à la demande utilisateur :
+  `de39748`. Application signée installée sur l’iPhone d’Édouard, séquence 3244
+  (`/tmp/plaquisto-usability-install.json`). Lancement automatique refusé car
+  téléphone verrouillé ; installation confirmée indépendamment du lancement.
+- Nouveau lot isolé sur `codex/offcuts-staggered-layout`, depuis ce commit.
+  Réemploi limité au calepinage affiché et au format de la couche active.
+  Minimum fixe de 200 mm dans les deux directions, sans réglage utilisateur.
+  Un destinataire réutilisé doit toucher deux axes d’ossature distincts, ou une
+  périphérie extérieure et un axe distinct. Les ouvertures, contacts ponctuels
+  et fragments colinéaires d’une même fourrure ne créent pas d’appui supplémentaire.
+- Découpe conservatrice par enveloppes rectangulaires sans rotation : aucune
+  matière fictivement récupérée dans les trous, concavités ou coupes diagonales.
+  Les pièces disjointes d’une même case gardent leur position relative.
+  Comptage distinct des cases, morceaux et plaques à acheter ; repères 2-1/2-2
+  pour une même plaque. Fiche de découpe dans les coordonnées de la plaque brute,
+  avec les autres morceaux de cette plaque en pointillés et les perçages conservés.
+- Option quinconce dans Plaques et pose : bandes alternées décalées dans le sens
+  long ; décalages compatibles avec l’entraxe, pas une demi-plaque imposée.
+  Aucun joint horizontal ajouté sur un mur couvert en une seule hauteur.
+  Grille pendant les gestes et résultat utilisent la même géométrie ; joints
+  en T reconnus. Réglages facultatifs Codable pour relire les anciens documents.
+- Optimiser compare désormais les plaques réellement nécessaires après réemploi,
+  puis cherche un décalage de quinconce compatible parmi des candidats bornés.
+  Pas de garantie d’optimum global ni de conformité technique de tous les joints,
+  bords amincis ou prescriptions de pose ; limite explicitée dans le formulaire.
+- Vérifications terminées : tests de conservation de matière, non-chevauchement
+  des découpes, appuis, minimum 20 cm, quinconce/rotations/ouvertures, sauvegarde,
+  coordonnées des autres morceaux et optimisation. Suite complète : 303 tests
+  réussis, dont 14 nouveaux (`/tmp/plaquisto-offcuts-release-check.log`).
+  Compilation iPhone signée réussie (`/tmp/plaquisto-offcuts-device-final.log`).
+  Contrôle visuel sur simulateur : plafond 3×3 m, six morceaux issus de quatre
+  plaques, bascule quinconce à 120 cm, sélection de 4-2 avec 4-1 en pointillés
+  dans la même plaque brute, cotes 120×60 cm, exécution du bouton Optimiser.
+  Ce nouveau lot n’est pas encore poussé sur main ni installé sur l’iPhone.
+
 ## Ergonomie relevé, gestes et initialisation du calepinage — 27 septembre 2026
 
 - Branche `codex/survey-layout-usability`, depuis `origin/main` après la PR #2.
@@ -38,8 +75,8 @@
   annulation et désactivation des aimants, plan sombre, accès direct aux plafonds.
   Le pincement multi-touch et les vibrations restent à vérifier sur iPhone.
   Option de preuve : `Tests/run-room-model-proof.sh <simulateur> --configure-ceilings`.
-- Pas d’installation iPhone, commit, push ou fusion pour ce lot à ce stade.
-  Réemploi des chutes/quinconce non implémentés dans ce lot : portée limitée au
+- Livraison ultérieure : commit `de39748`, poussé sur main et installé sur iPhone
+  (voir section ci-dessus). Réemploi des chutes/quinconce exclu de ce lot : portée limitée au
   calepinage affiché, minimum fixe de 20 cm (sans réglage utilisateur), appui sur
   deux fourrures ou périphérie + une fourrure, décalage adapté aux fourrures.
 

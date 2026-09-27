@@ -260,7 +260,7 @@ struct LayoutSettingsForm: View {
         self.surface = surface; self.onSave = onSave
         var copy = layer
         copy.materializeFurringOrientation()
-        _layer = State(initialValue: copy.forSupport(surface.kind))
+        _layer = State(initialValue: copy.forSurface(surface))
     }
     var body: some View {
         NavigationStack {
@@ -303,7 +303,24 @@ struct LayoutSettingsForm: View {
                         Text(LayoutPlanning.aligned(layer) ? "Les joints parallèles aux fourrures sont alignés sur la trame." : "Les plaques sont décalées de la trame de fourrures.").font(.footnote)
                     }
                 }
-                Section { Text("Calepinage géométrique d’une couche. Les règles de joints et la réutilisation des chutes ne sont pas appliquées.").font(.footnote).foregroundStyle(.secondary) }
+                Section("Pose et chutes") {
+                    Toggle("Pose en quinconce",isOn:Binding(get:{layer.staggered == true},set:{ value in
+                        layer.staggered=value; layer.staggerOffset=nil
+                        if value { layer=LayoutPlanning.alignBoards(to:layer,support:surface.kind) }
+                    })).disabled(LayoutBoardGrid.staggerChoices(layer).isEmpty || (surface.kind == .wall && surface.bounds.height<=layer.cellHeight+0.001))
+                    if layer.staggered == true, LayoutBoardGrid.staggerDistance(layer)>0 {
+                        Text("Décalage entre bandes : \(layoutCM(LayoutBoardGrid.staggerDistance(layer))). Optimiser recherche un décalage adapté aux fourrures.")
+                            .font(.footnote).foregroundStyle(.secondary)
+                    } else {
+                        Text("Le quinconce nécessite une ossature compatible. Pour un mur couvert en une seule hauteur de plaque, il n’ajoute pas de joint horizontal.")
+                            .font(.footnote).foregroundStyle(.secondary)
+                    }
+                    Toggle("Réutiliser les chutes",isOn:Binding(get:{layer.reuseOffcuts != false},set:{layer.reuseOffcuts=$0}))
+                    Text("Dans ce calepinage uniquement : morceaux d’au moins 20 cm dans chaque direction, en contact avec deux fourrures ou une périphérie et une fourrure. Les morceaux 2-1 et 2-2 proviennent de la même plaque.")
+                        .font(.footnote).foregroundStyle(.secondary)
+                    Text("Proposition de découpe sans rotation des chutes. Les bords amincis et les prescriptions du système de pose restent à vérifier ; ce n’est pas une validation technique de l’ensemble des joints.")
+                        .font(.footnote).foregroundStyle(.secondary)
+                }
             }
             .scrollDismissesKeyboard(.interactively)
             .onChange(of:layer.sheetLength) { _,_ in reconcileSpacing() }
@@ -318,7 +335,7 @@ struct LayoutSettingsForm: View {
     }
     private func reconcileSpacing() {
         layer.materializeFurringOrientation()
-        layer = layer.forSupport(surface.kind)
+        layer = layer.forSurface(surface)
         guard let f = layer.furring else { return }
         let options = LayoutPlanning.compatibleSpacings(layer)
         if !options.contains(f.spacing) {
@@ -337,13 +354,24 @@ struct LayoutCutSelection: Identifiable {
     var spots: [LayoutPoint] = []
     var spotDiameter: Double = 0
     var spotLabels: [String] = []
+    var relatedCuts: [LayoutCutPiece] = []
     var id: String { piece.id }
-    static func make(sheet:LayoutSheetPlacement,piece:LayoutCutPiece,lighting:LayoutLighting?,frame:LayoutGridFrame,wall:Bool) -> Self {
+    static func make(sheet:LayoutSheetPlacement,piece:LayoutCutPiece,lighting:LayoutLighting?,frame:LayoutGridFrame,wall:Bool,placements:[LayoutSheetPlacement] = []) -> Self {
         let indices = (lighting?.positions.indices.map { $0 } ?? []).filter { i in
             piece.contains(frame.local(lighting!.positions[i]))
         }
+        let related=placements.flatMap(\.pieces).compactMap { other -> LayoutCutPiece? in
+            guard let source=piece.stock, let stock=other.stock,
+                  stock.number==source.number, other.id != piece.id else { return nil }
+            var copy=other
+            let delta=source.origin-stock.origin
+            copy.contour=copy.contour.map{$0+delta}
+            copy.holes=copy.holes.map{$0.map{$0+delta}}
+            copy.stock?.origin=source.origin
+            return copy
+        }
         return .init(sheet:sheet,piece:piece,spots:indices.map { frame.local(lighting!.positions[$0]) },spotDiameter:lighting?.diameter ?? 0,
-                     spotLabels:indices.map { lighting!.label(at:$0,wall:wall) })
+                     spotLabels:indices.map { lighting!.label(at:$0,wall:wall) },relatedCuts:related)
     }
 }
 
@@ -355,6 +383,7 @@ struct LayoutCutDetail: View {
     @AppStorage("layout.cut.holes") private var showHoles = true
     @AppStorage("layout.cut.spots") private var showSpots = true
     @AppStorage("layout.cut.coordinates") private var showCoordinates = false
+    @AppStorage("layout.cut.related") private var showRelated = true
     private var sheet: LayoutSheetPlacement { selection.sheet }
     private var piece: LayoutCutPiece { selection.piece }
     var body: some View {
@@ -364,11 +393,14 @@ struct LayoutCutDetail: View {
                     Canvas { context,size in draw(context:&context,size:size) }
                         .frame(height:420)
                         .background(Color(.secondarySystemGroupedBackground),in:RoundedRectangle(cornerRadius:20))
-                        .accessibilityLabel("Dessin coté de la plaque \(sheet.number), mesures en centimètres")
+                        .accessibilityLabel("Dessin coté du morceau \(sheet.label(for:piece)), mesures en centimètres")
                     VStack(alignment:.leading,spacing:12) {
                         Text("Visibilité des cotes").font(.headline)
                         Toggle("Côtés et découpes",isOn:$showEdges)
                         Toggle("Dimensions de la plaque brute",isOn:$showRaw)
+                        if !selection.relatedCuts.isEmpty {
+                            Toggle("Autres morceaux de cette plaque",isOn:$showRelated)
+                        }
                         if !piece.holes.isEmpty { Toggle("Cotes des ouvertures",isOn:$showHoles) }
                         if !selection.spots.isEmpty { Toggle("Position et diamètre des perçages",isOn:$showSpots) }
                         Toggle("Repères X/Y des sommets",isOn:$showCoordinates)
@@ -383,14 +415,24 @@ struct LayoutCutDetail: View {
                 }.padding()
             }
             .background(Color(.systemGroupedBackground))
-            .navigationTitle("Plaque \(sheet.number)").navigationBarTitleDisplayMode(.inline)
+            .navigationTitle("Plaque \(sheet.label(for:piece))").navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Fermer") { dismiss() } } }
         }
     }
     private func draw(context:inout GraphicsContext,size:CGSize) {
-        let raw = LayoutBounds(min:sheet.origin,max:sheet.origin + .init(x:sheet.width,y:sheet.height))
+        let cutOrigin=piece.stock?.origin ?? sheet.origin
+        let raw = LayoutBounds(min:cutOrigin,max:cutOrigin + .init(x:sheet.width,y:sheet.height))
         let v = LayoutViewport(bounds:raw,size:size,zoom:0.82,pan:.zero)
         context.stroke(layoutPath(raw.polygon,transform:v),with:.color(.secondary.opacity(0.5)),style:.init(lineWidth:1,dash:[4,4]))
+        if showRelated {
+            for other in selection.relatedCuts {
+                var outline=layoutPath(other.contour,transform:v)
+                for hole in other.holes { outline.addPath(layoutPath(hole,transform:v)) }
+                context.fill(outline,with:.color(.secondary.opacity(0.08)),style:.init(eoFill:true))
+                context.stroke(outline,with:.color(.secondary.opacity(0.55)),style:.init(lineWidth:1,dash:[3,3]))
+                context.draw(Text(other.stock?.label ?? "").font(.caption).foregroundStyle(.secondary),at:v.screen(other.labelPoint))
+            }
+        }
         var path = layoutPath(piece.contour,transform:v)
         for hole in piece.holes { path.addPath(layoutPath(hole,transform:v)) }
         context.fill(path,with:.color(.teal.opacity(0.16)),style:.init(eoFill:true))
@@ -431,7 +473,7 @@ struct LayoutCutDetail: View {
                 }
                 if showCoordinates {
                     let s = v.screen(p)
-                    label("\(j == 0 ? "" : "O\(j)·")\(vertexName(i))  X \(layoutCM(p.x-sheet.origin.x)) · Y \(layoutCM(p.y-sheet.origin.y))",at:.init(x:s.x,y:s.y-12),color:.secondary)
+                    label("\(j == 0 ? "" : "O\(j)·")\(vertexName(i))  X \(layoutCM(p.x-cutOrigin.x)) · Y \(layoutCM(p.y-cutOrigin.y))",at:.init(x:s.x,y:s.y-12),color:.secondary)
                 }
             }
         }

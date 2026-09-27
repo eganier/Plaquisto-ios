@@ -148,7 +148,7 @@ final class LayoutEditorModel: ObservableObject {
                 let value = try await worker.value
                 guard document == original else { isOptimizing = false; return }
                 var copy = original; copy.layers[0] = value; apply(copy)
-                optimizationMessage = value == layer ? "Aucune meilleure position trouvée parmi les positions testées." : "Meilleure position testée appliquée. Vous pouvez annuler cette modification."
+                optimizationMessage = value == layer ? "Aucune meilleure disposition trouvée parmi les essais." : "Meilleure disposition testée appliquée. Vous pouvez annuler cette modification."
             } catch { optimizationMessage = error.localizedDescription }
             isOptimizing = false
         }

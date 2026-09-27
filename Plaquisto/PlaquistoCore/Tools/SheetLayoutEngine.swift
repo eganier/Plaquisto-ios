@@ -114,6 +114,9 @@ struct LayoutLayer: Codable, Equatable, Identifiable {
     // Optional fields keep previously saved documents readable without migration.
     var referenceEdge: Int? = nil
     var furring: LayoutFurringSettings? = nil
+    var staggered: Bool? = nil
+    var staggerOffset: Double? = nil
+    var reuseOffcuts: Bool? = nil
     var cellWidth: Double { orientation == .vertical ? min(sheetWidth, sheetLength) : max(sheetWidth, sheetLength) }
     var cellHeight: Double { orientation == .vertical ? max(sheetWidth, sheetLength) : min(sheetWidth, sheetLength) }
     func forSupport(_ kind:LayoutSupportKind) -> Self {
@@ -126,7 +129,10 @@ struct LayoutLayer: Codable, Equatable, Identifiable {
     }
     func forSurface(_ surface:Surface2D) -> Self {
         var copy = forSupport(surface.kind)
-        if surface.kind == .wall && surface.bounds.height <= cellHeight + 0.001 { copy.offset.y = surface.bounds.min.y }
+        if surface.kind == .wall && surface.bounds.height <= cellHeight + 0.001 {
+            copy.offset.y = surface.bounds.min.y
+            if copy.staggered == true { copy.staggered = false }
+        }
         return copy
     }
 }
@@ -262,6 +268,7 @@ struct LayoutCutPiece: Equatable, Identifiable {
     var id: String
     var contour: [LayoutPoint]
     var holes: [[LayoutPoint]]
+    var stock: LayoutStockUse? = nil
     var area: Double { abs(LayoutGeometry.area(contour)) - holes.reduce(0) { $0 + abs(LayoutGeometry.area($1)) } }
     var bounds: LayoutBounds { .init(points: contour) }
     func contains(_ p: LayoutPoint) -> Bool {
@@ -278,6 +285,14 @@ struct LayoutCutPiece: Equatable, Identifiable {
         return contour[0]
     }
 }
+struct LayoutStockUse: Equatable {
+    var number: Int
+    var part: Int? = nil
+    // Lower-left corner of the purchased sheet in this piece's grid frame.
+    // This keeps the cutting diagram and spot coordinates correct after reuse.
+    var origin: LayoutPoint
+    var label: String { part.map { "\(number)-\($0)" } ?? "\(number)" }
+}
 struct LayoutSheetPlacement: Equatable, Identifiable {
     var id: String
     var number: Int
@@ -288,6 +303,9 @@ struct LayoutSheetPlacement: Equatable, Identifiable {
     var area: Double { pieces.reduce(0) { $0 + $1.area } }
     var isFull: Bool { abs(area - width * height) < 0.01 }
     var wasteArea: Double { max(0, width * height - area) }
+    func label(for piece: LayoutCutPiece) -> String {
+        piece.stock?.label ?? (pieces.count > 1 ? "\(number)-\((pieces.firstIndex(where:{$0.id==piece.id}) ?? 0)+1)" : "\(number)")
+    }
 }
 struct LayoutJoint: Equatable {
     var start: LayoutPoint
@@ -298,8 +316,17 @@ struct SheetLayoutResult: Equatable {
     var joints: [LayoutJoint]
     var frame = LayoutGridFrame()
     var furring = LayoutFurringResult()
+    var staggerDistance = 0.0
     var netArea: Double { sheets.reduce(0) { $0 + $1.area } }
-    var wasteArea: Double { sheets.reduce(0) { $0 + $1.wasteArea } }
+    var purchasedSheetCount: Int {
+        let numbers = Set(sheets.flatMap(\.pieces).compactMap { $0.stock?.number })
+        return numbers.isEmpty ? sheets.count : numbers.count
+    }
+    var savedSheetCount: Int { max(0,sheets.count-purchasedSheetCount) }
+    var wasteArea: Double {
+        guard let sheet=sheets.first else { return 0 }
+        return max(0,Double(purchasedSheetCount)*sheet.width*sheet.height-netArea)
+    }
     var pieceCount: Int { sheets.reduce(0) { $0 + $1.pieces.count } }
 }
 enum SheetLayoutEngine {
@@ -315,31 +342,21 @@ enum SheetLayoutEngine {
             var copy = opening; copy.contour = copy.contour.map(frame.local); return copy
         }
         let furring = try LayoutFurringEngine.calculate(surface:surface,layer:layer)
+        let measured = surface
         surface.contour = try surface.layingContour()
         let w = layer.cellWidth, h = layer.cellHeight
         guard w.isFinite, h.isFinite, w >= 1, h >= 1, w <= 100_000, h <= 100_000,
               layer.offset.finite, abs(layer.offset.x) <= 1_000_000, abs(layer.offset.y) <= 1_000_000 else { throw LayoutGeometryError.invalidFormat }
-        let b = surface.bounds
-        // Equivalent offsets modulo sheet size generate identical placements/IDs.
-        func normalized(_ n: Double, _ period: Double) -> Double {
-            let r = n.truncatingRemainder(dividingBy: period)
-            return abs(r) < LayoutGeometry.epsilon ? 0 : (r < 0 ? r + period : r)
-        }
-        let offset = LayoutPoint(x: normalized(layer.offset.x, w), y: normalized(layer.offset.y, h))
-        let c0 = Int(floor((b.min.x - offset.x) / w)), c1 = Int(ceil((b.max.x - offset.x) / w))
-        let r0 = Int(floor((b.min.y - offset.y) / h)), r1 = Int(ceil((b.max.y - offset.y) / h))
-        guard Double(c1 - c0) * Double(r1 - r0) <= 2000 else { throw LayoutGeometryError.tooLarge }
+        let cells = try LayoutBoardGrid.cells(bounds:surface.bounds,layer:layer)
         var sheets: [LayoutSheetPlacement] = []
-        var jointCandidates: [String: (LayoutJoint, Int)] = [:]
-        for row in r0..<r1 {
-            for col in c0..<c1 {
+        for cell in cells {
                 try Task.checkCancellation()
-                let origin = LayoutPoint(x: offset.x + Double(col) * w, y: offset.y + Double(row) * h)
+                let origin = cell.origin
                 let bounds = LayoutBounds(min: origin, max: origin + .init(x: w, y: h))
                 let loops = try LayoutGeometry.intersection(outer: surface.contour, holes: surface.openings.map(\.contour), rectangle: bounds)
                 let outers = loops.filter { LayoutGeometry.area($0) > 0 }
                 let holes = loops.filter { LayoutGeometry.area($0) < 0 }
-                let id = "\(col):\(row)"
+                let id = cell.id
                 var pieces: [LayoutCutPiece] = []
                 for (index, outer) in outers.enumerated() {
                     let enclosed = holes.filter { LayoutGeometry.contains($0[0], in: outer) }
@@ -348,25 +365,206 @@ enum SheetLayoutEngine {
                 }
                 guard !pieces.isEmpty else { continue }
                 sheets.append(.init(id: id, number: sheets.count + 1, origin: origin, width: w, height: h, pieces: pieces))
-                for piece in pieces {
-                    for e in LayoutGeometry.edges(piece.contour) {
-                        let vertical = abs(e.a.x - e.b.x) < LayoutGeometry.epsilon
-                        let horizontal = abs(e.a.y - e.b.y) < LayoutGeometry.epsilon
-                        guard vertical || horizontal else { continue }
-                        let a = (e.a.x, e.a.y) < (e.b.x, e.b.y) ? e.a : e.b
-                        let z = a == e.a ? e.b : e.a
-                        let key = [a.x, a.y, z.x, z.y].map { String(Int64(($0 / LayoutGeometry.epsilon).rounded())) }.joined(separator: ":")
-                        let previous = jointCandidates[key]
-                        jointCandidates[key] = (.init(start: a, end: z), (previous?.1 ?? 0) + 1)
-                    }
+        }
+        let joints = LayoutBoardGrid.joints(sheets.flatMap(\.pieces))
+        sheets = try LayoutOffcutPacking.assign(sheets, surface:measured, furring:furring, enabled:layer.reuseOffcuts != false)
+        return .init(sheets: sheets, joints: joints, frame:frame,
+                     furring:furring,staggerDistance:LayoutBoardGrid.staggerDistance(layer))
+    }
+}
+
+/// One source for the computed layout and the lightweight grid drawn during a
+/// drag. Alternate strips shift along the LONG board axis, never across it.
+enum LayoutBoardGrid {
+    struct Cell { var id:String; var origin:LayoutPoint }
+    static func staggerChoices(_ layer:LayoutLayer) -> [Double] {
+        let length = max(layer.cellWidth,layer.cellHeight)
+        guard length.isFinite, length > 0, let f=layer.furring,
+              LayoutPlanning.compatibleSpacings(layer).contains(f.spacing) else { return [] }
+        if layer.resolvedFurringOrientation == layer.orientation { return [length/2] }
+        let ratio=(length/f.spacing).rounded()
+        guard ratio.isFinite, ratio>1, ratio<=250 else { return [] }
+        let count = Int(ratio)
+        return (1..<count).map { Double($0)*f.spacing }.sorted {
+            abs($0-length/2) == abs($1-length/2) ? $0 < $1 : abs($0-length/2) < abs($1-length/2)
+        }
+    }
+    static func staggerDistance(_ layer:LayoutLayer) -> Double {
+        guard layer.staggered == true else { return 0 }
+        let choices=staggerChoices(layer)
+        if let requested=layer.staggerOffset, let matching=choices.first(where:{abs($0-requested)<0.001}) { return matching }
+        return choices.first ?? 0
+    }
+    static func cells(bounds b:LayoutBounds, layer:LayoutLayer) throws -> [Cell] {
+        let w=layer.cellWidth, h=layer.cellHeight, shift=staggerDistance(layer)
+        guard w.isFinite,h.isFinite,w>=1,h>=1,w<=100_000,h<=100_000,layer.offset.finite,
+              b.min.finite,b.max.finite,b.width>0,b.height>0,
+              [b.min.x,b.min.y,b.max.x,b.max.y].allSatisfy({abs($0)<=1_000_000}) else { throw LayoutGeometryError.invalidFormat }
+        func normalized(_ value:Double,_ period:Double) -> Double {
+            let r=value.truncatingRemainder(dividingBy:period)
+            return abs(r)<LayoutGeometry.epsilon ? 0 : (r<0 ? r+period : r)
+        }
+        let vertical=layer.orientation == .vertical
+        let offset=LayoutPoint(x:normalized(layer.offset.x,w*(shift>0 && vertical ? 2 : 1)),
+                               y:normalized(layer.offset.y,h*(shift>0 && !vertical ? 2 : 1)))
+        let c0=Int(floor((b.min.x-offset.x-(vertical ? 0 : shift))/w)), c1=Int(ceil((b.max.x-offset.x)/w))
+        let r0=Int(floor((b.min.y-offset.y-(vertical ? shift : 0))/h)), r1=Int(ceil((b.max.y-offset.y)/h))
+        guard Double(c1-c0)*Double(r1-r0)<=4000 else { throw LayoutGeometryError.tooLarge }
+        var result:[Cell]=[]
+        for row in r0..<r1 { for col in c0..<c1 {
+            let alternate=(vertical ? col : row)%2 != 0
+            let p=offset+LayoutPoint(x:Double(col)*w+(!vertical && alternate ? shift : 0),
+                                     y:Double(row)*h+(vertical && alternate ? shift : 0))
+            guard p.x<b.max.x-0.001,p.y<b.max.y-0.001,p.x+w>b.min.x+0.001,p.y+h>b.min.y+0.001 else { continue }
+            result.append(.init(id:"\(col):\(row)",origin:p))
+        } }
+        guard result.count<=2000 else { throw LayoutGeometryError.tooLarge }
+        return result
+    }
+
+    /// Split shared intervals at T junctions. Exact endpoint-key matching misses
+    /// the shorter edges introduced by staggered courses.
+    static func joints(_ pieces:[LayoutCutPiece]) -> [LayoutJoint] {
+        struct Axis:Hashable { var vertical:Bool; var position:Int64 }
+        var groups:[Axis:[(Double,Int)]]=[:]
+        for piece in pieces { for e in LayoutGeometry.edges(piece.contour) {
+            let vertical=abs(e.a.x-e.b.x)<LayoutGeometry.epsilon
+            guard vertical || abs(e.a.y-e.b.y)<LayoutGeometry.epsilon else { continue }
+            let key=Axis(vertical:vertical,position:Int64(((vertical ? e.a.x : e.a.y)/LayoutGeometry.epsilon).rounded()))
+            let a=vertical ? e.a.y : e.a.x, b=vertical ? e.b.y : e.b.x
+            groups[key,default:[]] += [(min(a,b),1),(max(a,b),-1)]
+        } }
+        var result:[LayoutJoint]=[]
+        for key in groups.keys.sorted(by:{ $0.vertical == $1.vertical ? $0.position<$1.position : $0.vertical }) {
+            let events=groups[key]!.sorted { $0.0<$1.0 }
+            var count=0, previous=events[0].0
+            for (position,change) in events {
+                if count>=2,position-previous>LayoutGeometry.epsilon {
+                    let coordinate=Double(key.position)*LayoutGeometry.epsilon
+                    result.append(.init(start:key.vertical ? .init(x:coordinate,y:previous) : .init(x:previous,y:coordinate),
+                                        end:key.vertical ? .init(x:coordinate,y:position) : .init(x:position,y:coordinate)))
                 }
+                count += change; previous=position
             }
         }
-        let joints = jointCandidates.keys.sorted().compactMap { key -> LayoutJoint? in
-            guard let entry = jointCandidates[key], entry.1 > 1 else { return nil }; return entry.0
+        return result
+    }
+}
+
+/// Conservative rectangular-envelope packing: no rotation, no reuse inside an
+/// opening, no imaginary material reclaimed from a diagonal or concave cut.
+/// Units are millimetres. The 200 mm threshold is intentionally not a UI setting.
+enum LayoutOffcutPacking {
+    static let minimum = 200.0
+    private struct Stock { var free:[LayoutBounds] }
+    private struct Use { var stock:Int; var origin:LayoutPoint }
+
+    static func hasSupports(_ piece:LayoutCutPiece, surface:Surface2D, furring:LayoutFurringResult) -> Bool {
+        func contactLength(_ line:LayoutJoint) -> Double {
+            guard piece.bounds.overlaps(.init(points:[line.start,line.end])) else { return 0 }
+            let segment=LayoutGeometry.Edge(a:line.start,b:line.end)
+            var cuts=[0.0,1.0]
+            for edge in ([piece.contour]+piece.holes).flatMap({LayoutGeometry.edges($0)}) {
+                cuts += LayoutGeometry.splitParameters(segment,by:edge)
+            }
+            cuts=cuts.filter{$0>=0 && $0<=1}.sorted()
+            let d=line.end-line.start
+            func onBoundary(_ p:LayoutPoint,_ contour:[LayoutPoint]) -> Bool {
+                LayoutGeometry.edges(contour).contains { LayoutGeometry.distance(p,to:$0.a,$0.b)<0.001 }
+            }
+            return zip(cuts,cuts.dropFirst()).reduce(0) { sum,pair in
+                let p=line.start+d*((pair.0+pair.1)/2)
+                let inside=LayoutGeometry.contains(p,in:piece.contour) || onBoundary(p,piece.contour)
+                let inHole=piece.holes.contains { LayoutGeometry.contains(p,in:$0) && !onBoundary(p,$0) }
+                return sum + (inside && !inHole ? (pair.1-pair.0)*d.length : 0)
+            }
         }
-        return .init(sheets: sheets, joints: joints, frame:frame,
-                     furring:furring)
+        func collinear(_ a:LayoutJoint,_ b:LayoutJoint) -> Bool {
+            let v=a.end-a.start
+            return v.length>0 && abs(LayoutGeometry.cross(v,b.start-a.start))/v.length<0.01 &&
+                abs(LayoutGeometry.cross(v,b.end-a.start))/v.length<0.01
+        }
+        var supports:[LayoutJoint]=[]
+        for line in furring.lines where contactLength(line)>1 {
+            if !supports.contains(where:{collinear($0,line)}) { supports.append(line) }
+            if supports.count>=2 { return true }
+        }
+        guard let support=supports.first else { return false }
+        // Openings are not load-bearing peripheries; only the measured outer
+        // boundary qualifies. A line coincident with a furring is not two supports.
+        return LayoutGeometry.edges(surface.contour).contains { edge in
+            let line=LayoutJoint(start:edge.a,end:edge.b)
+            return !collinear(support,line) && contactLength(line)>1
+        }
+    }
+
+    static func assign(_ input:[LayoutSheetPlacement], surface:Surface2D,
+                       furring:LayoutFurringResult, enabled:Bool) throws -> [LayoutSheetPlacement] {
+        guard let first=input.first else { return input }
+        let size=LayoutPoint(x:first.width,y:first.height)
+        let envelopes=input.map { LayoutBounds(points:$0.pieces.flatMap(\.contour)) }
+        let eligible=input.map { sheet in
+            enabled && !sheet.isFull && sheet.pieces.allSatisfy {
+                $0.bounds.width>=minimum-0.001 && $0.bounds.height>=minimum-0.001 &&
+                hasSupports($0,surface:surface,furring:furring)
+            }
+        }
+        var stocks:[Stock]=[], uses:[Int:Use]=[:]
+        let order=input.indices.sorted {
+            let a=envelopes[$0].width*envelopes[$0].height, b=envelopes[$1].width*envelopes[$1].height
+            return abs(a-b)<0.001 ? $0<$1 : a>b
+        }
+        for index in order {
+            try Task.checkCancellation()
+            let box=envelopes[index]
+            var candidate:(stock:Int,rect:Int,score:Double)?
+            if eligible[index] {
+                for s in stocks.indices { for r in stocks[s].free.indices {
+                    let free=stocks[s].free[r]
+                    guard box.width<=free.width+0.001,box.height<=free.height+0.001 else { continue }
+                    let score=free.width*free.height-box.width*box.height
+                    if candidate == nil || score<candidate!.score { candidate=(s,r,score) }
+                } }
+            }
+            let stock:Int, occupied:LayoutBounds
+            if let candidate {
+                stock=candidate.stock
+                let free=stocks[stock].free.remove(at:candidate.rect)
+                occupied = .init(min:free.min,max:free.min + .init(x:box.width,y:box.height))
+                stocks[stock].free += remainder(of:free,removing:occupied)
+            } else {
+                stock=stocks.count
+                // Retain the original cutting position for an ineligible group.
+                let lower=eligible[index] ? LayoutPoint.zero : box.min-input[index].origin
+                occupied = .init(min:lower,max:lower + .init(x:box.width,y:box.height))
+                stocks.append(.init(free:enabled ? remainder(of:.init(min:.zero,max:size),removing:occupied) : []))
+            }
+            uses[index] = .init(stock:stock,origin:box.min-occupied.min)
+        }
+        // Number purchased sheets by their first appearance on the plan, not by
+        // packing order. Number all their pieces together: 2-1, 2-2, etc.
+        var numbers:[Int:Int]=[:], totals:[Int:Int]=[:], ranks:[Int:Int]=[:]
+        for i in input.indices {
+            let s=uses[i]!.stock
+            if numbers[s]==nil { numbers[s]=numbers.count+1 }
+            totals[s,default:0] += input[i].pieces.count
+        }
+        var result=input
+        for i in result.indices { for j in result[i].pieces.indices {
+            let use=uses[i]!, rank=ranks[use.stock,default:0]+1
+            ranks[use.stock]=rank
+            result[i].pieces[j].stock = .init(number:numbers[use.stock]!,part:totals[use.stock]! > 1 ? rank : nil,origin:use.origin)
+        } }
+        return result
+    }
+    private static func remainder(of free:LayoutBounds, removing box:LayoutBounds) -> [LayoutBounds] {
+        // Four disjoint rectangles outside the reserved envelope. Holes and
+        // diagonal scraps inside the envelope are deliberately not available.
+        [LayoutBounds(min:free.min,max:.init(x:box.min.x,y:free.max.y)),
+         .init(min:.init(x:box.max.x,y:free.min.y),max:free.max),
+         .init(min:.init(x:box.min.x,y:free.min.y),max:.init(x:box.max.x,y:box.min.y)),
+         .init(min:.init(x:box.min.x,y:box.max.y),max:.init(x:box.max.x,y:free.max.y))]
+            .filter { $0.width>=minimum-0.001 && $0.height>=minimum-0.001 }
     }
 }
 
