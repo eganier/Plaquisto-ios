@@ -6,6 +6,200 @@ import SwiftUI
 @testable import Plaquisto
 
 final class SurveyCaptureTests: XCTestCase {
+    func testCeilingFitDefaultsFlatAndDoesNotInventMeasuredRidge() throws {
+        let original = ceilingRoom()
+        let proposal = try XCTUnwrap(WallCeilingEstimate.manualProposals(in:original.room).first)
+        let fit = CeilingAutoFit(room:original.room,proposal:proposal)
+        XCTAssertEqual(fit.coverage,1,accuracy:1e-8)
+        let flat = fit.suggest(shape:.flat)
+        XCTAssertEqual(flat.settings.shape,.flat)
+        XCTAssertEqual(flat.settings.lowHeight,2.5,accuracy:1e-8)
+        for shape in [CeilingEstimateSettings.Shape.singleSlope,.twoSlopes,.fourSlopes] {
+            let suggestion = fit.suggest(shape:shape)
+            XCTAssertTrue(suggestion.estimatedRise,"Equal wall tops cannot measure a ridge: \(shape)")
+            XCTAssertEqual(suggestion.settings.highHeight,3,accuracy:1e-8)
+            let kept = fit.suggest(shape:shape,current:.init(shape:.twoSlopes,lowHeight:2.5,highHeight:4))
+            XCTAssertEqual(kept.settings.highHeight,4,accuracy:1e-8)
+            let result = try WallCeilingEstimate.applying(to:original,proposal:proposal,
+                settings:suggestion.settings,manuallyEdited:true)
+            XCTAssertEqual(result.room.walls,original.room.walls)
+            XCTAssertEqual(result.initialRoom,original.initialRoom)
+        }
+    }
+
+    func testCeilingFitUsesGablePeakAndHandlesRotationTranslationAndUnequalPans() throws {
+        for (ridge,rotation) in [(0.5,0.0),(0.3,0.37),(0.7,-1.2)] {
+            let original = profiledCeilingRoom(ridge:ridge,rotation:rotation)
+            let proposal = try XCTUnwrap(WallCeilingEstimate.manualProposals(in:original.room).first)
+            let fit = CeilingAutoFit(room:original.room,proposal:proposal)
+            let suggestion = fit.suggest(shape:.twoSlopes)
+            XCTAssertFalse(suggestion.estimatedRise)
+            XCTAssertEqual(suggestion.settings.lowHeight,2.5,accuracy:0.02)
+            XCTAssertEqual(suggestion.settings.highHeight,3.7,accuracy:0.02)
+            let planes = try WallCeilingEstimate.planes(boundary:proposal.boundary,
+                floorElevation:proposal.floorElevation,settings:suggestion.settings)
+            for sample in fit.samples {
+                let y = try XCTUnwrap(planes.map { $0.height(x:sample.point.x,z:sample.point.z) }.min())
+                XCTAssertEqual(y,sample.point.y,accuracy:0.03)
+            }
+            XCTAssertTrue(fit.gaps(settings:suggestion.settings).isEmpty)
+            let result = try WallCeilingEstimate.applying(to:original,proposal:proposal,
+                settings:suggestion.settings,manuallyEdited:true)
+            XCTAssertEqual(result.room.ceilings.count,1)
+            XCTAssertEqual(result.room.slopes.count,2)
+            XCTAssertEqual(result.room.walls,original.room.walls)
+            XCTAssertEqual(result.initialRoom,original.initialRoom)
+            XCTAssertEqual(try PlaquistoRoomDocument.decode(result.encoded()),result)
+        }
+    }
+
+    func testCeilingFitOneSlopeAndReportsWrongShapeWithoutChangingWalls() throws {
+        let original = profiledCeilingRoom(singleSlope:true,rotation:0.6)
+        let proposal = try XCTUnwrap(WallCeilingEstimate.manualProposals(in:original.room).first)
+        let fit = CeilingAutoFit(room:original.room,proposal:proposal)
+        let ramp = fit.suggest(shape:.singleSlope)
+        XCTAssertFalse(ramp.estimatedRise)
+        XCTAssertEqual(ramp.settings.lowHeight,2.5,accuracy:0.02)
+        XCTAssertEqual(ramp.settings.highHeight,3.7,accuracy:0.02)
+        XCTAssertTrue(fit.gaps(settings:ramp.settings).isEmpty)
+        let flat = fit.suggest(shape:.flat)
+        XCTAssertFalse(fit.gaps(settings:flat.settings).isEmpty)
+        let result = try WallCeilingEstimate.applying(to:original,proposal:proposal,
+            settings:flat.settings,manuallyEdited:true)
+        XCTAssertEqual(result.room.walls,original.room.walls)
+    }
+
+    func testCeilingFitIsUnchangedByFragmentedGableAndRetainsFallbackProvenance() throws {
+        let original = profiledCeilingRoom(ridge:0.3)
+        var fragmented = original
+        for i in fragmented.room.walls.indices {
+            guard let outline = fragmented.room.walls[i].localOutline else { continue }
+            fragmented.room.walls[i].localOutline = outline.indices.flatMap { j -> [RoomPoint] in
+                let a = outline[j], b = outline[(j+1)%outline.count]
+                return (0..<30).map { a+(b-a)*(Double($0)/30) }
+            }
+        }
+        let proposal = try XCTUnwrap(WallCeilingEstimate.manualProposals(in:original.room).first)
+        let normal = CeilingAutoFit(room:original.room,proposal:proposal).suggest(shape:.twoSlopes)
+        let subdivided = CeilingAutoFit(room:fragmented.room,proposal:proposal).suggest(shape:.twoSlopes)
+        XCTAssertFalse(subdivided.estimatedRise)
+        XCTAssertEqual(subdivided.settings.highHeight,normal.settings.highHeight,accuracy:0.02)
+        XCTAssertEqual(subdivided.settings.lowHeight,normal.settings.lowHeight,accuracy:0.02)
+
+        let flat = ceilingRoom()
+        let choice = try XCTUnwrap(WallCeilingEstimate.manualProposals(in:flat.room).first)
+        let fallback = CeilingAutoFit(room:flat.room,proposal:choice).suggest(shape:.fourSlopes)
+        let saved = try WallCeilingEstimate.applying(to:flat,proposal:choice,settings:fallback.settings,manuallyEdited:true)
+        let loaded = try PlaquistoRoomDocument.decode(saved.encoded())
+        XCTAssertEqual(loaded.room.ceilings.first?.estimateSettings?.riseIsEstimated,true)
+    }
+
+    func testCeilingFitIgnoresWallTopsFromAnotherFloor() throws {
+        let original = profiledCeilingRoom()
+        var stacked = original.room
+        let upstairs = original.room.walls.map { wall -> PlaquistoWall in
+            var copy = wall; copy.id = UUID(); copy.start.y += 4; copy.end.y += 4
+            return copy
+        }
+        stacked.walls = upstairs+stacked.walls
+        let proposal = try XCTUnwrap(WallCeilingEstimate.manualProposals(in:original.room).first)
+        let fitted = CeilingAutoFit(room:stacked,proposal:proposal).suggest(shape:.twoSlopes)
+        XCTAssertFalse(fitted.estimatedRise)
+        XCTAssertEqual(fitted.settings.highHeight,3.7,accuracy:0.02)
+    }
+
+    func testOffCenterCeilingSplitReopensWithValidSettings() throws {
+        let original = ceilingRoom()
+        let choice = try XCTUnwrap(WallCeilingEstimate.manualProposals(in:original.room).first)
+        let whole = try WallCeilingEstimate.applying(to:original,proposal:choice,
+            settings:.init(shape:.twoSlopes,lowHeight:2.5,highHeight:3.7,azimuth:0,ridgePosition:0.5),manuallyEdited:true)
+        let split = try WallCeilingEstimate.split(whole,ceilingID:whole.room.ceilings[0].id,
+            from:.init(x:1.9,y:0,z:-1),to:.init(x:1.9,y:0,z:4))
+        for ceiling in split.room.ceilings { XCTAssertTrue(try XCTUnwrap(ceiling.estimateSettings).isValid) }
+        XCTAssertEqual(split.room.walls,original.room.walls)
+    }
+
+    func testCeilingFitIgnoresOtherRoomAndKeepsBothCeilingsEditableAfterReload() throws {
+        var original = dividedRoom()
+        // A remote high room must not influence the selected kitchen's ceiling.
+        let far = ceilingRoom([(20,0),(24,0),(24,3),(20,3)],heights:[8,8,8,8])
+        original.room.walls += far.room.walls
+        let choices = try WallCeilingEstimate.manualProposals(in:original.room)
+        let local = choices.filter { ($0.boundary.map(\.x).max() ?? 0) < 10 }
+        XCTAssertEqual(local.count,2)
+        var document = original
+        for choice in local {
+            let fit = CeilingAutoFit(room:document.room,proposal:choice)
+            let suggestion = fit.suggest(shape:.flat)
+            XCTAssertEqual(suggestion.settings.lowHeight,2.5,accuracy:1e-8)
+            document = try WallCeilingEstimate.applying(to:document,proposal:choice,
+                settings:suggestion.settings,manuallyEdited:true)
+        }
+        document = try PlaquistoRoomDocument.decode(document.encoded())
+        let kitchen = document.room.ceilings[0], living = document.room.ceilings[1]
+        let livingPans = document.room.slopes.filter { living.slopeIDs.contains($0.id) }
+        let reopen = try WallCeilingEstimate.manualProposals(in:document.room)
+        XCTAssertEqual(reopen.filter { $0.ceilingID != nil }.count,2)
+        let kitchenChoice = try XCTUnwrap(reopen.first { $0.ceilingID == kitchen.id })
+        let suggested = CeilingAutoFit(room:document.room,proposal:kitchenChoice).suggest(shape:.twoSlopes)
+        let edited = try WallCeilingEstimate.applying(to:document,proposal:kitchenChoice,
+            settings:suggested.settings,manuallyEdited:true)
+        XCTAssertEqual(edited.room.ceilings[0].id,kitchen.id)
+        XCTAssertEqual(edited.room.ceilings[1],living)
+        XCTAssertEqual(edited.room.slopes.filter { living.slopeIDs.contains($0.id) },livingPans)
+        let again = try WallCeilingEstimate.manualProposals(in:edited.room)
+        XCTAssertNotNil(again.first { $0.ceilingID == living.id })
+        XCTAssertEqual(again.filter { $0.ceilingID == nil }.count,1,"The distant third zone remains available")
+    }
+
+    func testCeilingFitSplitZoneOnlyUsesItsRemainingWallProfiles() throws {
+        let original = profiledCeilingRoom(ridge:0.5)
+        let choice = try XCTUnwrap(WallCeilingEstimate.manualProposals(in:original.room).first)
+        let whole = try WallCeilingEstimate.applying(to:original,proposal:choice,
+            settings:CeilingAutoFit(room:original.room,proposal:choice).suggest(shape:.twoSlopes).settings,manuallyEdited:true)
+        // Fixture has translation (100, -70), split across the ridge at z = -67.
+        let split = try WallCeilingEstimate.split(whole,ceilingID:whole.room.ceilings[0].id,
+            from:.init(x:99,y:0,z:-67),to:.init(x:105,y:0,z:-67))
+        let halves = try WallCeilingEstimate.manualProposals(in:split.room)
+        XCTAssertEqual(halves.count,2)
+        for half in halves {
+            let fit = CeilingAutoFit(room:split.room,proposal:half)
+            XCTAssertLessThan(fit.coverage,1,"An interior cut is not an observed wall")
+            let ramp = fit.suggest(shape:.singleSlope)
+            XCTAssertFalse(ramp.estimatedRise)
+            XCTAssertEqual(ramp.settings.lowHeight,2.5,accuracy:0.03)
+            XCTAssertEqual(ramp.settings.highHeight,3.7,accuracy:0.03)
+        }
+    }
+
+    private func profiledCeilingRoom(ridge:Double = 0.5, singleSlope:Bool = false,
+                                     rotation:Double = 0) -> PlaquistoRoomDocument {
+        var document = ceilingRoom([(0,0),(4,0),(4,6),(0,6)])
+        let source = GeometryProvenance(source:.roomPlan)
+        func top(_ z:Double) -> Double {
+            2.5+1.2*(singleSlope ? z/6 : min(z/(6*ridge),(6-z)/(6*(1-ridge))))
+        }
+        for i in document.room.walls.indices {
+            var wall = document.room.walls[i]
+            var xs = [0.0,wall.length.rawValue]
+            if !singleSlope, abs(wall.direction.z) > 0.1 {
+                let x = (6*ridge-wall.start.z)/wall.direction.z
+                if x > 0 && x < wall.length.rawValue { xs.append(x) }
+            }
+            xs.sort()
+            let upper = xs.map { RoomPoint(x:$0,y:top(wall.start.z+wall.direction.z*$0),z:0) }
+            wall.localOutline = [.zero,.init(x:wall.length.rawValue,y:0,z:0)]+upper.reversed()
+            wall.height = .init(rawValue:upper.map(\.y).max()!,provenance:source)
+            func transform(_ p:RoomPoint) -> RoomPoint {
+                .init(x:100+p.x*cos(rotation)-p.z*sin(rotation),y:1.2,
+                      z:-70+p.x*sin(rotation)+p.z*cos(rotation))
+            }
+            wall.start = transform(wall.start); wall.end = transform(wall.end)
+            document.room.walls[i] = wall
+        }
+        return .init(room:document.room)
+    }
+
     func testAddingSecondCeilingPreservesFirstAndLabelsParentsNotPans() throws {
         let original=dividedRoom()
         let zones=try WallCeilingEstimate.manualProposals(in:original.room)

@@ -451,32 +451,10 @@ enum WallCeilingEstimate {
         guard !document.room.slopes.contains(where: { slope in
             slope.boundaries.contains { overlaps(proposal.boundary,$0) }
         }) else { throw Failure.existingCeiling }
-        let u = SIMD2(cos(settings.azimuth), sin(settings.azimuth)), v = SIMD2(-u.y, u.x)
         var polygon = proposal.boundary.map { SIMD2($0.x, $0.z) }
         if ScannerCeilingReconstruction.triangulate(polygon) == nil { polygon.reverse() }
         guard let indices = ScannerCeilingReconstruction.triangulate(polygon) else { throw Failure.openContour }
-        let us = polygon.map { simd_dot($0, u) }, vs = polygon.map { simd_dot($0, v) }
-        guard let u0 = us.min(), let u1 = us.max(), let v0 = vs.min(), let v1 = vs.max(),
-              u1 - u0 > 0.01, v1 - v0 > 0.01 else { throw Failure.openContour }
-        let bottom = proposal.floorElevation + settings.lowHeight
-        let rise = settings.highHeight - settings.lowHeight
-        let peak = u0 + (u1 - u0) * settings.ridgePosition
-        func plane(_ axis: SIMD2<Double>, _ gradient: Double, _ origin: Double) -> RoomPlane {
-            .init(a: axis.x * gradient, b: axis.y * gradient, c: bottom - gradient * origin)
-        }
-        var planes: [RoomPlane]
-        if settings.shape == .flat || rise < 1e-8 {
-            planes = [.init(a: 0, b: 0, c: bottom)]
-        } else if settings.shape == .singleSlope {
-            planes = [plane(u, rise / (u1-u0), u0)]
-        } else {
-            planes = [plane(u, rise / (peak-u0), u0), plane(u, -rise / (u1-peak), u1)]
-            if settings.shape == .fourSlopes {
-                // Hip ends meet a central ridge; in a square this becomes a summit.
-                let hipRun = min((u1-u0)/2, (v1-v0)/2)
-                planes += [plane(v, rise / hipRun, v0), plane(v, -rise / hipRun, v1)]
-            }
-        }
+        let planes = try planes(boundary: proposal.boundary, floorElevation: proposal.floorElevation, settings: settings)
         let source = GeometryProvenance(source: .estimated)
         var pans: [PlaquistoSlope] = []
         for (index, plane) in planes.enumerated() {
@@ -517,6 +495,31 @@ enum WallCeilingEstimate {
                                          footprint:proposal.boundary,floorElevation:proposal.floorElevation,planNumber:number))
         try edited.validate()
         return edited
+    }
+
+    /// Shared by the editor mesh and its fitter: the same settings always describe the same roof.
+    static func planes(boundary: [RoomPoint], floorElevation: Double,
+                       settings: CeilingEstimateSettings) throws -> [RoomPlane] {
+        guard settings.isValid, floorElevation.isFinite, boundary.allSatisfy(\.finite) else { throw Failure.invalidHeight }
+        let u = SIMD2(cos(settings.azimuth), sin(settings.azimuth)), v = SIMD2(-u.y, u.x)
+        let polygon = boundary.map { SIMD2($0.x, $0.z) }
+        let us = polygon.map { simd_dot($0, u) }, vs = polygon.map { simd_dot($0, v) }
+        guard let u0 = us.min(), let u1 = us.max(), let v0 = vs.min(), let v1 = vs.max(),
+              u1-u0 > 0.01, v1-v0 > 0.01 else { throw Failure.openContour }
+        let bottom = floorElevation + settings.lowHeight
+        let rise = settings.highHeight-settings.lowHeight
+        let peak = u0+(u1-u0)*settings.ridgePosition
+        func plane(_ axis: SIMD2<Double>, _ gradient: Double, _ origin: Double) -> RoomPlane {
+            .init(a:axis.x*gradient, b:axis.y*gradient, c:bottom-gradient*origin)
+        }
+        if settings.shape == .flat || rise < 1e-8 { return [.init(a:0,b:0,c:bottom)] }
+        if settings.shape == .singleSlope { return [plane(u,rise/(u1-u0),u0)] }
+        var result = [plane(u,rise/(peak-u0),u0), plane(u,-rise/(u1-peak),u1)]
+        if settings.shape == .fourSlopes {
+            let run = min((u1-u0)/2,(v1-v0)/2)
+            result += [plane(v,rise/run,v0), plane(v,-rise/run,v1)]
+        }
+        return result
     }
 
     static func footprint(of ceiling: PlaquistoCeiling, in room: PlaquistoRoomModel) -> [RoomPoint]? {
@@ -608,7 +611,7 @@ enum WallCeilingEstimate {
                 let current=footprints[i].map { simd_dot(SIMD2($0.x,$0.z),u) }
                 if let lo=previous.min(), let hi=previous.max(), let newLo=current.min(), let newHi=current.max(), newHi>newLo {
                     let peak=lo+(hi-lo)*settings.ridgePosition
-                    settings.ridgePosition=min(0.9,max(0.1,(peak-newLo)/(newHi-newLo)))
+                    settings.ridgePosition=min(0.85,max(0.15,(peak-newLo)/(newHi-newLo)))
                 }
             }
             ceiling.estimateSettings=settings

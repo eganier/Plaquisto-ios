@@ -1,6 +1,9 @@
 // !$*UTF8*$!
 { archiveVersion = 1; classes = {}; objectVersion = 56; objects = {
 SWF1 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SurveyWorkGeometry.swift; sourceTree = "<group>"; };
+CAF1 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CeilingAutoFit.swift; sourceTree = "<group>"; };
+CAA1 = {isa = PBXBuildFile; fileRef = CAF1; };
+CAL1 = {isa = PBXBuildFile; fileRef = CAF1; };
 MSF1 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MaquetteStyle.swift; sourceTree = "<group>"; };
 MSA1 = {isa = PBXBuildFile; fileRef = MSF1; };
 MSL1 = {isa = PBXBuildFile; fileRef = MSF1; };
@@ -210,16 +213,16 @@ NKA1 = {isa = PBXBuildFile; fileRef = NKF1; };
 NKL1 = {isa = PBXBuildFile; fileRef = NKF1; };
 BZ01 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ZeroEmptyDecimalTextField.swift; sourceTree = "<group>"; };
 CC01 = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
-		CC02 = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (MSA1,SWA1,SWVA1,SCA1,SCV1,SVB1,NKA1,CJ02,BA6,BA7,BA8,BA0,BA1,BA2,BA3,BA4,BA5,AA01,AA02,AA03,AA04,AA05,AA06,AA08,AA09,AA10,AA11,AA12,AA13,AA14,AA15,AA16,AA17,AA18,AA19,AA20,AA21,AA22,AA23,AA24,AA25,AA26,AA27,AA28,AA29,AM01,AZ01,MO01,MO02,MO03,TA01,TA02,TA03,TA04,TA05,PA01,PA02,PA03,PA04,PA05,PA07,PA08,PA09,PA10,PA11); runOnlyForDeploymentPostprocessing = 0; };
+		CC02 = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (CAA1,MSA1,SWA1,SWVA1,SCA1,SCV1,SVB1,NKA1,CJ02,BA6,BA7,BA8,BA0,BA1,BA2,BA3,BA4,BA5,AA01,AA02,AA03,AA04,AA05,AA06,AA08,AA09,AA10,AA11,AA12,AA13,AA14,AA15,AA16,AA17,AA18,AA19,AA20,AA21,AA22,AA23,AA24,AA25,AA26,AA27,AA28,AA29,AM01,AZ01,MO01,MO02,MO03,TA01,TA02,TA03,TA04,TA05,PA01,PA02,PA03,PA04,PA05,PA07,PA08,PA09,PA10,PA11); runOnlyForDeploymentPostprocessing = 0; };
 CC03 = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (BA10); runOnlyForDeploymentPostprocessing = 0; };
 CC04 = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (SCT1,BT9,AA07,TT01,PT01); runOnlyForDeploymentPostprocessing = 0; };
 CC05 = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
 CC06 = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
 LC01 = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
-LC02 = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (MSL1,SCV2,SVC1,SVR1,SWL1,SWVL1,SCL1,SVB2,SVM1,SVG1,SVE1,NKL1,CJ03,BL6,BL7,BL8,BL0,BL1,BL2,BL3,BL4,BL5,LA01,TL01,TL02,TL03,TL04,TL05,PL01,PL02,PL03,PL04,PL05,PL07,PL08,PL09,PL10,PL11,LA02,LA03,LA04,LA05,LA06,LA07,LA08,LA09,LA10,LA11,LO01,LO02,LO03,LS01,LS02,LS03,LS04,LS05,LS06,LS07,LS08,LS09,LS10,LS11); runOnlyForDeploymentPostprocessing = 0; };
+LC02 = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (CAL1,MSL1,SCV2,SVC1,SVR1,SWL1,SWVL1,SCL1,SVB2,SVM1,SVG1,SVE1,NKL1,CJ03,BL6,BL7,BL8,BL0,BL1,BL2,BL3,BL4,BL5,LA01,TL01,TL02,TL03,TL04,TL05,PL01,PL02,PL03,PL04,PL05,PL07,PL08,PL09,PL10,PL11,LA02,LA03,LA04,LA05,LA06,LA07,LA08,LA09,LA10,LA11,LO01,LO02,LO03,LS01,LS02,LS03,LS04,LS05,LS06,LS07,LS08,LS09,LS10,LS11); runOnlyForDeploymentPostprocessing = 0; };
 LC03 = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (BL10); runOnlyForDeploymentPostprocessing = 0; };
 DD01 = {isa = PBXGroup; children = (DD02,SD01,LD01,DD04,DD03); sourceTree = "<group>"; };
-DD02 = {isa = PBXGroup; children = (MSF1,SWF1,SWF2,SCF1,SCF2,SVF1,BB01,BB06,BB07,BB10,BB11,BB12,BB13,BB14,BB15,BB16,BB17,BB18); path = Plaquisto; sourceTree = "<group>"; };
+DD02 = {isa = PBXGroup; children = (CAF1,MSF1,SWF1,SWF2,SCF1,SCF2,SVF1,BB01,BB06,BB07,BB10,BB11,BB12,BB13,BB14,BB15,BB16,BB17,BB18); path = Plaquisto; sourceTree = "<group>"; };
 DD03 = {isa = PBXGroup; children = (BB04,LB04,BB09); name = Products; sourceTree = "<group>"; };
 DD04 = {isa = PBXGroup; children = (SCFT1,BF9,BB08,BT01,PB06); path = PlaquistoTests; sourceTree = "<group>"; };
 LD01 = {isa = PBXGroup; children = (LB01); path = PlaquistoLab; sourceTree = "<group>"; };
