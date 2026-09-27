@@ -41,6 +41,7 @@ private struct FacingDimension: Identifiable, Hashable {
 private typealias FacingAllocation = FacingSelection
 
 struct CeilingConfiguratorView: View {
+    @Environment(\.layoutCoveringAreaRatio) private var coveringAreaRatio
     @StateObject private var store = CeilingReferenceStore()
     @State private var step: Int
     @State private var length: Double
@@ -72,7 +73,11 @@ struct CeilingConfiguratorView: View {
     @State private var compoundChoice: String
     @State private var showingSavedResult: Bool
     @State private var shouldApplyDefaultInsulation: Bool
+    @State private var configurationExpanded = false
     private let onSave: (CeilingConfiguration) -> Void
+    private let isEditing: Bool
+    private let preserveInitialSpacing: Bool
+    private let lockScannedGeometry: Bool
 
     private let stepNames = ["Dimensions", "Support", "Isolation", "Plénum et entraxe", "Fixation", "Parements", "Bandes à joint", "Résultat"]
     private let spacingChoices = [0.4, 0.5, 0.6]
@@ -80,8 +85,11 @@ struct CeilingConfiguratorView: View {
     init(
         initialConfiguration: CeilingConfiguration = CeilingConfiguration(),
         startsAtResult: Bool = false,
+        preserveInitialSpacing: Bool = false,
+        lockScannedGeometry: Bool = false,
         onSave: @escaping (CeilingConfiguration) -> Void = { _ in }
     ) {
+        self.lockScannedGeometry = lockScannedGeometry
         _step = State(initialValue: startsAtResult ? 7 : 0)
         _length = State(initialValue: initialConfiguration.length)
         _width = State(initialValue: initialConfiguration.width)
@@ -110,6 +118,8 @@ struct CeilingConfiguratorView: View {
         _showingSavedResult = State(initialValue: startsAtResult)
         _shouldApplyDefaultInsulation = State(initialValue: !startsAtResult && initialConfiguration.insulationID.isEmpty)
         self.onSave = onSave
+        self.isEditing = startsAtResult
+        self.preserveInitialSpacing = preserveInitialSpacing
     }
 
     private var catalogue: CeilingCataloguePayload? { store.catalogue }
@@ -168,10 +178,8 @@ struct CeilingConfiguratorView: View {
         }
     }
     private func insulationLambda(for record: CeilingReferenceRecord?) -> Double? {
-        if let text = record?.data["conductivity"]?.string,
-           let match = text.range(of: #"0[,.]\d+"#, options: .regularExpression),
-           let value = Double(text[match].replacingOccurrences(of: ",", with: ".")) { return value }
-        return record?.data["lambda_w_mk"]?.number
+        ThermalCalculator.catalogueLambda(conductivity: record?.data["conductivity"]?.string,
+                                          lambda: record?.data["lambda_w_mk"]?.number)
     }
     private func insulationLambdaTitle(_ record: CeilingReferenceRecord) -> String {
         guard let lambda = insulationLambda(for: record) else { return "Lambda non renseigné" }
@@ -179,7 +187,7 @@ struct CeilingConfiguratorView: View {
     }
     private var insulationTypeBinding: Binding<String> {
         Binding(get: { selectedInsulationType }, set: { material in
-            insulationID = material.isEmpty ? "" : (insulationOptions(for: material).first?.id ?? "")
+            insulationID = material.isEmpty ? "" : (preferredInsulation(for: material)?.id ?? "")
         })
     }
     private var insulationEnabledBinding: Binding<Bool> {
@@ -201,7 +209,7 @@ struct CeilingConfiguratorView: View {
     }
     private var secondInsulationTypeBinding: Binding<String> {
         Binding(get: { selectedSecondInsulationType }, set: { material in
-            secondInsulationID = material.isEmpty ? "" : (insulationOptions(for: material).first?.id ?? "")
+            secondInsulationID = material.isEmpty ? "" : (preferredInsulation(for: material)?.id ?? "")
         })
     }
     private var insulationPoints: [InsulationPoint] {
@@ -326,6 +334,11 @@ struct CeilingConfiguratorView: View {
     }
     private var otherSupplies: [Supply] {
         var result: [Supply] = []
+        if let catalogue = store.catalogue {
+            for (index, item) in LayoutWorkGeometry.ceilingInsulation(configuration, catalogue: catalogue, coveringRatio: coveringAreaRatio).enumerated() {
+                result.append(Supply(id: "LAYOUT-INSULATION-\(index)", name: item.name, quantity: item.quantity, unit: "m²"))
+            }
+        }
 
         for item in quantityItems where !["QTY-FIXATION", "QTY-PLAQUE"].contains(item.id) {
             if !jointTreatment && ["QTY-BANDE", "QTY-ENDUIT-POUDRE", "QTY-ENDUIT-PATE"].contains(item.id) { continue }
@@ -345,7 +358,13 @@ struct CeilingConfiguratorView: View {
         return result
     }
     private var facingSupplies: [Supply] {
-        suppliesForSkin(firstSkin, name: "Première peau") + (layers == 2 ? suppliesForSkin(secondSkin, name: "Deuxième peau") : [])
+        let supplies = suppliesForSkin(firstSkin) + (layers == 2 ? suppliesForSkin(secondSkin) : [])
+        return SupplyListingConsolidator.rows(supplies.map {
+            .init(name: $0.name, quantity: $0.quantity, unit: $0.unit)
+        }).compactMap { row in
+            guard row.measurements.count == 1, let measurement = row.measurements.first else { return nil }
+            return Supply(id: "\(row.name)|\(measurement.unit)", name: row.name, quantity: measurement.quantity, unit: measurement.unit)
+        }
     }
     private var vaporBarrierSupplies: [Supply] {
         guard vaporBarrier else { return [] }
@@ -385,7 +404,7 @@ struct CeilingConfiguratorView: View {
                 applyDefaultInsulationIfAvailable()
                 shouldApplyDefaultInsulation = false
             }
-            normalizeCeilingShapeSelections()
+            normalizeCeilingShapeSelections(preservingSpacing:isEditing || preserveInitialSpacing)
             plenum = max(plenum, minimumPlenum)
             trackedMinimumPlenum = minimumPlenum
             normalizeFacingAllocations()
@@ -402,6 +421,13 @@ struct CeilingConfiguratorView: View {
             fixingSystemID = ""
         }
         .tint(Color(red: 0.12, green: 0.38, blue: 0.29))
+        .toolbar {
+            if isEditing {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Enregistrer") { onSave(configuration) }
+                }
+            }
+        }
     }
 
     private var configurator: some View {
@@ -490,6 +516,8 @@ struct CeilingConfiguratorView: View {
                 .pickerStyle(.segmented)
                 .onChange(of: ceilingShape) { _, _ in normalizeCeilingShapeSelections() }
             }
+            .disabled(lockScannedGeometry)
+            if !lockScannedGeometry {
             Section {
                 Toggle("Préciser la longueur et la largeur", isOn: $specifiesDimensions)
                 if specifiesDimensions {
@@ -511,11 +539,16 @@ struct CeilingConfiguratorView: View {
                      ? "La longueur et la largeur améliorent la précision des calculs. Si elles sont toutes les deux renseignées, la surface est calculée automatiquement."
                      : "La longueur et la largeur ne sont pas renseignées. Plaquisto estimera un ouvrage carré et le quantitatif sera légèrement moins précis.")
             }
+            }
             Section("Surface de l’ouvrage") {
-                if specifiesDimensions {
+                if specifiesDimensions || lockScannedGeometry {
                     LabeledContent("Surface calculée", value: "\(format(enteredArea)) m²")
                 } else {
                     MeasureField(label: "Surface", value: $enteredArea, unit: "m²")
+                }
+                if lockScannedGeometry {
+                    Text("Surface nette issue des plafonds sélectionnés. Chaque contour est conservé dans un composant de l’ouvrage. Les consommables sont estimés à partir des ratios du système choisi.")
+                        .font(.footnote).foregroundStyle(.secondary)
                 }
             }
 
@@ -738,28 +771,30 @@ struct CeilingConfiguratorView: View {
                 }
                 .padding(.vertical, 5)
             }
-            Section("Configuration du plafond") {
-                LabeledContent("Type", value: isSlopedCeiling ? "Rampant" : "Horizontal")
-                LabeledContent("Sens des fourrures", value: furringDirection == "length" ? "Dans la longueur" : "Dans la largeur")
-                LabeledContent("Support", value: supportTitle(support))
-                if !insulationID.isEmpty {
-                    LabeledContent("Isolation", value: insulationLayers == 2 ? "Deux couches" : "Une couche")
-                    LabeledContent("Première couche", value: firstInsulationLocation == "below" ? belowStructureTitle : betweenStructureTitle)
-                    if insulationLayers == 2 {
-                        LabeledContent("Deuxième couche", value: secondInsulationLocation == "below" ? belowStructureTitle : betweenStructureTitle)
+            Section {
+                DisclosureGroup("Configuration retenue", isExpanded: $configurationExpanded) {
+                    editableConfigurationRow("Type", value: isSlopedCeiling ? "Rampant" : "Horizontal", targetStep: 0)
+                    editableConfigurationRow("Sens des fourrures", value: furringDirection == "length" ? "Dans la longueur" : "Dans la largeur", targetStep: 0)
+                    editableConfigurationRow("Support", value: supportTitle(support), targetStep: 1)
+                    if !insulationID.isEmpty {
+                        editableConfigurationRow("Isolation", value: insulationLayers == 2 ? "Deux couches" : "Une couche", targetStep: 2)
+                        editableConfigurationRow("Première couche", value: firstInsulationLocation == "below" ? belowStructureTitle : betweenStructureTitle, targetStep: 2)
+                        if insulationLayers == 2 {
+                            editableConfigurationRow("Deuxième couche", value: secondInsulationLocation == "below" ? belowStructureTitle : betweenStructureTitle, targetStep: 2)
+                        }
+                        if let totalInsulationThermalResistance {
+                            editableConfigurationRow("Résistance thermique totale", value: "R = \(totalInsulationThermalResistance.formatted(.number.precision(.fractionLength(2)))) m²·K/W", targetStep: 2)
+                        }
                     }
-                    if let totalInsulationThermalResistance {
-                        LabeledContent("Résistance thermique totale", value: "R = \(totalInsulationThermalResistance.formatted(.number.precision(.fractionLength(2)))) m²·K/W")
-                    }
+                    editableConfigurationRow("Plénum retenu", value: "\(format(plenum)) cm", targetStep: 3)
                 }
-                LabeledContent("Plénum retenu", value: "\(format(plenum)) cm")
             }
             Section("Système de fixation") {
                 LabeledContent("Solution", value: selectedFixingSystem?.title ?? "—")
                 LabeledContent("Nombre de systèmes", value: String(Int(ceil(fixingSystemCount))))
             }
             Section("Pare-vapeur") {
-                LabeledContent("Pose prévue", value: vaporBarrier ? "Oui" : "Non")
+                editableConfigurationRow("Pose prévue", value: vaporBarrier ? "Oui" : "Non", targetStep: 2)
                 if vaporBarrier {
                     ForEach(vaporBarrierSupplies) { supply in
                         LabeledContent(supply.name, value: "\(formattedQuantity(supply.quantity, unit: supply.unit)) \(supply.unit)")
@@ -781,6 +816,24 @@ struct CeilingConfiguratorView: View {
                 }
             }
         }
+    }
+
+    private func editableConfigurationRow(_ title: String, value: String, targetStep: Int) -> some View {
+        Button {
+            withAnimation {
+                showingSavedResult = false
+                step = targetStep
+            }
+        } label: {
+            HStack(spacing: 8) {
+                Text(title)
+                Spacer()
+                Text(value).foregroundStyle(.secondary).multilineTextAlignment(.trailing)
+                Image(systemName: "chevron.right").font(.caption.weight(.semibold)).foregroundStyle(.tertiary)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
     }
 
     private var ceilingFacingsStep: some View {
@@ -890,7 +943,7 @@ struct CeilingConfiguratorView: View {
     }
 
     private func advance() {
-        if step == 0 && (!specifiesDimensions || length <= 0 || width <= 0) { showDimensionsWarning = true }
+        if step == 0 && !lockScannedGeometry && (!specifiesDimensions || length <= 0 || width <= 0) { showDimensionsWarning = true }
         else if step == 2 && isSlopedCeiling && !vaporBarrier { showVaporBarrierWarning = true }
         else if step == 3 && spacingIsAboveRecommendation { showSpacingWarning = true }
         else { completeAdvance() }
@@ -911,7 +964,7 @@ struct CeilingConfiguratorView: View {
         if step == 4 { ensureFacingAllocations() }
     }
 
-    private func normalizeCeilingShapeSelections() {
+    private func normalizeCeilingShapeSelections(preservingSpacing:Bool = false) {
         if !supports.contains(support) {
             support = supports.first ?? ""
             fixingSystemID = ""
@@ -933,7 +986,9 @@ struct CeilingConfiguratorView: View {
 
         if insulationLayers == 2 { prepareSecondInsulationDefault() }
         normalizeInsulationLocations()
-        selectedSpacing = maximumSpacing ?? 0.4
+        if !preservingSpacing || !spacingChoices.contains(selectedSpacing) {
+            selectedSpacing = maximumSpacing ?? 0.4
+        }
     }
 
     private func isGlassWool(_ value: String) -> Bool {
@@ -943,9 +998,7 @@ struct CeilingConfiguratorView: View {
 
     private func applyDefaultInsulationIfAvailable() {
         guard insulationID.isEmpty,
-              let record = availableInsulationSeries.first(where: {
-                  isGlassWool($0.data["material"]?.string ?? "")
-              }) ?? availableInsulationSeries.first else { return }
+              let record = preferredInsulation(in: availableInsulationSeries) else { return }
         insulationID = record.id
         insulationThickness = insulationPoints.first?.thickness ?? 0
     }
@@ -967,9 +1020,7 @@ struct CeilingConfiguratorView: View {
             return
         }
         if !availableInsulationSeries.contains(where: { $0.id == secondInsulationID }),
-           let defaultRecord = availableInsulationSeries.first(where: {
-               isGlassWool($0.data["material"]?.string ?? "")
-           }) ?? availableInsulationSeries.first {
+           let defaultRecord = preferredInsulation(in: availableInsulationSeries) {
             secondInsulationID = defaultRecord.id
         }
         if !secondInsulationPoints.contains(where: { abs($0.thickness - secondInsulationThickness) < 0.01 }) {
@@ -1098,24 +1149,58 @@ struct CeilingConfiguratorView: View {
 
     private func preferredDimension(for facingID: String) -> FacingDimension? {
         let available = dimensions(for: facingID)
-        guard let facing = facings.first(where: { $0.id == facingID }) else { return available.first }
-        let preferredLength = facing.data["function"]?.string == "quatre_bords_amincis" ? 2400.0 : 2500.0
-        if facing.data["mechanical_family"]?.string == "BA13",
-           let preferred = available.first(where: { $0.width == 1200 && $0.length == preferredLength }) {
-            return preferred
-        }
-        return available.first
+        guard !available.isEmpty else { return nil }
+        let spacingMM = selectedSpacing * 1_000
+        return available.sorted { lhs, rhs in
+            let leftWidthPenalty = abs(lhs.width - 1_200)
+            let rightWidthPenalty = abs(rhs.width - 1_200)
+            if leftWidthPenalty != rightWidthPenalty { return leftWidthPenalty < rightWidthPenalty }
+            let leftMultiple = abs(lhs.length.truncatingRemainder(dividingBy: spacingMM)) < 0.1
+            let rightMultiple = abs(rhs.length.truncatingRemainder(dividingBy: spacingMM)) < 0.1
+            if leftMultiple != rightMultiple { return leftMultiple }
+            if abs(lhs.length - 2_400) != abs(rhs.length - 2_400) {
+                return abs(lhs.length - 2_400) < abs(rhs.length - 2_400)
+            }
+            return lhs.length < rhs.length
+        }.first
     }
 
-    private func suppliesForSkin(_ allocations: [FacingAllocation], name skinName: String) -> [Supply] {
+    private func preferredInsulation(in records: [CeilingReferenceRecord]) -> CeilingReferenceRecord? {
+        func normalizedMaterial(_ record: CeilingReferenceRecord) -> String {
+            (record.data["material"]?.string ?? "").folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+        }
+        func preferredLambda(for material: String) -> Double? {
+            if material.contains("laine de verre") { return 0.035 }
+            if material.contains("laine de bois") { return 0.036 }
+            return nil
+        }
+        let glass = records.filter { normalizedMaterial($0).contains("laine de verre") }
+        if let exact = glass.first(where: { abs((insulationLambda(for: $0) ?? 0) - 0.035) < 0.000_1 }) { return exact }
+        if let firstGlass = glass.first { return firstGlass }
+        if let material = records.first.map(normalizedMaterial), let target = preferredLambda(for: material),
+           let exact = records.first(where: { abs((insulationLambda(for: $0) ?? 0) - target) < 0.000_1 }) { return exact }
+        return records.first
+    }
+
+    private func preferredInsulation(for material: String) -> CeilingReferenceRecord? {
+        let records = insulationOptions(for: material)
+        let normalized = material.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+        let target = normalized.contains("laine de bois") ? 0.036 : (normalized.contains("laine de verre") ? 0.035 : nil)
+        if let target, let exact = records.first(where: { abs((insulationLambda(for: $0) ?? 0) - target) < 0.000_1 }) {
+            return exact
+        }
+        return records.first
+    }
+
+    private func suppliesForSkin(_ allocations: [FacingAllocation]) -> [Supply] {
         allocations.compactMap { allocation in
             guard let facing = facings.first(where: { $0.id == allocation.facingID }),
                   let dimension = dimensions(for: allocation.facingID).first(where: { $0.id == allocation.dimensionID }),
                   dimension.area > 0 else { return nil }
-            let boardCount = ceil(allocation.area * 1.05 / dimension.area)
+            let boardCount = ceil(allocation.area * coveringAreaRatio * 1.05 / dimension.area)
             return Supply(
-                id: "\(skinName)-\(allocation.id)",
-                name: "\(skinName) · \(facing.title) · \(dimension.label) · \(format(allocation.area)) m² posés",
+                id: "\(facing.id)-\(dimension.id)-\(allocation.id)",
+                name: "\(facing.title) · \(dimension.label)",
                 quantity: boardCount,
                 unit: "plaque(s)"
             )
@@ -1172,8 +1257,7 @@ private struct MeasureField: View {
         HStack {
             Text(label)
             Spacer()
-            TextField("0", value: $value, format: .number)
-                .keyboardType(.decimalPad)
+            ZeroEmptyDecimalTextField(value: $value)
                 .multilineTextAlignment(.trailing)
                 .frame(width: 90)
             Text(unit).foregroundStyle(.secondary)

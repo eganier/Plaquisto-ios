@@ -32,6 +32,7 @@ struct AdhesiveFacingConfiguratorView: View {
     let onSave: ((AdhesiveFacingConfiguration) -> Void)?
     let onClose: () -> Void
     let showsCloseButton: Bool
+    private let isEditing: Bool
     @State private var step: Int
     @State private var geometryMode: GeometryMode
     @State private var height: Double
@@ -42,6 +43,7 @@ struct AdhesiveFacingConfiguratorView: View {
     @State private var selectedFormatID: String
     @State private var jointTreatment: Bool
     @State private var showPanelHeightWarning = false
+    @State private var configurationExpanded = false
 
     private let green = Color(red: 0.12, green: 0.38, blue: 0.29)
     private let stepNames = ["Dimensions", "Parement", "Format", "Bandes à joint", "Résultat"]
@@ -66,6 +68,7 @@ struct AdhesiveFacingConfiguratorView: View {
         self.onSave = onSave
         self.onClose = onClose
         self.showsCloseButton = showsCloseButton
+        self.isEditing = initialConfiguration != nil
     }
 
     private var actualLength: Double { geometryMode == .length ? enteredLength : (height > 0 ? enteredSurface / height : 0) }
@@ -103,6 +106,13 @@ struct AdhesiveFacingConfiguratorView: View {
         .onChange(of: references.options) { _, _ in normalizeSelections() }
         .onChange(of: selectedFamily) { _, _ in normalizeFunction() }
         .onChange(of: height) { _, _ in normalizeFormatForHeight() }
+        .toolbar {
+            if isEditing, let onSave {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Enregistrer") { onSave(configuration) }
+                }
+            }
+        }
         .alert("Hauteur de plaque insuffisante", isPresented: $showPanelHeightWarning) {
             Button("Modifier le format", role: .cancel) {}
             Button("Continuer malgré tout") { step += 1 }
@@ -241,13 +251,6 @@ struct AdhesiveFacingConfiguratorView: View {
 
     private var resultStep: some View {
         VStack(alignment: .leading, spacing: 18) {
-            sectionTitle("Configuration retenue")
-            card {
-                LabeledContent("Dimensions", value: "\(format(actualLength, "m")) × \(format(height, "m"))")
-                Divider(); LabeledContent("Surface", value: format(actualArea, "m²"))
-                Divider(); LabeledContent("Parement", value: "\(selectedFamily) · \(selectedFunction?.functionTitle ?? "Standard")")
-                Divider(); LabeledContent("Format", value: selectedFormat.title)
-            }
             sectionTitle("Quantitatif indicatif")
             card {
                 ForEach(Array(quantityRows.enumerated()), id: \.offset) { index, row in
@@ -255,7 +258,30 @@ struct AdhesiveFacingConfiguratorView: View {
                     if index < quantityRows.count - 1 { Divider() }
                 }
             }
+            DisclosureGroup(isExpanded: $configurationExpanded) {
+                card {
+                    editableConfigurationRow("Dimensions", value: "\(format(actualLength, "m")) × \(format(height, "m"))", targetStep: 1)
+                    Divider(); editableConfigurationRow("Surface", value: format(actualArea, "m²"), targetStep: 1)
+                    Divider(); editableConfigurationRow("Parement", value: "\(selectedFamily) · \(selectedFunction?.functionTitle ?? "Standard")", targetStep: 2)
+                    Divider(); editableConfigurationRow("Format", value: selectedFormat.title, targetStep: 3)
+                }.padding(.top, 8)
+            } label: { sectionTitle("Configuration retenue") }
         }
+    }
+
+    private func editableConfigurationRow(_ title: String, value: String, targetStep: Int) -> some View {
+        Button {
+            withAnimation { step = targetStep }
+        } label: {
+            HStack(spacing: 8) {
+                Text(title)
+                Spacer()
+                Text(value).foregroundStyle(.secondary).multilineTextAlignment(.trailing)
+                Image(systemName: "chevron.right").font(.caption.weight(.semibold)).foregroundStyle(.tertiary)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
     }
 
     private var quantityRows: [(name: String, quantity: Double, unit: String)] {
@@ -285,6 +311,7 @@ struct AdhesiveFacingConfiguratorView: View {
     private func normalizeSelections() {
         if !references.families.contains(selectedFamily) { selectedFamily = references.families.first ?? "BA13" }
         normalizeFunction()
+        normalizeFormatForHeight()
     }
 
     private func normalizeFunction() {
@@ -292,7 +319,17 @@ struct AdhesiveFacingConfiguratorView: View {
     }
 
     private func normalizeFormatForHeight() {
-        guard panelIsShort, let next = references.formats.first(where: { Double($0.heightMM) / 1000 >= height }) else { return }
+        guard panelIsShort else { return }
+        let next = references.formats
+            .filter { Double($0.heightMM) / 1000 >= height }
+            .sorted {
+                let leftWidth = abs($0.widthMM - 1_200)
+                let rightWidth = abs($1.widthMM - 1_200)
+                if leftWidth != rightWidth { return leftWidth < rightWidth }
+                return $0.heightMM < $1.heightMM
+            }
+            .first
+        guard let next else { return }
         selectedFormatID = next.id
     }
 
@@ -340,8 +377,8 @@ private struct AdhesiveDecimalRow: View {
         HStack {
             Text(title)
             Spacer()
-            TextField("0", value: $value, format: .number)
-                .keyboardType(.decimalPad).multilineTextAlignment(.trailing).frame(minWidth: 58, maxWidth: 100)
+            ZeroEmptyDecimalTextField(value: $value)
+                .multilineTextAlignment(.trailing).frame(minWidth: 58, maxWidth: 100)
             Text(unit).foregroundStyle(.secondary)
         }
     }

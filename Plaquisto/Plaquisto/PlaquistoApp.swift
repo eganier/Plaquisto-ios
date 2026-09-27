@@ -8,6 +8,9 @@ struct PlaquistoApp: App {
         WindowGroup {
             PlaquistoRootView()
                 .environmentObject(projectStore)
+                #if DEBUG
+                .environment(\.beforeAfterAccount, BeforeAfterAccountContext(allowsLabWatermarkControl: true))
+                #endif
         }
     }
 }
@@ -19,24 +22,14 @@ private struct PlaquistoRootView: View {
     var body: some View {
         TabView(selection: $selectedTab) {
             ProjectsHomeView { showingAccount = true }
-                .tabItem { Label("Chantiers", systemImage: "building.2") }
+                .tabItem { Label("Projets", systemImage: "building.2") }
                 .tag(AppTab.projects)
 
-            AppSectionPlaceholder(
-                title: "Scanner",
-                symbol: "viewfinder",
-                message: "Les relevés LiDAR pourront être rattachés directement à un chantier.",
-                onOpenAccount: { showingAccount = true }
-            )
+            ScannerDebugView(onOpenAccount: { showingAccount = true })
             .tabItem { Label("Scanner", systemImage: "viewfinder") }
             .tag(AppTab.scanner)
 
-            AppSectionPlaceholder(
-                title: "Outils",
-                symbol: "wrench.and.screwdriver",
-                message: "Retrouvez ici les calculateurs et informations rapides.",
-                onOpenAccount: { showingAccount = true }
-            )
+            ToolsHomeView(onOpenAccount: { showingAccount = true })
             .tabItem { Label("Outils", systemImage: "wrench.and.screwdriver") }
             .tag(AppTab.tools)
 

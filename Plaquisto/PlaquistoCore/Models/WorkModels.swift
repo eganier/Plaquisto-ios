@@ -59,6 +59,18 @@ struct DoublageFacingSelection: Identifiable, Codable, Equatable, Hashable {
     }
 }
 
+protocol OpeningFacingSelection {
+    var openingFacingID: String { get }
+}
+
+extension DoublageFacingSelection: OpeningFacingSelection {
+    var openingFacingID: String { facingID }
+}
+
+extension FurringFacingSelection: OpeningFacingSelection {
+    var openingFacingID: String { facingID }
+}
+
 struct DoublageInsulationSelection: Codable, Equatable, Hashable {
     var familyID: String = ""
     var lambda: Double = 0
@@ -70,6 +82,14 @@ struct DoublageQuantity: Identifiable, Codable, Equatable {
     var quantity: Double
     var unit: String
     var id: String { "\(name)|\(unit)" }
+}
+
+/// Quantity inputs for separate scanned supports. Their real contours live in
+/// WorkComponentRecord; this snapshot prevents deriving rails from net area/HSP.
+struct MeasuredWallRun: Codable, Equatable {
+    var length: Double
+    var height: Double
+    var netArea: Double
 }
 
 struct DoublageConfiguration: Codable, Equatable {
@@ -97,6 +117,7 @@ struct DoublageConfiguration: Codable, Equatable {
     var jointTreatment = true
     var compoundChoice = "poudre"
     var quantities: [DoublageQuantity] = []
+    var measuredWallRuns: [MeasuredWallRun]? = nil
 
     var area: Double { geometryMode == "surface" ? enteredSurface : enteredLength * height }
 }
@@ -250,6 +271,10 @@ struct FurringLiningConfiguration: Codable, Equatable {
     var tiledArea = false
     var tiledAreaSurface: Double = 0
     var selectedSupportLines = 1
+    // Optional so configurations saved before the spacing was persisted remain decodable.
+    var furringSpacing: Double? = nil
+    // Optional so configurations saved before this choice remain decodable.
+    var includesHorizontalSupportFurring: Bool? = nil
     var insulationEnabled = true
     var firstInsulation = FurringInsulationSelection()
     var vaporBarrier = false
@@ -257,15 +282,21 @@ struct FurringLiningConfiguration: Codable, Equatable {
     var jointTreatment = true
     var compoundChoice = "poudre"
     var quantities: [DoublageQuantity] = []
+    var measuredWallRuns: [MeasuredWallRun]? = nil
 
     var area: Double { geometryMode == "surface" ? enteredSurface : enteredLength * height }
+}
+
+struct PaintingBetaConfiguration: Codable, Equatable {
+    var area: Double = 0
 }
 
 enum WorkCategory: String, Codable, CaseIterable, Identifiable {
     case ceilings = "plafonds"
     case partitions = "cloisons"
     case wallInsulation = "isolation-murs"
-    case specificWorks = "ouvrages-specifiques"
+    case openings = "ouvertures"
+    case painting = "peinture"
 
     var id: String { rawValue }
     var title: String {
@@ -273,7 +304,8 @@ enum WorkCategory: String, Codable, CaseIterable, Identifiable {
         case .ceilings: "Les plafonds"
         case .partitions: "Les cloisons"
         case .wallInsulation: "L’isolation des murs"
-        case .specificWorks: "Ouvrages spécifiques"
+        case .openings: "Les ouvertures"
+        case .painting: "La peinture (bêta)"
         }
     }
 }
@@ -281,59 +313,97 @@ enum WorkCategory: String, Codable, CaseIterable, Identifiable {
 enum WorkType: String, Codable, CaseIterable, Identifiable {
     case ceilingOnFurring = "plafond-fourrures"
     case ceilingOnRailsAndStuds = "plafond-rails-montants"
+    case modularCeiling = "plafond-modulaire"
     case peripheralLiningStuds = "doublage-peripherique-rails-montants"
     case distributionPartition = "cloison-de-distribution"
     case alveolarPartition = "cloison-de-distribution-alveolaire"
     case peripheralLiningBonded = "doublage-peripherique-complexe-colle"
     case peripheralLiningFurrings = "doublage-peripherique-lisses-fourrures"
     case peripheralLiningAdhesiveFacing = "doublage-peripherique-parement-colle"
+    case openings = "ouvertures"
+    case paintingBeta = "peinture-beta"
 
     var id: String { rawValue }
     var category: WorkCategory {
         switch self {
-        case .ceilingOnFurring, .ceilingOnRailsAndStuds: .ceilings
+        case .ceilingOnFurring, .ceilingOnRailsAndStuds, .modularCeiling: .ceilings
         case .peripheralLiningStuds, .peripheralLiningBonded, .peripheralLiningFurrings, .peripheralLiningAdhesiveFacing: .wallInsulation
         case .distributionPartition, .alveolarPartition: .partitions
+        case .openings: .openings
+        case .paintingBeta: .painting
         }
     }
     var title: String {
         switch self {
         case .ceilingOnFurring: "Plafond sur fourrures"
         case .ceilingOnRailsAndStuds: "Plafond sur ossature rails et montants"
+        case .modularCeiling: "Plafond modulaire en dalles (bêta)"
         case .peripheralLiningStuds: "Doublage périphérique — Rails et montants"
         case .distributionPartition: "Cloison de distribution — Rails et montants"
         case .alveolarPartition: "Cloison de distribution alvéolaire"
         case .peripheralLiningBonded: "Doublage périphérique — Complexe collé"
         case .peripheralLiningFurrings: "Doublage périphérique — Lisses et fourrures"
         case .peripheralLiningAdhesiveFacing: "Doublage périphérique — Parement collé"
+        case .openings: "Ouvertures"
+        case .paintingBeta: "Peinture (bêta)"
         }
     }
     var defaultNameBase: String {
         switch self {
         case .ceilingOnFurring: "Plafond sur fourrures"
         case .ceilingOnRailsAndStuds: "Plafond sur ossature rails et montants"
+        case .modularCeiling: "Plafond modulaire en dalles"
         case .peripheralLiningStuds: "Doublage périphérique sur rails et montants"
         case .distributionPartition: "Cloison de distribution"
         case .alveolarPartition: "Cloison de distribution alvéolaire"
         case .peripheralLiningBonded: "Doublage périphérique en complexe collé"
         case .peripheralLiningFurrings: "Doublage périphérique sur lisses et fourrures"
         case .peripheralLiningAdhesiveFacing: "Doublage périphérique en parement collé"
+        case .openings: "Ouvertures"
+        case .paintingBeta: "Peinture (bêta)"
         }
+    }
+
+    /// Intitulé volontairement simple utilisé dans le nom visible d'un ouvrage.
+    /// Le détail constructif complet reste affiché séparément via `title`.
+    var simpleTitle: String {
+        switch self {
+        case .ceilingOnFurring, .ceilingOnRailsAndStuds:
+            "Plafond"
+        case .modularCeiling:
+            "Plafond modulaire"
+        case .peripheralLiningStuds, .peripheralLiningBonded, .peripheralLiningFurrings, .peripheralLiningAdhesiveFacing:
+            "Doublage périphérique"
+        case .distributionPartition, .alveolarPartition:
+            "Cloison"
+        case .openings:
+            "Ouvertures"
+        case .paintingBeta:
+            "Peinture (bêta)"
+        }
+    }
+
+    func generatedName(roomName: String) -> String {
+        let room = roomName.trimmingCharacters(in: .whitespacesAndNewlines)
+        return room.isEmpty ? simpleTitle : "\(room) - \(simpleTitle)"
     }
 }
 
 enum WorkConfiguration: Codable, Equatable {
     case ceiling(CeilingConfiguration)
     case railStudCeiling(RailStudCeilingConfiguration)
+    case modularCeiling(ModularCeilingConfiguration)
     case peripheralLining(DoublageConfiguration)
     case distributionPartition(CloisonDistributionConfiguration)
     case alveolarPartition(AlveolarPartitionConfiguration)
     case bondedLining(BondedLiningConfiguration)
     case furringLining(FurringLiningConfiguration)
     case adhesiveFacing(AdhesiveFacingConfiguration)
+    case openings(OpeningConfiguration)
+    case paintingBeta(PaintingBetaConfiguration)
 
     private enum CodingKeys: String, CodingKey { case kind, data }
-    private enum Kind: String, Codable { case ceiling, railStudCeiling, peripheralLining, distributionPartition, alveolarPartition, bondedLining, furringLining, adhesiveFacing }
+    private enum Kind: String, Codable { case ceiling, railStudCeiling, modularCeiling, peripheralLining, distributionPartition, alveolarPartition, bondedLining, furringLining, adhesiveFacing, openings, paintingBeta }
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
@@ -342,6 +412,8 @@ enum WorkConfiguration: Codable, Equatable {
             self = .ceiling(try container.decode(CeilingConfiguration.self, forKey: .data))
         case .railStudCeiling:
             self = .railStudCeiling(try container.decode(RailStudCeilingConfiguration.self, forKey: .data))
+        case .modularCeiling:
+            self = .modularCeiling(try container.decode(ModularCeilingConfiguration.self, forKey: .data))
         case .peripheralLining:
             self = .peripheralLining(try container.decode(DoublageConfiguration.self, forKey: .data))
         case .distributionPartition:
@@ -354,6 +426,10 @@ enum WorkConfiguration: Codable, Equatable {
             self = .furringLining(try container.decode(FurringLiningConfiguration.self, forKey: .data))
         case .adhesiveFacing:
             self = .adhesiveFacing(try container.decode(AdhesiveFacingConfiguration.self, forKey: .data))
+        case .openings:
+            self = .openings(try container.decode(OpeningConfiguration.self, forKey: .data))
+        case .paintingBeta:
+            self = .paintingBeta(try container.decode(PaintingBetaConfiguration.self, forKey: .data))
         }
     }
 
@@ -365,6 +441,9 @@ enum WorkConfiguration: Codable, Equatable {
             try container.encode(configuration, forKey: .data)
         case .railStudCeiling(let configuration):
             try container.encode(Kind.railStudCeiling, forKey: .kind)
+            try container.encode(configuration, forKey: .data)
+        case .modularCeiling(let configuration):
+            try container.encode(Kind.modularCeiling, forKey: .kind)
             try container.encode(configuration, forKey: .data)
         case .peripheralLining(let configuration):
             try container.encode(Kind.peripheralLining, forKey: .kind)
@@ -384,6 +463,12 @@ enum WorkConfiguration: Codable, Equatable {
         case .adhesiveFacing(let configuration):
             try container.encode(Kind.adhesiveFacing, forKey: .kind)
             try container.encode(configuration, forKey: .data)
+        case .openings(let configuration):
+            try container.encode(Kind.openings, forKey: .kind)
+            try container.encode(configuration, forKey: .data)
+        case .paintingBeta(let configuration):
+            try container.encode(Kind.paintingBeta, forKey: .kind)
+            try container.encode(configuration, forKey: .data)
         }
     }
 }
@@ -396,14 +481,65 @@ struct WorkItem: Identifiable, Equatable {
     var payload: WorkConfiguration
     let createdAt: Date
     var updatedAt: Date
+    /// Compatibility facade for the existing single-support configurators.
+    /// The persisted source of truth is always the component, never a second copy.
+    var layoutDocument: LayoutDocument? {
+        get {
+            guard components.count == 1, components[0].plans.count == 1 else { return nil }
+            return components[0].document(for: components[0].plans[0])
+        }
+        set {
+            guard let newValue else { return }
+            guard components.isEmpty || (components.count == 1 && components[0].plans.count <= 1) else { return }
+            var component = components.first ?? WorkComponentRecord(name: newValue.surface.name)
+            if component.surface != newValue.surface { component.geometryRevision += 1 }
+            component.surface = newValue.surface
+            var plan = component.plans.first ?? ComponentLayoutPlan(sideRoomID: isPartition ? roomID : nil)
+            component.referenceSideRoomID = component.referenceSideRoomID ?? plan.sideRoomID
+            plan.layers = newValue.layers; plan.lighting = newValue.lighting
+            component.framing = plan.layers.first?.furring
+            for i in plan.layers.indices { plan.layers[i].furring = nil }
+            plan.geometryRevision = component.geometryRevision
+            component.plans = [plan]
+            components = [component]
+        }
+    }
+    var isPartition: Bool { type == .distributionPartition || type == .alveolarPartition }
+    /// A named component alone is not a saved layout (including legacy empty components).
+    var hasSavedLayout: Bool {
+        components.contains { component in
+            component.surface != nil && component.plans.contains { !$0.layers.isEmpty }
+        }
+    }
+    var layoutNeedsRecalculation: Bool? = nil
+    /// The source scan changed after this ouvrage captured its component geometry.
+    /// Quantities and layouts remain untouched until the user explicitly decides
+    /// whether to keep them or rebuild the ouvrage from the corrected source.
+    var surveySourceNeedsReview = false
+    /// Optional user-selected organization. Geometric side references are independent.
+    var roomID: UUID? = nil
+    var level: String? = nil
+    var zone: String? = nil
+    var linkedRoomIDs: [UUID] = []
+    var components: [WorkComponentRecord] = []
 
     var ceilingConfiguration: CeilingConfiguration? {
         guard case .ceiling(let configuration) = payload else { return nil }
         return configuration
     }
 
+    var paintingBetaConfiguration: PaintingBetaConfiguration? {
+        guard case .paintingBeta(let configuration) = payload else { return nil }
+        return configuration
+    }
+
     var railStudCeilingConfiguration: RailStudCeilingConfiguration? {
         guard case .railStudCeiling(let configuration) = payload else { return nil }
+        return configuration
+    }
+
+    var modularCeilingConfiguration: ModularCeilingConfiguration? {
+        guard case .modularCeiling(let configuration) = payload else { return nil }
         return configuration
     }
 
@@ -437,6 +573,18 @@ struct WorkItem: Identifiable, Equatable {
         return configuration
     }
 
+    var openingConfiguration: OpeningConfiguration? {
+        guard case .openings(let configuration) = payload else { return nil }
+        return configuration
+    }
+
+    /// Pièce déduite des nouveaux noms `Pièce - Ouvrage`. Pour les données
+    /// historiques, le nom complet reste proposé afin qu'il puisse être corrigé.
+    var inferredRoomName: String {
+        guard let separator = name.range(of: " - ") else { return name }
+        return String(name[..<separator.lowerBound]).trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     init(id: UUID, projectID: UUID, name: String, type: WorkType, payload: WorkConfiguration, createdAt: Date, updatedAt: Date) {
         self.id = id
         self.projectID = projectID
@@ -453,6 +601,10 @@ struct WorkItem: Identifiable, Equatable {
 
     init(id: UUID, projectID: UUID, name: String, type: WorkType, railStudCeilingConfiguration: RailStudCeilingConfiguration, createdAt: Date, updatedAt: Date) {
         self.init(id: id, projectID: projectID, name: name, type: type, payload: .railStudCeiling(railStudCeilingConfiguration), createdAt: createdAt, updatedAt: updatedAt)
+    }
+
+    init(id: UUID, projectID: UUID, name: String, type: WorkType, modularCeilingConfiguration: ModularCeilingConfiguration, createdAt: Date, updatedAt: Date) {
+        self.init(id: id, projectID: projectID, name: name, type: type, payload: .modularCeiling(modularCeilingConfiguration), createdAt: createdAt, updatedAt: updatedAt)
     }
 
     init(id: UUID, projectID: UUID, name: String, type: WorkType, doublageConfiguration: DoublageConfiguration, createdAt: Date, updatedAt: Date) {
@@ -478,11 +630,15 @@ struct WorkItem: Identifiable, Equatable {
     init(id: UUID, projectID: UUID, name: String, type: WorkType, adhesiveFacingConfiguration: AdhesiveFacingConfiguration, createdAt: Date, updatedAt: Date) {
         self.init(id: id, projectID: projectID, name: name, type: type, payload: .adhesiveFacing(adhesiveFacingConfiguration), createdAt: createdAt, updatedAt: updatedAt)
     }
+
+    init(id: UUID, projectID: UUID, name: String, type: WorkType, openingConfiguration: OpeningConfiguration, createdAt: Date, updatedAt: Date) {
+        self.init(id: id, projectID: projectID, name: name, type: type, payload: .openings(openingConfiguration), createdAt: createdAt, updatedAt: updatedAt)
+    }
 }
 
 extension WorkItem: Codable {
     private enum CodingKeys: String, CodingKey {
-        case id, projectID, name, type, payload, configuration, doublageConfiguration, createdAt, updatedAt
+        case id, projectID, name, type, payload, configuration, doublageConfiguration, createdAt, updatedAt, layoutDocument, layoutNeedsRecalculation, surveySourceNeedsReview, roomID, linkedRoomIDs, components, level, zone
     }
 
     init(from decoder: Decoder) throws {
@@ -493,6 +649,13 @@ extension WorkItem: Codable {
         type = try container.decode(WorkType.self, forKey: .type)
         createdAt = try container.decode(Date.self, forKey: .createdAt)
         updatedAt = try container.decode(Date.self, forKey: .updatedAt)
+        layoutNeedsRecalculation = try container.decodeIfPresent(Bool.self,forKey:.layoutNeedsRecalculation)
+        surveySourceNeedsReview = try container.decodeIfPresent(Bool.self, forKey: .surveySourceNeedsReview) ?? false
+        roomID = try container.decodeIfPresent(UUID.self, forKey: .roomID)
+        level = try container.decodeIfPresent(String.self, forKey: .level)
+        zone = try container.decodeIfPresent(String.self, forKey: .zone)
+        linkedRoomIDs = try container.decodeIfPresent([UUID].self, forKey: .linkedRoomIDs) ?? []
+        components = try container.decodeIfPresent([WorkComponentRecord].self, forKey: .components) ?? []
 
         if let current = try container.decodeIfPresent(WorkConfiguration.self, forKey: .payload) {
             payload = current
@@ -501,6 +664,9 @@ extension WorkItem: Codable {
             payload = .peripheralLining(legacy)
         } else {
             payload = .ceiling(try container.decode(CeilingConfiguration.self, forKey: .configuration))
+        }
+        if components.isEmpty, let document = try container.decodeIfPresent(LayoutDocument.self, forKey: .layoutDocument) {
+            layoutDocument = document
         }
     }
 
@@ -513,6 +679,13 @@ extension WorkItem: Codable {
         try container.encode(payload, forKey: .payload)
         try container.encode(createdAt, forKey: .createdAt)
         try container.encode(updatedAt, forKey: .updatedAt)
+        try container.encodeIfPresent(layoutNeedsRecalculation,forKey:.layoutNeedsRecalculation)
+        if surveySourceNeedsReview { try container.encode(true, forKey: .surveySourceNeedsReview) }
+        try container.encodeIfPresent(roomID, forKey: .roomID)
+        try container.encodeIfPresent(level, forKey: .level)
+        try container.encodeIfPresent(zone, forKey: .zone)
+        try container.encode(linkedRoomIDs, forKey: .linkedRoomIDs)
+        try container.encode(components, forKey: .components)
     }
 }
 
@@ -525,4 +698,105 @@ struct ProjectItem: Identifiable, Codable, Equatable {
     var works: [WorkItem]
     let createdAt: Date
     var updatedAt: Date
+    var rooms: [ProjectRoomRecord] = []
+    // Optional keeps existing v2 archives readable. Relations are explicit, not inferred from lengths.
+    var ceilingWallLinks: [CeilingWallLink]? = nil
+
+    func ownedWorks(in roomID: UUID) -> [WorkItem] { works.filter { $0.roomID == roomID } }
+    func filteredWorks(roomID: UUID? = nil, level: String? = nil, zone: String? = nil) -> [WorkItem] {
+        works.filter { work in
+            (roomID == nil || work.roomID == roomID) && (level == nil || work.level == level) && (zone == nil || work.zone == zone)
+        }
+    }
+    /// Owner-only union: adjacent room links never add the same partition again.
+    func quantityWorks(in roomIDs: Set<UUID>, includeUnassigned: Bool = false) -> [WorkItem] {
+        var seen = Set<UUID>()
+        return works.filter { work in
+            let included = work.roomID.map { roomIDs.contains($0) } ?? includeUnassigned
+            return included && seen.insert(work.id).inserted
+        }
+    }
+    func linkedWorks(in roomID: UUID) -> [WorkItem] {
+        works.filter { $0.roomID != roomID && $0.linkedRoomIDs.contains(roomID) }
+    }
+}
+
+/// Independent of RoomPlan: this identity survives rescans and room renaming.
+struct ProjectRoomRecord: Identifiable, Codable, Equatable {
+    var id = UUID()
+    var name: String
+    var floorAreaM2: Double? = nil
+}
+
+/// A physical part of an ouvrage, not a second ouvrage or a quantity snapshot.
+/// No geometry is invented when only the total work area is known.
+struct WorkComponentRecord: Identifiable, Codable, Equatable {
+    var id = UUID()
+    var name: String
+    var surface: Surface2D? = nil
+    var geometryRevision = 0
+    var plans: [ComponentLayoutPlan] = []
+    var referenceSideRoomID: UUID? = nil
+    var framing: LayoutFurringSettings? = nil
+    /// Acquisition link, not ownership: edited component geometry remains authoritative.
+    var surveySource: SurveySurfaceSource? = nil
+
+    func isOppositeSide(_ sideRoomID: UUID?) -> Bool {
+        guard let referenceSideRoomID, let sideRoomID else { return false }
+        return referenceSideRoomID != sideRoomID
+    }
+
+    func document(for plan: ComponentLayoutPlan) -> LayoutDocument? {
+        guard let surface else { return nil }
+        let opposite = isOppositeSide(plan.sideRoomID)
+        var layers = plan.layers
+        if !layers.isEmpty {
+            var settings = framing
+            if opposite { settings?.offset.negate() }
+            layers[0].furring = settings
+        }
+        return LayoutDocument(surface: opposite ? surface.mirroredComponentSide() : surface, layers: layers, lighting: plan.lighting)
+    }
+}
+
+struct SurveySurfaceSource: Codable, Equatable, Hashable {
+    enum Kind: String, Codable { case wall, ceiling }
+    var surveyID: UUID
+    var checkpointID: UUID
+    var surfaceID: UUID
+    var boundaryIndex: Int
+    var kind: Kind
+    var capturedAt: Date
+}
+
+extension Surface2D {
+    /// An involution around the component's fixed local origin. IDs and edge indices
+    /// stay stable; the same window cannot drift between the two partition sides.
+    func mirroredComponentSide() -> Surface2D {
+        func mirror(_ point: LayoutPoint) -> LayoutPoint { .init(x: -point.x, y: point.y) }
+        func mirroredIntent(_ source: LayoutContourIntent) -> LayoutContourIntent {
+            var result = source
+            result.sketch = source.sketch.map(mirror)
+            result.userVertexPositions = source.userVertexPositions.map { $0.map(mirror) }
+            return result
+        }
+        var result = self
+        result.contour = contour.map(mirror)
+        result.openings = openings.map { opening in var copy = opening; copy.contour = opening.contour.map(mirror); return copy }
+        result.contourIntent = contourIntent.map(mirroredIntent)
+        result.previousContourIntents = previousContourIntents.map(mirroredIntent)
+        if let frame = localFrame {
+            result.localFrame?.axisX = .init(x: -frame.axisX.x, y: -frame.axisX.y, z: -frame.axisX.z)
+        }
+        return result
+    }
+}
+
+/// Partition sides have distinct plans but share the component's physical contour.
+struct ComponentLayoutPlan: Identifiable, Codable, Equatable {
+    var id = UUID()
+    var sideRoomID: UUID? = nil
+    var layers: [LayoutLayer] = [.init()]
+    var lighting: LayoutLighting? = nil
+    var geometryRevision = 0
 }

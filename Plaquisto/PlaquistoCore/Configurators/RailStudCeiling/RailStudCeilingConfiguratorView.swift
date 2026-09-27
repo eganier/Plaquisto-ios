@@ -292,6 +292,7 @@ private final class RailStudCeilingReferenceStore: ObservableObject {
 }
 
 struct RailStudCeilingConfiguratorView: View {
+    @Environment(\.layoutCoveringAreaRatio) private var coveringAreaRatio
     @StateObject private var references = RailStudCeilingReferenceStore()
     @State private var step = 0
     @State private var shape: LabCeilingShape = .horizontal
@@ -318,7 +319,9 @@ struct RailStudCeilingConfiguratorView: View {
     @State private var showDimensionsAlert = false
     @State private var showVaporAlert = false
     @State private var showingResult = false
+    @State private var configurationExpanded = false
     private let onSave: ((RailStudCeilingConfiguration) -> Void)?
+    private let isEditing: Bool
 
     private let steps = ["Dimensions","Isolation","Parements","Ossature","Support","Plénum","Suspension","Bandes à joint","Résultat"]
 
@@ -348,6 +351,7 @@ struct RailStudCeilingConfiguratorView: View {
         _compound = State(initialValue: value.compound)
         _showingResult = State(initialValue: startsAtResult)
         self.onSave = onSave
+        self.isEditing = initialConfiguration != nil
     }
     private var supports: [LabCeilingSupport] { LabCeilingSupport.allCases.filter { references.supportIsAvailable($0, for: shape) } }
     private var insulation: [LabInsulationSeries] { references.insulation.filter { shape == .horizontal || abs($0.lambda - 0.040) > 0.0001 } }
@@ -437,6 +441,13 @@ struct RailStudCeilingConfiguratorView: View {
         }
         .navigationBarBackButtonHidden()
         .tint(Color(red: 0.12, green: 0.38, blue: 0.29))
+        .toolbar {
+            if isEditing, let onSave {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Enregistrer") { onSave(configurationSnapshot()) }
+                }
+            }
+        }
         .alert("Dimensions non renseignées", isPresented: $showDimensionsAlert) {
             Button("Renseigner les dimensions", role: .cancel) { dimensionsSpecified = true }
             Button("Continuer avec une estimation") {
@@ -707,20 +718,41 @@ struct RailStudCeilingConfiguratorView: View {
     private var resultStep: some View {
         Group {
             Section { Label("Configuration compatible", systemImage: "checkmark.seal.fill").font(.headline).foregroundStyle(.green); Text("\(format(effectiveArea)) m² · \(shape.title.lowercased()) · \(stud.title) · \(assembly.title.lowercased())").foregroundStyle(.secondary) }
-            Section("Configuration") {
-                LabeledContent("Dimensions", value: "\(format(length)) × \(format(width)) m")
-                LabeledContent("Portée", value: "\(format(span)) m")
-                LabeledContent("Parement mécanique", value: mechanicalFacing.title)
-                LabeledContent("Ossature", value: "\(stud.railTitle) + \(stud.title)")
-                LabeledContent("Montage", value: frameMode.title)
-                if frameMode == .suspended {
-                    LabeledContent("Plénum", value: "\(format(plenumCM)) cm")
-                }
-                if insulationEnabled { LabeledContent("Isolation", value: insulationLayers == 1 ? "Une couche" : "Deux couches"); LabeledContent("R total", value: "\(format(thermalResistance)) m²·K/W") }
-                LabeledContent("Pare-vapeur", value: vaporBarrier ? "Oui" : "Non")
-            }
             Section("Quantitatif") { ForEach(quantities) { LabeledContent($0.name, value: quantityTitle($0)) } }
+            Section {
+                DisclosureGroup("Configuration retenue", isExpanded: $configurationExpanded) {
+                    editableConfigurationRow("Dimensions", value: "\(format(length)) × \(format(width)) m", targetStep: 0)
+                    editableConfigurationRow("Portée", value: "\(format(span)) m", targetStep: 0)
+                    editableConfigurationRow("Parement mécanique", value: mechanicalFacing.title, targetStep: 2)
+                    editableConfigurationRow("Ossature", value: "\(stud.railTitle) + \(stud.title)", targetStep: 3)
+                    editableConfigurationRow("Montage", value: frameMode.title, targetStep: 3)
+                    if frameMode == .suspended { editableConfigurationRow("Plénum", value: "\(format(plenumCM)) cm", targetStep: 5) }
+                    if insulationEnabled {
+                        editableConfigurationRow("Isolation", value: insulationLayers == 1 ? "Une couche" : "Deux couches", targetStep: 1)
+                        editableConfigurationRow("R total", value: "\(format(thermalResistance)) m²·K/W", targetStep: 1)
+                    }
+                    editableConfigurationRow("Pare-vapeur", value: vaporBarrier ? "Oui" : "Non", targetStep: 1)
+                }
+            }
         }
+    }
+
+    private func editableConfigurationRow(_ title: String, value: String, targetStep: Int) -> some View {
+        Button {
+            withAnimation {
+                showingResult = false
+                step = targetStep
+            }
+        } label: {
+            HStack(spacing: 8) {
+                Text(title)
+                Spacer()
+                Text(value).foregroundStyle(.secondary).multilineTextAlignment(.trailing)
+                Image(systemName: "chevron.right").font(.caption.weight(.semibold)).foregroundStyle(.tertiary)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
     }
 
     private var canContinue: Bool {
@@ -774,13 +806,17 @@ struct RailStudCeilingConfiguratorView: View {
         selection.wrappedValue.thickness = chosen.thicknesses.first ?? 0
     }
     private var preferredInsulationSeries: LabInsulationSeries? {
-        insulation.first(where: { $0.material == "Laine de verre" }) ?? insulation.first
+        insulation.first(where: { $0.material == "Laine de verre" && abs($0.lambda - 0.035) < 0.0001 })
+            ?? insulation.first(where: { $0.material == "Laine de verre" })
+            ?? insulation.first
     }
     private func seriesForMaterial(_ material: String) -> [LabInsulationSeries] { insulation.filter { $0.material == material }.sorted { $0.lambda < $1.lambda } }
     private func material(_ selection: LabInsulationSelection) -> String { series(selection.seriesID)?.material ?? insulationMaterials.first ?? "" }
     private func materialBinding(_ selection: Binding<LabInsulationSelection>) -> Binding<String> {
         Binding(get: { material(selection.wrappedValue) }, set: { value in
-            guard let first = seriesForMaterial(value).first else { return }
+            let target = value.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current).contains("laine de bois") ? 0.036 : 0.035
+            let options = seriesForMaterial(value)
+            guard let first = options.first(where: { abs($0.lambda - target) < 0.0001 }) ?? options.first else { return }
             selection.wrappedValue.seriesID = first.id; selection.wrappedValue.thickness = first.thicknesses.first ?? 0
         })
     }
@@ -820,8 +856,16 @@ struct RailStudCeilingConfiguratorView: View {
     }
     private func preferredDimension(_ product: LabFacingProduct?) -> LabFacingDimension? {
         guard let product else { return nil }
-        let length = product.function == "quatre_bords_amincis" ? 2400 : 2500
-        return product.dimensions.first { $0.width == 1200 && $0.length == length } ?? product.dimensions.first
+        let spacingMM = studSpacing * 1_000
+        return product.dimensions.sorted { lhs, rhs in
+            let leftWidthPenalty = abs(Double(lhs.width - 1_200))
+            let rightWidthPenalty = abs(Double(rhs.width - 1_200))
+            if leftWidthPenalty != rightWidthPenalty { return leftWidthPenalty < rightWidthPenalty }
+            let leftMultiple = abs(Double(lhs.length).truncatingRemainder(dividingBy: spacingMM)) < 0.1
+            let rightMultiple = abs(Double(rhs.length).truncatingRemainder(dividingBy: spacingMM)) < 0.1
+            if leftMultiple != rightMultiple { return leftMultiple }
+            return abs(lhs.length - 2_400) < abs(rhs.length - 2_400)
+        }.first
     }
     private func allocationsValid(_ values: [LabFacingAllocation]) -> Bool {
         !values.isEmpty && values.allSatisfy { allocation in
@@ -859,7 +903,7 @@ struct RailStudCeilingConfiguratorView: View {
         var result: [LabSupply] = []
         for allocation in firstSkin + (facingLayers == 2 ? secondSkin : []) {
             guard let facing = product(allocation.productID), let dimension = facing.dimensions.first(where: { $0.id == allocation.dimensionID }) else { continue }
-            result.append(.init(name: "\(facing.family) \(facing.functionTitle) · \(dimension.title)", quantity: ceil(allocation.area * references.quantity("plate_m2_m2", fallback: 1.05) / dimension.area), unit: "plaque(s)"))
+            result.append(.init(name: "\(facing.family) \(facing.functionTitle) · \(dimension.title)", quantity: ceil(allocation.area * coveringAreaRatio * references.quantity("plate_m2_m2", fallback: 1.05) / dimension.area), unit: "plaque(s)"))
         }
         result += [.init(name: "Montant \(stud.title)", quantity: studLength, unit: "ml"), .init(name: "Rail \(stud.railTitle)", quantity: railLength, unit: "ml")]
         let railFixingSpacing = references.quantity("rail_fixing_spacing_m", fallback: 0.60)
@@ -878,8 +922,8 @@ struct RailStudCeilingConfiguratorView: View {
         }
         if insulationEnabled {
             let insulationFactor = references.quantity("insulation_m2_m2", fallback: 1.05)
-            if let firstSeries { result.append(.init(name: "\(firstSeries.material) · λ \(lambda(firstSeries.lambda)) · \(firstInsulation.thickness) mm", quantity: effectiveArea * insulationFactor, unit: "m²")) }
-            if insulationLayers == 2, let secondSeries { result.append(.init(name: "\(secondSeries.material) · λ \(lambda(secondSeries.lambda)) · \(secondInsulation.thickness) mm", quantity: effectiveArea * insulationFactor, unit: "m²")) }
+            if let firstSeries { result.append(.init(name: "\(firstSeries.material) · λ \(lambda(firstSeries.lambda)) · \(firstInsulation.thickness) mm", quantity: effectiveArea * coveringAreaRatio * insulationFactor, unit: "m²")) }
+            if insulationLayers == 2, let secondSeries { result.append(.init(name: "\(secondSeries.material) · λ \(lambda(secondSeries.lambda)) · \(secondInsulation.thickness) mm", quantity: effectiveArea * coveringAreaRatio * insulationFactor, unit: "m²")) }
         }
         if vaporBarrier { result += [.init(name: "Pare-vapeur", quantity: effectiveArea * references.quantity("vapor_barrier_m2_m2", fallback: 1.2), unit: "m²"), .init(name: "Scotch double-face", quantity: (assembly == .single ? studLength : studLength / 2) * references.quantity("double_sided_tape_factor", fallback: 1.1), unit: "ml")] }
         if facingLayers == 1 { result.append(.init(name: "Vis TTPC · parement", quantity: effectiveArea * references.quantity("ttpc_single_unit_m2", fallback: 15), unit: "unité")) }
@@ -941,6 +985,6 @@ private struct LabMeasureField: View {
     @Binding var value: Double
     let unit: String
     var body: some View {
-        HStack { Text(label); Spacer(); TextField("0", value: $value, format: .number).keyboardType(.decimalPad).multilineTextAlignment(.trailing).frame(width: 90); Text(unit).foregroundStyle(.secondary) }
+        HStack { Text(label); Spacer(); ZeroEmptyDecimalTextField(value: $value).multilineTextAlignment(.trailing).frame(width: 90); Text(unit).foregroundStyle(.secondary) }
     }
 }

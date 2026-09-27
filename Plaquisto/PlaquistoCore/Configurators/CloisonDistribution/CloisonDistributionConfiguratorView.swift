@@ -1,6 +1,7 @@
 import SwiftUI
 
 struct CloisonDistributionConfiguratorView: View {
+    @Environment(\.layoutCoveringAreaRatio) private var coveringAreaRatio
     enum GeometryMode: String, CaseIterable, Identifiable {
         case length = "Longueur"
         case surface = "Surface totale"
@@ -31,6 +32,7 @@ struct CloisonDistributionConfiguratorView: View {
     private let onSave: ((CloisonDistributionConfiguration) -> Void)?
     private let onClose: (() -> Void)?
     private let showsCloseButton: Bool
+    private let isEditing: Bool
     @State private var step = 1
     @State private var geometryMode = GeometryMode.length
     @State private var height = 0.0
@@ -53,6 +55,7 @@ struct CloisonDistributionConfiguratorView: View {
     @State private var jointTreatment = true
     @State private var compound = Compound.powder
     @State private var showPlateHeightWarning = false
+    @State private var configurationExpanded = false
 
     init(
         initialConfiguration: CloisonDistributionConfiguration? = nil,
@@ -65,6 +68,7 @@ struct CloisonDistributionConfiguratorView: View {
         self.onSave = onSave
         self.onClose = onClose
         self.showsCloseButton = showsCloseButton
+        self.isEditing = initialConfiguration != nil
         _step = State(initialValue: startsAtResult ? 7 : 1)
         _geometryMode = State(initialValue: configuration.geometryMode == "surface" ? .surface : .length)
         _height = State(initialValue: configuration.height)
@@ -227,6 +231,13 @@ struct CloisonDistributionConfiguratorView: View {
         .onChange(of: tiledArea) { _, enabled in if !enabled { tiledAreaSurface = 0 } }
         .onChange(of: systemID) { _, _ in normalizeInsulation() }
         .onChange(of: insulationID) { _, _ in normalizeInsulationThickness() }
+        .toolbar {
+            if isEditing, let onSave {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Enregistrer") { onSave(configurationSnapshot()) }
+                }
+            }
+        }
         .alert("Hauteur de plaque insuffisante", isPresented: $showPlateHeightWarning) {
             Button("Revenir au choix", role: .cancel) {}
             Button("Continuer malgré tout") { step += 1 }
@@ -608,27 +619,6 @@ struct CloisonDistributionConfiguratorView: View {
 
     private var resultStep: some View {
         VStack(alignment: .leading, spacing: 14) {
-            sectionTitle("Configuration retenue")
-            card {
-                LabeledContent("Dimensions", value: "\(format(actualLength, "m")) × \(format(height, "m"))")
-                Divider()
-                LabeledContent("Surface", value: format(actualArea, "m²"))
-                Divider()
-                LabeledContent("Parements", value: skinCount.rawValue)
-                Divider()
-                LabeledContent("Ossature", value: selectedSystem?.frame ?? "Largeur \(selectedFrameWidthMM) mm")
-                Divider()
-                LabeledContent("Épaisseur totale de la cloison", value: selectedSystem.map { "\($0.totalThicknessMM) mm" } ?? "—")
-                Divider()
-                LabeledContent("Montants", value: mounting.rawValue)
-                Divider()
-                LabeledContent("Entraxe courant", value: "\(Int(spacing * 100)) cm")
-                Divider()
-                LabeledContent("Surface carrelée", value: tiledArea ? format(effectiveTiledArea, "m²") : "Non")
-                Divider()
-                LabeledContent("Isolation", value: insulationEnabled ? insulationSummary : "Non")
-            }
-
             sectionTitle("Quantitatif indicatif")
             card {
                 ForEach(Array(resultRows.enumerated()), id: \.offset) { index, row in
@@ -636,7 +626,35 @@ struct CloisonDistributionConfiguratorView: View {
                     LabeledContent(row.0, value: row.1)
                 }
             }
+            DisclosureGroup(isExpanded: $configurationExpanded) {
+                card {
+                    editableConfigurationRow("Dimensions", value: "\(format(actualLength, "m")) × \(format(height, "m"))", targetStep: 1)
+                    Divider(); editableConfigurationRow("Surface", value: format(actualArea, "m²"), targetStep: 1)
+                    Divider(); editableConfigurationRow("Parements", value: skinCount.rawValue, targetStep: 3)
+                    Divider(); editableConfigurationRow("Ossature", value: selectedSystem?.frame ?? "Largeur \(selectedFrameWidthMM) mm", targetStep: 2)
+                    Divider(); editableConfigurationRow("Épaisseur totale de la cloison", value: selectedSystem.map { "\($0.totalThicknessMM) mm" } ?? "—", targetStep: 2)
+                    Divider(); editableConfigurationRow("Montants", value: mounting.rawValue, targetStep: 2)
+                    Divider(); editableConfigurationRow("Entraxe courant", value: "\(Int(spacing * 100)) cm", targetStep: 2)
+                    Divider(); editableConfigurationRow("Surface carrelée", value: tiledArea ? format(effectiveTiledArea, "m²") : "Non", targetStep: 4)
+                    Divider(); editableConfigurationRow("Isolation", value: insulationEnabled ? insulationSummary : "Non", targetStep: 5)
+                }.padding(.top, 8)
+            } label: { sectionTitle("Configuration retenue") }
         }
+    }
+
+    private func editableConfigurationRow(_ title: String, value: String, targetStep: Int) -> some View {
+        Button {
+            withAnimation { step = targetStep }
+        } label: {
+            HStack(spacing: 8) {
+                Text(title)
+                Spacer()
+                Text(value).foregroundStyle(.secondary).multilineTextAlignment(.trailing)
+                Image(systemName: "chevron.right").font(.caption.weight(.semibold)).foregroundStyle(.tertiary)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
     }
 
     private var insulationSummary: String {
@@ -654,7 +672,7 @@ struct CloisonDistributionConfiguratorView: View {
         if skinCount == .double {
             allFacings += faceASecond + faceBSecond
         }
-        appendCombinedFacingRows(allFacings, factor: plateFactor, to: &rows)
+        appendCombinedFacingRows(allFacings, factor: plateFactor * coveringAreaRatio, to: &rows)
 
         let layerKey = skinCount == .single ? "simple" : "double"
         let mountingKey = mounting == .simple ? "simple" : "double"
@@ -672,7 +690,7 @@ struct CloisonDistributionConfiguratorView: View {
         rows.append(("Vis TRPF 13", format(mixedSpacingQuantity(table.frameScrews, standardKey: detailKey, layerKey: layerKey, mountingKey: mountingKey), "unités", rounded: true)))
 
         if insulationEnabled {
-            rows.append(("Isolation · \(insulationSummary)", format(actualArea * (table.coefficients["insulation_m2_m2"] ?? 1.10), "m²")))
+            rows.append(("Isolation · \(insulationSummary)", format(actualArea * coveringAreaRatio * (table.coefficients["insulation_m2_m2"] ?? 1.10), "m²")))
         }
         if jointTreatment {
             let bandKey = skinCount == .single ? "band_simple_skin_ml_m2" : "band_double_skin_ml_m2"
@@ -780,7 +798,15 @@ struct CloisonDistributionConfiguratorView: View {
     }
 
     private func preferredFormat(_ formats: [CloisonFacingFormat]) -> CloisonFacingFormat? {
-        formats.filter { Double($0.lengthMM) / 1000 >= height }.min(by: { $0.lengthMM < $1.lengthMM }) ?? formats.max(by: { $0.lengthMM < $1.lengthMM })
+        formats.sorted { lhs, rhs in
+            let leftFits = Double(lhs.lengthMM) / 1_000 >= height
+            let rightFits = Double(rhs.lengthMM) / 1_000 >= height
+            if leftFits != rightFits { return leftFits }
+            let leftWidthPenalty = abs(lhs.widthMM - 1_200)
+            let rightWidthPenalty = abs(rhs.widthMM - 1_200)
+            if leftWidthPenalty != rightWidthPenalty { return leftWidthPenalty < rightWidthPenalty }
+            return leftFits ? lhs.lengthMM < rhs.lengthMM : lhs.lengthMM > rhs.lengthMM
+        }.first
     }
 
     private func addAllocation(to allocations: Binding<[FacingAllocation]>) {
@@ -1035,8 +1061,7 @@ private struct LabDecimalRow: View {
         HStack {
             Text(title)
             Spacer()
-            TextField("0", value: $value, format: .number.precision(.fractionLength(0...2)))
-                .keyboardType(.decimalPad)
+            ZeroEmptyDecimalTextField(value: $value)
                 .multilineTextAlignment(.trailing)
                 .frame(maxWidth: 86)
             Text(unit).foregroundStyle(.secondary)
