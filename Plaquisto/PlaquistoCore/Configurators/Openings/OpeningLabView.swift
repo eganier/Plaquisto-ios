@@ -255,7 +255,7 @@ struct OpeningLabView: View {
     }
 
     private func height(_ value: Double) -> String {
-        value.formatted(.number.precision(.fractionLength(0...2))) + " m"
+        value.formatted(.number.locale(Locale(identifier: "fr_FR")).grouping(.never).precision(.fractionLength(0...2))) + " m"
     }
 
     private var typesSection: some View {
@@ -673,17 +673,15 @@ private struct DecimalField: View {
     @Binding var value: Double
     let suffix: String
     @State private var text = ""
-    @FocusState private var isFocused: Bool
+    @State private var isFocused = false
 
     var body: some View {
         HStack {
             Text(title)
             Spacer()
-            TextField("0,00", text: $text)
-                .keyboardType(.decimalPad)
+            PlaquistoNumericField(placeholder: "0,00", text: $text, onEditingChanged: { isFocused = $0 })
                 .multilineTextAlignment(.trailing)
                 .frame(minWidth: 70, maxWidth: 110)
-                .focused($isFocused)
             Text(suffix).foregroundStyle(.secondary)
         }
         .onAppear { synchronizeText() }
@@ -694,7 +692,7 @@ private struct DecimalField: View {
             let normalized = newText.replacingOccurrences(of: ",", with: ".")
             if normalized.isEmpty {
                 value = 0
-            } else if let parsed = Double(normalized) {
+            } else if let parsed = Double(normalized), parsed.isFinite {
                 value = parsed
             }
         }
@@ -722,8 +720,7 @@ private struct OptionalDecimalField: View {
         HStack {
             Text(title)
             Spacer()
-            TextField(placeholder, value: $value, format: .number)
-                .keyboardType(.decimalPad)
+            PlaquistoOptionalNumberField(placeholder: placeholder, value: $value)
                 .multilineTextAlignment(.trailing)
                 .frame(minWidth: 80, maxWidth: 110)
             Text(suffix).foregroundStyle(.secondary)

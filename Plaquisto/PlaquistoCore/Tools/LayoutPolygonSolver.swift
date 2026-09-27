@@ -29,6 +29,7 @@ extension Surface2D {
         intent.sketch = resolved.contour
         intent.userVertexPositions = Array(repeating:nil,count:points.count)
         copy.contourIntent = intent
+        _ = try copy.layingContour()
         return copy
     }
 
@@ -42,6 +43,7 @@ extension Surface2D {
         var copy = self
         copy.contour = contour.map(scale)
         try LayoutGeometry.validate(copy.contour)
+        _ = try copy.layingContour()
         copy.openings = openings.map { opening in var o = opening; o.contour = o.contour.map(scale); return o }
         if var intent = contourIntent {
             intent.sketch = intent.sketch.map(scale)
@@ -413,6 +415,9 @@ extension Surface2D {
     }
     mutating func resolve(_ intent: LayoutContourIntent) throws {
         let resolved = try LayoutPolygonSolver.resolve(intent)
-        contourIntent = intent; contour = resolved.contour; dimensionCorrections = resolved.corrections
+        var copy = self
+        copy.contourIntent = intent; copy.contour = resolved.contour; copy.dimensionCorrections = resolved.corrections
+        _ = try copy.layingContour()
+        self = copy
     }
 }

@@ -2,13 +2,74 @@ import SceneKit
 import SwiftUI
 
 struct ScannerDebugView: View {
+    @EnvironmentObject private var store: ProjectStore
     let onOpenAccount: () -> Void
     @StateObject private var model = ScannerDebugModel()
     @State private var showingCapture = false
+    @State private var showingWorkspace = false
+    @State private var recoveredDrafts: [ScanCampaignDraft] = []
+    @State private var recoveryError: String?
+    @State private var showDiagnostics = false
 
     var body: some View {
         NavigationStack {
             List {
+                Section {
+                    Button {
+                        model.prepareForCapture()
+                        showingCapture = true
+                    } label: {
+                        Label("Démarrer un relevé", systemImage: "viewfinder")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(!model.canStart || model.needsSaveRetry)
+                    .listRowBackground(Color.clear)
+                    if model.needsSaveRetry {
+                        Text("Sauvegardez le relevé en mémoire avant de commencer une nouvelle capture.")
+                            .font(.caption).foregroundStyle(.orange)
+                        Button("Réessayer la sauvegarde") { model.retryCampaignSave(); reloadDrafts() }
+                    }
+                }
+                Section {
+                    Text("Balayez lentement les murs et les ouvertures en suivant le guidage Apple. Touchez « Terminer le scan » pour ouvrir la maquette et le plan modifiables.")
+                        .font(.subheadline)
+                    Text("Capture native RoomPlan : commencez par une pièce. Le découpage automatique d’une maison en plusieurs pièces n’est pas activé.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                if !model.campaign.chunks.isEmpty {
+                    Section("Dernier relevé") {
+                        NavigationLink {
+                            ScannerCampaignWorkspaceView(draft: model.campaign)
+                        } label: {
+                            Label("Ouvrir la maquette et choisir les surfaces", systemImage: "square.stack.3d.up")
+                        }
+                    }
+                }
+                let remainingDrafts = recoveredDrafts.filter { draft in
+                    draft.id != model.campaign.id && !store.surveys.contains(where: { $0.id == draft.id })
+                }
+                if !remainingDrafts.isEmpty {
+                    Section("Relevés à enregistrer") {
+                        ForEach(remainingDrafts) { draft in
+                            NavigationLink {
+                                ScannerCampaignWorkspaceView(draft: draft)
+                            } label: {
+                                VStack(alignment: .leading) {
+                                    Text("\(draft.chunks.count) pièce(s) conservée(s)")
+                                    Text(draft.createdAt, style: .date).font(.caption).foregroundStyle(.secondary)
+                                }
+                            }
+                        }
+                    }
+                }
+                if let recoveryError { Text(recoveryError).foregroundStyle(.orange) }
+                Section {
+                    Button(showDiagnostics ? "Masquer les détails techniques" : "Détails techniques et diagnostic") {
+                        showDiagnostics.toggle()
+                    }.font(.footnote)
+                }
+                if showDiagnostics {
                 Section {
                     capabilityRow("RoomPlan", available: model.roomPlanSupported)
                     capabilityRow("Maillage LiDAR classifié", available: model.meshClassificationSupported)
@@ -20,29 +81,25 @@ struct ScannerDebugView: View {
 
                 Section("Pièce Plaquisto") {
                     NavigationLink("Ouvrir la pièce sauvegardée") {
-                        PlaquistoSavedRoomView()
+                        PlaquistoSavedRoomView(projectSaveDestination: { AnyView(ScannerProjectSaveView(document: $0)) })
                     }
                     Text("Murs et dimensions depuis le fichier Plaquisto, sans lancer de capture.").font(.caption).foregroundStyle(.secondary)
                 }
                 if let summary = model.summary {
-                    Section("Plafond reconstitué") {
-                        if !model.virtualBoundaries.isEmpty {
-                            Text("Zone délimitée par \(model.virtualBoundaries.count) limite(s) virtuelle(s) — aucun mur créé.")
-                                .font(.caption).foregroundStyle(.secondary)
-                        }
-                        if let surface = model.meshPreview?.reconstruction {
-                            LabeledContent("Surface reconstituée", value: surface.area.formatted(.number.precision(.fractionLength(2))) + " m²")
-                            LabeledContent("Pans reconstitués", value: "\(surface.pans.count)")
-                            ForEach(surface.pans.indices, id: \.self) { index in
-                                let pan = surface.pans[index]
-                                LabeledContent("Pan \(index + 1)", value: "\(pan.area.formatted(.number.precision(.fractionLength(2)))) m² · \(pan.slopeDegrees.formatted(.number.precision(.fractionLength(1))))°")
+                    if model.campaign.chunks.isEmpty, let document = model.latestDocument {
+                        Section("Projet Plaquisto") {
+                            NavigationLink {
+                                ScannerProjectSaveView(document: document)
+                            } label: {
+                                Label("Enregistrer cette pièce dans un relevé", systemImage: "folder.badge.plus")
                             }
-                            Text("Surface continue estimée à partir des murs et des portions planes observées. Les ouvertures éventuelles ne sont pas déduites.")
+                            Text("Enregistrez cette pièce dans un projet pour la retrouver avec les autres pièces du relevé.")
                                 .font(.caption).foregroundStyle(.secondary)
-                        } else {
-                            Text(model.meshPreview?.reconstructionMessage ?? "Reconstruction indisponible.")
-                                .foregroundStyle(.secondary)
                         }
+                    }
+                    Section("Plafonds après le scan") {
+                        Text("Créez le plafond dans Modifier le plan → Plafond. Les hauteurs proposées restent à vérifier. Aucun plafond n’est déduit automatiquement et les contours des murs restent inchangés.")
+                            .font(.caption).foregroundStyle(.secondary)
                     }
                     if let preview = model.meshPreview {
                         Section {
@@ -54,12 +111,12 @@ struct ScannerDebugView: View {
                         }
                     }
                     if let diagnostic = model.contourDiagnostic {
-                        Section("Diagnostic de reconstruction") {
-                            Text("Dernière tentative pendant le scan : \(model.lastReconstructionDiagnostic)")
-                            ShareLink(item: diagnostic) {
+                        Section("Diagnostic de capture") {
+                            Text(model.lastReconstructionDiagnostic)
+                            ShareLink(item: model.campaign.captureDiagnostic ?? diagnostic) {
                                 Label("Partager le diagnostic complet", systemImage: "square.and.arrow.up")
                             }
-                            Text("Murs, positions relatives de la caméra, compteurs et motifs de refus des 120 dernières tentatives. Sans photos ni maillage brut. Conservé en mémoire jusqu’au prochain scan.")
+                            Text("Géométrie, événements de capture et configuration native. Sans photos ni maillage brut. Le rapport est sauvegardé avec le relevé et accessible depuis le menu de la maquette.")
                                 .font(.caption).foregroundStyle(.secondary)
                         }
                     }
@@ -81,28 +138,17 @@ struct ScannerDebugView: View {
                         resultRow("Faces classées plafond", value: summary.ceilingMeshFaces)
                     }
 
-                    Section("Détection géométrique") {
-                        resultRow("Faces candidates plafond", value: summary.geometricCeilingFaces)
-                        resultRow("Faces horizontales", value: summary.geometricHorizontalFaces)
-                        resultRow("Faces inclinées", value: summary.geometricSlopedFaces)
-                        LabeledContent("Surface candidate", value: summary.geometricCeilingArea.formatted(.number.precision(.fractionLength(2))) + " m²")
-                    }
-
                     Section("Diagnostic des hauteurs") {
                         measurementRow("Sol RoomPlan", value: summary.roomFloorY)
                         measurementRow("Haut des murs RoomPlan", value: summary.roomTopY)
-                        measurementRow("Seuil de recherche", value: summary.geometricMinimumY)
-                        measurementRow("Maillage le plus bas", value: summary.meshMinimumY)
-                        measurementRow("Maillage le plus haut", value: summary.meshMaximumY)
-                        measurementRow("Altitude maximale vue pendant le scan", value: summary.highestObservedMeshY)
-                        resultRow("Faces non verticales (toutes hauteurs)", value: summary.upwardOrientedFaces)
                     }
                     Section("Performances et caméra") {
                         Text(model.cameraFormatsDescription).font(.caption)
-                        LabeledContent("Dernière copie du maillage", value: model.meshCopyMilliseconds.formatted(.number.precision(.fractionLength(0))) + " ms (arrière-plan)")
+                        Text("Aucune copie de maillage ni recherche de plafond ajoutée par Plaquisto pendant l’acquisition.").font(.caption)
                     }
                 }
 
+                }
                 if let errorMessage = model.errorMessage {
                     Section {
                         Label(errorMessage, systemImage: "exclamationmark.triangle.fill")
@@ -110,27 +156,30 @@ struct ScannerDebugView: View {
                     }
                 }
 
-                Section {
-                    Button {
-                        model.prepareForCapture()
-                        showingCapture = true
-                    } label: {
-                        Label(model.summary == nil ? "Démarrer un scan de test" : "Relancer un scan de test", systemImage: "viewfinder")
-                            .frame(maxWidth: .infinity)
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(!model.canStart)
-                    .listRowBackground(Color.clear)
-                }
             }
             .navigationTitle("Scanner")
+            .onAppear { reloadDrafts() }
             .toolbar {
                 AccountToolbarButton(action: onOpenAccount)
             }
-            .fullScreenCover(isPresented: $showingCapture) {
+            .navigationDestination(isPresented: $showingWorkspace) {
+                ScannerCampaignWorkspaceView(draft: model.campaign)
+            }
+            .fullScreenCover(isPresented: $showingCapture, onDismiss: {
+                if model.didFinish && !model.campaign.chunks.isEmpty { showingWorkspace = true }
+            }) {
                 ScannerDebugCaptureView(model: model, isPresented: $showingCapture)
             }
+            .onChange(of: showingCapture) { _, showing in if !showing { reloadDrafts() } }
         }
+    }
+
+    private func reloadDrafts() {
+        do {
+            let recovery = try ScanCampaignStore.recover()
+            recoveredDrafts = recovery.drafts.filter { !$0.chunks.isEmpty }
+            recoveryError = recovery.unreadableFiles.isEmpty ? nil : "\(recovery.unreadableFiles.count) relevé(s) illisible(s), conservé(s) sur l’appareil. Les autres relevés restent disponibles."
+        } catch { recoveryError = "Un relevé sauvegardé n’a pas pu être relu : \(error.localizedDescription)" }
     }
 
     private func capabilityRow(_ title: String, available: Bool) -> some View {
@@ -153,86 +202,38 @@ struct ScannerDebugView: View {
     }
 }
 
+
 private struct ScannerDebugCaptureView: View {
     @ObservedObject var model: ScannerDebugModel
     @Binding var isPresented: Bool
 
     var body: some View {
-        ZStack {
-            ScannerRoomCaptureRepresentable(model: model)
-                .ignoresSafeArea()
-            ScannerLiveCeilingOverlay(model: model)
-                .ignoresSafeArea()
-                .allowsHitTesting(false)
-            if model.placingBoundary {
-                Image(systemName: "plus.circle")
-                    .font(.system(size: 32)).foregroundStyle(.orange)
-                    .allowsHitTesting(false)
-            }
+        GeometryReader { geometry in
+            ZStack {
+                Color.black.ignoresSafeArea()
+                // Apple's own live parametric model, coaching and camera view.
+                ScannerRoomCaptureRepresentable(model: model)
+                    .frame(height: geometry.size.height * 0.72)
+                    .clipped()
 
-            VStack {
-                HStack {
-                    Button("Annuler") {
-                        model.cancelCapture()
-                        isPresented = false
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .tint(.white.opacity(0.9))
-                    .foregroundStyle(.primary)
-
-                    Spacer()
-
-                    Text(model.statusText)
-                        .font(.caption.weight(.semibold))
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 8)
-                        .background(.ultraThinMaterial, in: Capsule())
-                }
-                .padding()
-
-                Spacer()
-
-                VStack(spacing: 10) {
-                    if model.placingBoundary {
-                        Text(model.boundaryInstruction)
-                            .font(.caption).padding(8)
-                            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 10))
-                        HStack {
-                            Button("Annuler la limite") { model.cancelBoundary() }
-                            Button(model.boundaryPoints.count == 2 ? "Confirmer ce côté" : "Marquer ce point") {
-                                if model.boundaryPoints.count == 2 { model.confirmBoundary() }
-                                else { model.markBoundaryPoint() }
-                            }
-                        }.buttonStyle(.borderedProminent)
-                    } else {
-                        if model.hasCeilingProposal {
-                            HStack {
-                                Button("Valider ce plafond") { model.acceptCeilingProposal() }
-                                Button("Autre proposition") { model.rejectCeilingProposal() }
-                            }.buttonStyle(.borderedProminent)
+                VStack {
+                    HStack {
+                        Button("Annuler") {
+                            model.cancelCapture()
+                            isPresented = false
                         }
-                    }
-                    if model.liveCeilingLocked {
-                        Button("Recalculer le plafond") { model.unlockCeiling() }
-                            .buttonStyle(.borderedProminent)
-                    }
-                    Text(model.liveCeilingStatus)
-                        .font(.caption.weight(.semibold))
-                        .padding(10)
-                        .background(.ultraThinMaterial, in: Capsule())
-                    Text("Maillage : \(model.liveMeshAnchorCount) ancres · \(model.liveCeilingFaceCount) faces plafond")
-                        .font(.caption.monospacedDigit())
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 8)
-                        .background(.ultraThinMaterial, in: Capsule())
-
-                    if let highestY = model.highestObservedMeshY {
-                        Text("Altitude mesh maximale observée : \(Double(highestY).formatted(.number.precision(.fractionLength(2)))) m")
-                            .font(.caption.monospacedDigit())
-                            .padding(8)
+                        .buttonStyle(.borderedProminent)
+                        .tint(.white.opacity(0.9))
+                        .foregroundStyle(.primary)
+                        Spacer()
+                        Text(model.statusText)
+                            .font(.caption.weight(.semibold))
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 8)
                             .background(.ultraThinMaterial, in: Capsule())
                     }
-
+                    .padding()
+                    Spacer()
                     Button {
                         model.finishCapture()
                     } label: {
@@ -240,11 +241,12 @@ private struct ScannerDebugCaptureView: View {
                             .frame(maxWidth: .infinity)
                     }
                     .buttonStyle(.borderedProminent)
-                    .disabled(model.isProcessing || model.placingBoundary || model.hasCeilingProposal)
+                    .disabled(model.finishingCampaign)
+                    .padding()
                 }
-                .padding()
             }
         }
+        .environment(\.colorScheme, .dark)
         .interactiveDismissDisabled()
         .onAppear { model.startCapture() }
         .onChange(of: model.didFinish) { _, didFinish in
@@ -256,7 +258,7 @@ private struct ScannerDebugCaptureView: View {
     }
 }
 
-struct ScannerDebugSummary {
+struct ScannerDebugSummary: Codable {
     let walls: Int
     let floors: Int
     let doors: Int

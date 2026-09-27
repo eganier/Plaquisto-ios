@@ -292,6 +292,7 @@ private final class RailStudCeilingReferenceStore: ObservableObject {
 }
 
 struct RailStudCeilingConfiguratorView: View {
+    @Environment(\.layoutCoveringAreaRatio) private var coveringAreaRatio
     @StateObject private var references = RailStudCeilingReferenceStore()
     @State private var step = 0
     @State private var shape: LabCeilingShape = .horizontal
@@ -902,7 +903,7 @@ struct RailStudCeilingConfiguratorView: View {
         var result: [LabSupply] = []
         for allocation in firstSkin + (facingLayers == 2 ? secondSkin : []) {
             guard let facing = product(allocation.productID), let dimension = facing.dimensions.first(where: { $0.id == allocation.dimensionID }) else { continue }
-            result.append(.init(name: "\(facing.family) \(facing.functionTitle) · \(dimension.title)", quantity: ceil(allocation.area * references.quantity("plate_m2_m2", fallback: 1.05) / dimension.area), unit: "plaque(s)"))
+            result.append(.init(name: "\(facing.family) \(facing.functionTitle) · \(dimension.title)", quantity: ceil(allocation.area * coveringAreaRatio * references.quantity("plate_m2_m2", fallback: 1.05) / dimension.area), unit: "plaque(s)"))
         }
         result += [.init(name: "Montant \(stud.title)", quantity: studLength, unit: "ml"), .init(name: "Rail \(stud.railTitle)", quantity: railLength, unit: "ml")]
         let railFixingSpacing = references.quantity("rail_fixing_spacing_m", fallback: 0.60)
@@ -921,8 +922,8 @@ struct RailStudCeilingConfiguratorView: View {
         }
         if insulationEnabled {
             let insulationFactor = references.quantity("insulation_m2_m2", fallback: 1.05)
-            if let firstSeries { result.append(.init(name: "\(firstSeries.material) · λ \(lambda(firstSeries.lambda)) · \(firstInsulation.thickness) mm", quantity: effectiveArea * insulationFactor, unit: "m²")) }
-            if insulationLayers == 2, let secondSeries { result.append(.init(name: "\(secondSeries.material) · λ \(lambda(secondSeries.lambda)) · \(secondInsulation.thickness) mm", quantity: effectiveArea * insulationFactor, unit: "m²")) }
+            if let firstSeries { result.append(.init(name: "\(firstSeries.material) · λ \(lambda(firstSeries.lambda)) · \(firstInsulation.thickness) mm", quantity: effectiveArea * coveringAreaRatio * insulationFactor, unit: "m²")) }
+            if insulationLayers == 2, let secondSeries { result.append(.init(name: "\(secondSeries.material) · λ \(lambda(secondSeries.lambda)) · \(secondInsulation.thickness) mm", quantity: effectiveArea * coveringAreaRatio * insulationFactor, unit: "m²")) }
         }
         if vaporBarrier { result += [.init(name: "Pare-vapeur", quantity: effectiveArea * references.quantity("vapor_barrier_m2_m2", fallback: 1.2), unit: "m²"), .init(name: "Scotch double-face", quantity: (assembly == .single ? studLength : studLength / 2) * references.quantity("double_sided_tape_factor", fallback: 1.1), unit: "ml")] }
         if facingLayers == 1 { result.append(.init(name: "Vis TTPC · parement", quantity: effectiveArea * references.quantity("ttpc_single_unit_m2", fallback: 15), unit: "unité")) }

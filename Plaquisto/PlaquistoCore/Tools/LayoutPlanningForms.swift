@@ -47,6 +47,7 @@ struct LayoutFurringForm: View {
     init(surface:Surface2D,layer:LayoutLayer,onSave:@escaping(LayoutLayer)->Void) {
         self.surface = surface; self.onSave = onSave
         var copy = layer; if copy.furring == nil { copy.furring = .init() }
+        copy.materializeFurringOrientation()
         copy = copy.forSupport(surface.kind)
         _layer = State(initialValue:copy)
     }
@@ -67,9 +68,13 @@ struct LayoutFurringForm: View {
         NavigationStack {
             Form {
                 Section { LayoutLivePreview(surface:surface,layer:layer).frame(height:220) }
-                if surface.kind == .ceiling { Section("Par rapport au grand côté des plaques") {
-                    Picker("Sens des fourrures",selection:binding(\.parallelToBoards)) {
-                        Text("Perpendiculaires").tag(false); Text("Parallèles").tag(true)
+                if surface.kind == .ceiling { Section("Orientation des fourrures") {
+                    Picker("Sens des fourrures", selection: Binding(
+                        get: { layer.resolvedFurringOrientation ?? .horizontal },
+                        set: { layer.setFurringOrientation($0) }
+                    )) {
+                        Text("Horizontales").tag(LayoutOrientation.horizontal)
+                        Text("Verticales").tag(LayoutOrientation.vertical)
                     }.pickerStyle(.segmented)
                 } } else { Section { Label("Ossature verticale, perpendiculaire au sol",systemImage:"arrow.up") } }
                 Section(surface.kind == .wall ? "Entraxe de l’ossature" : "Entraxe des fourrures") {
@@ -102,7 +107,7 @@ struct LayoutFurringForm: View {
                     notice = "Attention : passage à \(layoutCM(spacing)) d’entraxe pour correspondre aux plaques."
                 }
             }
-            .onChange(of:layer.furring?.parallelToBoards) { _,_ in
+            .onChange(of:layer.furring?.orientation) { _,_ in
                 if !compatible, let spacing = LayoutPlanning.compatibleSpacings(layer).max() {
                     layer.furring?.spacing = spacing
                     notice = "Attention : passage à \(layoutCM(spacing)) d’entraxe pour ce sens de pose."

@@ -41,6 +41,7 @@ private struct FacingDimension: Identifiable, Hashable {
 private typealias FacingAllocation = FacingSelection
 
 struct CeilingConfiguratorView: View {
+    @Environment(\.layoutCoveringAreaRatio) private var coveringAreaRatio
     @StateObject private var store = CeilingReferenceStore()
     @State private var step: Int
     @State private var length: Double
@@ -76,6 +77,7 @@ struct CeilingConfiguratorView: View {
     private let onSave: (CeilingConfiguration) -> Void
     private let isEditing: Bool
     private let preserveInitialSpacing: Bool
+    private let lockScannedGeometry: Bool
 
     private let stepNames = ["Dimensions", "Support", "Isolation", "Plénum et entraxe", "Fixation", "Parements", "Bandes à joint", "Résultat"]
     private let spacingChoices = [0.4, 0.5, 0.6]
@@ -84,8 +86,10 @@ struct CeilingConfiguratorView: View {
         initialConfiguration: CeilingConfiguration = CeilingConfiguration(),
         startsAtResult: Bool = false,
         preserveInitialSpacing: Bool = false,
+        lockScannedGeometry: Bool = false,
         onSave: @escaping (CeilingConfiguration) -> Void = { _ in }
     ) {
+        self.lockScannedGeometry = lockScannedGeometry
         _step = State(initialValue: startsAtResult ? 7 : 0)
         _length = State(initialValue: initialConfiguration.length)
         _width = State(initialValue: initialConfiguration.width)
@@ -174,10 +178,8 @@ struct CeilingConfiguratorView: View {
         }
     }
     private func insulationLambda(for record: CeilingReferenceRecord?) -> Double? {
-        if let text = record?.data["conductivity"]?.string,
-           let match = text.range(of: #"0[,.]\d+"#, options: .regularExpression),
-           let value = Double(text[match].replacingOccurrences(of: ",", with: ".")) { return value }
-        return record?.data["lambda_w_mk"]?.number
+        ThermalCalculator.catalogueLambda(conductivity: record?.data["conductivity"]?.string,
+                                          lambda: record?.data["lambda_w_mk"]?.number)
     }
     private func insulationLambdaTitle(_ record: CeilingReferenceRecord) -> String {
         guard let lambda = insulationLambda(for: record) else { return "Lambda non renseigné" }
@@ -332,6 +334,11 @@ struct CeilingConfiguratorView: View {
     }
     private var otherSupplies: [Supply] {
         var result: [Supply] = []
+        if let catalogue = store.catalogue {
+            for (index, item) in LayoutWorkGeometry.ceilingInsulation(configuration, catalogue: catalogue, coveringRatio: coveringAreaRatio).enumerated() {
+                result.append(Supply(id: "LAYOUT-INSULATION-\(index)", name: item.name, quantity: item.quantity, unit: "m²"))
+            }
+        }
 
         for item in quantityItems where !["QTY-FIXATION", "QTY-PLAQUE"].contains(item.id) {
             if !jointTreatment && ["QTY-BANDE", "QTY-ENDUIT-POUDRE", "QTY-ENDUIT-PATE"].contains(item.id) { continue }
@@ -509,6 +516,8 @@ struct CeilingConfiguratorView: View {
                 .pickerStyle(.segmented)
                 .onChange(of: ceilingShape) { _, _ in normalizeCeilingShapeSelections() }
             }
+            .disabled(lockScannedGeometry)
+            if !lockScannedGeometry {
             Section {
                 Toggle("Préciser la longueur et la largeur", isOn: $specifiesDimensions)
                 if specifiesDimensions {
@@ -530,11 +539,16 @@ struct CeilingConfiguratorView: View {
                      ? "La longueur et la largeur améliorent la précision des calculs. Si elles sont toutes les deux renseignées, la surface est calculée automatiquement."
                      : "La longueur et la largeur ne sont pas renseignées. Plaquisto estimera un ouvrage carré et le quantitatif sera légèrement moins précis.")
             }
+            }
             Section("Surface de l’ouvrage") {
-                if specifiesDimensions {
+                if specifiesDimensions || lockScannedGeometry {
                     LabeledContent("Surface calculée", value: "\(format(enteredArea)) m²")
                 } else {
                     MeasureField(label: "Surface", value: $enteredArea, unit: "m²")
+                }
+                if lockScannedGeometry {
+                    Text("Surface nette issue des plafonds sélectionnés. Chaque contour est conservé dans un composant de l’ouvrage. Les consommables sont estimés à partir des ratios du système choisi.")
+                        .font(.footnote).foregroundStyle(.secondary)
                 }
             }
 
@@ -929,7 +943,7 @@ struct CeilingConfiguratorView: View {
     }
 
     private func advance() {
-        if step == 0 && (!specifiesDimensions || length <= 0 || width <= 0) { showDimensionsWarning = true }
+        if step == 0 && !lockScannedGeometry && (!specifiesDimensions || length <= 0 || width <= 0) { showDimensionsWarning = true }
         else if step == 2 && isSlopedCeiling && !vaporBarrier { showVaporBarrierWarning = true }
         else if step == 3 && spacingIsAboveRecommendation { showSpacingWarning = true }
         else { completeAdvance() }
@@ -1183,7 +1197,7 @@ struct CeilingConfiguratorView: View {
             guard let facing = facings.first(where: { $0.id == allocation.facingID }),
                   let dimension = dimensions(for: allocation.facingID).first(where: { $0.id == allocation.dimensionID }),
                   dimension.area > 0 else { return nil }
-            let boardCount = ceil(allocation.area * 1.05 / dimension.area)
+            let boardCount = ceil(allocation.area * coveringAreaRatio * 1.05 / dimension.area)
             return Supply(
                 id: "\(facing.id)-\(dimension.id)-\(allocation.id)",
                 name: "\(facing.title) · \(dimension.label)",

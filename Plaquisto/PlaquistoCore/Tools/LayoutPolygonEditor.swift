@@ -235,6 +235,10 @@ struct LayoutManualContourEditor: View {
     let title: String?
     @State private var surface: Surface2D?
     @State private var drawing: Bool
+    @State private var offsetEdges: Set<Int> = []
+    @State private var offsetStart: Surface2D?
+    @State private var lastOffsetValue = 0.0
+    @State private var editTopology = false
     @State private var selection: LayoutPolygonSelection?
     @State private var dragOriginal: Surface2D?
     @State private var dragVertex: Int?
@@ -259,6 +263,12 @@ struct LayoutManualContourEditor: View {
         self.kind = kind
         self.title = title
         var initial = surface; initial?.kind = kind
+        // Before predefined shapes had an explicit provenance, they were saved
+        // as "manual" too. The absence of a drawing intent identifies them and
+        // keeps the drawing-only scale control hidden after later edits.
+        if initial?.provenance == "manual", initial?.contourIntent == nil {
+            initial?.provenance = "preset"
+        }
         self.onSave = onSave; _surface = State(initialValue:initial); _drawing = State(initialValue:surface == nil)
     }
     var body: some View {
@@ -270,12 +280,27 @@ struct LayoutManualContourEditor: View {
                 if drawing {
                     LayoutSketchPad(kind:kind) { points in accept(points) }.padding(12)
                 } else if let surface {
+                    HStack(spacing:24) {
+                        Button { showDimensions.toggle() } label: {
+                            LayoutVisibilityIcon(kind:.sheet,state:showDimensions ? .dimensioned : .hidden).frame(width:52,height:42)
+                        }.accessibilityLabel(showDimensions ? "Masquer les cotes" : "Afficher les cotes")
+                        Button { showAngles.toggle() } label: {
+                            LayoutVisibilityIcon(kind:.angle,state:showAngles ? .visible : .hidden).frame(width:52,height:42)
+                        }.accessibilityLabel(showAngles ? "Masquer les angles" : "Afficher les angles")
+                    }
                     GeometryReader { proxy in
                         let viewport = planViewport(surface:dragOriginal ?? surface, size:proxy.size)
                         Canvas { context,_ in
                             let path = layoutPath(surface.contour, transform:viewport)
                             context.fill(path, with:.color(.teal.opacity(0.12)))
-                            context.stroke(path, with:.color(.teal), lineWidth:2)
+                            context.stroke(path, with:.color(.teal), lineWidth:5)
+                            if let laying = try? surface.layingContour() {
+                                context.stroke(layoutPath(laying,transform:viewport),with:.color(.secondary.opacity(0.5)),lineWidth:2)
+                                for i in offsetEdges where laying.indices.contains(i) {
+                                    var selected = Path(); selected.move(to:viewport.screen(laying[i])); selected.addLine(to:viewport.screen(laying[(i+1)%laying.count]))
+                                    context.stroke(selected,with:.color(.orange),style:.init(lineWidth:7,lineCap:.round))
+                                }
+                            }
                             for (i,p) in surface.contour.enumerated() {
                                 let point = viewport.screen(p)
                                 context.fill(Path(ellipseIn:CGRect(x:point.x-7,y:point.y-7,width:14,height:14)),with:.color(.teal))
@@ -297,7 +322,7 @@ struct LayoutManualContourEditor: View {
                                 let delta = viewport.world(value.location) - viewport.world(value.startLocation)
                                 var copy = original; copy.contour[i] = original.contour[i] + delta; self.surface = copy
                             } else {
-                                viewPan = .init(width:dragPanOrigin.width+value.translation.width,height:dragPanOrigin.height+value.translation.height)
+                                viewPan = viewport.constrainedPan(.init(width:dragPanOrigin.width+value.translation.width,height:dragPanOrigin.height+value.translation.height),contour:surface.contour)
                             }
                         }.onEnded { _ in finishDrag() })
                         .simultaneousGesture(MagnifyGesture().updating($magnification) { value,state,_ in state = value.magnification }
@@ -307,8 +332,26 @@ struct LayoutManualContourEditor: View {
                                     if let original = dragOriginal { self.surface = original; viewPan = dragPanOrigin }
                                     dragOriginal = nil; dragVertex = nil
                                 }
-                            }.onEnded { value in viewZoom = min(8,max(0.4,viewZoom*value.magnification)); pinching = false })
+                            }.onEnded { value in
+                                viewZoom = min(8,max(0.4,viewZoom*value.magnification))
+                                let final = LayoutViewport(bounds:viewport.bounds,size:proxy.size,zoom:viewZoom,pan:viewPan)
+                                viewPan = final.constrainedPan(viewPan,contour:surface.contour)
+                                pinching = false
+                            })
                         .simultaneousGesture(SpatialTapGesture().onEnded { value in
+                            if !editTopology {
+                                let p = viewport.world(value.location)
+                                if let laying = try? surface.layingContour() {
+                                    let edge = laying.indices.min(by: { a,b in
+                                        LayoutGeometry.distance(p,to:laying[a],laying[(a+1)%laying.count]) < LayoutGeometry.distance(p,to:laying[b],laying[(b+1)%laying.count])
+                                    }).flatMap { i in LayoutGeometry.distance(p,to:laying[i],laying[(i+1)%laying.count])*viewport.scale < 22 ? i : nil }
+                                    if let edge {
+                                        if offsetEdges.contains(edge) { offsetEdges.remove(edge) }
+                                        else { offsetEdges.insert(edge) }
+                                    }
+                                }
+                                return
+                            }
                             topologyVertex = surface.contour.indices.first { i in
                                 let p = viewport.screen(surface.contour[i]); return hypot(p.x-value.location.x,p.y-value.location.y) < 24
                             }
@@ -339,32 +382,36 @@ struct LayoutManualContourEditor: View {
                                 .background(.regularMaterial,in:Capsule()).padding(8).allowsHitTesting(false)
                         }
                     }.padding(8)
-                    HStack {
-                        Toggle("Cotes", isOn:$showDimensions)
-                        Toggle("Angles", isOn:$showAngles)
-                    }.toggleStyle(.button).buttonStyle(.bordered).padding(.horizontal)
-                    Text("Pincez à deux doigts pour zoomer. Glissez le fond pour déplacer la vue.").font(.caption).foregroundStyle(.secondary).padding(.horizontal)
-                    VStack(alignment:.leading,spacing:4) {
+                    scaleControls(surface)
+                    VStack(alignment:.leading,spacing:6) {
                         HStack {
-                            Text("Échelle du dessin").font(.subheadline.bold())
+                            Text("Décalage des bords de plaque").font(.subheadline.bold())
                             Spacer()
-                            Text("× \(scaleValue.formatted(.number.precision(.fractionLength(2))))").monospacedDigit()
+                            Button("Réinitialiser") { applyOffset(reset:true) }.font(.subheadline)
                         }
-                        Slider(value:Binding(get:{scaleValue},set:{ value in
-                            let base = scaleReference ?? surface
-                            if let copy = try? base.scaledDrawing(by:value) {
-                                scaleReference = base; self.surface = copy; scaleValue = value
-                            }
-                        }),in:0.25...5,onEditingChanged:{ editing in
-                            if editing { scaleStart = self.surface }
-                            else if let original = scaleStart, original != self.surface { history.append(original); scaleStart = nil }
-                        }).disabled(!surface.canScaleDrawing).accessibilityLabel("Échelle réelle du dessin")
-                        Text(surface.canScaleDrawing
-                             ? "\(layoutCM(surface.bounds.width)) × \(layoutCM(surface.bounds.height)) · agrandissement proportionnel, angles conservés."
-                             : "Échelle verrouillée après saisie d’une cote mesurée, pour préserver vos mesures.")
-                            .font(.caption).foregroundStyle(.secondary)
+                        Text("Créez un espace entre les bords de plaques et les murs supports afin de faciliter le passage des gaines.").font(.caption).foregroundStyle(.secondary)
+                        if offsetEdges.isEmpty {
+                            Text("Sélectionnez un ou plusieurs bords sur le dessin.").font(.caption).foregroundStyle(.secondary)
+                        }
+                        HStack {
+                            Slider(value:Binding(get:{ selectedOffset(surface) },set:{ value in
+                                let crossedZero = value * lastOffsetValue < 0
+                                let snapped = abs(value) < 0.25 || crossedZero ? 0 : value
+                                if snapped == 0 && lastOffsetValue != 0 { UIImpactFeedbackGenerator(style:.light).impactOccurred() }
+                                lastOffsetValue = snapped
+                                applyOffset(cm:snapped)
+                            }),in:-5...5,onEditingChanged:{ editing in
+                                if editing { offsetStart = self.surface; lastOffsetValue = selectedOffset(surface) }
+                                else { if let original = offsetStart, original != self.surface { history.append(original) }; offsetStart = nil }
+                            })
+                                .disabled(offsetEdges.isEmpty || editTopology)
+                                .tint(.orange).accessibilityIdentifier("layout.contour.offset")
+                                .accessibilityLabel("Décalage des bords sélectionnés en centimètres")
+                            Text("\(selectedOffset(surface).formatted(.number.precision(.fractionLength(1)))) cm").monospacedDigit().frame(width:65,alignment:.trailing)
+                        }
+                        Text("−5 cm : vers l’intérieur · 0 : au mur · +5 cm : vers l’extérieur").font(.caption2).foregroundStyle(.secondary)
+                        if let warning = surface.layingWarning { Text(warning).font(.caption).foregroundStyle(.orange) }
                     }.padding(.horizontal)
-                    Text("≈ : cote issue du dessin, à remplacer par votre mesure.").font(.caption).foregroundStyle(.secondary)
                     HStack {
                         Button("Redessiner", systemImage:"pencil.tip") { drawing = true }
                         Spacer()
@@ -378,6 +425,11 @@ struct LayoutManualContourEditor: View {
             .toolbar {
                 ToolbarItem(placement:.cancellationAction) { Button("Annuler") { dismiss() } }
                 ToolbarItem(placement:.confirmationAction) { Button("Utiliser") { if let surface { onSave(surface); dismiss() } }.disabled(surface == nil || drawing) }
+                ToolbarItem(placement:.primaryAction) {
+                    Menu {
+                        Toggle("Ajouter ou supprimer des sommets",isOn:$editTopology)
+                    } label: { Image(systemName:"ellipsis.circle") }
+                }
             }
             .alert(topologyVertex != nil ? "Supprimer ce sommet ?" : "Ajouter un sommet ?",isPresented:$confirmingTopology) {
                 Button("Annuler",role:.cancel) {}
@@ -389,7 +441,7 @@ struct LayoutManualContourEditor: View {
                     } catch { self.error = error.localizedDescription }
                 }.disabled(topologyVertex != nil && (surface?.contour.count ?? 0) <= 3)
             } message: {
-                Text("Les contraintes des côtés et angles modifiés seront libérées. Les autres mesures sont conservées.")
+                Text("Les contraintes et décalages individuels des côtés modifiés seront libérés. Les autres mesures et décalages sont conservés.")
             }
             .sheet(item:$selection) { selected in
                 if let surface {
@@ -404,7 +456,52 @@ struct LayoutManualContourEditor: View {
     }
     private func planViewport(surface:Surface2D, size:CGSize) -> LayoutViewport {
         let b = surface.bounds, margin = max(b.width,b.height)*0.25
-        return .init(bounds:viewBounds ?? .init(min:b.min - .init(x:margin,y:margin), max:b.max + .init(x:margin,y:margin)),size:size,zoom:min(8,max(0.4,viewZoom*magnification)),pan:viewPan)
+        let viewport = LayoutViewport(bounds:viewBounds ?? .init(min:b.min - .init(x:margin,y:margin), max:b.max + .init(x:margin,y:margin)),size:size,zoom:min(8,max(0.4,viewZoom*magnification)),pan:viewPan)
+        return LayoutViewport(bounds:viewport.bounds,size:size,zoom:viewport.zoom,pan:viewport.constrainedPan(viewPan,contour:surface.contour))
+    }
+    @ViewBuilder private func scaleControls(_ surface:Surface2D) -> some View {
+        if surface.provenance == "manual", surface.contourIntent != nil {
+            VStack(alignment:.leading,spacing:4) {
+                HStack {
+                    Text("Échelle du dessin").font(.subheadline.bold())
+                    Spacer()
+                    Text("× \(scaleValue.formatted(.number.precision(.fractionLength(2))))").monospacedDigit()
+                }
+                Slider(value:Binding(get:{scaleValue},set:{ value in
+                    let base = scaleReference ?? surface
+                    if let copy = try? base.scaledDrawing(by:value) {
+                        scaleReference = base; self.surface = copy; scaleValue = value
+                    }
+                }),in:0.25...5,onEditingChanged:{ editing in
+                    if editing { scaleStart = self.surface }
+                    else if let original = scaleStart, original != self.surface { history.append(original); scaleStart = nil }
+                }).disabled(!surface.canScaleDrawing).accessibilityLabel("Échelle réelle du dessin")
+            }.padding(.horizontal)
+        }
+    }
+    private func selectedOffset(_ surface:Surface2D) -> Double {
+        guard let edge = offsetEdges.sorted().first, surface.contour.indices.contains(edge) else { return 0 }
+        // The trade convention shown to the user follows the slider direction:
+        // negative values move the board edge inward, positive values outward.
+        // The geometry engine stores the inward normal with the opposite sign.
+        return max(-5,min(5,LayoutLayingOffset.displayedCentimetres(storedMillimetres:surface.layingDistance(at:edge))))
+    }
+    private func applyOffset(cm:Double? = nil, reset:Bool = false) {
+        guard let original = surface else { return }
+        do {
+            var updated = original
+            if reset { updated = try original.changingLayingOffset(reset:true) }
+            else if let cm, !offsetEdges.isEmpty {
+                updated.edgeIDs = original.stableEdgeIDs
+                for edge in offsetEdges where updated.contour.indices.contains(edge) {
+                    updated.layingOffset.individualMM[updated.edgeIDs[edge]] = LayoutLayingOffset.storedMillimetres(displayedCentimetres:cm)
+                }
+                _ = try updated.layingContour()
+            }
+            if reset && updated != original { history.append(original) }
+            surface = updated; error = nil
+            if reset { offsetEdges.removeAll() }
+        } catch { self.error = "Ce décalage ne peut pas être appliqué à cette forme." }
     }
     private func accept(_ points:[LayoutPoint]) {
         let b = LayoutBounds(points:points), scale = 4000 / max(1,max(b.width,b.height))
@@ -427,5 +524,5 @@ struct LayoutManualContourEditor: View {
         do { let copy = try original.movingVertices(to:moved.contour); history.append(original); surface = copy; error = nil; resetScale() }
         catch { surface = original; self.error = error.localizedDescription }
     }
-    private func resetScale() { scaleReference = nil; scaleValue = 1; scaleStart = nil }
+    private func resetScale() { scaleReference = nil; scaleValue = 1; scaleStart = nil; offsetEdges.removeAll() }
 }

@@ -118,6 +118,12 @@ enum WallAngleCalculator {
 }
 
 enum ThermalCalculator {
+    static func catalogueLambda(conductivity: String?, lambda: Double?) -> Double? {
+        if let conductivity,
+           let match = conductivity.range(of: #"0[,.]\d+"#, options: .regularExpression),
+           let value = Double(conductivity[match].replacingOccurrences(of: ",", with: ".")) { return value }
+        return lambda
+    }
     static func resistance(thicknessMM: Double, lambda: Double) -> Double? {
         guard thicknessMM > 0, lambda > 0 else { return nil }
         let value = thicknessMM / 1_000 / lambda

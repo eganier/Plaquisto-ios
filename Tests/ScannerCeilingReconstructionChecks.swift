@@ -32,6 +32,20 @@ enum ScannerCeilingReconstructionChecks {
         }
     }
     static func main() {
+        let twoRooms = walls([.init(0,0),.init(8,0),.init(8,4),.init(0,4)])
+            + [Engine.Wall(start:.init(4,0),end:.init(4,4))]
+        for x in [2.0,6.0] {
+            guard let local = Engine.localCeilingWalls(twoRooms,keepPoint:.init(x,2)) else {
+                fatalError("Missing closed local room")
+            }
+            let area = abs(local.reduce(0) { $0 + $1.start.x*$1.end.y - $1.end.x*$1.start.y }) / 2
+            precondition(abs(area-16) < 1e-8)
+            precondition(local.allSatisfy { x < 4 ? max($0.start.x,$0.end.x) <= 4 : min($0.start.x,$0.end.x) >= 4 })
+        }
+        let closedLWalls = walls([.init(0,0),.init(4,0),.init(4,2),.init(2,2),.init(2,4),.init(0,4)])
+        let closedLocalL = Engine.localCeilingWalls(closedLWalls,keepPoint:.init(1,1))!
+        precondition(closedLocalL.count == 6)
+        precondition(abs(success(Engine.reconstruct(walls:closedLocalL,triangles:mesh())).area-12) < 1e-8)
         let roofWalls = walls([.init(0, 0), .init(4, 0), .init(4, 3), .init(0, 3)])
         func roofMesh(ridge: Double = 2, leftSlope: Double = 0.5, rightSlope: Double = 0.5, hole: Bool = false) -> [Engine.Triangle] {
             var triangles: [Engine.Triangle] = []

@@ -1,5 +1,86 @@
 import Foundation
 
+struct LayoutLayingOffset: Codable, Equatable {
+    enum Unit: String, Codable { case millimetres }
+    var unit = Unit.millimetres
+    var globalMM = 0.0
+    // Absolute distances from the measured edge, replacing the global distance.
+    var individualMM: [String: Double] = [:]
+
+    static func displayedCentimetres(storedMillimetres: Double) -> Double {
+        -storedMillimetres / 10
+    }
+
+    static func storedMillimetres(displayedCentimetres: Double) -> Double {
+        -displayedCentimetres * 10
+    }
+}
+
+extension Surface2D {
+    func netMeasuredArea() throws -> Double {
+        try LayoutGeometry.intersection(outer:contour,holes:openings.map(\.contour),rectangle:bounds).reduce(0) { $0 + LayoutGeometry.area($1) }
+    }
+    func netLayingArea() throws -> Double {
+        let polygon = try layingContour()
+        return try LayoutGeometry.intersection(outer:polygon,holes:openings.map(\.contour),rectangle:LayoutBounds(points:polygon)).reduce(0) { $0 + LayoutGeometry.area($1) }
+    }
+    var stableEdgeIDs: [String] {
+        contour.indices.map { edgeIDs.indices.contains($0) ? edgeIDs[$0] : "\(id.uuidString):\(topologyID?.uuidString ?? "original"):\($0)" }
+    }
+    func layingDistance(at edge: Int) -> Double {
+        layingOffset.individualMM[stableEdgeIDs[edge]] ?? layingOffset.globalMM
+    }
+    var layingWarning: String? {
+        guard contour.indices.contains(where: { layingDistance(at:$0) < 0 }) else { return nil }
+        return "Une partie du calpinage dépasse du contour mesuré. Le format de plaque sélectionné nécessitera un ajustement sur le bord en contact avec le \(kind == .ceiling ? "mur support" : "mur adjacent")."
+    }
+    func changingLayingOffset(globalMM: Double? = nil, edge: Int? = nil, distanceMM: Double? = nil, reset: Bool = false) throws -> Self {
+        var copy = self
+        copy.edgeIDs = stableEdgeIDs
+        if reset { copy.layingOffset = .init() }
+        if let globalMM {
+            guard globalMM.isFinite, (0...50).contains(globalMM) else { throw LayoutGeometryError.invalidContour }
+            copy.layingOffset.globalMM = globalMM
+        }
+        if let edge, let distanceMM {
+            guard contour.indices.contains(edge), distanceMM.isFinite, (-50...100).contains(distanceMM) else { throw LayoutGeometryError.invalidContour }
+            copy.layingOffset.individualMM[copy.edgeIDs[edge]] = distanceMM
+        }
+        _ = try copy.layingContour()
+        return copy
+    }
+    func layingContour() throws -> [LayoutPoint] {
+        try LayoutGeometry.validate(contour)
+        let distances = contour.indices.map { layingDistance(at:$0) }
+        guard distances.allSatisfy({ $0.isFinite && (-50...100).contains($0) }) else { throw LayoutGeometryError.invalidContour }
+        if distances.allSatisfy({ $0 == 0 }) { return contour }
+        let winding = LayoutGeometry.area(contour) > 0 ? 1.0 : -1.0
+        let directions = contour.indices.map { (contour[($0+1)%contour.count]-contour[$0]) }
+        let shifted = contour.indices.map { i in
+            contour[i] + LayoutPoint(x:-directions[i].y,y:directions[i].x) * (winding*distances[i]/directions[i].length)
+        }
+        var result: [LayoutPoint] = []
+        for i in contour.indices {
+            let previous = (i+contour.count-1)%contour.count
+            let a = shifted[previous], b = shifted[i], u = directions[previous], v = directions[i]
+            let denominator = LayoutGeometry.cross(u,v)
+            if abs(denominator) <= 1e-10*u.length*v.length {
+                guard abs(distances[previous]-distances[i]) < LayoutGeometry.epsilon else { throw LayoutGeometryError.invalidContour }
+                result.append(b)
+            } else {
+                result.append(a + u * (LayoutGeometry.cross(b-a,v)/denominator))
+            }
+        }
+        try LayoutGeometry.validate(result)
+        guard LayoutGeometry.area(result)*winding > LayoutGeometry.minimumArea else { throw LayoutGeometryError.invalidContour }
+        for i in result.indices {
+            let edge = result[(i+1)%result.count]-result[i]
+            guard edge.length >= 1, LayoutGeometry.dot(edge,directions[i]) > 0 else { throw LayoutGeometryError.invalidContour }
+        }
+        return result
+    }
+}
+
 // All geometry is in millimetres, Y up. No SwiftUI, ARKit or RoomPlan dependency.
 struct LayoutPoint: Codable, Hashable {
     var x: Double

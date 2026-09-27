@@ -11,7 +11,7 @@ struct RoomPoint: Codable, Equatable {
     var finite: Bool { x.isFinite && y.isFinite && z.isFinite }
 }
 enum GeometrySource: String, Codable {
-    case roomPlan, arCore, lidar, manual, imported
+    case roomPlan, arCore, lidar, manual, imported, estimated
     var title: String {
         switch self {
         case .roomPlan: return "RoomPlan"
@@ -19,6 +19,7 @@ enum GeometrySource: String, Codable {
         case .lidar: return "LiDAR"
         case .manual: return "Manuelle"
         case .imported: return "Import"
+        case .estimated: return "Estimation à partir des murs"
         }
     }
 }
@@ -60,6 +61,17 @@ struct PlaquistoWall: Codable, Equatable, Identifiable {
     var thickness: RoomMeasurement? = nil
     var openingIDs: [UUID] = []
     var provenance: GeometryProvenance
+    /// Original polygon in wall-local metres: X along the wall, Y up, Z = 0.
+    /// Missing on older scans; never inferred from a ceiling.
+    var localOutline: [RoomPoint]? = nil
+    var effectiveOutline: [RoomPoint] {
+        let outline = localOutline ?? [RoomPoint(x:0,y:0,z:0),
+            RoomPoint(x:length.rawValue,y:0,z:0),
+            RoomPoint(x:length.rawValue,y:height.rawValue,z:0), RoomPoint(x:0,y:height.rawValue,z:0)]
+        let sx = length.rawValue > 0 ? length.effectiveValue / length.rawValue : 1
+        let sy = height.rawValue > 0 ? height.effectiveValue / height.rawValue : 1
+        return outline.map { .init(x:$0.x*sx,y:$0.y*sy,z:0) }
+    }
     var direction: RoomPoint {
         let v = RoomPoint(x: end.x-start.x, y: 0, z: end.z-start.z)
         return v.length > 1e-9 ? v * (1/v.length) : .zero
@@ -104,6 +116,63 @@ struct PlaquistoCeiling: Codable, Equatable, Identifiable {
     var id = UUID()
     var slopeIDs: [UUID]
     var provenance: GeometryProvenance
+    var estimateSettings: CeilingEstimateSettings? = nil
+    /// Editable footprint in the original room frame, not a measured ceiling.
+    var footprint: [RoomPoint]? = nil
+    var floorElevation: Double? = nil
+    var planNumber: Int? = nil
+}
+
+enum CeilingPlanNaming {
+    static func numbering(_ ceilings:[PlaquistoCeiling], existing:[String:Int]? = nil) -> [String:Int] {
+        var result=existing ?? [:]
+        var next=max(0,result.values.max() ?? 0)
+        for ceiling in ceilings where result[ceiling.id.uuidString] == nil {
+            next += 1; result[ceiling.id.uuidString]=next
+        }
+        return result
+    }
+    static func numbers(in survey:ProjectSurveyRecord) -> [String:Int] {
+        numbering(survey.checkpoints.flatMap { $0.document.room.ceilings },existing:survey.ceilingPlanNumbers)
+    }
+    static func title(_ ceiling:PlaquistoCeiling,in room:PlaquistoRoomModel,numbers:[String:Int]) -> String {
+        let local=numbering(room.ceilings,existing:numbers)
+        return "Plafond "+letters(local[ceiling.id.uuidString] ?? 1)
+    }
+    static func letters(_ number: Int) -> String {
+        var n = max(1, number), result = ""
+        while n > 0 { n -= 1; result = String(UnicodeScalar(65+n%26)!) + result; n /= 26 }
+        return result
+    }
+    static func title(_ ceiling: PlaquistoCeiling, in room: PlaquistoRoomModel) -> String {
+        "Plafond " + letters(ceiling.planNumber ?? ((room.ceilings.firstIndex { $0.id == ceiling.id } ?? 0)+1))
+    }
+}
+
+/// Portable editing parameters. These describe an assumption, never a LiDAR observation.
+struct CeilingEstimateSettings: Codable, Equatable {
+    enum Shape: String, Codable, CaseIterable, Identifiable {
+        case flat, singleSlope, twoSlopes, fourSlopes
+        var id: String { rawValue }
+        var title: String {
+            switch self {
+            case .flat: "Plat"
+            case .singleSlope: "Un pan"
+            case .twoSlopes: "Deux pans"
+            case .fourSlopes: "Quatre pans"
+            }
+        }
+    }
+    var shape: Shape = .flat
+    var lowHeight: Double
+    var highHeight: Double
+    var azimuth: Double = 0
+    var ridgePosition: Double = 0.5
+    var isValid: Bool {
+        [lowHeight, highHeight, azimuth, ridgePosition].allSatisfy(\.isFinite)
+            && lowHeight > 0 && highHeight >= lowHeight && highHeight <= 1000
+            && (0.15...0.85).contains(ridgePosition)
+    }
 }
 struct PlaquistoFloor: Codable, Equatable, Identifiable {
     var id = UUID()
@@ -175,6 +244,9 @@ struct PlaquistoRoomDocument: Codable, Equatable {
                 [m.rawValue, m.effectiveValue].allSatisfy { $0.isFinite && (zero ? $0 >= 0 : $0 > 0) && $0 <= 1000 }
             }
             for w in model.walls {
+                if let outline=w.localOutline {
+                    guard outline.count>=3, outline.count<=10000, outline.allSatisfy(\.finite) else { throw RoomModelError.invalidGeometry }
+                }
                 guard w.start.finite, w.end.finite, w.direction.length > 0,
                       measurement(w.length), measurement(w.height), w.thickness.map({ measurement($0, zero: true) }) ?? true,
                       w.openingIDs.allSatisfy({ id in model.openings.contains { $0.id == id && $0.wallID == w.id } }) else { throw RoomModelError.invalidGeometry }
@@ -188,11 +260,179 @@ struct PlaquistoRoomDocument: Codable, Equatable {
                 guard [pan.plane.a,pan.plane.b,pan.plane.c].allSatisfy(\.isFinite), !pan.boundaries.isEmpty,
                       pan.boundaries.allSatisfy({ $0.count >= 3 && $0.count <= 10000 && $0.allSatisfy(\.finite) }) else { throw RoomModelError.invalidGeometry }
             }
-            guard model.ceilings.allSatisfy({ c in c.slopeIDs.allSatisfy { id in model.slopes.contains { $0.id == id } } }),
+            guard model.ceilings.allSatisfy({ c in (c.estimateSettings?.isValid ?? true) && c.slopeIDs.allSatisfy { id in model.slopes.contains { $0.id == id } } }),
                   model.floors.allSatisfy({ ($0.referenceElevation?.isFinite ?? true) && $0.boundaries.allSatisfy { $0.count >= 3 && $0.allSatisfy(\.finite) } }) else { throw RoomModelError.invalidGeometry }
         }
     }
 }
+
+/// Portable transform from one room checkpoint into the survey coordinate space.
+/// Values are a column-major 4 × 4 matrix, matching the convention used at the
+/// acquisition boundaries without persisting a SIMD or Apple framework type.
+struct SurveyTransform3D: Codable, Equatable {
+    var values: [Double]
+
+    static let identity = SurveyTransform3D(values: [
+        1, 0, 0, 0,
+        0, 1, 0, 0,
+        0, 0, 1, 0,
+        0, 0, 0, 1
+    ])
+
+    var isValid: Bool {
+        guard values.count == 16, values.allSatisfy(\.isFinite) else { return false }
+        let epsilon = 1e-6
+        guard abs(values[3]) < epsilon, abs(values[7]) < epsilon,
+              abs(values[11]) < epsilon, abs(values[15] - 1) < epsilon else { return false }
+        // A survey placement is rigid: it must never rescale measured dimensions.
+        let axes = (0..<3).map { column in (0..<3).map { values[column * 4 + $0] } }
+        for i in 0..<3 {
+            for j in i..<3 {
+                let dot = (0..<3).reduce(0.0) { $0 + axes[i][$1] * axes[j][$1] }
+                guard abs(dot - (i == j ? 1 : 0)) < epsilon else { return false }
+            }
+        }
+        let determinant = axes[0][0] * (axes[1][1] * axes[2][2] - axes[1][2] * axes[2][1])
+            - axes[1][0] * (axes[0][1] * axes[2][2] - axes[0][2] * axes[2][1])
+            + axes[2][0] * (axes[0][1] * axes[1][2] - axes[0][2] * axes[1][1])
+        return abs(determinant - 1) < epsilon
+    }
+}
+
+enum SurveyLifecycleState: String, Codable, CaseIterable {
+    case draft
+    case readyForReview
+    case validated
+}
+
+enum SurveySpatialLinkState: String, Codable, CaseIterable {
+    /// The acquisition adapter guarantees that this checkpoint shares the
+    /// survey world space (continuous or successfully relocalized session).
+    case sharedWorldSpace
+    /// The room is deliberately kept usable on its own; no transform is invented.
+    case needsLink
+    /// A user-approved transform aligns this room with the survey.
+    case manuallyAligned
+}
+
+/// Controls whether a checkpoint may feed a trade configuration. This is kept
+/// separate from `needsReview`: review can also cover naming or spatial linking,
+/// while this state specifically prevents provisional geometry becoming a quote.
+enum SurveyCheckpointWorkState: String, Codable, CaseIterable {
+    /// Portable live checkpoint saved before the acquisition adapter finished
+    /// refining the room. It may be recovered and inspected, never silently used.
+    case provisional
+    /// Processing completed, or the user corrected the geometry. An explicit
+    /// confirmation is still required before creating an ouvrage from it.
+    case awaitingValidation
+    /// The user explicitly accepted this checkpoint as a métier input.
+    case validated
+}
+
+/// One completed room capture. A checkpoint is portable and remains usable when
+/// StructureBuilder cannot assemble the whole property.
+struct ProjectRoomScanCheckpoint: Codable, Equatable, Identifiable {
+    var id = UUID()
+    var roomID: UUID
+    var document: PlaquistoRoomDocument
+    var transformToSurvey = SurveyTransform3D.identity
+    var spatialLinkState: SurveySpatialLinkState
+    var needsReview = true
+    /// Optional for backward decoding. Historical checkpoints may have lost the
+    /// acquisition's provisional flag: require review rather than invent approval.
+    var workState: SurveyCheckpointWorkState? = nil
+    var createdAt = Date()
+    var updatedAt = Date()
+
+    var effectiveWorkState: SurveyCheckpointWorkState { workState ?? .awaitingValidation }
+    var isUsableForWork: Bool { effectiveWorkState == .validated }
+}
+
+/// A project-bound 3D survey. Apple acquisition artefacts are intentionally absent:
+/// Android or an imported geometry adapter can produce the same record.
+/// Optional one-shot position captured on site, never inferred at save time.
+struct ScanLocationFix: Codable, Equatable {
+    var latitude:Double
+    var longitude:Double
+    var horizontalAccuracy:Double
+    var capturedAt:Date
+    func isUsable(at date:Date) -> Bool {
+        latitude.isFinite && longitude.isFinite && (-90...90).contains(latitude)
+            && (-180...180).contains(longitude) && horizontalAccuracy.isFinite
+            && horizontalAccuracy >= 0 && horizontalAccuracy <= 100
+            && abs(capturedAt.timeIntervalSince(date)) <= 30
+    }
+}
+
+struct ProjectSurveyRecord: Codable, Equatable, Identifiable {
+    var id = UUID()
+    var projectID: UUID
+    var name: String
+    var levelName: String? = nil
+    var state: SurveyLifecycleState = .draft
+    var checkpoints: [ProjectRoomScanCheckpoint] = []
+    var createdAt = Date()
+    var updatedAt = Date()
+    /// Original capture report; optional for archives created before diagnostics.
+    var captureDiagnostic: String? = nil
+    var captureLocation: ScanLocationFix? = nil
+    var ceilingPlanNumbers: [String:Int]? = nil
+}
+
+extension PlaquistoRoomDocument {
+    /// Deep identity copy used when duplicating a Project. Observation source IDs
+    /// remain correlation metadata, while every Plaquisto domain ID is renewed.
+    func remappingDomainIDs() -> Self {
+        let models = [initialRoom, room]
+        let roomIDs = Dictionary(uniqueKeysWithValues: Set(models.map(\.id)).map { ($0, UUID()) })
+        let wallIDs = Dictionary(uniqueKeysWithValues: Set(models.flatMap(\.walls).map(\.id)).map { ($0, UUID()) })
+        let openingIDs = Dictionary(uniqueKeysWithValues: Set(models.flatMap(\.openings).map(\.id)).map { ($0, UUID()) })
+        let slopeIDs = Dictionary(uniqueKeysWithValues: Set(models.flatMap(\.slopes).map(\.id)).map { ($0, UUID()) })
+        let ceilingIDs = Dictionary(uniqueKeysWithValues: Set(models.flatMap(\.ceilings).map(\.id)).map { ($0, UUID()) })
+        let floorIDs = Dictionary(uniqueKeysWithValues: Set(models.flatMap(\.floors).map(\.id)).map { ($0, UUID()) })
+
+        func copy(_ source: PlaquistoRoomModel) -> PlaquistoRoomModel {
+            var result = source
+            result.id = roomIDs[source.id]!
+            result.walls = source.walls.map { wall in
+                var value = wall
+                value.id = wallIDs[wall.id]!
+                value.openingIDs = wall.openingIDs.compactMap { openingIDs[$0] }
+                return value
+            }
+            result.openings = source.openings.map { opening in
+                var value = opening
+                value.id = openingIDs[opening.id]!
+                value.wallID = opening.wallID.flatMap { wallIDs[$0] }
+                return value
+            }
+            result.slopes = source.slopes.map { slope in
+                var value = slope; value.id = slopeIDs[slope.id]!; return value
+            }
+            result.ceilings = source.ceilings.map { ceiling in
+                var value = ceiling
+                value.id = ceilingIDs[ceiling.id]!
+                value.slopeIDs = ceiling.slopeIDs.compactMap { slopeIDs[$0] }
+                return value
+            }
+            result.floors = source.floors.map { floor in
+                var value = floor; value.id = floorIDs[floor.id]!; return value
+            }
+            return result
+        }
+
+        let copiedInitial = copy(initialRoom)
+        var copied = PlaquistoRoomDocument(room: copiedInitial)
+        copied.schemaVersion = schemaVersion
+        copied.room = copy(room)
+        copied.wallWorkIntents = wallWorkIntents?.compactMap { intent in
+            guard let wallID = wallIDs[intent.wallID] else { return nil }
+            return WallWorkIntent(wallID: wallID, use: intent.use)
+        }
+        return copied
+    }
+}
+
 enum PlaquistoRoomStore {
     static var defaultURL: URL {
         FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]

@@ -264,10 +264,11 @@ struct LayoutDimensionField: View {
         HStack {
             Text(title).foregroundStyle(tint ?? Color.primary)
             Spacer(minLength: 12)
-            LayoutSelectAllTextField(text: $text, keyboardType: signed ? .numbersAndPunctuation : .decimalPad, showsDoneButton:showsDoneButton) { active in
+            PlaquistoNumericField(text: $text, signed: signed, onEditingChanged: { active in
                 editing = active
                 if !active { synchronize() }
-            }
+            })
+                .multilineTextAlignment(.trailing)
                 .frame(width: 100, height: 34)
                 .accessibilityLabel(title)
                 .onChange(of: text) { _, value in
@@ -281,72 +282,5 @@ struct LayoutDimensionField: View {
     }
     private func synchronize() {
         text = millimetres == 0 ? "" : (millimetres * displayScale).formatted(.number.locale(Locale(identifier: "fr_FR")).grouping(.never).precision(.fractionLength(0...3)))
-    }
-}
-
-private struct LayoutSelectAllTextField: UIViewRepresentable {
-    @Binding var text: String
-    let keyboardType: UIKeyboardType
-    var showsDoneButton = true
-    let onEditingChanged: (Bool) -> Void
-
-    func makeCoordinator() -> Coordinator { Coordinator(self) }
-    func makeUIView(context: Context) -> UITextField {
-        let field = UITextField()
-        field.keyboardType = keyboardType
-        field.textAlignment = .right
-        field.placeholder = "0"
-        field.delegate = context.coordinator
-        field.addTarget(context.coordinator, action: #selector(Coordinator.changed(_:)), for: .editingChanged)
-        if showsDoneButton {
-            let toolbar = UIToolbar()
-            toolbar.sizeToFit()
-            toolbar.items = [
-                UIBarButtonItem(systemItem: .flexibleSpace),
-                UIBarButtonItem(title: "Terminé", style: .done, target: context.coordinator, action: #selector(Coordinator.dismissKeyboard(_:)))
-            ]
-            field.inputAccessoryView = toolbar
-        }
-        return field
-    }
-    func updateUIView(_ field: UITextField, context: Context) {
-        context.coordinator.parent = self
-        field.keyboardType = keyboardType
-        if field.text != text { field.text = text }
-    }
-
-    final class Coordinator: NSObject, UITextFieldDelegate, UIGestureRecognizerDelegate {
-        var parent: LayoutSelectAllTextField
-        private var outsideTap: UITapGestureRecognizer?
-        init(_ parent: LayoutSelectAllTextField) { self.parent = parent }
-        @objc func changed(_ field: UITextField) { parent.text = field.text ?? "" }
-        @objc func dismissKeyboard(_ sender: UIBarButtonItem) {
-            UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: sender, for: nil)
-        }
-        func textFieldDidBeginEditing(_ textField: UITextField) {
-            parent.onEditingChanged(true)
-            DispatchQueue.main.async { textField.selectAll(nil) }
-            let tap = UITapGestureRecognizer(target: self, action: #selector(tappedOutside))
-            tap.cancelsTouchesInView = false
-            tap.delegate = self
-            textField.window?.addGestureRecognizer(tap)
-            outsideTap = tap
-        }
-        @objc private func tappedOutside() {
-            outsideTap?.view?.endEditing(true)
-        }
-        func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
-            var view = touch.view
-            while let current = view {
-                if current is UITextField || current is UITextView || current is UIControl { return false }
-                view = current.superview
-            }
-            return true
-        }
-        func textFieldDidEndEditing(_ textField: UITextField) {
-            if let outsideTap { outsideTap.view?.removeGestureRecognizer(outsideTap) }
-            outsideTap = nil
-            parent.onEditingChanged(false)
-        }
     }
 }

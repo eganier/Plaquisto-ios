@@ -20,8 +20,16 @@ extension LayoutDocument {
     /// including an explicitly absent frame, when reopened.
     static func newSupport(_ surface:Surface2D) -> Self {
         var layer = LayoutLayer(furring:.init()).forSurface(surface)
-        let spacing = LayoutPlanning.compatibleSpacings(layer).last ?? 400
-        layer.furring?.spacing = spacing
+        if surface.kind == .ceiling {
+            // Standard ceiling starter configuration: 240 × 120 cm boards are
+            // compatible with 60 cm furring centres in both board orientations.
+            layer.sheetWidth = 1200
+            layer.sheetLength = 2400
+            layer.furring?.spacing = 600
+        } else {
+            let spacing = LayoutPlanning.compatibleSpacings(layer).last ?? 400
+            layer.furring?.spacing = spacing
+        }
         return .init(surface:surface,layers:[layer])
     }
 }
@@ -220,7 +228,7 @@ enum LayoutPlanning {
     }
 
     static func alongX(_ layer:LayoutLayer) -> Bool {
-        (layer.orientation == .horizontal) == (layer.furring?.parallelToBoards ?? false)
+        layer.resolvedFurringOrientation == .horizontal
     }
     static func crossingDimension(_ layer:LayoutLayer) -> Double { alongX(layer) ? layer.cellHeight : layer.cellWidth }
     static func compatibleSpacings(_ layer:LayoutLayer) -> [Double] {
@@ -234,10 +242,26 @@ enum LayoutPlanning {
         if var f = copy.furring { f.offset = alongX(copy) ? copy.offset.y : copy.offset.x; copy.furring = f }
         return copy
     }
-    static func alignBoards(to layer:LayoutLayer) -> LayoutLayer {
+    static func alignBoards(to layer:LayoutLayer, support:LayoutSupportKind) -> LayoutLayer {
         var copy = layer
         if let f = layer.furring {
-            if alongX(layer) { copy.offset.y = f.offset } else { copy.offset.x = f.offset }
+            let current = alongX(layer) ? layer.offset.y : layer.offset.x
+            let target: Double
+            if support == .ceiling {
+                // Offsets live in the reference edge's local grid coordinates.
+                // Compatible board dimensions are multiples of spacing, so all
+                // parallel joints share this phase. Preserve the chosen grid
+                // period and move by at most half one furring spacing.
+                guard current.isFinite, f.offset.isFinite, f.spacing.isFinite,
+                      compatibleSpacings(layer).contains(f.spacing) else { return layer }
+                let delta = (f.offset - current).remainder(dividingBy: f.spacing)
+                guard abs(delta) > 0.000001 else { return layer }
+                target = current + delta
+            } else {
+                // Wall alignment retains its existing behavior.
+                target = f.offset
+            }
+            if alongX(layer) { copy.offset.y = target } else { copy.offset.x = target }
         }
         return copy
     }
@@ -333,6 +357,12 @@ extension Surface2D {
         }
         try LayoutGeometry.validate(points)
         var copy = self, intent = LayoutContourIntent(sketch:points)
+        let oldIDs = stableEdgeIDs
+        copy.edgeIDs = indices.indices.map { i in
+            if let source = indices[i], indices[(i+1)%indices.count] == (source+1)%contour.count { return oldIDs[source] }
+            return UUID().uuidString
+        }
+        copy.layingOffset.individualMM = layingOffset.individualMM.filter { copy.edgeIDs.contains($0.key) }
         copy.topologyID = UUID()
         var locks: [Int] = []
         for i in points.indices {
@@ -351,6 +381,7 @@ extension Surface2D {
         copy.previousContourIntents.append(old)
         copy.edgeTones = indices.map { i in i.flatMap { edgeTones.indices.contains($0) ? edgeTones[$0] : nil } ?? .teal }
         try copy.resolve(intent)
+        _ = try copy.layingContour()
         return copy
     }
 }

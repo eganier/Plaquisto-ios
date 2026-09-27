@@ -6,26 +6,64 @@ struct LayoutViewport {
     let zoom: Double
     let pan: CGSize
     var rotation: Double = 0
+    var pivot: LayoutPoint? = nil
     var scale: Double { min(max(1, size.width - 70) / max(100, bounds.width), max(1, size.height - 70) / max(100, bounds.height)) * zoom }
+    var rotationPivot: LayoutPoint { pivot ?? bounds.center }
     static func rotated(_ p: LayoutPoint, by angle: Double) -> LayoutPoint {
         .init(x: p.x * cos(angle) - p.y * sin(angle), y: p.x * sin(angle) + p.y * cos(angle))
     }
     func screen(_ p: LayoutPoint) -> CGPoint {
-        let r = Self.rotated(p, by: rotation)
+        let r = rotationPivot + Self.rotated(p - rotationPivot, by: rotation)
         return .init(x: size.width / 2 + pan.width + (r.x - bounds.center.x) * scale,
                      y: size.height / 2 + pan.height - (r.y - bounds.center.y) * scale)
     }
     func world(_ p: CGPoint) -> LayoutPoint {
-        Self.rotated(.init(x: bounds.center.x + (p.x - size.width / 2 - pan.width) / scale,
-                           y: bounds.center.y - (p.y - size.height / 2 - pan.height) / scale), by: -rotation)
+        let rotatedPoint = LayoutPoint(x: bounds.center.x + (p.x - size.width / 2 - pan.width) / scale,
+                                       y: bounds.center.y - (p.y - size.height / 2 - pan.height) / scale)
+        return rotationPivot + Self.rotated(rotatedPoint - rotationPivot, by: -rotation)
     }
     func worldDelta(_ translation: CGSize) -> LayoutPoint {
         Self.rotated(.init(x: translation.width / scale, y: -translation.height / scale), by: -rotation)
     }
-    static func fittedBounds(_ points: [LayoutPoint], rotation: Double) -> LayoutBounds {
-        let b = LayoutBounds(points: points.map { rotated($0, by: rotation) })
-        let margin = max(b.width, b.height) * 0.2
-        return .init(min: b.min - .init(x: margin, y: margin), max: b.max + .init(x: margin, y: margin))
+    /// Keeps a visible part of the transformed contour inside the canvas while
+    /// leaving the camera free to pan in every direction. This only constrains
+    /// the view; model coordinates and snapping axes are untouched.
+    func constrainedPan(_ candidate: CGSize, contour: [LayoutPoint], minimumVisible: Double = 50) -> CGSize {
+        guard !contour.isEmpty, size.width > 2, size.height > 2 else { return .zero }
+        let points = contour.map { point -> CGPoint in
+            let rotated = rotationPivot + Self.rotated(point - rotationPivot, by: rotation)
+            return .init(x: size.width / 2 + (rotated.x - bounds.center.x) * scale,
+                         y: size.height / 2 - (rotated.y - bounds.center.y) * scale)
+        }
+        let visibleX = min(minimumVisible, max(1, size.width / 2 - 1))
+        let visibleY = min(minimumVisible, max(1, size.height / 2 - 1))
+        let minX = points.map(\.x).min() ?? 0, maxX = points.map(\.x).max() ?? 0
+        let minY = points.map(\.y).min() ?? 0, maxY = points.map(\.y).max() ?? 0
+        return .init(
+            width: min(size.width - visibleX - minX, max(visibleX - maxX, candidate.width)),
+            height: min(size.height - visibleY - minY, max(visibleY - maxY, candidate.height))
+        )
+    }
+    static func geometricCenter(_ points: [LayoutPoint]) -> LayoutPoint {
+        guard points.count >= 3 else { return LayoutBounds(points: points).center }
+        var doubledArea = 0.0, x = 0.0, y = 0.0
+        for edge in LayoutGeometry.edges(points) {
+            let cross = edge.a.x * edge.b.y - edge.b.x * edge.a.y
+            doubledArea += cross
+            x += (edge.a.x + edge.b.x) * cross
+            y += (edge.a.y + edge.b.y) * cross
+        }
+        guard abs(doubledArea) > 0.000_001 else { return LayoutBounds(points: points).center }
+        return .init(x: x / (3 * doubledArea), y: y / (3 * doubledArea))
+    }
+    static func fittedBounds(_ points: [LayoutPoint], rotation: Double, pivot: LayoutPoint? = nil) -> LayoutBounds {
+        let center = pivot ?? geometricCenter(points)
+        let relative = points.map { rotated($0 - center, by: rotation) }
+        let halfWidth = relative.map { abs($0.x) }.max() ?? 50
+        let halfHeight = relative.map { abs($0.y) }.max() ?? 50
+        let margin = max(halfWidth * 2, halfHeight * 2) * 0.2
+        let half = LayoutPoint(x: max(50, halfWidth + margin), y: max(50, halfHeight + margin))
+        return .init(min: center - half, max: center + half)
     }
     /// View-only alignment. Geometry, measured angles and layer offsets stay intact.
     static func horizontalBaseRotation(_ contour:[LayoutPoint]) -> Double {
@@ -203,7 +241,25 @@ struct LayoutSavedThumbnail: View {
     }
 }
 
+/// UI navigation for parts of the same work; no separate standalone documents are created.
+struct LayoutWorkbookNavigation {
+    struct Tab: Identifiable {
+        let id: String
+        let title: String
+    }
+    let tabs: [Tab]
+    let selectedID: String
+    let select: (String) -> Void
+    let add: () -> Void
+    let rename: () -> Void
+    let relations: () -> Void
+}
+
 struct SheetLayoutView: View {
+    var workbook: LayoutWorkbookNavigation? = nil
+    @State private var afterLinkedSave: (() -> Void)?
+    @State private var pendingPartAction: (() -> Void)?
+    @State private var cleanDocument: LayoutDocument?
     var initialDocument: LayoutDocument? = nil
     var onSaveDocument: ((LayoutDocument) throws -> Void)? = nil
     var requiredSupportKind: LayoutSupportKind? = nil
@@ -215,7 +271,9 @@ struct SheetLayoutView: View {
     @StateObject private var model: LayoutEditorModel
     init(initialDocument: LayoutDocument? = nil, onSaveDocument: ((LayoutDocument) throws -> Void)? = nil, requiredSupportKind: LayoutSupportKind? = nil, sharedPartitionFraming: Bool = false,
          reviewLinkedDocument: ((LayoutDocument) throws -> ComponentAdjacencyReview)? = nil,
-         saveReviewedDocument: ((LayoutDocument, ComponentAdjacencyReview, ComponentAdjacencyDecision) throws -> Void)? = nil) {
+         saveReviewedDocument: ((LayoutDocument, ComponentAdjacencyReview, ComponentAdjacencyDecision) throws -> Void)? = nil,
+         workbook: LayoutWorkbookNavigation? = nil) {
+        self.workbook = workbook
         self.initialDocument = initialDocument
         self.onSaveDocument = onSaveDocument
         self.requiredSupportKind = requiredSupportKind
@@ -264,13 +322,42 @@ struct SheetLayoutView: View {
 
     var body: some View {
         Group {
-            if let document = model.document { editor(document) }
-            else { entry }
+            VStack(spacing: 0) {
+                if let workbook {
+                    Menu {
+                        ForEach(workbook.tabs) { tab in
+                            Button { if tab.id != workbook.selectedID { performAfterSaving { workbook.select(tab.id) } } } label: {
+                                Label(tab.title, systemImage: tab.id == workbook.selectedID ? "checkmark" : "square")
+                            }
+                        }
+                        Divider()
+                        Button("Ajouter une sous-partie", systemImage: "plus") { performAfterSaving(workbook.add) }
+                        Button("Renommer cette sous-partie", systemImage: "pencil") { performAfterSaving(workbook.rename) }
+                        Button("Relations et pièces", systemImage: "link") { performAfterSaving(workbook.relations) }
+                    } label: {
+                        HStack {
+                            Image(systemName: "square.stack")
+                            Text(workbook.tabs.first { $0.id == workbook.selectedID }?.title ?? "Sous-parties")
+                                .lineLimit(1)
+                            Spacer()
+                            Image(systemName: "chevron.up.chevron.down")
+                        }.padding(.horizontal).padding(.vertical, 9)
+                    }.accessibilityLabel("Sous-parties du calepinage")
+                }
+                if let document = model.document { editor(document) }
+                else { entry }
+            }
         }
         .navigationTitle("Calepinage 2D").navigationBarTitleDisplayMode(.inline)
-        .navigationBarBackButtonHidden(model.document != nil && onSaveDocument == nil)
+        .navigationBarBackButtonHidden(workbook != nil || (model.document != nil && onSaveDocument == nil))
         .background(Color(.systemGroupedBackground))
         .toolbar {
+            if workbook != nil {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button { performAfterSaving { dismiss() } } label: { Image(systemName: "chevron.left") }
+                        .accessibilityLabel("Enregistrer et revenir à l’ouvrage")
+                }
+            }
             if model.document != nil {
                 if onSaveDocument == nil {
                     ToolbarItem(placement:.topBarLeading) {
@@ -280,6 +367,7 @@ struct SheetLayoutView: View {
                 }
                 ToolbarItemGroup(placement: .topBarTrailing) {
                     Button("Enregistrer") {
+                        afterLinkedSave = nil
                         if onSaveDocument != nil, let document = model.document {
                             if sharedPartitionFraming && initialDocument?.layers.first?.furring != document.layers.first?.furring {
                                 pendingSharedFrameSave = document
@@ -302,6 +390,23 @@ struct SheetLayoutView: View {
             }
         }
         .sheet(item: $sheet) { destination in sheetContent(destination) }
+        .confirmationDialog("Enregistrer les modifications de cette sous-partie ?", isPresented: Binding(
+            get: { pendingPartAction != nil }, set: { if !$0 { pendingPartAction = nil } }
+        ), titleVisibility: .visible) {
+            Button("Enregistrer et continuer") {
+                let action = pendingPartAction; pendingPartAction = nil
+                if let action { saveBeforePartAction(action) }
+            }
+            Button("Abandonner les modifications", role: .destructive) {
+                let action = pendingPartAction; pendingPartAction = nil
+                if let cleanDocument { model.apply(cleanDocument) }
+                else { model.startNew() }
+                action?()
+            }
+            Button("Rester sur cette sous-partie", role: .cancel) { pendingPartAction = nil }
+        } message: {
+            Text("Les modifications du contour, des plaques, de l’ossature, des ouvertures et de l’électricité doivent être enregistrées. Les réglages de vue et d’affichage ne sont pas concernés.")
+        }
         .sheet(item: $pendingAdjacency) { pending in
             NavigationStack {
                 Form {
@@ -364,7 +469,7 @@ struct SheetLayoutView: View {
             rotation = 0; rotationStart = nil; rotationLatch = nil; fittedBounds = nil; zoom = 1; pan = .zero
         }
         .onChange(of:mode) { _,_ in spotGuides = []; spotEditError = nil; addingSpot = false }
-        .onAppear { if !loadedInitial, let initialDocument { model.apply(initialDocument); loadedInitial = true } }
+        .onAppear { if !loadedInitial { if let initialDocument { model.apply(initialDocument) }; cleanDocument = model.document; loadedInitial = true } }
         .fullScreenCover(isPresented:$editingShape) {
             if let document = model.document {
                 LayoutManualContourEditor(surface:document.surface,kind:document.surface.kind,title:"Modifier le contour et l’échelle") { surface in
@@ -389,15 +494,34 @@ struct SheetLayoutView: View {
         }
     }
 
+    private func performAfterSaving(_ action: @escaping () -> Void) {
+        guard let document = model.document, document != cleanDocument else { action(); return }
+        pendingPartAction = action
+    }
+
+    private func saveBeforePartAction(_ action: @escaping () -> Void) {
+        guard let document = model.document else { action(); return }
+        afterLinkedSave = action
+        if sharedPartitionFraming && initialDocument?.layers.first?.furring != document.layers.first?.furring {
+            pendingSharedFrameSave = document
+        } else { saveLinked(document) }
+    }
+
+    private func finishLinkedNavigation() {
+        cleanDocument = model.document
+        if let action = afterLinkedSave { afterLinkedSave = nil; action() }
+        else { dismiss() }
+    }
+
     private func saveLinked(_ document: LayoutDocument) {
         do {
             if let review = try reviewLinkedDocument?(document), !review.changes.isEmpty {
                 pendingAdjacency = .init(document: document, review: review)
                 return
             }
-            try onSaveDocument?(document); dismiss()
+            try onSaveDocument?(document); finishLinkedNavigation()
         }
-        catch { linkedSaveError = "Le plan n’a pas pu être enregistré dans son composant. \(error.localizedDescription)" }
+        catch { linkedSaveError = "Le plan n’a pas pu être enregistré dans l’ouvrage. \(error.localizedDescription)" }
     }
 
     private func finishReviewedSave(_ pending: PendingAdjacency, decision: ComponentAdjacencyDecision) {
@@ -405,13 +529,13 @@ struct SheetLayoutView: View {
         do {
             guard let saveReviewedDocument else { return }
             try saveReviewedDocument(pending.document, pending.review, decision)
-            dismiss()
+            finishLinkedNavigation()
         } catch { linkedSaveError = "Aucune modification enregistrée. \(error.localizedDescription)" }
     }
 
     private var entry: some View {
         List {
-            Section(onSaveDocument == nil ? "Calepinages sauvegardés" : "Contour du composant") {
+            Section(onSaveDocument == nil ? "Calepinages sauvegardés" : "Contour de la sous-partie") {
                 if model.savedDocuments.isEmpty {
                     ContentUnavailableView(onSaveDocument == nil ? "Aucun calepinage" : "Support à définir", systemImage: "square.grid.3x3",
                                            description: Text(onSaveDocument == nil ? "Créez votre premier mur ou plafond." : "Dessinez le contour ou choisissez une forme et renseignez ses dimensions."))
@@ -460,7 +584,7 @@ struct SheetLayoutView: View {
         VStack(spacing: 10) {
             HStack {
                 VStack(alignment: .leading, spacing: 3) {
-                    Text(document.surface.name).font(.headline).lineLimit(1)
+                    Text(workbook?.tabs.first { $0.id == workbook?.selectedID }?.title ?? document.surface.name).font(.headline).lineLimit(1)
                     Text("\(document.surface.kind.rawValue) · \(layoutCM(document.surface.bounds.width)) × \(layoutCM(document.surface.bounds.height))")
                         .font(.caption).foregroundStyle(.secondary)
                 }
@@ -502,8 +626,9 @@ struct SheetLayoutView: View {
                 visibilityButton(.electrical,title:"Électricité",state:$visibility.electrical)
             }.padding(3).padding(.horizontal).disabled(drag != nil)
             GeometryReader { proxy in
-                let bounds = drag?.document.surface.bounds ?? document.surface.bounds
-                let viewport = LayoutViewport(bounds:fittedBounds ?? LayoutViewport.fittedBounds(bounds.polygon, rotation:0), size: proxy.size, zoom: zoom * magnification, pan: pan, rotation:rotation)
+                let contour = drag?.document.surface.contour ?? document.surface.contour
+                let pivot = LayoutViewport.geometricCenter(contour)
+                let viewport = LayoutViewport(bounds:fittedBounds ?? LayoutViewport.fittedBounds(contour, rotation:0, pivot:pivot), size: proxy.size, zoom: zoom * magnification, pan: pan, rotation:rotation, pivot:pivot)
                 Canvas { context, size in draw(context: &context, size: size, document: document, viewport: viewport) }
                     .background(Color(.secondarySystemGroupedBackground))
                     .contentShape(Rectangle())
@@ -517,7 +642,15 @@ struct SheetLayoutView: View {
                                 pinching = true
                                 if let original = drag { model.cancelGesture(restoring:original.document); pan = original.initialPan; drag = nil; spotGuides = [] }
                             }
-                        }.onEnded { value in if mode != .lighting { zoom = min(8, max(0.4, zoom * value.magnification)) }; pinching = false })
+                        }.onEnded { value in
+                            if mode != .lighting {
+                                let nextZoom = min(8, max(0.4, zoom * value.magnification))
+                                let finalViewport = LayoutViewport(bounds:viewport.bounds,size:proxy.size,zoom:nextZoom,pan:.zero,rotation:rotation,pivot:pivot)
+                                zoom = nextZoom
+                                pan = finalViewport.constrainedPan(pan,contour:document.surface.contour)
+                            }
+                            pinching = false
+                        })
                     .simultaneousGesture(RotationGesture().onChanged { angle in
                         if mode == .lighting {
                             guard visibility.electrical.isVisible else { return }
@@ -537,9 +670,11 @@ struct SheetLayoutView: View {
                         guard document.surface.kind == .ceiling else { return }
                         if rotationStart == nil {
                             rotationStart = rotation
-                            // Keep the origin and camera framing fixed throughout the rotation.
+                            // Keep a camera centered on the surface itself throughout
+                            // the rotation. Geometry and construction axes stay intact.
                             fittedBounds = viewport.bounds
-                            if let original = drag { model.cancelGesture(restoring:original.document); pan = original.initialPan; drag = nil; spotGuides = [] }
+                            if let original = drag { model.cancelGesture(restoring:original.document); drag = nil; spotGuides = [] }
+                            pan = .zero
                         }
                         let snap = LayoutViewport.snappedRotation((rotationStart ?? rotation) - angle.radians, contour:document.surface.contour, latched:rotationLatch)
                         if snap.latch != nil && rotationLatch == nil { UISelectionFeedbackGenerator().selectionChanged() }
@@ -555,13 +690,17 @@ struct SheetLayoutView: View {
                     }
                     .overlay(alignment: .bottomLeading) {
                         Button {
-                            rotation = LayoutViewport.horizontalBaseRotation(document.surface.contour)
+                            let alignedRotation = LayoutViewport.horizontalBaseRotation(document.surface.contour)
+                            let alignedViewport = LayoutViewport(bounds:viewport.bounds,size:proxy.size,zoom:zoom,pan:.zero,rotation:alignedRotation,pivot:pivot)
+                            rotation = alignedRotation
                             rotationStart = nil; rotationLatch = nil
-                            fittedBounds = LayoutViewport.fittedBounds(document.surface.contour,rotation:rotation)
-                            zoom = 1; pan = .zero
+                            pan = alignedViewport.constrainedPan(pan,contour:document.surface.contour)
                         } label: { Image(systemName:"arrow.down.to.line").padding(12).background(.regularMaterial,in:Circle()) }
                             .padding(8).accessibilityLabel("Aligner le bas sur l’axe horizontal")
                             .disabled(drag != nil || pinching || lightingRotationOriginal != nil)
+                    }
+                    .onChange(of: proxy.size) { _, _ in
+                        pan = viewport.constrainedPan(pan, contour: document.surface.contour)
                     }
                     .clipShape(RoundedRectangle(cornerRadius: 18))
             }.padding(.horizontal)
@@ -580,6 +719,9 @@ struct SheetLayoutView: View {
                 Button { sheet = .lighting } label: { Label(warning,systemImage:"exclamationmark.triangle") }
                     .font(.caption).foregroundStyle(.orange).padding(.horizontal)
             }
+            if let warning = document.surface.layingWarning {
+                Label(warning,systemImage:"exclamationmark.triangle").font(.caption).foregroundStyle(.orange).padding(.horizontal)
+            }
             if mode == .grid || mode == .framing {
                 HStack {
                     Button { model.optimize(furring:mode == .framing) } label: {
@@ -588,7 +730,7 @@ struct SheetLayoutView: View {
                     if let layer = document.layers.first, layer.furring != nil {
                         Button(mode == .framing ? "Caler sur les plaques" : "Caler sur les fourrures") {
                             var copy = document
-                            copy.layers[0] = mode == .framing ? LayoutPlanning.alignFurring(to:layer) : LayoutPlanning.alignBoards(to:layer)
+                            copy.layers[0] = mode == .framing ? LayoutPlanning.alignFurring(to:layer) : LayoutPlanning.alignBoards(to:layer,support:document.surface.kind)
                             model.apply(copy)
                         }.disabled(!LayoutPlanning.compatibleSpacings(layer).contains(layer.furring?.spacing ?? 0))
                     }
@@ -690,11 +832,8 @@ struct SheetLayoutView: View {
 
     private func draw(context: inout GraphicsContext, size: CGSize, document: LayoutDocument, viewport: LayoutViewport) {
         let surface = document.surface
-        let origin = viewport.screen(.zero)
-        var axes = Path()
-        axes.move(to: .init(x: 0, y: origin.y)); axes.addLine(to: .init(x: size.width, y: origin.y))
-        axes.move(to: .init(x: origin.x, y: 0)); axes.addLine(to: .init(x: origin.x, y: size.height))
-        context.stroke(axes, with: .color(.secondary.opacity(0.2)), style: StrokeStyle(lineWidth: 1, dash: [3, 4]))
+        // The construction axes remain part of the coordinate system used by
+        // snapping and alignment; only their visual overlay is intentionally hidden.
         if let result = model.result {
             if drag != nil && mode != .lighting {
                 drawLiveGrids(context:&context,document:document,viewport:viewport)
@@ -731,6 +870,9 @@ struct SheetLayoutView: View {
             }
         }
         context.stroke(layoutPath(surface.contour, transform: viewport), with: .color(.primary), lineWidth: 2)
+        if let laying = try? surface.layingContour(), laying != surface.contour {
+            context.stroke(layoutPath(laying,transform:viewport),with:.color(.orange),lineWidth:2.5)
+        }
         for opening in surface.openings where visibility.openings.isVisible {
             let p = layoutPath(opening.contour, transform: viewport)
             context.stroke(p, with: .color(.orange), style: StrokeStyle(lineWidth: 2, dash: [5, 3]))
@@ -771,14 +913,21 @@ struct SheetLayoutView: View {
     private func drawLiveGrids(context:inout GraphicsContext,document:LayoutDocument,viewport:LayoutViewport) {
         guard let layer = document.layers.first else { return }
         let frame = LayoutGridFrame.make(surface:document.surface,layer:layer)
-        let bounds = LayoutPlanning.localSurface(document.surface,frame:frame).bounds
-        var clipped = context
-        var clip = layoutPath(document.surface.contour,transform:viewport)
-        for o in document.surface.openings { clip.addPath(layoutPath(o.contour,transform:viewport)) }
-        clipped.clip(to:clip,style:.init(eoFill:true))
-        if visibility.sheets.isVisible { clipped.fill(clip,with:.color(.teal.opacity(0.12)),style:.init(eoFill:true)) }
+        let measured = document.surface.contour
+        let laying = (try? document.surface.layingContour()) ?? measured
+        let bounds = LayoutBounds(points:(measured+laying).map(frame.local))
+        func clippingPath(_ contour:[LayoutPoint]) -> Path {
+            let loops = (try? LayoutGeometry.intersection(outer:contour,holes:document.surface.openings.map(\.contour),rectangle:LayoutBounds(points:contour))) ?? []
+            var path = Path()
+            for loop in loops { path.addPath(layoutPath(loop,transform:viewport)) }
+            return path
+        }
+        let boardClip = clippingPath(laying), framingClip = clippingPath(measured)
+        if visibility.sheets.isVisible { context.fill(boardClip,with:.color(.teal.opacity(0.12)),style:.init(eoFill:true)) }
         func grid(step:Double,offset:Double,vertical:Bool,color:Color) {
             guard step >= 1 else { return }
+            var clipped = context
+            clipped.clip(to:color == .purple ? framingClip : boardClip,style:.init(eoFill:true))
             let low = vertical ? bounds.min.x : bounds.min.y, high = vertical ? bounds.max.x : bounds.max.y
             let start = Int(floor((low-offset)/step)), end = Int(ceil((high-offset)/step))
             guard end-start <= 2000 else { return }
@@ -931,7 +1080,9 @@ struct SheetLayoutView: View {
         } else if let id = drag.opening, let i = updated.surface.openings.firstIndex(where: { $0.id == id }) {
             updated.surface.openings[i].contour = drag.document.surface.openings[i].contour.map { $0 + delta }
         } else {
-            pan = .init(width: drag.initialPan.width + value.translation.width, height: drag.initialPan.height + value.translation.height)
+            let candidate = CGSize(width:drag.initialPan.width + value.translation.width,
+                                   height:drag.initialPan.height + value.translation.height)
+            pan = drag.viewport.constrainedPan(candidate,contour:drag.document.surface.contour)
             return
         }
         model.preview(updated)
@@ -1032,6 +1183,7 @@ struct SheetLayoutView: View {
                             LabeledContent("Plaques brutes", value: "\(result.sheets.count)")
                             LabeledContent("Morceaux à poser", value: "\(result.pieceCount)")
                             LabeledContent("Surface nette", value: layoutArea(result.netArea))
+                            LabeledContent("Isolant · surface de pose", value: layoutArea(result.netArea))
                             LabeledContent("Chutes théoriques", value: layoutArea(result.wasteArea))
                             Text("Une plaque brute par case de grille utilisée. Les chutes ne sont pas réaffectées à d’autres cases.").font(.footnote).foregroundStyle(.secondary)
                         }

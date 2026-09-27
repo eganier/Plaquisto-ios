@@ -37,8 +37,8 @@ struct LayoutSurfaceForm: View {
     }
     private var valid: Bool {
         length >= 10 && height >= 10 && length <= 100_000 && height <= 100_000
-            && (!(preset == .slope || preset == .lShape) || second >= height)
-            && (preset != .lShape || (lowerLength >= 10 && upperLength >= 10 && abs(lowerLength + upperLength - length) < 0.1))
+            && (preset != .slope || second >= height)
+            && (preset != .lShape || kind == .ceiling || (second >= height && lowerLength >= 10 && upperLength >= 10 && abs(lowerLength + upperLength - length) < 0.1))
             && (preset != .freeform || manualSurface != nil)
             && (try? LayoutGeometry.validate(contour)) != nil
     }
@@ -58,7 +58,7 @@ struct LayoutSurfaceForm: View {
                     }
                 } else {
                     Section("Dimensions") {
-                        if preset != .lShape {
+                        if preset != .lShape || kind == .ceiling {
                             LayoutDimensionField(title: "Longueur", millimetres: $length, tint: .blue)
                         }
                         if kind == .ceiling {
@@ -97,11 +97,22 @@ struct LayoutSurfaceForm: View {
                         surface.kind = kind
                         if preset == .freeform {
                             onCreate(.newSupport(surface)); dismiss()
-                        } else { presetReview = surface }
+                        } else {
+                            surface.provenance = "preset"
+                            presetReview = surface
+                        }
                     }.disabled(!valid)
                 }
             }
             .onChange(of: kind) { _, value in if !LayoutPreset.available(for: value).contains(preset) { preset = .rectangle } }
+            .onChange(of: preset) { _, value in
+                // The ceiling L preset uses the historical, symmetric L geometry.
+                // Keep the third dimension below the width so old wall-specific
+                // parameters are never selected for a newly created ceiling.
+                if kind == .ceiling, value == .lShape {
+                    second = max(10, height / 2)
+                }
+            }
             .sheet(item: $selectedCorrection) { LayoutCorrectionDetail(correction: $0, edgeCount: contour.count) }
             .fullScreenCover(isPresented:$showingDrawing) { LayoutManualContourEditor(surface:manualSurface,kind:kind) { manualSurface = $0 } }
             .fullScreenCover(item:$presetReview,onDismiss:{
@@ -246,7 +257,10 @@ struct LayoutSettingsForm: View {
     @State private var layer: LayoutLayer
     @State private var compatibilityMessage: String?
     init(layer: LayoutLayer, surface: Surface2D, onSave: @escaping (LayoutLayer) -> Void) {
-        self.surface = surface; self.onSave = onSave; _layer = State(initialValue: layer.forSupport(surface.kind))
+        self.surface = surface; self.onSave = onSave
+        var copy = layer
+        copy.materializeFurringOrientation()
+        _layer = State(initialValue: copy.forSupport(surface.kind))
     }
     var body: some View {
         NavigationStack {
@@ -284,7 +298,8 @@ struct LayoutSettingsForm: View {
                 if layer.furring != nil {
                     Section("Coordination avec les fourrures") {
                         if let compatibilityMessage { Label(compatibilityMessage,systemImage:"exclamationmark.triangle.fill").foregroundStyle(.orange) }
-                        Button("Caler les plaques sur les fourrures") { layer = LayoutPlanning.alignBoards(to:layer) }
+                        Button("Caler les plaques sur les fourrures") { layer = LayoutPlanning.alignBoards(to:layer,support:surface.kind) }
+                            .disabled(surface.kind == .ceiling && !LayoutPlanning.compatibleSpacings(layer).contains(layer.furring?.spacing ?? 0))
                         Text(LayoutPlanning.aligned(layer) ? "Les joints parallèles aux fourrures sont alignés sur la trame." : "Les plaques sont décalées de la trame de fourrures.").font(.footnote)
                     }
                 }
@@ -302,6 +317,7 @@ struct LayoutSettingsForm: View {
         }
     }
     private func reconcileSpacing() {
+        layer.materializeFurringOrientation()
         layer = layer.forSupport(surface.kind)
         guard let f = layer.furring else { return }
         let options = LayoutPlanning.compatibleSpacings(layer)

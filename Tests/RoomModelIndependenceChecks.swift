@@ -58,13 +58,17 @@ import Foundation
         room.openings = []
         room.slopes[0].plane = .init(a:0.5,b:0,c:2)
         room.slopes[0].boundaries = [[p(0,2,0),p(4.28,4.14,0),p(4.28,4.14,3),p(0,2,3)]]
-        close(PlaquistoWallGeometry.analyze(wall:rectangular,room:room).gross,4.28*(2+4.14)/2)
+        close(PlaquistoWallGeometry.analyze(wall:rectangular,room:room).gross,4.28*2.5)
         room.slopes = [
             .init(plane:.init(a:0.5,b:0,c:2),boundaries:[[p(0,2,0),p(2.14,3.07,0),p(2.14,3.07,3),p(0,2,3)]],provenance:scan,accepted:true),
             .init(plane:.init(a:-0.5,b:0,c:4.14),boundaries:[[p(2.14,3.07,0),p(4.28,2,0),p(4.28,2,3),p(2.14,3.07,3)]],provenance:scan,accepted:true)]
-        close(PlaquistoWallGeometry.analyze(wall:rectangular,room:room).gross,4.28*2+4.28*1.07/2)
+        close(PlaquistoWallGeometry.analyze(wall:rectangular,room:room).gross,4.28*2.5)
         let vertices=PlaquistoWallGeometry.triangles(wall:rectangular,room:room)
-        precondition(vertices.count==12 && vertices.allSatisfy(\.finite))
+        precondition(vertices.count==6 && vertices.allSatisfy(\.finite))
+        var gable=rectangular
+        gable.localOutline=[p(0,0,0),p(4.28,0,0),p(4.28,2,0),p(2.14,3.07,0),p(0,2,0)]
+        close(PlaquistoWallGeometry.analyze(wall:gable,room:room).gross,4.28*2+4.28*1.07/2)
+        precondition(PlaquistoWallGeometry.triangles(wall:gable,room:room).count==12)
         var intent=document
         intent.wallWorkIntents = [.init(wallID:wall.id,use:.lining)]
         let roundTrip = try PlaquistoRoomDocument.decode(intent.encoded())

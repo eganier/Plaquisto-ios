@@ -77,14 +77,24 @@ struct ProjectsHomeView: View {
 
 private struct ProjectDetailView: View {
     @EnvironmentObject private var store: ProjectStore
+    @StateObject private var references = CeilingReferenceStore()
     @Environment(\.dismiss) private var dismiss
     let projectID: UUID
+    var roomID: UUID? = nil
     @State private var showingEdit = false
     @State private var showingNewWork = false
     @State private var confirmingDelete = false
     @State private var workToDelete: WorkItem?
     @State private var workToRename: WorkItem?
-    @State private var isolationWorkID: UUID?
+    @State private var surveyToDelete: ProjectSurveyRecord?
+    private struct WorkDestination: Hashable {
+        enum Screen: Hashable { case quantities, layout, configuration, insulation }
+        let workID: UUID
+        let screen: Screen
+    }
+    // One route for the whole list. Never embed multiple NavigationLinks in a
+    // single List cell: a physical row tap can activate all of them on iOS.
+    @State private var workDestination: WorkDestination?
     @State private var errorMessage = ""
 
     private var project: ProjectItem? { store.project(id: projectID) }
@@ -93,67 +103,90 @@ private struct ProjectDetailView: View {
         Group {
             if let project {
                 List {
-                    Section("Projet") {
+                    if roomID == nil {
+                    if !project.client.isEmpty || !project.address.isEmpty || !project.notes.isEmpty {
+                    Section {
                         if !project.client.isEmpty { LabeledContent("Client", value: project.client) }
                         if !project.address.isEmpty { LabeledContent("Adresse", value: project.address) }
                         if !project.notes.isEmpty { Text(project.notes).foregroundStyle(.secondary) }
                     }
-                    Section("Pièces") {
-                        ForEach(project.rooms) { room in
-                            NavigationLink { ProjectRoomDetailView(projectID: projectID, roomID: room.id) } label: {
-                                VStack(alignment: .leading) {
-                                    Text(room.name)
-                                    Text("\(project.ownedWorks(in: room.id).count) ouvrages").font(.caption).foregroundStyle(.secondary)
+                    }
+                    }
+                    if roomID == nil, !store.surveys(projectID: projectID).isEmpty {
+                        Section("Relevés 3D") {
+                            ForEach(store.surveys(projectID: projectID)) { survey in
+                                NavigationLink {
+                                    ProjectSurveyDetailView(surveyID: survey.id)
+                                } label: {
+                                    HStack(spacing:12) {
+                                        SurveyThumbnailView(survey:survey)
+                                            .frame(width:100,height:76)
+                                            .clipShape(RoundedRectangle(cornerRadius:12))
+                                        VStack(alignment:.leading,spacing:5) {
+                                            Text(survey.name).font(.headline)
+                                            Text("\(survey.checkpoints.count) pièce(s)").font(.subheadline).foregroundStyle(.secondary)
+                                            Text(survey.createdAt,format:.dateTime.day().month().year())
+                                                .font(.caption).foregroundStyle(.secondary)
+                                        }
+                                    }.padding(.vertical,4)
+                                }
+                                .swipeActions(edge:.trailing,allowsFullSwipe:false) {
+                                    Button { surveyToDelete=survey } label: { Label("Supprimer",systemImage:"trash") }
+                                        .tint(.red)
                                 }
                             }
                         }
-                        NavigationLink("Organiser les pièces et les ouvrages") { ProjectRoomOrganizationView(projectID: projectID) }
                     }
-                    Section("Ouvrages") {
-                        if project.works.isEmpty {
+                    Section(roomID == nil ? "Ouvrages" : "Ouvrages de la pièce") {
+                        if (roomID.map { project.ownedWorks(in: $0) } ?? project.works).isEmpty {
                             Text("Aucun ouvrage enregistré.").foregroundStyle(.secondary)
                         } else {
-                            ForEach(project.works) { work in
+                            ForEach(roomID.map { project.ownedWorks(in: $0) } ?? project.works) { work in
                                 VStack(alignment: .leading, spacing: 7) {
-                                    NavigationLink {
-                                        SavedWorkView(work: work)
-                                    } label: {
-                                        VStack(alignment: .leading, spacing: 4) {
-                                            Text(work.name).font(.headline)
-                                            if let configuration = work.openingConfiguration {
-                                                ForEach(OpeningSummaryFormatter.lines(for: configuration)) { line in
-                                                    HStack(alignment: .firstTextBaseline, spacing: 6) {
-                                                        Text("•")
-                                                        Text(openingSummary(line))
-                                                    }
-                                                    .font(.subheadline)
-                                                    .foregroundStyle(.secondary)
-                                                }
-                                            } else {
-                                                Text(work.type.title).font(.subheadline).foregroundStyle(.secondary)
+                                    Text(work.name).font(.headline)
+                                    Text(WorkTechnicalSummary.text(for: work, catalogue: references.workSummaryCatalogue))
+                                        .font(.subheadline).foregroundStyle(.secondary)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                    if work.surveySourceNeedsReview {
+                                        SurveySourceReviewNotice(work: work)
+                                    }
+                                    if let configuration = work.openingConfiguration {
+                                        ForEach(OpeningSummaryFormatter.lines(for: configuration)) { line in
+                                            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                                                Text("•")
+                                                Text(openingSummary(line))
                                             }
+                                            .font(.subheadline)
+                                            .foregroundStyle(.secondary)
                                         }
                                     }
-                                    if work.layoutDocument != nil && !work.isPartition, let component = work.components.first {
-                                        NavigationLink { ComponentPlanEditorView(projectID: work.projectID, workID: work.id, component: component, side: nil, kind: work.type.category == .ceilings ? .ceiling : .wall, sharedFraming: false) } label: {
-                                            Label("Calepinage 2D existant",systemImage:"square.grid.3x3").font(.caption).foregroundStyle(.teal)
-                                        }
-                                        if work.layoutNeedsRecalculation == true {
-                                            Label("Calepinage modifié : ouvrez l’ouvrage pour recalculer son quantitatif.",systemImage:"exclamationmark.triangle.fill").font(.caption).foregroundStyle(.orange)
-                                        }
-                                    }
-                                    NavigationLink {
-                                        WorkComponentsView(projectID: projectID, workID: work.id)
+                                    Button {
+                                        openWork(work.id, screen: .quantities)
                                     } label: {
-                                        Label("Composants d’ouvrage (\(work.components.count))", systemImage: "square.stack.3d.up")
-                                            .font(.caption)
+                                        workAction("Quantitatif", icon: "sum")
+                                    }.buttonStyle(.plain)
+                                    .accessibilityIdentifier("work.\(work.id).quantities")
+                                    if work.type != .paintingBeta && (work.hasSavedLayout || !work.components.isEmpty || (work.type != .openings && !work.isPartition)) {
+                                        Button { openWork(work.id, screen: .layout) } label: {
+                                            workAction(work.hasSavedLayout ? "Calepinage 2D existant" : "Créer un calepinage 2D", icon: "square.grid.3x3")
+                                        }.buttonStyle(.plain)
+                                        .accessibilityIdentifier("work.\(work.id).layout")
+                                        if work.layoutNeedsRecalculation == true && !work.surveySourceNeedsReview {
+                                            Label("Calepinage modifié : ouvrez « Modifier la configuration » pour recalculer le quantitatif.",systemImage:"exclamationmark.triangle.fill").font(.caption).foregroundStyle(.orange)
+                                        }
                                     }
+                                    Button {
+                                        openWork(work.id, screen: .configuration)
+                                    } label: {
+                                        workAction("Modifier la configuration", icon: "slider.horizontal.3")
+                                    }.buttonStyle(.plain)
+                                    .accessibilityIdentifier("work.\(work.id).configuration")
                                     if let conflict = store.openingJoineryConflict(
                                         projectID: projectID,
                                         referenceWorkID: work.id
                                     ) {
                                         Button {
-                                            isolationWorkID = work.id
+                                            openWork(work.id, screen: .insulation)
                                         } label: {
                                             Label(joineryConflictSummary(conflict), systemImage: "exclamationmark.triangle.fill")
                                                 .font(.caption.weight(.semibold))
@@ -163,7 +196,7 @@ private struct ProjectDetailView: View {
                                         .buttonStyle(.plain)
                                     }
                                 }
-                                .swipeActions {
+                                .swipeActions(allowsFullSwipe: false) {
                                     Button { workToDelete = work } label: { Label("Supprimer", systemImage: "trash") }
                                         .tint(.red)
                                     Button { duplicateWork(work) } label: { Label("Dupliquer", systemImage: "plus.square.on.square") }
@@ -173,37 +206,53 @@ private struct ProjectDetailView: View {
                                 }
                             }
                         }
-                        Button { showingNewWork = true } label: { Label("Ajouter un ouvrage", systemImage: "plus.circle.fill") }
                     }
-                    if !project.works.isEmpty {
-                        Section("Quantitatifs regroupés") {
-                            NavigationLink {
-                                CombinedQuantityView(works: project.works, title: "Quantitatif total")
-                            } label: {
-                                Label("Afficher le quantitatif total", systemImage: "sum")
-                            }
-                            NavigationLink {
-                                WorkSelectionView(works: project.works)
-                            } label: {
-                                Label("Sélectionner des ouvrages", systemImage: "checklist")
+                    if let roomID {
+                        if !project.linkedWorks(in: roomID).isEmpty {
+                            Section("Autres cloisons liées — hors quantitatif de cette pièce") {
+                                ForEach(project.linkedWorks(in: roomID)) { work in
+                                    NavigationLink(work.name) { WorkLayoutWorkbookView(projectID: projectID, workID: work.id, initialSide: roomID) }
+                                }
                             }
                         }
                     }
-                    Section { Button("Supprimer le projet", role: .destructive) { confirmingDelete = true } }
+                    Section {
+                        Button { showingNewWork = true } label: { Label("Ajouter un nouvel ouvrage", systemImage: "plus.circle.fill") }
+                    }
+                    Section {
+                        if let roomID {
+                            NavigationLink("Quantitatif de la pièce") {
+                                CombinedQuantityView(works: project.ownedWorks(in: roomID), title: "Quantitatif de la pièce")
+                            }
+                        } else {
+                            NavigationLink { ProjectWorkQuantitySelectionView(projectID: projectID) } label: {
+                                Label("Voir les quantitatifs", systemImage: "sum")
+                            }
+                        }
+                    }
+                    if roomID == nil {
+                        Section { Button("Supprimer le projet", role: .destructive) { confirmingDelete = true } }
+                    }
                 }
-                .navigationTitle(project.name)
-                .navigationDestination(isPresented: Binding(
-                    get: { isolationWorkID != nil },
-                    set: { if !$0 { isolationWorkID = nil } }
-                )) {
-                    if let isolationWorkID,
-                       let work = store.project(id: projectID)?.works.first(where: { $0.id == isolationWorkID }) {
-                        SavedWorkView(work: work, opensIsolationStep: true)
+                .navigationTitle(project.rooms.first(where: { $0.id == roomID })?.name ?? project.name)
+                .task { await references.load() }
+                .navigationDestination(item: $workDestination) { destination in
+                    if let work = store.project(id: projectID)?.works.first(where: { $0.id == destination.workID }) {
+                        switch destination.screen {
+                        case .quantities:
+                            CombinedQuantityView(works: [work], title: "Quantitatif de l’ouvrage")
+                        case .layout:
+                            WorkLayoutWorkbookView(projectID: projectID, workID: work.id, initialSide: roomID)
+                        case .configuration:
+                            SavedWorkView(work: work, startsAtBeginning: true)
+                        case .insulation:
+                            SavedWorkView(work: work, opensIsolationStep: true)
+                        }
                     } else {
                         ContentUnavailableView("Ouvrage introuvable", systemImage: "exclamationmark.triangle")
                     }
                 }
-                .toolbar { Button("Modifier") { showingEdit = true } }
+                .toolbar { if roomID == nil { Button("Modifier") { showingEdit = true } } }
                 .sheet(isPresented: $showingEdit) { ProjectFormView(project: project) }
                 .sheet(isPresented: $showingNewWork) { NewWorkView(projectID: projectID) }
                 .sheet(item: $workToRename) { work in
@@ -219,6 +268,16 @@ private struct ProjectDetailView: View {
                     Button("Supprimer définitivement", role: .destructive) { if let workToDelete { deleteWork(workToDelete) } }
                     Button("Annuler", role: .cancel) { workToDelete = nil }
                 }
+                .confirmationDialog("Supprimer ce relevé 3D ?",isPresented:Binding(get:{ surveyToDelete != nil },set:{ if !$0 { surveyToDelete=nil } }),titleVisibility:.visible) {
+                    Button("Supprimer le relevé",role:.destructive) {
+                        guard let survey=surveyToDelete else { return }
+                        do { try store.deleteSurvey(projectID:projectID,surveyID:survey.id); surveyToDelete=nil }
+                        catch { errorMessage=error.localizedDescription }
+                    }
+                    Button("Annuler",role:.cancel) { surveyToDelete=nil }
+                } message: {
+                    Text("Le relevé « \(surveyToDelete?.name ?? "") » sera supprimé du projet. Les ouvrages, calepinages et quantitatifs déjà créés seront conservés dans leur état actuel, sans lien avec ce relevé.")
+                }
             } else {
                 ContentUnavailableView("Projet introuvable", systemImage: "exclamationmark.triangle")
             }
@@ -227,6 +286,10 @@ private struct ProjectDetailView: View {
     }
 
     private var errorBinding: Binding<Bool> { Binding(get: { !errorMessage.isEmpty }, set: { if !$0 { errorMessage = "" } }) }
+    private func organizationSummary(_ work: WorkItem, project: ProjectItem) -> String? {
+        let values = [project.rooms.first { $0.id == work.roomID }?.name, work.level, work.zone].compactMap { $0 }
+        return values.isEmpty ? nil : values.joined(separator: " · ")
+    }
     private func deleteProject() { do { try store.deleteProject(id: projectID); dismiss() } catch { errorMessage = "Le projet n’a pas pu être supprimé." } }
     private func deleteWork(_ work: WorkItem) { do { try store.deleteWork(projectID: projectID, workID: work.id); workToDelete = nil } catch { errorMessage = "L’ouvrage n’a pas pu être supprimé." } }
     private func duplicateWork(_ work: WorkItem) { do { try store.duplicateWork(projectID: projectID, workID: work.id) } catch { errorMessage = "L’ouvrage n’a pas pu être dupliqué." } }
@@ -237,6 +300,23 @@ private struct ProjectDetailView: View {
         } catch {
             errorMessage = "Ce nom est vide ou déjà utilisé dans ce projet."
         }
+    }
+
+    private func openWork(_ id: UUID, screen: WorkDestination.Screen) {
+        guard workDestination == nil else { return }
+        workDestination = WorkDestination(workID: id, screen: screen)
+    }
+
+    private func workAction(_ title: String, icon: String) -> some View {
+        HStack {
+            Label(title, systemImage: icon)
+            Spacer(minLength: 8)
+            Image(systemName: "chevron.right").font(.caption.weight(.semibold))
+        }
+        .font(.subheadline)
+        .foregroundStyle(.tint)
+        .frame(minHeight: 44)
+        .contentShape(Rectangle())
     }
 
     private func openingSummary(_ line: OpeningSummaryLine) -> String {
@@ -265,7 +345,7 @@ private struct ProjectRoomOrganizationView: View {
         Form {
             Section("Ajouter une pièce") {
                 TextField("Nom de la pièce", text: $name)
-                TextField("Surface au sol en m² (facultatif)", text: $area).keyboardType(.decimalPad)
+                PlaquistoNumericField(placeholder: "Surface au sol en m² (facultatif)", text: $area)
                 Button("Ajouter") {
                     do {
                         let value = area.isEmpty ? nil : Double(area.replacingOccurrences(of: ",", with: "."))
@@ -288,18 +368,9 @@ private struct ProjectRoomOrganizationView: View {
                         }
                     }
                 }
-                Section("Pièce propriétaire des ouvrages") {
+                Section("Organisation des ouvrages") {
                     ForEach(project.works) { work in
-                        Picker(work.name, selection: Binding<UUID?>(get: { work.roomID }, set: { value in
-                            guard let value else { return }
-                            let adjacent = work.isPartition ? Array(Set(work.linkedRoomIDs + [work.roomID].compactMap { $0 }).subtracting([value])) : []
-                            do { try store.assignWork(projectID: projectID, workID: work.id, ownerRoomID: value, adjacentRoomIDs: adjacent) }
-                            catch { self.error = "Rattachement impossible." }
-                        })) {
-                            Text("À rattacher").tag(nil as UUID?)
-                            ForEach(project.rooms) { Text($0.name).tag(Optional($0.id)) }
-                        }
-                        .disabled(work.openingConfiguration?.sourceWorkID != nil)
+                        NavigationLink(work.name) { WorkOrganizationForm(projectID: projectID, work: work) }
                     }
                 }
             }
@@ -317,30 +388,59 @@ private struct ProjectRoomOrganizationView: View {
     }
 }
 
+private struct WorkOrganizationForm: View {
+    @EnvironmentObject private var store: ProjectStore
+    @Environment(\.dismiss) private var dismiss
+    let projectID: UUID
+    let work: WorkItem
+    @State private var roomID: UUID?
+    @State private var level: String
+    @State private var zone: String
+    @State private var newRoom = ""
+    @State private var error: String?
+    init(projectID: UUID, work: WorkItem) {
+        self.projectID = projectID; self.work = work
+        _roomID = State(initialValue: work.roomID)
+        _level = State(initialValue: work.level ?? "")
+        _zone = State(initialValue: work.zone ?? "")
+    }
+    var body: some View {
+        Form {
+            Section {
+                Picker("Pièce", selection: $roomID) {
+                    Text("Aucune").tag(nil as UUID?)
+                    ForEach(store.project(id: projectID)?.rooms ?? []) { Text($0.name).tag(Optional($0.id)) }
+                }
+                TextField("Nouvelle pièce (facultatif)", text: $newRoom)
+                TextField("Niveau / étage (facultatif)", text: $level)
+                TextField("Zone / logement (facultatif)", text: $zone)
+            } footer: { Text("Tous ces rattachements sont facultatifs et indépendants. Ils ne changent ni le quantitatif ni le calepinage de l’ouvrage.") }
+            if let error { Text(error).foregroundStyle(.red) }
+        }
+        .navigationTitle("Organisation")
+        .toolbar {
+            Button("Enregistrer") {
+                do {
+                    var room = roomID
+                    if !newRoom.clean.isEmpty {
+                        if let existing = store.project(id: projectID)?.rooms.first(where: { $0.name.caseInsensitiveCompare(newRoom.clean) == .orderedSame }) {
+                            room = existing.id
+                        } else { room = try store.createRoom(projectID: projectID, name: newRoom.clean) }
+                    }
+                    try store.updateWorkOrganization(projectID: projectID, workID: work.id, roomID: room, level: level, zone: zone)
+                    dismiss()
+                } catch { self.error = error.localizedDescription }
+            }
+        }
+    }
+}
+
 private struct ProjectRoomDetailView: View {
     @EnvironmentObject private var store: ProjectStore
     let projectID: UUID
     let roomID: UUID
     var body: some View {
-        if let project = store.project(id: projectID), let room = project.rooms.first(where: { $0.id == roomID }) {
-            List {
-                Section("Ouvrages de la pièce") {
-                    ForEach(project.ownedWorks(in: roomID)) { work in
-                        NavigationLink(work.name) { WorkComponentsView(projectID: projectID, workID: work.id) }
-                    }
-                }
-                if !project.linkedWorks(in: roomID).isEmpty {
-                    Section("Cloisons liées — comptées dans leur pièce propriétaire") {
-                        ForEach(project.linkedWorks(in: roomID)) { work in
-                            NavigationLink(work.name) { WorkComponentsView(projectID: projectID, workID: work.id) }
-                        }
-                    }
-                }
-                NavigationLink("Quantitatif de la pièce") {
-                    CombinedQuantityView(works: project.ownedWorks(in: roomID), title: room.name)
-                }
-            }.navigationTitle(room.name)
-        }
+        ProjectDetailView(projectID: projectID, roomID: roomID)
     }
 }
 
@@ -357,7 +457,7 @@ private struct WorkComponentsView: View {
             List {
                 Section {
                     NavigationLink("Configuration et quantitatif de l’ouvrage") { SavedWorkView(work: work) }
-                    Text("Le quantitatif est calculé dans le formulaire de l’ouvrage. Les métrés de plusieurs composants ne sont pas encore regroupés automatiquement.")
+                    Text("Le quantitatif est calculé dans le formulaire de l’ouvrage. Les métrés des sous-parties ne sont pas encore regroupés automatiquement.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 if [.distributionPartition, .alveolarPartition].contains(work.type) {
@@ -371,11 +471,9 @@ private struct WorkComponentsView: View {
                                 guard let owner = work.roomID else { error = "Rattachez d’abord la cloison à sa pièce propriétaire."; return }
                                 var links = work.linkedRoomIDs.filter { $0 != room.id }
                                 if enabled { links.append(room.id) }
-                                // Choose the smaller room only on initial association. Later changes
-                                // keep explicit ownership, so an area edit cannot move quantities silently.
+                                // Organization is chosen explicitly; never infer it from room area.
                                 let candidates = [owner] + links
-                                let firstAssociation = enabled && work.linkedRoomIDs.isEmpty && work.components.allSatisfy { $0.plans.isEmpty }
-                                let selectedOwner = firstAssociation ? (store.suggestedPartitionOwner(projectID: projectID, roomIDs: candidates) ?? owner) : owner
+                                let selectedOwner = owner
                                 do { try store.assignWork(projectID: projectID, workID: workID, ownerRoomID: selectedOwner, adjacentRoomIDs: candidates.filter { $0 != selectedOwner }) }
                                 catch { self.error = "Modification impossible." }
                             }))
@@ -384,14 +482,6 @@ private struct WorkComponentsView: View {
                 }
                 ForEach(work.components) { component in
                     Section(component.name) {
-                        if component.surface == nil { Text("Contour à renseigner").foregroundStyle(.secondary) }
-                        if [.distributionPartition, .alveolarPartition].contains(work.type) {
-                            ForEach(project.rooms.filter { $0.id == work.roomID || work.linkedRoomIDs.contains($0.id) }) { room in
-                                componentLink(component, side: room.id, title: "Côté \(room.name)")
-                            }
-                        } else {
-                            componentLink(component, side: nil, title: "Plan de calepinage")
-                        }
                         if component.surface?.kind == .ceiling {
                             NavigationLink("Murs reliés au plafond") {
                                 CeilingWallLinksView(projectID: projectID, componentID: component.id)
@@ -404,30 +494,121 @@ private struct WorkComponentsView: View {
                         }
                     }
                 }
-                Section("Ajouter un composant d’ouvrage") {
-                    TextField("Exemple : Mur A", text: $name)
-                    Button("Ajouter le composant") {
-                        do { try store.addComponent(projectID: projectID, workID: workID, name: name); name = ""; error = "" }
-                        catch { self.error = "Nom vide ou déjà utilisé." }
-                    }.disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                }
                 if !error.isEmpty { Text(error).foregroundStyle(.red) }
-            }.navigationTitle(work.name)
+            }.navigationTitle("Relations et pièces")
         }
     }
-    private func componentLink(_ component: WorkComponentRecord, side: UUID?, title: String) -> some View {
-        let plan = component.plans.first { $0.sideRoomID == side } ?? ComponentLayoutPlan(sideRoomID: side)
-        return NavigationLink {
-            ComponentPlanEditorView(projectID: projectID, workID: workID, component: component, side: side,
-                kind: work?.type.category == .ceilings ? .ceiling : .wall, sharedFraming: work?.isPartition == true)
-        } label: {
-            VStack(alignment: .leading) {
-                Label(title, systemImage: "square.grid.3x3")
-                if component.plans.contains(where: { $0.sideRoomID == side }) && plan.geometryRevision != component.geometryRevision {
-                    Text("Contour ou ossature modifié — calepinage à vérifier").font(.caption).foregroundStyle(.orange)
-                }
+}
+
+/// One work-owned workbook, whose tabs reuse the existing stable component/side identities.
+private struct WorkLayoutWorkbookView: View {
+    @EnvironmentObject private var store: ProjectStore
+    let projectID: UUID
+    let workID: UUID
+    var initialSide: UUID? = nil
+    private struct Selection: Identifiable {
+        let id = UUID()
+        let component: WorkComponentRecord
+        let side: UUID?
+        var key: String { component.id.uuidString + ":" + (side?.uuidString ?? "main") }
+    }
+    @State private var selected: Selection?
+    @State private var drafts: [WorkComponentRecord] = []
+    @State private var editingName = ""
+    @State private var adding = false
+    @State private var renaming = false
+    @State private var relations = false
+    @State private var error: String?
+    private var project: ProjectItem? { store.project(id: projectID) }
+    private var work: WorkItem? { project?.works.first { $0.id == workID } }
+    private var selections: [Selection] {
+        guard let work else { return [] }
+        let components = work.components + drafts.filter { draft in !work.components.contains { $0.id == draft.id } }
+        return components.flatMap { component in
+            let stored = component.plans.compactMap(\.sideRoomID) + [component.referenceSideRoomID].compactMap { $0 }
+            let ids = Array(Set(stored + [work.roomID].compactMap { $0 } + work.linkedRoomIDs)).sorted { $0.uuidString < $1.uuidString }
+            let sides: [UUID?] = work.isPartition && !ids.isEmpty ? ids.map(Optional.some) : [nil]
+            return sides.map { Selection(component: component, side: $0) }
+        }
+    }
+    var body: some View {
+        Group {
+            if let work, let selected {
+                ComponentPlanEditorView(projectID: projectID, workID: workID, component: selected.component,
+                    side: selected.side, kind: work.type.category == .ceilings ? .ceiling : .wall,
+                    sharedFraming: work.isPartition,
+                    workbook: LayoutWorkbookNavigation(tabs: selections.map { item in
+                        let room = project?.rooms.first { $0.id == item.side }?.name
+                        let stale = item.component.plans.contains { $0.sideRoomID == item.side && $0.geometryRevision != item.component.geometryRevision }
+                        return .init(id: item.key, title: item.component.name + (room.map { " · Côté \($0)" } ?? "") + (stale ? " — à vérifier" : ""))
+                    }, selectedID: selected.key, select: { key in
+                        self.selected = selections.first { $0.key == key }
+                    }, add: {
+                        editingName = ""; adding = true
+                    }, rename: {
+                        editingName = work.components.first { $0.id == selected.component.id }?.name ?? selected.component.name
+                        renaming = true
+                    }, relations: { relations = true }))
+                    .id(selected.id)
+            } else if work != nil {
+                ProgressView("Ouverture du calepinage…")
+            } else {
+                ContentUnavailableView("Ouvrage introuvable", systemImage: "square.grid.3x3")
             }
         }
+        .task {
+            guard selected == nil, let work else { return }
+            if work.components.isEmpty {
+                drafts = [WorkComponentRecord(name: work.type.category == .ceilings ? "Plafond partie A" : "Mur A")]
+            }
+            let saved = selections.filter { $0.component.surface != nil && $0.component.plans.contains { !$0.layers.isEmpty } }
+            selected = saved.first { $0.side == initialSide } ?? saved.first
+                ?? selections.first { $0.side == initialSide } ?? selections.first
+        }
+        .alert("Nouvelle sous-partie", isPresented: $adding) {
+            TextField("Nom : Mur B, Plafond partie B…", text: $editingName)
+            Button("Annuler", role: .cancel) {}
+            Button("Créer") {
+                let name = editingName.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !selections.contains(where: { $0.component.name.localizedCaseInsensitiveCompare(name) == .orderedSame }) else {
+                    error = "Ce nom est déjà utilisé."; return
+                }
+                let draft = WorkComponentRecord(name: name)
+                drafts.append(draft)
+                selected = selections.first { $0.component.id == draft.id && $0.side == selected?.side }
+                    ?? selections.first { $0.component.id == draft.id }
+            }.disabled(editingName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+        }
+        .alert("Renommer la sous-partie", isPresented: $renaming) {
+            TextField("Nom", text: $editingName)
+            Button("Annuler", role: .cancel) {}
+            Button("Renommer") {
+                guard let selected else { return }
+                do {
+                    if work?.components.contains(where: { $0.id == selected.component.id }) == true {
+                        try store.renameComponent(projectID: projectID, workID: workID, componentID: selected.component.id, name: editingName)
+                    } else if let index = drafts.firstIndex(where: { $0.id == selected.component.id }) {
+                        let name = editingName.trimmingCharacters(in: .whitespacesAndNewlines)
+                        guard !selections.contains(where: { $0.component.id != selected.component.id && $0.component.name.localizedCaseInsensitiveCompare(name) == .orderedSame }) else {
+                            error = "Ce nom est déjà utilisé."; return
+                        }
+                        drafts[index].name = name
+                    }
+                    self.selected = selections.first { $0.key == selected.key }
+                } catch { self.error = "Nom vide ou déjà utilisé. Le calepinage est conservé." }
+            }.disabled(editingName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+        }
+        .sheet(isPresented: $relations, onDismiss: {
+            if let selected { self.selected = selections.first { $0.key == selected.key } ?? selections.first }
+        }) {
+            NavigationStack {
+                WorkComponentsView(projectID: projectID, workID: workID)
+                    .toolbar { Button("Fermer") { relations = false } }
+            }
+        }
+        .alert("Action impossible", isPresented: Binding(get: { error != nil }, set: { if !$0 { error = nil } })) {
+            Button("OK") { error = nil }
+        } message: { Text(error ?? "") }
     }
 }
 
@@ -439,11 +620,13 @@ private struct ComponentPlanEditorView: View {
     let side: UUID?
     let kind: LayoutSupportKind
     let sharedFraming: Bool
+    var workbook: LayoutWorkbookNavigation? = nil
     @State private var openedComponent: WorkComponentRecord
 
-    init(projectID: UUID, workID: UUID, component: WorkComponentRecord, side: UUID?, kind: LayoutSupportKind, sharedFraming: Bool) {
+    init(projectID: UUID, workID: UUID, component: WorkComponentRecord, side: UUID?, kind: LayoutSupportKind, sharedFraming: Bool, workbook: LayoutWorkbookNavigation? = nil) {
         self.projectID = projectID; self.workID = workID; self.side = side
         self.kind = kind; self.sharedFraming = sharedFraming
+        self.workbook = workbook
         _openedComponent = State(initialValue: component)
     }
 
@@ -451,16 +634,24 @@ private struct ComponentPlanEditorView: View {
         let plan = openedComponent.plans.first { $0.sideRoomID == side } ?? ComponentLayoutPlan(sideRoomID: side)
         SheetLayoutView(initialDocument: openedComponent.document(for: plan), onSaveDocument: { document in
             try store.saveComponentPlan(projectID: projectID, workID: workID, componentID: openedComponent.id,
-                sideRoomID: side, document: document, expectedGeometryRevision: openedComponent.geometryRevision)
+                sideRoomID: side, document: document, expectedGeometryRevision: openedComponent.geometryRevision,
+                newComponent: openedComponent)
+            refreshOpenedComponent()
         }, requiredSupportKind: kind, sharedPartitionFraming: sharedFraming, reviewLinkedDocument: { document in
             try store.reviewComponentPlan(projectID: projectID, componentID: openedComponent.id, document: document)
         }, saveReviewedDocument: { document, review, decision in
             try store.saveComponentPlan(projectID: projectID, workID: workID, componentID: openedComponent.id,
                 sideRoomID: side, document: document, expectedGeometryRevision: openedComponent.geometryRevision,
-                adjacencyDecision: decision, reviewedAdjacency: review)
-        })
+                adjacencyDecision: decision, reviewedAdjacency: review, newComponent: openedComponent)
+            refreshOpenedComponent()
+        }, workbook: workbook)
         .environmentObject(catalogue)
         .task { await catalogue.load() }
+    }
+    private func refreshOpenedComponent() {
+        if let current = store.project(id: projectID)?.works.first(where: { $0.id == workID })?.components.first(where: { $0.id == openedComponent.id }) {
+            openedComponent = current
+        }
     }
 }
 
@@ -638,208 +829,135 @@ private struct NewWorkView: View {
     @EnvironmentObject private var store: ProjectStore
     @Environment(\.dismiss) private var dismiss
     let projectID: UUID
-    @State private var roomName = ""
-    @State private var category = WorkCategory.ceilings
-    @State private var type = WorkType.ceilingOnFurring
+    @State private var customName = ""
+    @State private var configurationDraft: Draft?
+    @State private var duplicateName: String?
+    @State private var category: WorkCategory?
+
     private struct Draft: Identifiable {
         let id = UUID()
         let name: String
         let type: WorkType
-        let roomName: String
-    }
-    @State private var configurationDraft: Draft?
-    @State private var activeAlert: NewWorkAlert?
-
-    private let columns = [
-        GridItem(.flexible(), spacing: 12),
-        GridItem(.flexible(), spacing: 12)
-    ]
-
-    private var availableTypes: [WorkType] {
-        WorkType.allCases.filter { $0.category == category }
-    }
-
-    private var canConfigure: Bool {
-        availableTypes.contains(type) && !roomName.clean.isEmpty
     }
 
     var body: some View {
         NavigationStack {
-            VStack(spacing: 0) {
-                if category == .openings {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 24) {
+                    workNameField
+
                     categoryPicker
-                    .padding(20)
-                    .background(Color(.systemGroupedBackground))
 
-                    OpeningLabView(
-                        heightOptions: store.openingHeightOptions(projectID: projectID)
-                    ) { configuration in
-                        saveOpening(configuration)
-                    }
-                } else {
-                    ScrollView {
-                        VStack(alignment: .leading, spacing: 24) {
-                            categoryPicker
-
-                        roomNameField
-
+                    if let category {
                         VStack(alignment: .leading, spacing: 10) {
-                            Text("Ouvrage")
-                                .font(.headline)
-
-                            if availableTypes.isEmpty {
-                                Text("Aucun ouvrage disponible dans cette catégorie pour le moment.")
-                                    .foregroundStyle(.secondary)
-                                    .frame(maxWidth: .infinity, alignment: .leading)
+                            Text(category.cardTitle).font(.headline)
+                            ForEach(WorkType.allCases.filter { $0.category == category }) { type in
+                                Button { prepareConfiguration(type) } label: {
+                                    HStack(spacing: 12) {
+                                        RoundedRectangle(cornerRadius: 3)
+                                            .fill(category.cardColor).frame(width: 5)
+                                        Text(type.title)
+                                            .foregroundStyle(.primary)
+                                            .multilineTextAlignment(.leading)
+                                            .frame(maxWidth: .infinity, alignment: .leading)
+                                        Image(systemName: "chevron.right")
+                                            .font(.caption.weight(.semibold))
+                                            .foregroundStyle(.secondary)
+                                    }
                                     .padding(16)
                                     .background(.background, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-                            } else {
-                                Picker("Type d’ouvrage", selection: $type) {
-                                    ForEach(availableTypes) { Text($0.title).tag($0) }
                                 }
-                                .pickerStyle(.menu)
-                                .padding(16)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .background(.background, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                                .buttonStyle(.plain)
+                                .accessibilityIdentifier("work.creation.type.\(type.rawValue)")
                             }
                         }
-                        }
-                        .padding(20)
                     }
                 }
+                .padding(20)
             }
             .background(Color(.systemGroupedBackground))
-            .navigationTitle(category == .openings ? "Ouvertures" : "Ajouter un ouvrage")
+            .navigationTitle("Ajouter un ouvrage")
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Annuler") { dismiss() } }
-                if category != .openings {
-                    ToolbarItem(placement: .confirmationAction) { Button("Configurer") { prepareConfiguration() }.disabled(!canConfigure) }
-                }
             }
             .fullScreenCover(item: $configurationDraft) { draft in
-                WorkConfiguratorContainer(projectID: projectID, workName: draft.name, workType: draft.type, onFinished: { dismiss() }, newRoomName: draft.roomName)
+                WorkConfiguratorContainer(projectID: projectID, workName: draft.name, workType: draft.type, onFinished: { dismiss() })
             }
-            .alert(item: $activeAlert) { alert in
-                switch alert {
-                case .duplicateName(let duplicateName):
-                    Alert(
-                        title: Text("Nom déjà utilisé"),
-                        message: Text("Un ouvrage nommé « \(duplicateName) » existe déjà dans ce projet. Choisissez un autre nom."),
-                        dismissButton: .default(Text("OK"))
-                    )
-                case .saveFailed:
-                    Alert(
-                        title: Text("Enregistrement impossible"),
-                        message: Text("Les ouvertures n’ont pas pu être enregistrées sur cet appareil."),
-                        dismissButton: .default(Text("OK"))
-                    )
-                }
+            .alert("Nom déjà utilisé", isPresented: Binding(
+                get: { duplicateName != nil },
+                set: { if !$0 { duplicateName = nil } }
+            )) {
+                Button("OK") { duplicateName = nil }
+            } message: {
+                Text("Un ouvrage nommé « \(duplicateName ?? "") » existe déjà dans ce projet. Choisissez un autre nom.")
             }
         }
     }
 
-    private var roomNameField: some View {
+    private var workNameField: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("Pièce concernée")
-                .font(.headline)
-            if let rooms = store.project(id: projectID)?.rooms, !rooms.isEmpty {
-                Menu("Choisir une pièce existante") {
-                    ForEach(rooms) { room in Button(room.name) { roomName = room.name } }
-                }
-            }
-            TextField("Exemple : Salon", text: $roomName)
-                .textFieldStyle(.plain)
-                .padding(16)
-                .background(.background, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-            if !roomName.clean.isEmpty {
-                Text(type.generatedName(roomName: roomName))
-                    .font(.caption)
+            HStack(alignment: .firstTextBaseline) {
+                Text("Nom de l’ouvrage").font(.headline)
+                Spacer()
+                Text("Facultatif")
+                    .font(.caption.weight(.medium))
                     .foregroundStyle(.secondary)
+                    .padding(.horizontal, 9)
+                    .padding(.vertical, 4)
+                    .background(.thinMaterial, in: Capsule())
             }
+            HStack(spacing: 12) {
+                Image(systemName: "pencil")
+                    .foregroundStyle(.secondary)
+                    .frame(width: 22)
+                TextField("Exemple : Plafond du salon", text: $customName)
+                    .textInputAutocapitalization(.sentences)
+                    .accessibilityIdentifier("work.creation.name")
+            }
+            .padding(.horizontal, 16)
+            .frame(minHeight: 56)
+            .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+            Text("Si vous laissez ce champ vide, un nom sera proposé automatiquement.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
         }
     }
 
     private var categoryPicker: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Text("Catégorie d’ouvrage")
-                .font(.title2.bold())
-
-            LazyVGrid(columns: columns, spacing: 12) {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Catégorie d’ouvrage").font(.headline)
+            LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {
                 ForEach(WorkCategory.allCases) { item in
-                    Button {
-                        category = item
-                        if let firstType = WorkType.allCases.first(where: { $0.category == item }) {
-                            type = firstType
-                        }
-                    } label: {
+                    Button { category = item } label: {
                         Text(item.cardTitle)
                             .font(.headline)
                             .foregroundStyle(.white)
                             .multilineTextAlignment(.center)
-                            .frame(maxWidth: .infinity, minHeight: 112)
+                            .frame(maxWidth: .infinity, minHeight: 90)
                             .padding(.horizontal, 10)
-                            .background(item.cardColor, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+                            .background(item.cardColor, in: RoundedRectangle(cornerRadius: 20))
                             .overlay {
-                                RoundedRectangle(cornerRadius: 20, style: .continuous)
-                                    .stroke(.white, lineWidth: category == item ? 4 : 0)
+                                RoundedRectangle(cornerRadius: 16)
+                                    .stroke(.white, lineWidth: category == item ? 3 : 0)
                                     .padding(4)
                             }
-                            .shadow(color: category == item ? item.cardColor.opacity(0.28) : .clear, radius: 8, y: 4)
                     }
                     .buttonStyle(.plain)
                     .accessibilityAddTraits(category == item ? .isSelected : [])
+                    .accessibilityIdentifier("work.creation.category.\(item.rawValue)")
                 }
             }
         }
     }
 
-    private func prepareConfiguration() {
-        let generatedName = type.generatedName(roomName: roomName)
-        if store.workNameExists(projectID: projectID, name: generatedName) {
-            activeAlert = .duplicateName(generatedName)
-        } else {
-            openConfigurator(with: generatedName)
-        }
-    }
-
-    private func saveOpening(_ configuration: OpeningConfiguration) {
-        let linkedRoomName = configuration.sourceWorkID.flatMap { sourceID in
-            store.project(id: projectID)?.works.first(where: { $0.id == sourceID })?.inferredRoomName
-        }
-        let effectiveRoomName = linkedRoomName ?? configuration.roomName
-        let workName = effectiveRoomName.map { WorkType.openings.generatedName(roomName: $0) }
-            ?? store.defaultWorkName(projectID: projectID, type: .openings)
-        if store.workNameExists(projectID: projectID, name: workName) {
-            activeAlert = .duplicateName(workName)
+    private func prepareConfiguration(_ type: WorkType) {
+        guard configurationDraft == nil else { return }
+        let name = customName.clean.isEmpty ? store.defaultWorkName(projectID: projectID, type: type) : customName.clean
+        guard !store.workNameExists(projectID: projectID, name: name) else {
+            duplicateName = name
             return
         }
-        do {
-            _ = try store.createConfiguredWork(
-                projectID: projectID,
-                name: workName,
-                type: .openings,
-                payload: .openings(configuration), roomID: nil, newRoomName: effectiveRoomName
-            )
-            dismiss()
-        } catch {
-            activeAlert = .saveFailed
-        }
-    }
-
-    private func openConfigurator(with workName: String) {
-        configurationDraft = Draft(name: workName, type: type, roomName: roomName)
-    }
-}
-
-private enum NewWorkAlert: Identifiable {
-    case duplicateName(String)
-    case saveFailed
-
-    var id: String {
-        switch self {
-        case .duplicateName: "duplicate-name"
-        case .saveFailed: "save-failed"
-        }
+        configurationDraft = Draft(name: name, type: type)
     }
 }
 
@@ -850,6 +968,7 @@ private extension WorkCategory {
         case .partitions: "Cloisons"
         case .wallInsulation: "Isolation des murs"
         case .openings: "Ouvertures"
+        case .painting: "Peinture (bêta)"
         }
     }
 
@@ -859,6 +978,7 @@ private extension WorkCategory {
         case .partitions: Color(red: 0.76, green: 0.43, blue: 0.24)
         case .wallInsulation: Color(red: 0.22, green: 0.49, blue: 0.38)
         case .openings: Color(red: 0.45, green: 0.34, blue: 0.58)
+        case .painting: Color(red: 0.57, green: 0.37, blue: 0.24)
         }
     }
 }
@@ -868,27 +988,30 @@ struct SavedWorkView: View {
     @Environment(\.dismiss) private var dismiss
     let work: WorkItem
     var opensIsolationStep = false
+    var startsAtBeginning = false
     @State private var errorMessage = ""
-    private var currentWork: WorkItem { store.project(id: work.projectID)?.works.first(where: { $0.id == work.id }) ?? work }
+    private var currentWork: WorkItem {
+        SurveyWorkGeometry.workForRecalculation(store.project(id: work.projectID)?.works.first(where: { $0.id == work.id }) ?? work)
+    }
     private var recalculationDocument: LayoutDocument? { currentWork.layoutNeedsRecalculation == true ? currentWork.layoutDocument : nil }
 
     var body: some View {
         Group {
             switch currentWork.type {
             case .ceilingOnFurring:
-                CeilingConfiguratorView(initialConfiguration: LayoutWorkGeometry.ceiling(recalculationDocument,base:currentWork.ceilingConfiguration ?? .init()), startsAtResult: recalculationDocument == nil, preserveInitialSpacing:true) { configuration in
+                CeilingConfiguratorView(initialConfiguration: LayoutWorkGeometry.ceiling(recalculationDocument,base:currentWork.ceilingConfiguration ?? .init()), startsAtResult: !startsAtBeginning && recalculationDocument == nil, preserveInitialSpacing:true, lockScannedGeometry: currentWork.components.contains { $0.surveySource != nil }) { configuration in
                     do { try store.updateWork(currentWork, configuration: configuration); dismiss() }
                     catch { errorMessage = "Les modifications n’ont pas pu être enregistrées." }
                 }
             case .ceilingOnRailsAndStuds:
-                RailStudCeilingConfiguratorView(initialConfiguration: LayoutWorkGeometry.railCeiling(recalculationDocument,base:currentWork.railStudCeilingConfiguration ?? .init()), startsAtResult: recalculationDocument == nil) { configuration in
+                RailStudCeilingConfiguratorView(initialConfiguration: LayoutWorkGeometry.railCeiling(recalculationDocument,base:currentWork.railStudCeilingConfiguration ?? .init()), startsAtResult: !startsAtBeginning && recalculationDocument == nil) { configuration in
                     do { try store.updateWork(currentWork, railStudCeilingConfiguration: configuration); dismiss() }
                     catch { errorMessage = "Les modifications n’ont pas pu être enregistrées." }
                 }
             case .modularCeiling:
                 ModularCeilingConfiguratorView(
                     initialConfiguration: currentWork.modularCeilingConfiguration,
-                    startsAtResult: true
+                    startsAtResult: !startsAtBeginning
                 ) { configuration in
                     do { try store.updateWork(currentWork, modularCeilingConfiguration: configuration); dismiss() }
                     catch { errorMessage = "Les modifications n’ont pas pu être enregistrées." }
@@ -896,38 +1019,38 @@ struct SavedWorkView: View {
             case .peripheralLiningStuds:
                 DoublageConfiguratorHost(
                     initialConfiguration: LayoutWorkGeometry.lining(recalculationDocument,base:currentWork.doublageConfiguration ?? .init()),
-                    startsAtResult: !opensIsolationStep && recalculationDocument == nil,
+                    startsAtResult: !startsAtBeginning && !opensIsolationStep && recalculationDocument == nil,
                     initialStep: opensIsolationStep ? 4 : nil
                 ) { configuration in
                     do { try store.updateWork(currentWork, doublageConfiguration: configuration); dismiss() }
                     catch { errorMessage = "Les modifications n’ont pas pu être enregistrées." }
                 }
             case .distributionPartition:
-                CloisonDistributionConfiguratorHost(initialConfiguration: LayoutWorkGeometry.partition(recalculationDocument,base:currentWork.cloisonDistributionConfiguration ?? .init()), startsAtResult: recalculationDocument == nil) { configuration in
+                CloisonDistributionConfiguratorHost(initialConfiguration: LayoutWorkGeometry.partition(recalculationDocument,base:currentWork.cloisonDistributionConfiguration ?? .init()), startsAtResult: !startsAtBeginning && recalculationDocument == nil) { configuration in
                     do { try store.updateWork(currentWork, cloisonDistributionConfiguration: configuration); dismiss() }
                     catch { errorMessage = "Les modifications n’ont pas pu être enregistrées." }
                 }
             case .alveolarPartition:
-                AlveolarPartitionConfiguratorHost(initialConfiguration: currentWork.alveolarPartitionConfiguration, startsAtResult: true) { configuration in
+                AlveolarPartitionConfiguratorHost(initialConfiguration: currentWork.alveolarPartitionConfiguration, startsAtResult: !startsAtBeginning) { configuration in
                     do { try store.updateWork(currentWork, alveolarPartitionConfiguration: configuration); dismiss() }
                     catch { errorMessage = "Les modifications n’ont pas pu être enregistrées." }
                 }
             case .peripheralLiningBonded:
-                BondedLiningConfiguratorHost(initialConfiguration: currentWork.bondedLiningConfiguration, startsAtResult: true) { configuration in
+                BondedLiningConfiguratorHost(initialConfiguration: currentWork.bondedLiningConfiguration, startsAtResult: !startsAtBeginning) { configuration in
                     do { try store.updateWork(currentWork, bondedLiningConfiguration: configuration); dismiss() }
                     catch { errorMessage = "Les modifications n’ont pas pu être enregistrées." }
                 }
             case .peripheralLiningFurrings:
                 FurringLiningConfiguratorHost(
                     initialConfiguration: LayoutWorkGeometry.furring(recalculationDocument,base:currentWork.furringLiningConfiguration ?? .init()),
-                    startsAtResult: !opensIsolationStep && recalculationDocument == nil,
+                    startsAtResult: !startsAtBeginning && !opensIsolationStep && recalculationDocument == nil,
                     initialStep: opensIsolationStep ? 4 : nil
                 ) { configuration in
                     do { try store.updateWork(currentWork, furringLiningConfiguration: configuration); dismiss() }
                     catch { errorMessage = "Les modifications n’ont pas pu être enregistrées." }
                 }
             case .peripheralLiningAdhesiveFacing:
-                AdhesiveFacingConfiguratorHost(initialConfiguration: currentWork.adhesiveFacingConfiguration, startsAtResult: true) { configuration in
+                AdhesiveFacingConfiguratorHost(initialConfiguration: currentWork.adhesiveFacingConfiguration, startsAtResult: !startsAtBeginning) { configuration in
                     do { try store.updateWork(currentWork, adhesiveFacingConfiguration: configuration); dismiss() }
                     catch { errorMessage = "Les modifications n’ont pas pu être enregistrées." }
                 }
@@ -939,10 +1062,75 @@ struct SavedWorkView: View {
                     do { try store.updateWork(currentWork, openingConfiguration: configuration); dismiss() }
                     catch { errorMessage = "Les modifications n’ont pas pu être enregistrées." }
                 }
+            case .paintingBeta:
+                PaintingBetaConfiguratorView(initialConfiguration: {
+                    if case .paintingBeta(let value) = currentWork.payload { return value }
+                    return PaintingBetaConfiguration()
+                }(), readOnlyArea: currentWork.components.contains { $0.surveySource != nil }) { configuration in
+                    do { try store.updateWork(currentWork, paintingBetaConfiguration: configuration); dismiss() }
+                    catch { errorMessage = error.localizedDescription }
+                }
             }
         }
         .navigationTitle(currentWork.name)
+        .safeAreaInset(edge: .top) {
+            if currentWork.surveySourceNeedsReview {
+                SurveySourceReviewNotice(work: currentWork)
+                    .padding(.horizontal).padding(.vertical, 8)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(.regularMaterial)
+            }
+        }
+        .environment(\.layoutCoveringAreaRatio, LayoutWorkGeometry.coveringAreaRatio(currentWork.layoutDocument))
         .alert("Enregistrement impossible", isPresented: Binding(get: { !errorMessage.isEmpty }, set: { if !$0 { errorMessage = "" } })) { Button("OK") {} } message: { Text(errorMessage) }
+    }
+}
+
+/// A source correction never silently replaces an already configured work.
+/// Keep this warning visible both in the project and beside its quantities.
+struct SurveySourceReviewNotice: View {
+    @EnvironmentObject private var store: ProjectStore
+    let work: WorkItem
+    @State private var confirming = false
+    @State private var showingSource = false
+    @State private var error: String?
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Label("Relevé modifié — ouvrage à contrôler", systemImage: "exclamationmark.triangle.fill")
+                .font(.caption.weight(.semibold)).foregroundStyle(.orange)
+            Text("Les dimensions et quantités de cet ouvrage ont été conservées. Comparez-les au relevé corrigé avant de les utiliser.")
+                .font(.caption).foregroundStyle(.secondary)
+            if !work.components.compactMap(\.surveySource).isEmpty {
+                Button("Ouvrir le relevé source") { showingSource = true }
+                    .font(.caption.weight(.semibold)).buttonStyle(.borderless)
+            }
+            Button("Conserver les dimensions de l’ouvrage…") { confirming = true }
+                .font(.caption).buttonStyle(.borderless)
+        }.fixedSize(horizontal: false, vertical: true)
+        .sheet(isPresented: $showingSource) {
+            if let source = work.components.compactMap(\.surveySource).first {
+                NavigationStack {
+                    ProjectSurveyDetailView(surveyID: source.surveyID)
+                        .toolbar {
+                            ToolbarItem(placement: .cancellationAction) {
+                                Button("Fermer") { showingSource = false }
+                            }
+                        }
+                }
+            }
+        }
+        .alert("Conserver les dimensions actuelles ?", isPresented: $confirming) {
+            Button("Annuler", role: .cancel) {}
+            Button("J’ai vérifié, conserver") {
+                do { try store.confirmKeepingCurrentSurveyGeometry(projectID: work.projectID, workID: work.id) }
+                catch { self.error = error.localizedDescription }
+            }
+        } message: {
+            Text("Le contour, les ouvertures et les quantités de l’ouvrage resteront inchangés. Confirmez seulement après les avoir comparés au relevé corrigé. Aucun ajustement automatique ne sera effectué.")
+        }
+        .alert("Vérification non enregistrée", isPresented: Binding(get: { error != nil }, set: { if !$0 { error = nil } })) {
+            Button("OK") { error = nil }
+        } message: { Text(error ?? "") }
     }
 }
 
@@ -956,6 +1144,8 @@ struct WorkConfiguratorContainer: View {
     var layoutDocument: LayoutDocument? = nil
     var roomID: UUID? = nil
     var newRoomName: String? = nil
+    var level: String? = nil
+    var zone: String? = nil
     @State private var errorMessage = ""
 
     var body: some View {
@@ -994,10 +1184,15 @@ struct WorkConfiguratorContainer: View {
                     OpeningLabView(heightOptions: store.openingHeightOptions(projectID: projectID)) { configuration in
                         save(openingConfiguration: configuration)
                     }
+                case .paintingBeta:
+                    PaintingBetaConfiguratorView(initialConfiguration: .init(), readOnlyArea: false) { configuration in
+                        savePayload(.paintingBeta(configuration))
+                    }
                 }
             }
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Fermer") { dismiss() } } }
         }
+        .environment(\.layoutCoveringAreaRatio, LayoutWorkGeometry.coveringAreaRatio(layoutDocument))
         .alert("Enregistrement impossible", isPresented: Binding(get: { !errorMessage.isEmpty }, set: { if !$0 { errorMessage = "" } })) { Button("OK") {} } message: { Text(errorMessage) }
     }
 
@@ -1015,7 +1210,7 @@ struct WorkConfiguratorContainer: View {
     private func savePayload(_ payload: WorkConfiguration) {
         do {
             try store.createConfiguredWork(projectID: projectID, name: workName, type: workType,
-                payload: payload, roomID: roomID, newRoomName: newRoomName, document: layoutDocument)
+                payload: payload, roomID: roomID, newRoomName: newRoomName, document: layoutDocument, level: level, zone: zone)
             finish()
         } catch { errorMessage = "L’ouvrage n’a pas pu être enregistré. \(error.localizedDescription)" }
     }

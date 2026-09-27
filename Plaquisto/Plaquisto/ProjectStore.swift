@@ -10,6 +10,7 @@ struct OpeningJoineryConflict: Equatable {
 @MainActor
 final class ProjectStore: ObservableObject {
     @Published private(set) var projects: [ProjectItem] = []
+    @Published private(set) var surveys: [ProjectSurveyRecord] = []
     @Published private(set) var lastError: String?
 
     private let fileURL: URL
@@ -19,6 +20,18 @@ final class ProjectStore: ObservableObject {
     private struct Archive: Codable {
         var schemaVersion = 2
         var projects: [ProjectItem]
+        var surveys: [ProjectSurveyRecord]
+
+        private enum CodingKeys: String, CodingKey { case schemaVersion, projects, surveys }
+        init(projects: [ProjectItem], surveys: [ProjectSurveyRecord]) {
+            self.projects = projects; self.surveys = surveys
+        }
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            schemaVersion = try container.decode(Int.self, forKey: .schemaVersion)
+            projects = try container.decode([ProjectItem].self, forKey: .projects)
+            surveys = try container.decodeIfPresent([ProjectSurveyRecord].self, forKey: .surveys) ?? []
+        }
     }
 
     init(fileURL: URL? = nil) {
@@ -38,11 +51,236 @@ final class ProjectStore: ObservableObject {
     }
 
     func project(id: UUID) -> ProjectItem? { projects.first { $0.id == id } }
+    func surveys(projectID: UUID) -> [ProjectSurveyRecord] {
+        surveys.filter { $0.projectID == projectID }.sorted { $0.updatedAt > $1.updatedAt }
+    }
+
+    /// Delete only the project survey. Derived works retain their independent
+    /// geometry, layouts and quantities; remove references atomically with it.
+    func deleteSurvey(projectID: UUID, surveyID: UUID) throws {
+        guard surveys.contains(where: { $0.id == surveyID && $0.projectID == projectID }),
+              let index=projects.firstIndex(where: { $0.id == projectID }) else { throw StoreError.invalidStructure }
+        var next=projects
+        let now=Date()
+        for workIndex in next[index].works.indices {
+            var detached=false
+            for componentIndex in next[index].works[workIndex].components.indices {
+                if next[index].works[workIndex].components[componentIndex].surveySource?.surveyID == surveyID {
+                    next[index].works[workIndex].components[componentIndex].surveySource=nil
+                    detached=true
+                }
+            }
+            if detached {
+                if next[index].works[workIndex].components.allSatisfy({ $0.surveySource == nil }) {
+                    next[index].works[workIndex].surveySourceNeedsReview=false
+                }
+                next[index].works[workIndex].updatedAt=now
+            }
+        }
+        next[index].updatedAt=now
+        try commit(next,surveys:surveys.filter { $0.id != surveyID })
+    }
+
+    /// Edits the existing checkpoint without recreating the room or changing its
+    /// spatial registration. A stale editor must not overwrite a newer revision.
+    func updateSurveyRoom(surveyID: UUID, checkpointID: UUID,
+                          expectedDocument: PlaquistoRoomDocument,
+                          document: PlaquistoRoomDocument) throws {
+        var next = surveys
+        var nextProjects = projects
+        guard let s = next.firstIndex(where: { $0.id == surveyID }),
+              let c = next[s].checkpoints.firstIndex(where: { $0.id == checkpointID }),
+              next[s].checkpoints[c].document == expectedDocument,
+              document.initialRoom == expectedDocument.initialRoom else { throw StoreError.staleGeometry }
+        try document.validate()
+        let now = Date()
+        let previousSurvey = next[s]
+        next[s].checkpoints[c].document = document
+        next[s].checkpoints[c].updatedAt = now
+        next[s].updatedAt = now
+        if hasEffectiveSurveyGeometryChange(before: previousSurvey, after: next[s], checkpointID: checkpointID) {
+            next[s].checkpoints[c].needsReview = true
+            next[s].checkpoints[c].workState = .awaitingValidation
+            next[s].state = .readyForReview
+            markWorksAffectedBySurveyGeometryChange(&nextProjects, before: previousSurvey,
+                after: next[s], checkpointID: checkpointID, now: now)
+        }
+        try commit(nextProjects, surveys: next)
+    }
+
+    /// Explicitly approves the current portable geometry for métier attribution.
+    /// A recovered provisional checkpoint can therefore be inspected/corrected and
+    /// approved even when RoomBuilder can no longer resume after app relaunch.
+    func validateSurveyCheckpoint(surveyID: UUID, checkpointID: UUID,
+                                  expectedDocument: PlaquistoRoomDocument) throws {
+        var next = surveys
+        guard let s = next.firstIndex(where: { $0.id == surveyID }),
+              let c = next[s].checkpoints.firstIndex(where: { $0.id == checkpointID }),
+              next[s].checkpoints[c].document == expectedDocument else { throw StoreError.staleGeometry }
+        try expectedDocument.validate()
+        let now = Date()
+        next[s].checkpoints[c].workState = .validated
+        next[s].checkpoints[c].needsReview = false
+        next[s].checkpoints[c].updatedAt = now
+        next[s].updatedAt = now
+        next[s].state = next[s].checkpoints.allSatisfy(\.isUsableForWork) ? .validated : .readyForReview
+        try commit(projects, surveys: next)
+    }
+
+    struct ScanRoomSaveResult: Equatable {
+        let projectID: UUID
+        let surveyID: UUID
+        let roomID: UUID
+        let checkpointID: UUID
+    }
+
+    /// The whole continuous scan is committed once. Never partially creates a
+    /// project when the second/third checkpoint is invalid or storage fails.
+    @discardableResult
+    func saveScanCampaign(_ draft: ScanCampaignDraft, projectID: UUID?, newProjectName: String,
+                          surveyName: String, newProjectClient: String = "", newProjectAddress: String = "",
+                          newProjectNotes: String = "") throws -> UUID {
+        try draft.validate()
+        guard !draft.includedChunks.isEmpty, !draft.hasUnreviewedDuplicates, !surveyName.trimmed.isEmpty,
+              !surveys.contains(where: { $0.id == draft.id }) else { throw StoreError.invalidStructure }
+        var next = projects
+        let now = Date()
+        let index: Int
+        if let projectID {
+            guard let i = next.firstIndex(where: { $0.id == projectID }) else { throw StoreError.projectNotFound }
+            index = i
+        } else {
+            guard !newProjectName.trimmed.isEmpty else { throw StoreError.invalidWorkName }
+            next.insert(.init(id: UUID(), name: newProjectName.trimmed, client: newProjectClient.trimmed,
+                              address: newProjectAddress.trimmed, notes: newProjectNotes.trimmed, works: [],
+                              createdAt: now, updatedAt: now), at: 0)
+            index = 0
+        }
+        var survey = ProjectSurveyRecord(id: draft.id, projectID: next[index].id, name: surveyName.trimmed,
+                                         state: .readyForReview, createdAt: now, updatedAt: now)
+        survey.captureDiagnostic = draft.captureDiagnostic
+        survey.captureLocation = draft.captureLocation
+        survey.ceilingPlanNumbers = draft.ceilingPlanNumbers
+        for chunk in draft.includedChunks {
+            // A matching label alone never means it is the same business room.
+            var name = chunk.name.trimmed
+            var suffix = 2
+            while next[index].rooms.contains(where: { $0.name.normalizedForComparison == name.normalizedForComparison }) {
+                name = "\(chunk.name.trimmed) \(suffix)"; suffix += 1
+            }
+            let room = ProjectRoomRecord(name: name)
+            next[index].rooms.append(room)
+            var document = chunk.document
+            if surveys.flatMap(\.checkpoints).contains(where: { $0.document.room.id == document.room.id }) {
+                document = document.remappingDomainIDs()
+            }
+            document.room.name = name
+            survey.checkpoints.append(.init(roomID: room.id, document: document,
+                spatialLinkState: draft.sharesWorldSpace ? .sharedWorldSpace : .needsLink,
+                workState: chunk.processingPending == true ? .provisional : .awaitingValidation,
+                createdAt: now, updatedAt: now))
+        }
+        next[index].updatedAt = now
+        try commit(next, surveys: surveys + [survey])
+        return survey.id
+    }
+
+    /// Saves the business room and its portable scan checkpoint in one archive write.
+    /// Opening then abandoning a screen cannot leave an empty Project, room or survey.
+    @discardableResult
+    func saveScannedRoom(projectID: UUID?, newProjectName: String?, surveyID: UUID?, surveyName: String,
+                         roomID: UUID?, roomName: String, document: PlaquistoRoomDocument,
+                         transformToSurvey: SurveyTransform3D = .identity,
+                         spatialLinkState: SurveySpatialLinkState = .needsLink,
+                         replacingExistingCapture: Bool = false) throws -> ScanRoomSaveResult {
+        try document.validate()
+        guard transformToSurvey.isValid, !roomName.trimmed.isEmpty, !surveyName.trimmed.isEmpty else {
+            throw StoreError.invalidStructure
+        }
+
+        var nextProjects = projects
+        var nextSurveys = surveys
+        let now = Date()
+        let resolvedProjectID: UUID
+        let projectIndex: Int
+        if let projectID {
+            guard let index = nextProjects.firstIndex(where: { $0.id == projectID }) else { throw StoreError.projectNotFound }
+            resolvedProjectID = projectID; projectIndex = index
+        } else {
+            guard surveyID == nil, roomID == nil, let name = newProjectName?.trimmed, !name.isEmpty else {
+                throw StoreError.invalidWorkName
+            }
+            resolvedProjectID = UUID()
+            nextProjects.insert(.init(id: resolvedProjectID, name: name, client: "", address: "", notes: "", works: [], createdAt: now, updatedAt: now), at: 0)
+            projectIndex = 0
+        }
+
+        let resolvedRoomID: UUID
+        if let roomID {
+            guard nextProjects[projectIndex].rooms.contains(where: { $0.id == roomID }) else { throw StoreError.invalidStructure }
+            resolvedRoomID = roomID
+        } else if let existing = nextProjects[projectIndex].rooms.first(where: {
+            $0.name.normalizedForComparison == roomName.normalizedForComparison
+        }) {
+            resolvedRoomID = existing.id
+        } else {
+            let room = ProjectRoomRecord(name: roomName.trimmed)
+            nextProjects[projectIndex].rooms.append(room)
+            resolvedRoomID = room.id
+        }
+
+        let resolvedSurveyID: UUID
+        let surveyIndex: Int
+        if let surveyID {
+            guard let index = nextSurveys.firstIndex(where: { $0.id == surveyID && $0.projectID == resolvedProjectID }) else {
+                throw StoreError.invalidStructure
+            }
+            resolvedSurveyID = surveyID; surveyIndex = index
+        } else {
+            let survey = ProjectSurveyRecord(projectID: resolvedProjectID, name: surveyName.trimmed,
+                                            createdAt: now, updatedAt: now)
+            nextSurveys.append(survey)
+            resolvedSurveyID = survey.id; surveyIndex = nextSurveys.count - 1
+        }
+
+        var savedDocument = document
+        savedDocument.room.name = roomName.trimmed
+        let checkpointID: UUID
+        if let index = nextSurveys[surveyIndex].checkpoints.firstIndex(where: { $0.roomID == resolvedRoomID }) {
+            guard replacingExistingCapture else { throw StoreError.scanReplacementRequiresConfirmation }
+            let previousSurvey = nextSurveys[surveyIndex]
+            checkpointID = nextSurveys[surveyIndex].checkpoints[index].id
+            nextSurveys[surveyIndex].checkpoints[index].document = savedDocument
+            nextSurveys[surveyIndex].checkpoints[index].transformToSurvey = transformToSurvey
+            nextSurveys[surveyIndex].checkpoints[index].spatialLinkState = spatialLinkState
+            nextSurveys[surveyIndex].checkpoints[index].needsReview = true
+            nextSurveys[surveyIndex].checkpoints[index].workState = .awaitingValidation
+            nextSurveys[surveyIndex].checkpoints[index].updatedAt = now
+            markWorksAffectedBySurveyGeometryChange(&nextProjects, before: previousSurvey,
+                after: nextSurveys[surveyIndex], checkpointID: checkpointID, now: now)
+        } else {
+            // Saving the same source in another survey creates independent domain
+            // identities while retaining the acquisition correlation metadata.
+            if nextSurveys.flatMap(\.checkpoints).contains(where: { $0.document.room.id == savedDocument.room.id }) {
+                savedDocument = savedDocument.remappingDomainIDs()
+            }
+            let checkpoint = ProjectRoomScanCheckpoint(roomID: resolvedRoomID, document: savedDocument,
+                transformToSurvey: transformToSurvey, spatialLinkState: spatialLinkState,
+                workState: .awaitingValidation, createdAt: now, updatedAt: now)
+            nextSurveys[surveyIndex].checkpoints.append(checkpoint)
+            checkpointID = checkpoint.id
+        }
+        nextSurveys[surveyIndex].state = .readyForReview
+        nextSurveys[surveyIndex].updatedAt = now
+        nextProjects[projectIndex].updatedAt = now
+        try commit(nextProjects, surveys: nextSurveys)
+        return .init(projectID: resolvedProjectID, surveyID: resolvedSurveyID, roomID: resolvedRoomID, checkpointID: checkpointID)
+    }
 
     /// One transaction for forms: room creation/selection, work and optional plan.
     @discardableResult
     func createConfiguredWork(projectID: UUID, name: String, type: WorkType, payload: WorkConfiguration,
-                              roomID: UUID?, newRoomName: String?, document: LayoutDocument? = nil) throws -> UUID {
+                              roomID: UUID?, newRoomName: String?, document: LayoutDocument? = nil, level: String? = nil, zone: String? = nil) throws -> UUID {
         var next = projects
         guard let i = next.firstIndex(where: { $0.id == projectID }) else { throw StoreError.projectNotFound }
         try validateWorkName(name, in: next[i])
@@ -63,11 +301,40 @@ final class ProjectStore: ObservableObject {
         let now = Date()
         var work = WorkItem(id: UUID(), projectID: projectID, name: name.trimmed, type: type, payload: payload, createdAt: now, updatedAt: now)
         work.roomID = owner
+        work.level = level?.trimmed.isEmpty == false ? level?.trimmed : nil
+        work.zone = zone?.trimmed.isEmpty == false ? zone?.trimmed : nil
         work.layoutDocument = document
         work.layoutNeedsRecalculation = document == nil ? nil : false
         next[i].works.insert(work, at: 0); next[i].updatedAt = now
         try commit(next)
         return work.id
+    }
+
+    /// Organization is optional metadata, never a command to change physical geometry or side plans.
+    func updateWorkOrganization(projectID: UUID, workID: UUID, roomID: UUID?, level: String?, zone: String?) throws {
+        var next = projects
+        guard let i = next.firstIndex(where: { $0.id == projectID }),
+              let j = next[i].works.firstIndex(where: { $0.id == workID }) else { throw StoreError.workNotFound }
+        guard roomID.map({ id in next[i].rooms.contains { $0.id == id } }) ?? true else { throw StoreError.invalidStructure }
+        next[i].works[j].roomID = roomID
+        next[i].works[j].level = level?.trimmed.isEmpty == false ? level?.trimmed : nil
+        next[i].works[j].zone = zone?.trimmed.isEmpty == false ? zone?.trimmed : nil
+        next[i].works[j].updatedAt = Date(); next[i].updatedAt = Date()
+        try commit(next)
+    }
+
+    /// The user deliberately keeps the ouvrage's current dimensions after
+    /// reviewing a newer scan. No payload, component or layout is regenerated.
+    func confirmKeepingCurrentSurveyGeometry(projectID: UUID, workID: UUID) throws {
+        var next = projects
+        guard let i = next.firstIndex(where: { $0.id == projectID }),
+              let j = next[i].works.firstIndex(where: { $0.id == workID }) else { throw StoreError.workNotFound }
+        guard next[i].works[j].surveySourceNeedsReview else { return }
+        let now = Date()
+        next[i].works[j].surveySourceNeedsReview = false
+        next[i].works[j].updatedAt = now
+        next[i].updatedAt = now
+        try commit(next)
     }
 
     func renameRoom(projectID: UUID, roomID: UUID, name: String) throws {
@@ -167,6 +434,22 @@ final class ProjectStore: ObservableObject {
         return component.id
     }
 
+    /// A workbook tab keeps its identity, geometry, side plans and adjacency links when renamed.
+    func renameComponent(projectID: UUID, workID: UUID, componentID: UUID, name: String) throws {
+        var next = projects
+        guard let i = next.firstIndex(where: { $0.id == projectID }),
+              let j = next[i].works.firstIndex(where: { $0.id == workID }),
+              let k = next[i].works[j].components.firstIndex(where: { $0.id == componentID }) else { throw StoreError.workNotFound }
+        guard !name.trimmed.isEmpty, !next[i].works[j].components.contains(where: {
+            $0.id != componentID && $0.name.normalizedForComparison == name.normalizedForComparison
+        }) else { throw StoreError.invalidWorkName }
+        next[i].works[j].components[k].name = name.trimmed
+        next[i].works[j].components[k].surface?.name = name.trimmed
+        next[i].works[j].updatedAt = Date()
+        next[i].updatedAt = Date()
+        try commit(next)
+    }
+
     /// Called by a scan adapter after an explicit 3D match, or by a user identifying a full-span boundary.
     /// Registers evidence only: never resizes either component.
     func linkCeilingToWall(projectID: UUID, ceilingComponentID: UUID, edgeIndex: Int, wallComponentID: UUID,
@@ -208,15 +491,27 @@ final class ProjectStore: ObservableObject {
     /// Geometry belongs to the component; finishing and electrical layout belong to its side.
     /// The local edit and explicitly accepted adjacent changes commit atomically.
     func saveComponentPlan(projectID: UUID, workID: UUID, componentID: UUID, sideRoomID: UUID?, document: LayoutDocument, expectedGeometryRevision: Int? = nil,
-                           adjacencyDecision: ComponentAdjacencyDecision = .undecided, reviewedAdjacency: ComponentAdjacencyReview? = nil) throws {
+                           adjacencyDecision: ComponentAdjacencyDecision = .undecided, reviewedAdjacency: ComponentAdjacencyReview? = nil,
+                           newComponent: WorkComponentRecord? = nil) throws {
         var next = projects
         guard let i = next.firstIndex(where: { $0.id == projectID }),
-              let j = next[i].works.firstIndex(where: { $0.id == workID }),
-              let k = next[i].works[j].components.firstIndex(where: { $0.id == componentID }) else { throw StoreError.workNotFound }
+              let j = next[i].works.firstIndex(where: { $0.id == workID }) else { throw StoreError.workNotFound }
+        // Insert the draft only in this transaction: failed validation or abandoned editors
+        // must never leave an empty component in persistent storage.
+        if !next[i].works[j].components.contains(where: { $0.id == componentID }), let newComponent {
+            guard newComponent.id == componentID, newComponent.surface == nil, newComponent.plans.isEmpty,
+                  !newComponent.name.trimmed.isEmpty,
+                  !next[i].works[j].components.contains(where: {
+                      $0.name.normalizedForComparison == newComponent.name.normalizedForComparison
+                  }) else { throw StoreError.invalidStructure }
+            next[i].works[j].components.append(newComponent)
+        }
+        guard let k = next[i].works[j].components.firstIndex(where: { $0.id == componentID }) else { throw StoreError.workNotFound }
         let work = next[i].works[j]
         let isPartition = [.distributionPartition, .alveolarPartition].contains(work.type)
         if isPartition {
-            guard let sideRoomID, sideRoomID == work.roomID || work.linkedRoomIDs.contains(sideRoomID) else { throw StoreError.invalidStructure }
+            let storedSides = work.components[k].plans.compactMap(\.sideRoomID)
+            guard sideRoomID.map({ $0 == work.roomID || work.linkedRoomIDs.contains($0) || storedSides.contains($0) }) ?? (work.roomID == nil) else { throw StoreError.invalidStructure }
         } else if sideRoomID != nil { throw StoreError.invalidStructure }
         guard !document.layers.isEmpty else { throw StoreError.invalidStructure }
         let expectedKind: LayoutSupportKind = work.type.category == .ceilings ? .ceiling : .wall
@@ -262,7 +557,7 @@ final class ProjectStore: ObservableObject {
         plan.geometryRevision = component.geometryRevision
         if let index { component.plans[index] = plan } else { component.plans.append(plan) }
         next[i].works[j].components[k] = component
-        if !work.isPartition && work.components.count == 1 {
+        if !work.isPartition && (work.components.count == 1 || work.components.contains(where: { $0.surveySource != nil })) {
             next[i].works[j].layoutNeedsRecalculation = true
         }
         next[i].works[j].updatedAt = Date()
@@ -372,7 +667,7 @@ final class ProjectStore: ObservableObject {
                 work.furringLiningConfiguration?.height
             case .peripheralLiningAdhesiveFacing:
                 work.adhesiveFacingConfiguration?.height
-            case .ceilingOnFurring, .ceilingOnRailsAndStuds, .modularCeiling, .openings:
+            case .ceilingOnFurring, .ceilingOnRailsAndStuds, .modularCeiling, .openings, .paintingBeta:
                 nil
             }
         }
@@ -474,7 +769,9 @@ final class ProjectStore: ObservableObject {
         try commit(next)
     }
 
-    func deleteProject(id: UUID) throws { try commit(projects.filter { $0.id != id }) }
+    func deleteProject(id: UUID) throws {
+        try commit(projects.filter { $0.id != id }, surveys: surveys.filter { $0.projectID != id })
+    }
 
     @discardableResult
     func duplicateProject(id: UUID) throws -> UUID {
@@ -502,7 +799,9 @@ final class ProjectStore: ObservableObject {
             }
             var copy = WorkItem(id: copiedIDs[work.id]!, projectID: projectID, name: work.name, type: work.type, payload: payload, createdAt: now, updatedAt: now)
             copy.layoutDocument = work.layoutDocument; copy.layoutNeedsRecalculation = work.layoutNeedsRecalculation
+            copy.surveySourceNeedsReview = work.surveySourceNeedsReview
             copy.roomID = work.roomID.flatMap { roomIDs[$0] }
+            copy.level = work.level; copy.zone = work.zone
             copy.linkedRoomIDs = work.linkedRoomIDs.compactMap { roomIDs[$0] }
             copy.components = copiedComponents(work.components, roomIDs: roomIDs, componentIDs: componentIDs)
             return copy
@@ -521,8 +820,44 @@ final class ProjectStore: ObservableObject {
             if link.ceilingSurfaceID == sourceSurface.id { result.ceilingSurfaceID = copiedSurface.id }
             return result
         }
+        let copiedSurveys = surveys.filter { $0.projectID == id }.map { sourceSurvey in
+            var survey = sourceSurvey
+            survey.id = UUID(); survey.projectID = projectID
+            survey.createdAt = now; survey.updatedAt = now
+            let originalNumbers=CeilingPlanNaming.numbers(in:sourceSurvey)
+            survey.ceilingPlanNumbers=[:]
+            survey.checkpoints = sourceSurvey.checkpoints.map { sourceCheckpoint in
+                var checkpoint = sourceCheckpoint
+                checkpoint.id = UUID()
+                checkpoint.roomID = roomIDs[sourceCheckpoint.roomID]!
+                checkpoint.document = sourceCheckpoint.document.remappingDomainIDs()
+                for (old,new) in zip(sourceCheckpoint.document.room.ceilings,checkpoint.document.room.ceilings) {
+                    survey.ceilingPlanNumbers?[new.id.uuidString]=originalNumbers[old.id.uuidString]
+                }
+                checkpoint.createdAt = now; checkpoint.updatedAt = now
+                return checkpoint
+            }
+            return survey
+        }
+        let originalSurveys = surveys.filter { $0.projectID == id }
+        for workIndex in copy.works.indices {
+            for componentIndex in copy.works[workIndex].components.indices {
+                guard var reference = source.works[workIndex].components[componentIndex].surveySource,
+                      let surveyIndex = originalSurveys.firstIndex(where: { $0.id == reference.surveyID }),
+                      let checkpointIndex = originalSurveys[surveyIndex].checkpoints.firstIndex(where: { $0.id == reference.checkpointID }) else { continue }
+                let original = originalSurveys[surveyIndex].checkpoints[checkpointIndex]
+                let copied = copiedSurveys[surveyIndex].checkpoints[checkpointIndex]
+                let originalIDs = reference.kind == .wall ? original.document.room.walls.map(\.id) : original.document.room.slopes.map(\.id)
+                let copiedIDs = reference.kind == .wall ? copied.document.room.walls.map(\.id) : copied.document.room.slopes.map(\.id)
+                guard let surfaceIndex = originalIDs.firstIndex(of: reference.surfaceID), copiedIDs.indices.contains(surfaceIndex) else { continue }
+                reference.surveyID = copiedSurveys[surveyIndex].id
+                reference.checkpointID = copied.id
+                reference.surfaceID = copiedIDs[surfaceIndex]
+                copy.works[workIndex].components[componentIndex].surveySource = reference
+            }
+        }
         next.insert(copy, at: projectIndex + 1)
-        try commit(next)
+        try commit(next, surveys: surveys + copiedSurveys)
         return projectID
     }
 
@@ -708,6 +1043,22 @@ final class ProjectStore: ObservableObject {
         try commit(next)
     }
 
+    func updateWork(_ work: WorkItem, paintingBetaConfiguration: PaintingBetaConfiguration) throws {
+        var next = projects
+        guard let projectIndex = next.firstIndex(where: { $0.id == work.projectID }),
+              let workIndex = next[projectIndex].works.firstIndex(where: { $0.id == work.id }),
+              paintingBetaConfiguration.area.isFinite, paintingBetaConfiguration.area > 0 else { throw StoreError.invalidStructure }
+        let current = next[projectIndex].works[workIndex]
+        if current.components.contains(where: { $0.surveySource != nil }) {
+            let measured = try current.components.compactMap(\.surface).reduce(0.0) { try $0 + $1.netMeasuredArea() / 1_000_000 }
+            guard abs(measured - paintingBetaConfiguration.area) < 0.0001 else { throw SurveyWorkError.changedDimensions }
+        }
+        next[projectIndex].works[workIndex].payload = .paintingBeta(paintingBetaConfiguration)
+        next[projectIndex].works[workIndex].updatedAt = Date()
+        next[projectIndex].updatedAt = Date()
+        try commit(next)
+    }
+
     func updateWork(_ work: WorkItem, modularCeilingConfiguration: ModularCeilingConfiguration) throws {
         var next = projects
         guard let projectIndex = next.firstIndex(where: { $0.id == work.projectID }),
@@ -863,6 +1214,7 @@ final class ProjectStore: ObservableObject {
         var copy = WorkItem(id: UUID(), projectID: projectID, name: copyName, type: source.type, payload: source.payload, createdAt: now, updatedAt: now)
         copy.layoutDocument = source.layoutDocument; copy.layoutNeedsRecalculation = source.layoutNeedsRecalculation
         copy.roomID = source.roomID
+        copy.level = source.level; copy.zone = source.zone
         copy.linkedRoomIDs = source.linkedRoomIDs
         copy.components = copiedComponents(source.components, roomIDs: Dictionary(uniqueKeysWithValues: next[projectIndex].rooms.map { ($0.id, $0.id) }))
         next[projectIndex].works.insert(copy, at: workIndex + 1)
@@ -885,6 +1237,84 @@ final class ProjectStore: ObservableObject {
         }
         next[projectIndex].updatedAt = Date()
         try commit(next)
+    }
+
+    /// Commit the configured ouvrage and every selected physical component in one
+    /// archive write. Selection is revalidated against the latest scan and claims.
+    @discardableResult
+    func createSurveyWork(surveyID: UUID, selections: [SurveyWorkSurface], name: String,
+                          type: WorkType, payload: WorkConfiguration, roomID: UUID?) throws -> UUID {
+        guard let survey = surveys.first(where: { $0.id == surveyID }),
+              !selections.isEmpty, Set(selections.map(\.id)).count == selections.count,
+              selections.allSatisfy({ $0.source.surveyID == surveyID }) else { throw SurveyWorkError.invalidSelection }
+        let selectedCheckpointIDs = Set(selections.map { $0.source.checkpointID })
+        guard selectedCheckpointIDs.allSatisfy({ checkpointID in
+            survey.checkpoints.first(where: { $0.id == checkpointID })?.isUsableForWork == true
+        }) else { throw StoreError.scanCheckpointRequiresValidation }
+        var next = projects
+        guard let index = next.firstIndex(where: { $0.id == survey.projectID }) else { throw StoreError.projectNotFound }
+        try validateWorkName(name, in: next[index])
+        if let roomID, !next[index].rooms.contains(where: { $0.id == roomID }) { throw StoreError.invalidStructure }
+        let available = SurveyWorkGeometry.surfaces(in: survey)
+        // A future different treatment (e.g. paint on one existing side) may
+        // reuse geometry. Exclusivity applies to this work family, not the scan.
+        let claimed = next[index].works.filter { $0.type.category == type.category }
+            .flatMap(\.components).compactMap(\.surveySource)
+        var current: [SurveyWorkSurface] = []
+        for selection in selections {
+            guard let resolved = available.first(where: { $0.id == selection.id }),
+                  resolved.sourceDocument == selection.sourceDocument else { throw SurveyWorkError.staleSource }
+            guard !claimed.contains(where: { SurveyWorkGeometry.hasSameSource($0, resolved.source) }) else {
+                throw SurveyWorkError.alreadyAssigned
+            }
+            current.append(resolved)
+        }
+        let area = SurveyWorkGeometry.totalArea(current)
+        let submittedArea: Double
+        switch (type, payload) {
+        case (.distributionPartition, .distributionPartition(let configuration)):
+            guard current.allSatisfy({ $0.source.kind == .wall && SurveyWorkGeometry.isDesignedPartition($0) }),
+                  abs(configuration.height-SurveyWorkGeometry.partition(current).height) < 0.0001 else {
+                throw SurveyWorkError.changedDimensions
+            }
+            submittedArea = configuration.area
+        case (.paintingBeta, .paintingBeta(let configuration)):
+            submittedArea = configuration.area
+        case (.ceilingOnFurring, .ceiling(let configuration)):
+            guard current.allSatisfy({ $0.source.kind == .ceiling }) else { throw SurveyWorkError.invalidSelection }
+            submittedArea = configuration.enteredArea ?? configuration.length * configuration.width
+        case (.peripheralLiningStuds, .peripheralLining(let configuration)):
+            guard current.allSatisfy({ $0.source.kind == .wall }) else { throw SurveyWorkError.invalidSelection }
+            guard configuration.measuredWallRuns == SurveyWorkGeometry.lining(current).measuredWallRuns,
+                  configuration.wallCount == current.count else { throw SurveyWorkError.changedDimensions }
+            submittedArea = configuration.area
+        case (.peripheralLiningFurrings, .furringLining(let configuration)):
+            guard current.allSatisfy({ $0.source.kind == .wall }) else { throw SurveyWorkError.invalidSelection }
+            guard configuration.measuredWallRuns == SurveyWorkGeometry.furring(current).measuredWallRuns,
+                  configuration.wallCount == current.count else { throw SurveyWorkError.changedDimensions }
+            submittedArea = configuration.area
+        default: throw SurveyWorkError.invalidSelection
+        }
+        guard area.isFinite, area > 0, submittedArea.isFinite, abs(area - submittedArea) < 0.0001 else {
+            throw SurveyWorkError.changedDimensions
+        }
+        let now = Date()
+        var work = WorkItem(id: UUID(), projectID: survey.projectID, name: name.trimmed,
+            type: type, payload: payload, createdAt: now, updatedAt: now)
+        work.roomID = roomID
+        work.components = current.map { selected in
+            var component = WorkComponentRecord(name: selected.surface.name)
+            component.surface = selected.surface
+            component.surveySource = selected.source
+            component.referenceSideRoomID = selected.roomID
+            // Geometry is available immediately, without pretending a default
+            // board grid is a user-validated calepinage.
+            return component
+        }
+        next[index].works.insert(work, at: 0)
+        next[index].updatedAt = now
+        try commit(next)
+        return work.id
     }
 
     private func validateWorkName(_ name: String, in project: ProjectItem, excluding workID: UUID? = nil) throws {
@@ -910,8 +1340,9 @@ final class ProjectStore: ObservableObject {
         do {
             let archive = try decoder.decode(Archive.self, from: Data(contentsOf: fileURL))
             guard archive.schemaVersion == 2 else { throw StoreError.invalidStructure }
-            try validateStructure(archive.projects)
+            try validateStructure(archive.projects, surveys: archive.surveys)
             projects = archive.projects
+            surveys = archive.surveys
             lastError = nil
         } catch {
             storageIsReadable = false
@@ -919,13 +1350,18 @@ final class ProjectStore: ObservableObject {
         }
     }
 
-    private func commit(_ next: [ProjectItem]) throws {
+    private func commit(_ next: [ProjectItem], surveys nextSurveys: [ProjectSurveyRecord]? = nil) throws {
         guard storageIsReadable else { throw StoreError.invalidStructure }
         do {
-            try validateStructure(next)
+            var committedSurveys = nextSurveys ?? surveys
+            for i in committedSurveys.indices {
+                committedSurveys[i].ceilingPlanNumbers=CeilingPlanNaming.numbers(in:committedSurveys[i])
+            }
+            try validateStructure(next, surveys: committedSurveys)
             try FileManager.default.createDirectory(at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
-            try encoder.encode(Archive(projects: next)).write(to: fileURL, options: .atomic)
+            try encoder.encode(Archive(projects: next, surveys: committedSurveys)).write(to: fileURL, options: .atomic)
             projects = next
+            surveys = committedSurveys
             lastError = nil
         } catch {
             lastError = "L’enregistrement local a échoué."
@@ -937,6 +1373,9 @@ final class ProjectStore: ObservableObject {
         components.map { source in
             var copy = source
             copy.id = componentIDs[source.id] ?? UUID()
+            // A standalone duplicate is a new independent work, not a second
+            // claim on the scan. Project duplication reconnects mapped sources.
+            copy.surveySource = nil
             copy.referenceSideRoomID = source.referenceSideRoomID.flatMap { roomIDs[$0] }
             copy.surface?.id = UUID()
             copy.surface?.openings = source.surface?.openings.map { opening in
@@ -953,7 +1392,63 @@ final class ProjectStore: ObservableObject {
         }
     }
 
-    private func validateStructure(_ projects: [ProjectItem]) throws {
+    /// Marks only ouvrages whose effective métier surface changed. Renaming a
+    /// room or editing unrelated metadata must not invalidate quantities.
+    private func markWorksAffectedBySurveyGeometryChange(_ projects: inout [ProjectItem],
+                                                          before: ProjectSurveyRecord,
+                                                          after: ProjectSurveyRecord,
+                                                          checkpointID: UUID,
+                                                          now: Date) {
+        guard let projectIndex = projects.firstIndex(where: { $0.id == before.projectID }) else { return }
+        let previousSurfaces = SurveyWorkGeometry.surfaces(in: before)
+        let currentSurfaces = SurveyWorkGeometry.surfaces(in: after)
+
+        func resolved(_ source: SurveySurfaceSource, in values: [SurveyWorkSurface]) -> Surface2D? {
+            values.first(where: { SurveyWorkGeometry.hasSameSource($0.source, source) })?.surface
+        }
+
+        var projectChanged = false
+        for workIndex in projects[projectIndex].works.indices {
+            let affected = projects[projectIndex].works[workIndex].components.contains { component in
+                guard let source = component.surveySource,
+                      source.surveyID == before.id,
+                      source.checkpointID == checkpointID else { return false }
+                guard let old = resolved(source, in: previousSurfaces),
+                      let new = resolved(source, in: currentSurfaces) else { return true }
+                return !sameEffectiveSurfaceGeometry(old, new)
+            }
+            guard affected else { continue }
+            projects[projectIndex].works[workIndex].surveySourceNeedsReview = true
+            projects[projectIndex].works[workIndex].updatedAt = now
+            projectChanged = true
+        }
+        if projectChanged { projects[projectIndex].updatedAt = now }
+    }
+
+    private func hasEffectiveSurveyGeometryChange(before: ProjectSurveyRecord,
+                                                  after: ProjectSurveyRecord,
+                                                  checkpointID: UUID) -> Bool {
+        let previous = SurveyWorkGeometry.surfaces(in: before).filter { $0.source.checkpointID == checkpointID }
+        let current = SurveyWorkGeometry.surfaces(in: after).filter { $0.source.checkpointID == checkpointID }
+        guard previous.count == current.count else { return true }
+        return previous.contains { old in
+            guard let new = current.first(where: { SurveyWorkGeometry.hasSameSource($0.source, old.source) }) else {
+                return true
+            }
+            return !sameEffectiveSurfaceGeometry(old.surface, new.surface)
+        }
+    }
+
+    private func sameEffectiveSurfaceGeometry(_ lhs: Surface2D, _ rhs: Surface2D) -> Bool {
+        guard lhs.kind == rhs.kind, lhs.contour == rhs.contour,
+              lhs.localFrame == rhs.localFrame,
+              lhs.openings.count == rhs.openings.count else { return false }
+        return zip(lhs.openings, rhs.openings).allSatisfy { pair in
+            pair.0.kind == pair.1.kind && pair.0.contour == pair.1.contour
+        }
+    }
+
+    private func validateStructure(_ projects: [ProjectItem], surveys: [ProjectSurveyRecord]) throws {
         var ids = Set<UUID>()
         func claim(_ id: UUID) throws { guard ids.insert(id).inserted else { throw StoreError.invalidStructure } }
         for project in projects {
@@ -971,15 +1466,14 @@ final class ProjectStore: ObservableObject {
                 }
                 guard work.projectID == project.id,
                       work.roomID.map({ rooms.contains($0) }) ?? true,
-                      Set(work.linkedRoomIDs).isSubset(of: rooms),
-                      work.roomID.map({ !work.linkedRoomIDs.contains($0) }) ?? work.linkedRoomIDs.isEmpty else { throw StoreError.invalidStructure }
+                      Set(work.linkedRoomIDs).isSubset(of: rooms) else { throw StoreError.invalidStructure }
                 for component in work.components {
                     try claim(component.id)
                     var sides = Set<UUID?>()
                     for plan in component.plans {
                         try claim(plan.id)
                         guard sides.insert(plan.sideRoomID).inserted,
-                              plan.sideRoomID.map({ $0 == work.roomID || work.linkedRoomIDs.contains($0) }) ?? true,
+                              plan.sideRoomID.map({ rooms.contains($0) }) ?? true,
                               plan.geometryRevision <= component.geometryRevision else { throw StoreError.invalidStructure }
                     }
                 }
@@ -997,15 +1491,48 @@ final class ProjectStore: ObservableObject {
                       walls.insert("\(link.roomID)/\(link.wallComponentID)").inserted else { throw StoreError.invalidStructure }
             }
         }
+        let projectsByID = Dictionary(uniqueKeysWithValues: projects.map { ($0.id, $0) })
+        for survey in surveys {
+            try claim(survey.id)
+            guard let project = projectsByID[survey.projectID], !survey.name.trimmed.isEmpty,
+                  survey.levelName.map({ !$0.trimmed.isEmpty }) ?? true else { throw StoreError.invalidStructure }
+            let rooms = Set(project.rooms.map(\.id))
+            var checkpointRooms = Set<UUID>()
+            for checkpoint in survey.checkpoints {
+                try claim(checkpoint.id)
+                try claim(checkpoint.document.room.id)
+                guard rooms.contains(checkpoint.roomID), checkpointRooms.insert(checkpoint.roomID).inserted,
+                      checkpoint.transformToSurvey.isValid,
+                      checkpoint.createdAt <= checkpoint.updatedAt else { throw StoreError.invalidStructure }
+                try checkpoint.document.validate()
+            }
+            guard survey.createdAt <= survey.updatedAt else { throw StoreError.invalidStructure }
+        }
+        for project in projects {
+            var claims = Set<String>()
+            for work in project.works {
+                for component in work.components {
+                    guard let source = component.surveySource else { continue }
+                    guard let survey = surveys.first(where: { $0.id == source.surveyID && $0.projectID == project.id }),
+                          survey.checkpoints.contains(where: { $0.id == source.checkpointID }),
+                          source.boundaryIndex >= 0,
+                          component.surface?.kind == (source.kind == .wall ? .wall : .ceiling) else { throw StoreError.invalidStructure }
+                    let key = "\(work.type.category.rawValue)/\(source.surveyID)/\(source.checkpointID)/\(source.surfaceID)/\(source.boundaryIndex)/\(source.kind.rawValue)"
+                    guard claims.insert(key).inserted else { throw StoreError.invalidStructure }
+                }
+            }
+        }
     }
 
     private enum StoreError: Error, LocalizedError {
-        case projectNotFound, workNotFound, invalidWorkName, duplicateWorkName, invalidStructure, staleGeometry, adjacencyConfirmationRequired, staleAdjacency
+        case projectNotFound, workNotFound, invalidWorkName, duplicateWorkName, invalidStructure, staleGeometry, adjacencyConfirmationRequired, staleAdjacency, scanReplacementRequiresConfirmation, scanCheckpointRequiresValidation
         var errorDescription: String? {
             switch self {
+            case .scanCheckpointRequiresValidation: "Contrôlez puis validez les surfaces du relevé avant de les utiliser dans un ouvrage."
+            case .scanReplacementRequiresConfirmation: "Cette pièce possède déjà un scan dans ce relevé. Confirmez son remplacement pour continuer."
             case .adjacencyConfirmationRequired: "Des murs sont reliés à ce plafond. Confirmez leurs nouvelles longueurs depuis le plan du composant, ou choisissez de conserver les murs."
             case .staleAdjacency: "Un mur ou un lien a changé depuis votre confirmation. Vérifiez à nouveau les longueurs proposées."
-            case .staleGeometry: "Le contour ou l’ossature commune a changé depuis l’ouverture de ce plan. Revenez au composant puis rouvrez son calepinage."
+            case .staleGeometry: "Le contour ou l’ossature commune a changé depuis l’ouverture de ce plan. Rouvrez cette sous-partie du calepinage."
             case .invalidStructure: "Les données ou leurs liens sont incompatibles. Aucune modification n’a été enregistrée."
             case .projectNotFound: "Projet introuvable."
             case .workNotFound: "Ouvrage ou composant introuvable."

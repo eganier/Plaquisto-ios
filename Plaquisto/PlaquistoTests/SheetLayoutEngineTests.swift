@@ -3,6 +3,124 @@ import SwiftUI
 @testable import Plaquisto
 
 final class SheetLayoutEngineTests: XCTestCase {
+    func testLayingOffsetPresentationUsesSliderDirection() throws {
+        XCTAssertEqual(LayoutLayingOffset.storedMillimetres(displayedCentimetres:-5),50)
+        XCTAssertEqual(LayoutLayingOffset.storedMillimetres(displayedCentimetres:5),-50)
+        XCTAssertEqual(LayoutLayingOffset.displayedCentimetres(storedMillimetres:50),-5)
+        XCTAssertEqual(LayoutLayingOffset.displayedCentimetres(storedMillimetres:-50),5)
+        let outward = try surface(width:5000,height:5000).changingLayingOffset(edge:0,distanceMM:LayoutLayingOffset.storedMillimetres(displayedCentimetres:5))
+        XCTAssertNotNil(outward.layingWarning)
+        let inward = try surface(width:5000,height:5000).changingLayingOffset(edge:0,distanceMM:LayoutLayingOffset.storedMillimetres(displayedCentimetres:-5))
+        XCTAssertNil(inward.layingWarning)
+    }
+    func testLayingOffsetsAreAbsoluteAndPreserveMeasuredContour() throws {
+        let original = surface(width:5000,height:5000)
+        XCTAssertEqual(try original.layingContour(),original.contour)
+        let global = try original.changingLayingOffset(globalMM:30)
+        XCTAssertEqual(LayoutBounds(points:try global.layingContour()).width,4940,accuracy:0.001)
+        XCTAssertEqual(LayoutBounds(points:try global.layingContour()).height,4940,accuracy:0.001)
+        for value in [0.0,-50,100] {
+            let individual = try global.changingLayingOffset(edge:0,distanceMM:value)
+            XCTAssertEqual(individual.layingDistance(at:0),value)
+            XCTAssertEqual(individual.contour,original.contour)
+            let result = try individual.layingContour()
+            let edge = original.contour[1]-original.contour[0]
+            XCTAssertEqual(LayoutGeometry.cross(edge,result[0]-original.contour[0])/edge.length,value,accuracy:0.001)
+            XCTAssertEqual(individual.layingWarning != nil,value < 0)
+            let reset = try individual.changingLayingOffset(reset:true)
+            XCTAssertNil(reset.layingWarning)
+            XCTAssertEqual(try reset.layingContour(),original.contour)
+            XCTAssertTrue(reset.layingOffset.individualMM.isEmpty)
+        }
+    }
+    func testLayingOffsetsConcaveObliqueAndBothWindings() throws {
+        let polygons = [surface(.lShape,width:5000,height:5000).contour,
+                        [LayoutPoint.zero,.init(x:5000,y:0),.init(x:4000,y:3500),.init(x:0,y:5000)]]
+        for polygon in polygons {
+            for contour in [polygon,Array(polygon.reversed())] {
+                let original = Surface2D(name:"Test",kind:.ceiling,contour:contour)
+                let changed = try original.changingLayingOffset(globalMM:30)
+                let result = try changed.layingContour()
+                let winding = LayoutGeometry.area(contour) > 0 ? 1.0 : -1.0
+                for i in contour.indices {
+                    let d = contour[(i+1)%contour.count]-contour[i]
+                    for point in [result[i],result[(i+1)%result.count]] {
+                        XCTAssertEqual(LayoutGeometry.cross(d,point-contour[i])/d.length,30*winding,accuracy:0.001)
+                    }
+                }
+            }
+        }
+    }
+    func testLayingInvalidOffsetsRejectAndKeepLastValidState() throws {
+        let narrow = surface(width:80,height:5000)
+        let valid = try narrow.changingLayingOffset(globalMM:30)
+        XCTAssertThrowsError(try valid.changingLayingOffset(globalMM:50))
+        XCTAssertEqual(valid.layingOffset.globalMM,30)
+        let crossed = Surface2D(name:"Invalid",kind:.wall,contour:[.zero,.init(x:100,y:100),.init(x:0,y:100),.init(x:100,y:0)])
+        XCTAssertThrowsError(try crossed.layingContour())
+    }
+    func testLayingClipsOpeningsAndChangesBoardsWithoutChangingFraming() throws {
+        var original = surface(width:5000,height:5000)
+        original.kind = .ceiling
+        original.openings = [.init(kind:.stairwell,contour:LayoutBounds(min:.init(x:0,y:100),max:.init(x:1000,y:1100)).polygon)]
+        var layer = LayoutLayer(); layer.furring = .init()
+        let before = try SheetLayoutEngine.calculate(surface:original,layer:layer)
+        let changed = try original.changingLayingOffset(globalMM:30)
+        let after = try SheetLayoutEngine.calculate(surface:changed,layer:layer)
+        XCTAssertEqual(after.netArea,4940*4940-970*1000,accuracy:0.01)
+        XCTAssertEqual(after.netArea,try changed.netLayingArea(),accuracy:0.01)
+        XCTAssertEqual(try changed.netMeasuredArea(),before.netArea,accuracy:0.01)
+        XCTAssertEqual(after.furring,before.furring)
+        XCTAssertNotEqual(after.sheets,before.sheets)
+        XCTAssertEqual(original.openings,changed.openings)
+    }
+    func testLayingPersistenceLegacyAndStableEdgeIdentity() throws {
+        let original = surface(width:5000,height:5000)
+        let changed = try original.changingLayingOffset(globalMM:30).changingLayingOffset(edge:2,distanceMM:-50)
+        let reopened = try JSONDecoder().decode(Surface2D.self,from:JSONEncoder().encode(changed))
+        XCTAssertEqual(changed,reopened)
+        XCTAssertEqual(try changed.layingContour(),try reopened.layingContour())
+        var legacy = try XCTUnwrap(JSONSerialization.jsonObject(with:JSONEncoder().encode(original)) as? [String:Any])
+        legacy.removeValue(forKey:"layingOffset"); legacy.removeValue(forKey:"edgeIDs")
+        let decoded = try JSONDecoder().decode(Surface2D.self,from:JSONSerialization.data(withJSONObject:legacy))
+        XCTAssertEqual(decoded.layingOffset.globalMM,0)
+        XCTAssertEqual(try decoded.layingContour(),original.contour)
+        let inserted = try changed.changingVertex(insertAfter:0,point:(changed.contour[0]+changed.contour[1])*0.5)
+        XCTAssertEqual(inserted.stableEdgeIDs[3],changed.stableEdgeIDs[2])
+        XCTAssertEqual(inserted.layingDistance(at:3),-50)
+    }
+    func testLayingExpansionRecalculatesRequiredBoardCount() throws {
+        let original = surface(width:2400,height:2500)
+        let expanded = try original.changingLayingOffset(edge:1,distanceMM:-50)
+        XCTAssertEqual(try SheetLayoutEngine.calculate(surface:original,layer:.init()).sheets.count,2)
+        XCTAssertEqual(try SheetLayoutEngine.calculate(surface:expanded,layer:.init()).sheets.count,3)
+    }
+    func testLayingOffsetsMirrorWithPartitionSideWithoutLosingEdgeIDs() throws {
+        let original = try surface(width:5000,height:5000).changingLayingOffset(globalMM:30).changingLayingOffset(edge:1,distanceMM:-50)
+        let mirrored = original.mirroredComponentSide()
+        XCTAssertEqual(mirrored.stableEdgeIDs,original.stableEdgeIDs)
+        let expected = try original.layingContour().map { LayoutPoint(x:-$0.x,y:$0.y) }
+        let actual = try mirrored.layingContour()
+        for (a,b) in zip(expected,actual) {
+            XCTAssertEqual(a.x,b.x,accuracy:0.001); XCTAssertEqual(a.y,b.y,accuracy:0.001)
+        }
+        XCTAssertEqual(try mirrored.netLayingArea(),try original.netLayingArea(),accuracy:0.01)
+    }
+    @MainActor func testLayingOffsetSurvivesClosingAndReopeningSavedPlan() throws {
+        let name = "layout-offset-\(UUID())", defaults = UserDefaults(suiteName:name)!
+        defer { defaults.removePersistentDomain(forName:name) }
+        let changed = try surface(width:5000,height:5000).changingLayingOffset(globalMM:30).changingLayingOffset(edge:1,distanceMM:-50)
+        let saved = SavedLayoutDocument(document:.init(surface:changed))
+        defaults.set(try JSONEncoder().encode([saved]),forKey:"plaquisto.tools.layout.library.v1")
+        let editor = LayoutEditorModel(defaults:defaults)
+        editor.open(editor.savedDocuments[0]); editor.saveCurrentAndClose()
+        let reopened = LayoutEditorModel(defaults:defaults)
+        reopened.open(reopened.savedDocuments[0])
+        XCTAssertEqual(reopened.document?.surface,changed)
+        XCTAssertTrue(try XCTUnwrap(reopened.document?.surface.layingWarning).contains("mur adjacent"))
+        var ceiling = changed; ceiling.kind = .ceiling
+        XCTAssertTrue(try XCTUnwrap(ceiling.layingWarning).contains("mur support"))
+    }
     func testHorizontalAlignmentIsViewOnlyAndWorksForBothWindings() throws {
         let polygon:[LayoutPoint] = [.zero,.init(x:4000,y:300),.init(x:4300,y:3000),.init(x:-200,y:2700)]
         for contour in [polygon,Array(polygon.reversed())] {
@@ -74,12 +192,13 @@ final class SheetLayoutEngineTests: XCTestCase {
         attachment.name = "Bibliothèque et icônes alignées"
         attachment.lifetime = .keepAlways; add(attachment)
     }
-    func testViewportRotationKeepsOriginAndRoundTripsCoordinates() {
+    func testViewportRotationKeepsGeometricCenterAndRoundTripsCoordinates() {
         let bounds = LayoutBounds(min:.init(x:-500,y:-500),max:.init(x:5000,y:4000))
-        let base = LayoutViewport(bounds:bounds,size:.init(width:390,height:600),zoom:1.7,pan:.init(width:23,height:-11))
+        let pivot = LayoutPoint(x:1750,y:1200)
+        let base = LayoutViewport(bounds:bounds,size:.init(width:390,height:600),zoom:1.7,pan:.init(width:23,height:-11),pivot:pivot)
         for angle in [-2.2,0,.pi/2,4.9] {
             var rotated = base; rotated.rotation = angle
-            XCTAssertEqual(rotated.screen(.zero),base.screen(.zero))
+            XCTAssertEqual(rotated.screen(pivot),base.screen(pivot))
             let point = LayoutPoint(x:1400,y:3300)
             let back = rotated.world(rotated.screen(point))
             XCTAssertEqual(back.x,point.x,accuracy:0.000001); XCTAssertEqual(back.y,point.y,accuracy:0.000001)
@@ -91,10 +210,46 @@ final class SheetLayoutEngineTests: XCTestCase {
     func testRotatedRecenterFitsEveryCorner() {
         let points = surface(width:6000,height:2500).contour
         let angle = 1.1
-        let viewport = LayoutViewport(bounds:LayoutViewport.fittedBounds(points,rotation:angle),size:.init(width:390,height:400),zoom:1,pan:.zero,rotation:angle)
+        let pivot = LayoutViewport.geometricCenter(points)
+        let viewport = LayoutViewport(bounds:LayoutViewport.fittedBounds(points,rotation:angle,pivot:pivot),size:.init(width:390,height:400),zoom:1,pan:.zero,rotation:angle,pivot:pivot)
         for point in points {
             let p = viewport.screen(point)
             XCTAssertTrue((0...390).contains(p.x)); XCTAssertTrue((0...400).contains(p.y))
+        }
+    }
+    func testConcaveViewportRotationUsesStablePolygonCentroid() {
+        let points = [LayoutPoint.zero,.init(x:5000,y:0),.init(x:5000,y:1500),
+                      .init(x:1800,y:1500),.init(x:1800,y:4200),.init(x:0,y:4200)]
+        let pivot = LayoutViewport.geometricCenter(points)
+        let bounds = LayoutViewport.fittedBounds(points,rotation:0,pivot:pivot)
+        let base = LayoutViewport(bounds:bounds,size:.init(width:390,height:500),zoom:1.3,pan:.zero,pivot:pivot)
+        let center = base.screen(pivot)
+        for angle in stride(from:-Double.pi,through:Double.pi,by:0.2) {
+            var viewport = base
+            viewport.rotation = angle
+            XCTAssertEqual(viewport.screen(pivot).x,center.x,accuracy:0.000001)
+            XCTAssertEqual(viewport.screen(pivot).y,center.y,accuracy:0.000001)
+        }
+    }
+    func testViewportPanAlwaysLeavesContourVisibleAtEveryZoomAndRotation() {
+        let points = [LayoutPoint.zero,.init(x:5000,y:0),.init(x:5000,y:1500),
+                      .init(x:1800,y:1500),.init(x:1800,y:4200),.init(x:0,y:4200)]
+        let pivot = LayoutViewport.geometricCenter(points)
+        let bounds = LayoutViewport.fittedBounds(points,rotation:0,pivot:pivot)
+        for zoom in [0.4,1.0,3.0,8.0] {
+            for rotation in [-2.1,0.0,1.3] {
+                let viewport = LayoutViewport(bounds:bounds,size:.init(width:390,height:500),zoom:zoom,pan:.zero,rotation:rotation,pivot:pivot)
+                for requested in [CGSize(width:20_000,height:20_000),CGSize(width:-20_000,height:-20_000),CGSize(width:20_000,height:-20_000)] {
+                    let pan = viewport.constrainedPan(requested,contour:points)
+                    var moved = viewport
+                    moved = LayoutViewport(bounds:moved.bounds,size:moved.size,zoom:moved.zoom,pan:pan,rotation:moved.rotation,pivot:moved.pivot)
+                    let screen = points.map(moved.screen)
+                    XCTAssertGreaterThanOrEqual(screen.map(\.x).max() ?? 0,50-0.000001)
+                    XCTAssertLessThanOrEqual(screen.map(\.x).min() ?? 0,340+0.000001)
+                    XCTAssertGreaterThanOrEqual(screen.map(\.y).max() ?? 0,50-0.000001)
+                    XCTAssertLessThanOrEqual(screen.map(\.y).min() ?? 0,450+0.000001)
+                }
+            }
         }
     }
     func testRotationDetentAcquiresAndReleasesForAnyWall() {
@@ -357,11 +512,74 @@ final class SheetLayoutEngineTests: XCTestCase {
         XCTAssertFalse(LayoutPlanning.aligned(layer))
         layer = LayoutPlanning.alignFurring(to:layer)
         XCTAssertTrue(LayoutPlanning.aligned(layer))
-        layer.furring?.offset = 75; layer = LayoutPlanning.alignBoards(to:layer)
+        layer.furring?.offset = 75; layer = LayoutPlanning.alignBoards(to:layer,support:.wall)
         XCTAssertTrue(LayoutPlanning.aligned(layer)); XCTAssertEqual(layer.offset.x,75)
         layer.furring?.parallelToBoards = true
         XCTAssertEqual(LayoutPlanning.compatibleSpacings(layer),[400,600])
     }
+    func testCeilingBoardSnapIsNearestAndPreservesLateralPlacement() {
+        for orientation in [LayoutOrientation.vertical, .horizontal] {
+            for spacing in [400.0, 500.0, 600.0] {
+                for position in [-4301.0, -1200, -1, 0, 49, 50, 51, 2749, 2750, 2751, 4390] {
+                    var layer = LayoutLayer()
+                    layer.orientation = orientation
+                    layer.sheetLength = spacing == 500 ? 2500 : 2400
+                    layer.referenceEdge = 2
+                    layer.furring = .init(spacing:spacing,offset:50)
+                    let alongX = LayoutPlanning.alongX(layer)
+                    layer.offset = alongX ? .init(x:1733,y:position) : .init(x:position,y:1733)
+                    let result = LayoutPlanning.alignBoards(to:layer,support:.ceiling)
+                    let target = alongX ? result.offset.y : result.offset.x
+                    let nearest = 50 + ((position - 50)/spacing).rounded()*spacing
+                    XCTAssertEqual(abs(target-position),abs(nearest-position),accuracy:0.000001)
+                    XCTAssertLessThanOrEqual(abs(target-position),spacing/2+0.000001)
+                    XCTAssertTrue(LayoutPlanning.aligned(result))
+                    XCTAssertEqual(LayoutPlanning.alignBoards(to:result,support:.ceiling),result)
+                    var expected = layer
+                    if alongX { expected.offset.y = target } else { expected.offset.x = target }
+                    XCTAssertEqual(result,expected, "Only the offset normal to the fourrures may change")
+                }
+            }
+        }
+    }
+
+    func testCeilingBoardSnapOnLargeRotatedPlanKeepsFurringAndGridOrigin() throws {
+        var support = surface(width:8000,height:7000)
+        support.kind = .ceiling
+        let world = LayoutGridFrame(origin:.init(x:800,y:400),angle:0.37)
+        support.contour = support.contour.map(world.world)
+        var layer = LayoutLayer()
+        layer.sheetLength = 2400
+        layer.referenceEdge = 0
+        layer.offset = .init(x:1733,y:3590)
+        layer.furring = .init(spacing:600,offset:0,orientation:.horizontal)
+        let before = try SheetLayoutEngine.calculate(surface:support,layer:layer)
+        let snapped = LayoutPlanning.alignBoards(to:layer,support:.ceiling)
+        XCTAssertEqual(snapped.offset,.init(x:1733,y:3600))
+        let after = try SheetLayoutEngine.calculate(surface:support,layer:snapped)
+        XCTAssertEqual(before.furring,after.furring)
+        XCTAssertEqual(before.frame.origin,after.frame.origin)
+        XCTAssertEqual(before.frame.angle,after.frame.angle)
+        XCTAssertTrue(after.furring.lines.contains { abs($0.start.y-3600) < 0.001 && abs($0.end.y-3600) < 0.001 })
+        XCTAssertTrue(LayoutPlanning.aligned(snapped))
+    }
+
+    func testCeilingSnapDoesNotResetAlignedOrUnsupportedLayers() {
+        var layer = LayoutLayer()
+        layer.sheetLength = 2400
+        layer.offset = .init(x:1345,y:3600)
+        XCTAssertEqual(LayoutPlanning.alignBoards(to:layer,support:.ceiling),layer)
+        layer.furring = .init(spacing:600,offset:0,orientation:.horizontal)
+        XCTAssertEqual(LayoutPlanning.alignBoards(to:layer,support:.ceiling),layer)
+        layer.furring?.spacing = 0
+        XCTAssertEqual(LayoutPlanning.alignBoards(to:layer,support:.ceiling),layer)
+        layer.furring?.spacing = 500
+        XCTAssertEqual(LayoutPlanning.alignBoards(to:layer,support:.ceiling),layer)
+        layer.furring?.spacing = 600
+        let wall = LayoutPlanning.alignBoards(to:layer,support:.wall)
+        XCTAssertEqual(wall.offset,.init(x:1345,y:0), "Legacy wall action is unchanged")
+    }
+
     func testOptimizationNeverWorsensCountsOrFurringMetres() throws {
         let s = surface(width:4800,height:2400)
         var layer = LayoutLayer(); layer.sheetLength = 2400; layer.orientation = .horizontal
@@ -446,6 +664,21 @@ final class SheetLayoutEngineTests: XCTestCase {
         XCTAssertThrowsError(try s.scaledDrawing(by:2))
     }
 
+    func testPresetShapesNeverUseDrawingScale() throws {
+        var wall = surface(.slope,width:4000,height:2400,second:3000)
+        wall.provenance = "preset"
+        wall.contourIntent = .init(sketch:wall.contour)
+        XCTAssertFalse(wall.canScaleDrawing)
+        XCTAssertThrowsError(try wall.scaledDrawing(by:1.5))
+
+        var ceiling = surface(width:5000,height:3200)
+        ceiling.kind = .ceiling
+        ceiling.provenance = "preset"
+        ceiling.contourIntent = .init(sketch:ceiling.contour)
+        XCTAssertFalse(ceiling.canScaleDrawing)
+        XCTAssertThrowsError(try ceiling.scaledDrawing(by:0.75))
+    }
+
     func testRotatedReferenceWallPreservesCutDimensionsAndHitTesting() throws {
         let angle = 0.43
         let frame = LayoutGridFrame(origin:.init(x:725,y:-823),angle:angle)
@@ -488,6 +721,50 @@ final class SheetLayoutEngineTests: XCTestCase {
         layer.orientation = .vertical
         let turned = try SheetLayoutEngine.calculate(surface:s,layer:layer)
         XCTAssertTrue(turned.furring.lines.allSatisfy{abs($0.start.x-$0.end.x) < 0.001})
+    }
+
+    func testBoardAndFurringOrientationsRemainIndependent() throws {
+        var surface = surface(width:2400,height:1200)
+        surface.kind = .ceiling
+
+        // A legacy relative value is resolved once, then preserved as an
+        // absolute physical direction while board orientation changes.
+        var layer = LayoutLayer()
+        layer.orientation = .vertical
+        layer.furring = .init(parallelToBoards:false,spacing:600,offset:0)
+        layer.materializeFurringOrientation()
+        XCTAssertEqual(layer.resolvedFurringOrientation, .horizontal)
+
+        layer.orientation = .horizontal
+        XCTAssertEqual(layer.resolvedFurringOrientation, .horizontal)
+        var result = try SheetLayoutEngine.calculate(surface:surface,layer:layer)
+        XCTAssertTrue(result.furring.lines.allSatisfy { abs($0.start.y-$0.end.y) < 0.001 })
+
+        layer.setFurringOrientation(.vertical)
+        XCTAssertEqual(layer.orientation, .horizontal)
+        result = try SheetLayoutEngine.calculate(surface:surface,layer:layer)
+        XCTAssertTrue(result.furring.lines.allSatisfy { abs($0.start.x-$0.end.x) < 0.001 })
+
+        layer.orientation = .vertical
+        XCTAssertEqual(layer.resolvedFurringOrientation, .vertical)
+        let reopened = try JSONDecoder().decode(LayoutLayer.self, from: JSONEncoder().encode(layer))
+        XCTAssertEqual(reopened.orientation, .vertical)
+        XCTAssertEqual(reopened.resolvedFurringOrientation, .vertical)
+    }
+
+    func testChangingFurringOrientationNeverChangesBoardOrientation() {
+        for boardOrientation in LayoutOrientation.allCases {
+            var layer = LayoutLayer()
+            layer.orientation = boardOrientation
+            layer.furring = .init()
+            layer.materializeFurringOrientation()
+
+            for furringOrientation in LayoutOrientation.allCases {
+                layer.setFurringOrientation(furringOrientation)
+                XCTAssertEqual(layer.orientation, boardOrientation)
+                XCTAssertEqual(layer.resolvedFurringOrientation, furringOrientation)
+            }
+        }
     }
 
     func testFurringClipsHolesAndConcaveContours() throws {
@@ -608,7 +885,7 @@ final class SheetLayoutEngineTests: XCTestCase {
         XCTAssertEqual(corrections.map(\.edgeIndex), corrections.map(\.edgeIndex).sorted())
     }
 
-    func testWallPresetsMirrorSlopeAndLWithoutChangingArea() throws {
+    func testLegacyWallPresetsMirrorSlopeAndLWithoutChangingArea() throws {
         for preset in [LayoutPreset.slope, .lShape] {
             let normal = preset.contour(length: 4000, height: 2400, secondaryHeight: 3000)
             let mirrored = preset.contour(length: 4000, height: 2400, secondaryHeight: 3000, mirrored: true)
@@ -616,8 +893,22 @@ final class SheetLayoutEngineTests: XCTestCase {
             XCTAssertNoThrow(try LayoutGeometry.validate(normal))
             XCTAssertNoThrow(try LayoutGeometry.validate(mirrored))
         }
-        XCTAssertFalse(LayoutPreset.available(for: .wall).contains(.gable))
-        XCTAssertEqual(LayoutPreset.available(for: .ceiling), [.rectangle, .freeform])
+    }
+    func testPresetSelectionExcludesLForWallsAndKeepsItForCeilings() throws {
+        XCTAssertEqual(LayoutPreset.available(for: .wall), [.rectangle, .slope, .freeform])
+        XCTAssertEqual(LayoutPreset.available(for: .ceiling), [.rectangle, .lShape, .freeform])
+        XCTAssertFalse(LayoutPreset.lShape.isAvailable(for: .wall))
+        XCTAssertTrue(LayoutPreset.lShape.isAvailable(for: .ceiling))
+
+        // Compatibility is intentionally independent from the creation menu:
+        // an L-shaped wall saved by an older version must remain valid.
+        let legacyWall = LayoutPreset.lShape.contour(
+            length: 5000,
+            height: 2400,
+            secondaryHeight: 3100,
+            lowerLength: 1800
+        )
+        XCTAssertNoThrow(try LayoutGeometry.validate(legacyWall))
     }
     func testSlopeMirrorMovesMaximumHeightFromBCToDA() throws {
         let normal = LayoutPreset.slope.contour(length: 4000, height: 2500, secondaryHeight: 4000)
@@ -628,7 +919,7 @@ final class SheetLayoutEngineTests: XCTestCase {
         XCTAssertEqual((mirrored[0] - mirrored[3]).length, 4000, accuracy: 0.001)
     }
 
-    func testLWallUsesRequestedArchitecturalSides() throws {
+    func testLegacyLWallUsesRequestedArchitecturalSides() throws {
         let contour = LayoutPreset.lShape.contour(length: 5000, height: 2400, secondaryHeight: 3100,
                                                    lowerLength: 1800)
         XCTAssertEqual((contour[1] - contour[0]).length, 1800, accuracy: 0.001) // BA
@@ -861,6 +1152,10 @@ final class SheetLayoutEngineTests: XCTestCase {
             XCTAssertFalse(lines.isEmpty)
             if kind == .wall {
                 XCTAssertTrue(lines.allSatisfy { abs($0.start.x-$0.end.x) < 0.0001 })
+            } else {
+                XCTAssertEqual(layer.sheetWidth,1200)
+                XCTAssertEqual(layer.sheetLength,2400)
+                XCTAssertEqual(framing.spacing,600)
             }
         }
     }

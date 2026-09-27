@@ -78,10 +78,8 @@ enum ComponentAdjacency {
         }
         let changes = (project.ceilingWallLinks ?? []).filter { $0.ceilingComponentID == componentID }.compactMap { link -> ComponentAdjacencyReview.Change? in
             guard let wall = components.first(where: { $0.id == link.wallComponentID }), let wallSurface = wall.surface else { return nil }
-            let work = works.first { $0.components.contains { $0.id == wall.id } }
             let room = project.rooms.first { $0.id == link.roomID }
-            let validRoom = (work.map { $0.roomID == link.roomID || $0.linkedRoomIDs.contains(link.roomID) } ?? false)
-                && works.first(where: { $0.components.contains { $0.id == componentID } })?.roomID == link.roomID
+            let validRoom = room != nil // Organization changes never alter physical correspondences.
             var change = ComponentAdjacencyReview.Change(link: link,
                 wallName: [room?.name, wall.name].compactMap { $0 }.joined(separator: " — "),
                 wallRevision: wall.geometryRevision, oldLengthMM: wallSurface.bounds.width)
@@ -110,8 +108,7 @@ enum ComponentAdjacency {
         guard let ceiling = components.first(where: { $0.id == link.ceilingComponentID })?.surface,
               let wall = components.first(where: { $0.id == link.wallComponentID })?.surface,
               link.identifiesEdge(in: ceiling), let length = wallSpan(of: ceiling, edge: link.edgeIndex),
-              project.works.filter({ $0.components.contains { $0.id == link.ceilingComponentID || $0.id == link.wallComponentID } })
-                .allSatisfy({ $0.roomID == link.roomID || $0.linkedRoomIDs.contains(link.roomID) }) else {
+              project.rooms.contains(where: { $0.id == link.roomID }) else {
             return "Lien plafond–mur à vérifier : contour ou pièce modifié."
         }
         guard abs(length - wall.bounds.width) > toleranceMM else { return nil }

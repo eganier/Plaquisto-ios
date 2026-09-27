@@ -4,6 +4,10 @@ import simd
 
 // Capture boundary. One instance per acquisition; source IDs are only lookup keys.
 final class RoomPlanAdapter {
+    static func usages(in room: CapturedRoom) -> [ScanRoomUsage] {
+        room.sections.map { ScanRoomUsage(rawValue: $0.label.rawValue) ?? .unidentified }
+    }
+
     private var ids: [UUID: UUID] = [:]
     private let roomID = UUID()
     private let createdAt = Date()
@@ -20,6 +24,21 @@ final class RoomPlanAdapter {
         switch surface.confidence { case .high: confidence = "high"; case .medium: confidence = "medium"; case .low: confidence = "low"; @unknown default: confidence = "unknown" }
         return .init(source:.roomPlan,sourceIdentifier:surface.identifier.uuidString,confidenceLabel:confidence)
     }
+    func convertWall(_ s: CapturedRoom.Surface) -> PlaquistoWall {
+        let source=provenance(s)
+        var wall=PlaquistoWall(id:id(s.identifier),
+            start:point(s,x:-s.dimensions.x/2,y:-s.dimensions.y/2),end:point(s,x:s.dimensions.x/2,y:-s.dimensions.y/2),
+            length:.init(rawValue:Double(s.dimensions.x),provenance:source),
+            height:.init(rawValue:Double(s.dimensions.y),provenance:source),provenance:source)
+        if s.dimensions.z>0 { wall.thickness = .init(rawValue:Double(s.dimensions.z),provenance:source) }
+        if s.polygonCorners.count>=3 {
+            wall.localOutline=s.polygonCorners.map { corner in
+                let delta=point(s,x:corner.x,y:corner.y,z:corner.z)-wall.start
+                return RoomPoint(x:delta.x*wall.direction.x+delta.z*wall.direction.z,y:delta.y,z:0)
+            }
+        }
+        return wall
+    }
     func convert(_ captured: CapturedRoom, preserving working: PlaquistoRoomModel? = nil) -> PlaquistoRoomModel {
         // Recover independent IDs from a working model when adapting an update.
         if let working {
@@ -31,12 +50,8 @@ final class RoomPlanAdapter {
                                        metadata:.init(createdAt:working?.metadata.createdAt ?? createdAt,source:.roomPlan,sourceObjectCount:captured.objects.count))
         result.ceilings = working?.ceilings ?? []; result.slopes = working?.slopes ?? []
         result.walls = captured.walls.map { s in
-            let source = provenance(s), domainID = id(s.identifier)
-            var wall = PlaquistoWall(id:domainID,
-                start:point(s,x:-s.dimensions.x/2,y:-s.dimensions.y/2), end:point(s,x:s.dimensions.x/2,y:-s.dimensions.y/2),
-                length:.init(rawValue:Double(s.dimensions.x),provenance:source), height:.init(rawValue:Double(s.dimensions.y),provenance:source), provenance:source)
-            if s.dimensions.z > 0 { wall.thickness = .init(rawValue:Double(s.dimensions.z),provenance:source) }
-            if let old = working?.walls.first(where: { $0.id == domainID }) {
+            var wall = convertWall(s)
+            if let old = working?.walls.first(where: { $0.id == wall.id }) {
                 wall.length = wall.length.preservingCorrection(from:old.length)
                 wall.height = wall.height.preservingCorrection(from:old.height)
                 wall.thickness = wall.thickness?.preservingCorrection(from:old.thickness) ?? old.thickness

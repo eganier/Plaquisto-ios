@@ -1,6 +1,7 @@
 import SwiftUI
 
 struct FurringLiningConfiguratorView: View {
+    @Environment(\.layoutCoveringAreaRatio) private var coveringAreaRatio
     private enum GeometryMode: String, CaseIterable, Identifiable {
         case length = "Longueur"
         case surface = "Surface totale"
@@ -38,6 +39,7 @@ struct FurringLiningConfiguratorView: View {
     private let onClose: (() -> Void)?
     private let showsCloseButton: Bool
     private let isEditing: Bool
+    private let measuredWallRuns: [MeasuredWallRun]?
     private let green = Color(red: 0.12, green: 0.38, blue: 0.29)
 
     @State private var step = 1
@@ -71,6 +73,7 @@ struct FurringLiningConfiguratorView: View {
     init(initialConfiguration: FurringLiningConfiguration? = nil, startsAtResult: Bool = false, initialStep: Int? = nil, onSave: ((FurringLiningConfiguration) -> Void)? = nil, onClose: (() -> Void)? = nil, showsCloseButton: Bool = true) {
         let configuration = initialConfiguration ?? FurringLiningConfiguration()
         self.onSave = onSave; self.onClose = onClose; self.showsCloseButton = showsCloseButton; self.isEditing = initialConfiguration != nil
+        self.measuredWallRuns = configuration.measuredWallRuns
         _step = State(initialValue: initialStep ?? (startsAtResult ? 6 : 1))
         _geometryMode = State(initialValue: configuration.geometryMode == "surface" ? .surface : .length)
         _height = State(initialValue: configuration.height); _enteredLength = State(initialValue: configuration.enteredLength); _enteredSurface = State(initialValue: configuration.enteredSurface)
@@ -91,7 +94,15 @@ struct FurringLiningConfiguratorView: View {
     private let stepNames = ["Dimensions", "Parements", "Ossature et appuis", "Isolation", "Bandes à joint", "Résultat"]
     private var facings: [DoublageFacingChoice] { catalogue.facings }
     private var insulationFamilies: [DoublageInsulationFamily] { catalogue.insulationFamilies }
-    private var actualLength: Double { geometryMode == .length ? enteredLength : (height > 0 ? enteredSurface / height : 0) }
+    private var activeMeasuredRuns: [MeasuredWallRun]? {
+        guard let measuredWallRuns, !measuredWallRuns.isEmpty, geometryMode == .surface,
+              abs(measuredWallRuns.reduce(0) { $0 + $1.netArea } - enteredSurface) < 0.0001,
+              abs((measuredWallRuns.map(\.height).max() ?? 0) - height) < 0.0001 else { return nil }
+        return measuredWallRuns
+    }
+    private var actualLength: Double {
+        activeMeasuredRuns?.reduce(0) { $0 + $1.length } ?? (geometryMode == .length ? enteredLength : (height > 0 ? enteredSurface / height : 0))
+    }
     private var actualArea: Double { geometryMode == .surface ? enteredSurface : enteredLength * height }
     private var calculationWallCount: Int { specifiesWallCount ? wallCount : 1 }
     private var effectiveTiledArea: Double { tiledArea ? min(max(tiledAreaSurface, 0), actualArea) : 0 }
@@ -154,8 +165,12 @@ struct FurringLiningConfiguratorView: View {
         return FurringLiningCalculator.recommendedSupportLines(height: height, maximumSpacing: selectedRule.maximumSupportSpacing)
     }
 
+    private var baseFurringCount: Int {
+        activeMeasuredRuns?.reduce(0) { $0 + FurringLiningCalculator.furringAxes(length: $1.length, spacing: standardFurringSpacing, wallCount: 1) }
+            ?? FurringLiningCalculator.furringAxes(length: actualLength, spacing: standardFurringSpacing, wallCount: calculationWallCount)
+    }
     private var furringCount: Int {
-        let base = FurringLiningCalculator.furringAxes(length: actualLength, spacing: standardFurringSpacing, wallCount: calculationWallCount)
+        let base = baseFurringCount
         guard tiledAreaRequires40CM, standardFurringSpacing > catalogue.tiledAreaMaximumSpacing, actualArea > 0 else { return base }
         let tiledLength = actualLength * effectiveTiledArea / actualArea
         let currentBays = Int(ceil(tiledLength / standardFurringSpacing))
@@ -164,7 +179,10 @@ struct FurringLiningConfiguratorView: View {
     }
 
     private var verticalFurringLength: Double {
-        Double(furringCount) * height * catalogue.quantities["furring_waste_factor"]
+        let measured = activeMeasuredRuns?.reduce(0.0) { sum, run in
+            sum + Double(FurringLiningCalculator.furringAxes(length: run.length, spacing: standardFurringSpacing, wallCount: 1)) * run.height
+        }
+        return ((measured ?? Double(baseFurringCount) * height) + Double(furringCount - baseFurringCount) * height) * catalogue.quantities["furring_waste_factor"]
     }
     private var intermediateHorizontalFurringLength: Double {
         FurringLiningCalculator.horizontalSupportFurringLength(
@@ -311,13 +329,15 @@ struct FurringLiningConfiguratorView: View {
                 }
             }
             card {
-                LabeledContent(geometryMode == .length ? "Surface calculée" : "Longueur calculée", value: format(geometryMode == .length ? actualArea : actualLength, geometryMode == .length ? "m²" : "m"))
+                LabeledContent(measuredWallRuns != nil ? "Longueur totale relevée" : (geometryMode == .length ? "Surface calculée" : "Longueur calculée"), value: format(geometryMode == .length ? actualArea : actualLength, geometryMode == .length ? "m²" : "m"))
             }
-            Text(specifiesWallCount
+            Text(measuredWallRuns != nil ? "Dimensions issues des surfaces sélectionnées. Les longueurs de chaque mur restent distinctes et les ouvertures sont déjà déduites. Pour corriger une mesure, modifiez le relevé. La hauteur affichée est la hauteur maximale."
+                 : specifiesWallCount
                  ? "La hauteur sous plafond est obligatoire. Le nombre de murs est prérempli à 4 afin de tenir compte des fourrures placées aux extrémités de chaque mur."
                  : "Le nombre de murs n’est pas renseigné. Le quantitatif des fourrures sera estimé uniquement à partir de la longueur totale et sera légèrement moins précis.")
                 .font(.footnote).foregroundStyle(.secondary)
         }
+        .disabled(measuredWallRuns != nil)
     }
 
     private var facingsStep: some View {
@@ -570,7 +590,7 @@ struct FurringLiningConfiguratorView: View {
             for selection in layer {
                 guard let facing = facing(for: selection), let plateFormat = selectedFormat(selection) else { continue }
                 let name = "\(facing.title) · \(plateFormat.title)"
-                let quantity = selection.surface * catalogue.quantities["plate_m2_m2"]
+                let quantity = selection.surface * coveringAreaRatio * catalogue.quantities["plate_m2_m2"]
                 totals[name, default: (0, "m²")].0 += quantity
             }
         }
@@ -592,7 +612,7 @@ struct FurringLiningConfiguratorView: View {
         rows.append((catalogue.quantities.name("trpf13", fallback: "Vis TRPF 13"), format(actualArea * catalogue.quantities["trpf13_unit_m2"] * screwFactor, "unités", rounded: true)))
 
         if insulationEnabled {
-            rows.append(("Isolation · \(insulationDescription(firstInsulation))", format(actualArea * catalogue.quantities["insulation_m2_m2"], "m²")))
+            rows.append(("Isolation · \(insulationDescription(firstInsulation))", format(actualArea * coveringAreaRatio * catalogue.quantities["insulation_m2_m2"], "m²")))
         }
         if vaporBarrier {
             rows.append((catalogue.quantities.name("vapor_barrier", fallback: "Pare-vapeur"), format(actualArea * catalogue.quantities["vapor_barrier_m2_m2"], "m²")))
@@ -888,7 +908,8 @@ struct FurringLiningConfiguratorView: View {
             furringSpacing: standardFurringSpacing, includesHorizontalSupportFurring: includesHorizontalSupportFurring, insulationEnabled: insulationEnabled,
             firstInsulation: firstInsulation, vaporBarrier: vaporBarrier,
             vaporBarrierInstallation: vaporBarrierInstallation == .tapedOnFurrings ? "taped_on_furrings" : "through_supports",
-            jointTreatment: jointTreatment, compoundChoice: compound == .paste ? "pate" : "poudre", quantities: quantitySnapshot
+            jointTreatment: jointTreatment, compoundChoice: compound == .paste ? "pate" : "poudre", quantities: quantitySnapshot,
+            measuredWallRuns: activeMeasuredRuns
         )
     }
 

@@ -1,7 +1,8 @@
 import Foundation
 import simd
 
-// Prototype : un contour fermé et un seul plan de plafond suffisamment observé.
+// Reconstruct a complete ceiling from observed plane patches and wall boundaries.
+// Flat, single-slope and two opposing observed slopes are supported.
 // Les trous du mesh ne sont pas interprétés comme des trémies.
 enum ScannerCeilingReconstruction {
     struct Wall {
@@ -59,6 +60,23 @@ enum ScannerCeilingReconstruction {
         }
         if !proposals.isEmpty { return proposals.sorted { $0.0 < $1.0 }.prefix(6).map { $0.1 } }
         return supportedRectangleProposals(walls: walls, keepPoint: keepPoint)
+    }
+
+    // Unlike passage proposals, this only chooses an already closed face. An L
+    // stays an L; no extra wall or virtual cut is introduced here.
+    static func localCeilingWalls(_ walls: [Wall], keepPoint: SIMD2<Double>) -> [Wall]? {
+        guard walls.count >= 3, walls.count <= 100,
+              let polygon = localFace(normalizedWalls(walls), containing: keepPoint) else { return nil }
+        return polygon.indices.map { Wall(start: polygon[$0], end: polygon[($0 + 1) % polygon.count]) }
+    }
+
+    static func isCeilingObservation(_ triangle: Triangle, classifiedCeiling: Bool,
+                                     minimumY: Double, floorY: Double) -> Bool {
+        guard triangle.area.isFinite, triangle.area > 1e-7,
+              triangle.center.y.isFinite, abs(triangle.normal.y) >= 0.42 else { return false }
+        // Wall heights only reject low clutter; they never supply the fitted
+        // height or slope. Apple's ceiling label preserves low roof patches.
+        return triangle.center.y >= (classifiedCeiling ? floorY + 0.5 : minimumY)
     }
 
     // Last resort, explicitly yellow: rectangle supported by four observed wall
@@ -542,7 +560,9 @@ enum ScannerCeilingReconstruction {
         return walls
     }
 
-    private static func closedContour(_ input: [Wall]) -> [SIMD2<Double>]? {
+    /// Shared with the explicit flat-ceiling fallback. Does not invent missing
+    /// walls or use a bounding rectangle; rejects ambiguous/open contours.
+    static func closedContour(_ input: [Wall]) -> [SIMD2<Double>]? {
         guard input.count <= 100,
               input.allSatisfy({ [$0.start.x, $0.start.y, $0.end.x, $0.end.y].allSatisfy(\.isFinite) }) else { return nil }
         let walls = normalizedWalls(input)
@@ -609,7 +629,7 @@ enum ScannerCeilingReconstruction {
         return signedArea(polygon) > 0 ? polygon : Array(polygon.reversed())
     }
 
-    private static func triangulate(_ polygon: [SIMD2<Double>]) -> [Int]? {
+    static func triangulate(_ polygon: [SIMD2<Double>]) -> [Int]? {
         var remaining = Array(polygon.indices)
         var triangles: [Int] = []
         while remaining.count > 3 {

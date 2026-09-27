@@ -43,11 +43,13 @@ struct Surface2D: Codable, Equatable, Identifiable {
     var previousContourIntents: [LayoutContourIntent] = []
     // Changes whenever vertices are inserted/removed, even if the final count is unchanged.
     var topologyID: UUID? = nil
+    var edgeIDs: [String] = []
+    var layingOffset = LayoutLayingOffset()
     var bounds: LayoutBounds { .init(points: contour) }
 }
 extension Surface2D {
     private enum CodingKeys: String, CodingKey {
-        case id, name, kind, contour, openings, provenance, sourceIdentifier, localFrame, edgeTones, dimensionCorrections, contourIntent, previousContourIntents, topologyID
+        case id, name, kind, contour, openings, provenance, sourceIdentifier, localFrame, edgeTones, dimensionCorrections, contourIntent, previousContourIntents, topologyID, edgeIDs, layingOffset
     }
     init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
@@ -64,6 +66,8 @@ extension Surface2D {
         contourIntent = try values.decodeIfPresent(LayoutContourIntent.self, forKey: .contourIntent)
         previousContourIntents = try values.decodeIfPresent([LayoutContourIntent].self, forKey: .previousContourIntents) ?? []
         topologyID = try values.decodeIfPresent(UUID.self, forKey: .topologyID)
+        edgeIDs = try values.decodeIfPresent([String].self, forKey: .edgeIDs) ?? []
+        layingOffset = try values.decodeIfPresent(LayoutLayingOffset.self, forKey: .layingOffset) ?? .init()
     }
 }
 struct LayoutVector3: Codable, Equatable {
@@ -116,6 +120,7 @@ struct LayoutLayer: Codable, Equatable, Identifiable {
         guard kind == .wall else { return self }
         var copy = self
         copy.referenceEdge = nil
+        copy.furring?.orientation = .vertical
         copy.furring?.parallelToBoards = orientation == .vertical
         return copy
     }
@@ -126,9 +131,40 @@ struct LayoutLayer: Codable, Equatable, Identifiable {
     }
 }
 struct LayoutFurringSettings: Codable, Equatable {
+    // Kept for decoding plans created before furring had its own absolute
+    // orientation. New and edited plans persist `orientation` as the source of
+    // truth, so rotating boards cannot rotate the frame with them.
     var parallelToBoards = false
     var spacing = 600.0
     var offset = 0.0
+    var orientation: LayoutOrientation? = nil
+
+    func resolvedOrientation(boardOrientation: LayoutOrientation) -> LayoutOrientation {
+        if let orientation { return orientation }
+        if parallelToBoards { return boardOrientation }
+        return boardOrientation == .horizontal ? .vertical : .horizontal
+    }
+}
+
+extension LayoutLayer {
+    var resolvedFurringOrientation: LayoutOrientation? {
+        furring?.resolvedOrientation(boardOrientation: orientation)
+    }
+
+    mutating func materializeFurringOrientation() {
+        guard var settings = furring else { return }
+        let resolved = settings.resolvedOrientation(boardOrientation: orientation)
+        settings.orientation = resolved
+        settings.parallelToBoards = resolved == orientation
+        furring = settings
+    }
+
+    mutating func setFurringOrientation(_ value: LayoutOrientation) {
+        guard var settings = furring else { return }
+        settings.orientation = value
+        settings.parallelToBoards = value == orientation
+        furring = settings
+    }
 }
 
 // Engine and cut sheets stay in grid coordinates. Only the overview is transformed.
@@ -165,7 +201,7 @@ enum LayoutFurringEngine {
         guard let settings = layer.furring else { return .init() }
         guard [400.0,500.0,600.0].contains(settings.spacing), settings.offset.isFinite else { throw LayoutGeometryError.invalidFormat }
         // In grid coordinates the long side is X for horizontal boards, Y otherwise.
-        let alongX = surface.kind == .wall ? false : (layer.orientation == .horizontal) == settings.parallelToBoards
+        let alongX = surface.kind == .wall ? false : settings.resolvedOrientation(boardOrientation: layer.orientation) == .horizontal
         func across(_ p: LayoutPoint) -> Double { alongX ? p.y : p.x }
         func along(_ p: LayoutPoint) -> Double { alongX ? p.x : p.y }
         let b = surface.bounds
@@ -278,6 +314,8 @@ enum SheetLayoutEngine {
         surface.openings = surface.openings.map { opening in
             var copy = opening; copy.contour = copy.contour.map(frame.local); return copy
         }
+        let furring = try LayoutFurringEngine.calculate(surface:surface,layer:layer)
+        surface.contour = try surface.layingContour()
         let w = layer.cellWidth, h = layer.cellHeight
         guard w.isFinite, h.isFinite, w >= 1, h >= 1, w <= 100_000, h <= 100_000,
               layer.offset.finite, abs(layer.offset.x) <= 1_000_000, abs(layer.offset.y) <= 1_000_000 else { throw LayoutGeometryError.invalidFormat }
@@ -328,14 +366,24 @@ enum SheetLayoutEngine {
             guard let entry = jointCandidates[key], entry.1 > 1 else { return nil }; return entry.0
         }
         return .init(sheets: sheets, joints: joints, frame:frame,
-                     furring:try LayoutFurringEngine.calculate(surface:surface,layer:layer))
+                     furring:furring)
     }
 }
 
 enum LayoutPreset: String, CaseIterable {
     case rectangle = "Rectangle", slope = "Sous rampant", gable = "Pignon", lShape = "En L", freeform = "Dessiner la forme"
+
+    func isAvailable(for kind: LayoutSupportKind) -> Bool {
+        switch (kind, self) {
+        case (_, .rectangle), (_, .freeform), (.wall, .slope), (.ceiling, .lShape):
+            return true
+        default:
+            return false
+        }
+    }
+
     static func available(for kind: LayoutSupportKind) -> [Self] {
-        kind == .wall ? [.rectangle, .slope, .lShape, .freeform] : [.rectangle, .freeform]
+        allCases.filter { $0.isAvailable(for: kind) }
     }
     func contour(length: Double, height: Double, secondaryHeight: Double, mirrored: Bool = false,
                  lowerLength: Double? = nil) -> [LayoutPoint] {

@@ -1,5 +1,17 @@
 import SwiftUI
 
+private struct LayoutCoveringAreaRatioKey: EnvironmentKey {
+    static let defaultValue = 1.0
+}
+extension EnvironmentValues {
+    /// Derived from the linked plan, never persisted as another geometry.
+    /// Applies to boards/insulation only; support dimensions keep driving framing.
+    var layoutCoveringAreaRatio: Double {
+        get { self[LayoutCoveringAreaRatioKey.self] }
+        set { self[LayoutCoveringAreaRatioKey.self] = newValue }
+    }
+}
+
 struct LayoutExportForm: View {
     @EnvironmentObject private var store: ProjectStore
     @Environment(\.dismiss) private var dismiss
@@ -22,7 +34,7 @@ struct LayoutExportForm: View {
                         ForEach(store.projects) { Text($0.name).tag(Optional($0.id)) }
                     }
                     if projectID == nil { TextField("Nom du projet",text:$projectName) }
-                    TextField("Pièce concernée",text:$roomName)
+                    LabeledContent("Pièce (facultatif)") { TextField("Exemple : Salon",text:$roomName) }
                 }
                 Section("Type d’ouvrage") {
                     Picker("Système",selection:$type) { ForEach(types) { Text($0.title).tag($0) } }
@@ -35,12 +47,12 @@ struct LayoutExportForm: View {
                             if projectID == nil { projectID = try store.createProject(name:projectName,client:"",address:"",notes:"") }
                             configuring = true
                         } catch { self.error = error.localizedDescription }
-                    }.disabled(roomName.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty || (projectID == nil && projectName.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty))
+                    }.disabled(projectID == nil && projectName.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty)
                     if let error { Text(error).foregroundStyle(.red) }
                 }
             }
             .navigationTitle("Exporter vers un ouvrage").navigationBarTitleDisplayMode(.inline)
-            .onAppear { roomName = document.surface.name; type = types[0]; projectID = store.projects.first?.id }
+            .onAppear { type = types[0]; projectID = store.projects.first?.id }
             .toolbar { ToolbarItem(placement:.cancellationAction) { Button("Fermer") { dismiss() } } }
             .fullScreenCover(isPresented:$configuring) {
                 if let projectID {
@@ -62,7 +74,28 @@ enum LayoutWorkGeometry {
         return (edges[0].length/1000,edges[1].length/1000)
     }
     static func area(_ document:LayoutDocument) -> Double {
-        ((try? SheetLayoutEngine.calculate(surface:document.surface,layer:document.layers.first ?? .init()).netArea) ?? 0)/1_000_000
+        ((try? document.surface.netMeasuredArea()) ?? 0)/1_000_000
+    }
+    static func coveringAreaRatio(_ document: LayoutDocument?) -> Double {
+        guard let document,
+              let measured = try? document.surface.netMeasuredArea(), measured > 0,
+              let laying = try? document.surface.netLayingArea(), laying.isFinite else { return 1 }
+        return laying / measured
+    }
+    static func ceilingInsulation(_ configuration: CeilingConfiguration, catalogue: CeilingCataloguePayload,
+                                  coveringRatio: Double) -> [(name: String, quantity: Double)] {
+        let area = (configuration.enteredArea ?? configuration.length * configuration.width) * coveringRatio
+        guard area.isFinite, area > 0 else { return [] }
+        var selections = [(configuration.insulationID, configuration.insulationThickness)]
+        if configuration.insulationLayers == 2, !configuration.insulationID.isEmpty {
+            selections.append((configuration.secondInsulationID ?? "", configuration.secondInsulationThickness ?? 0))
+        }
+        // Useful net surface, one quantity per selected insulation layer. No
+        // new waste coefficient is invented for this previously absent row.
+        return selections.compactMap { id, thickness in
+            guard !id.isEmpty, let record = catalogue.isolation.first(where: { $0.id == id }) else { return nil }
+            return ("Isolation · \(record.title) · \(thickness.formatted(.number.precision(.fractionLength(0...1)))) mm", area)
+        }
     }
     static func ceiling(_ document:LayoutDocument?, base:CeilingConfiguration = .init()) -> CeilingConfiguration {
         guard let document else { return base }

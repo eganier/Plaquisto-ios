@@ -5,6 +5,8 @@ enum PlaquistoWallGeometry {
         let x0: Double; let x1: Double; let h0: Double; let h1: Double
         let heightSource: GeometrySource
         let manuallyValidated: Bool
+        var b0: Double = 0
+        var b1: Double = 0
     }
     struct Result { let strips: [Strip]; let gross: Double; let net: Double; let openingArea: Double }
     static func contains(_ p: RoomPoint, polygon: [RoomPoint], tolerance: Double = 0.025) -> Bool {
@@ -24,48 +26,40 @@ enum PlaquistoWallGeometry {
     static func analyze(wall: PlaquistoWall, room: PlaquistoRoomModel) -> Result {
         let length = wall.length.effectiveValue
         guard length > 0 else { return .init(strips: [], gross: 0, net: 0, openingArea: 0) }
-        let pans = room.slopes.filter(\.accepted)
-        var breaks = [0.0, length]
-        let direction = wall.direction
-        func cross(_ x: Double, _ z: Double, _ u: Double, _ v: Double) -> Double { x*v-z*u }
-        for pan in pans {
-            for polygon in pan.boundaries {
-                for i in polygon.indices {
-                    let a = polygon[i], b = polygon[(i+1)%polygon.count]
-                    let ex = b.x-a.x, ez = b.z-a.z
-                    let denom = cross(direction.x,direction.z,ex,ez)
-                    if abs(denom) < 1e-9 { continue }
-                    let ax = a.x-wall.start.x, az = a.z-wall.start.z
-                    let t = cross(ax,az,ex,ez)/denom, u = cross(ax,az,direction.x,direction.z)/denom
-                    if t > 1e-6 && t < length-1e-6 && u >= -1e-6 && u <= 1+1e-6 { breaks.append(t) }
-                }
-            }
-        }
-        breaks = Array(Set(breaks)).sorted()
+        // Wall geometry is authoritative. Creating/editing any ceiling must
+        // never reshape it. Vertical slicing preserves concave scanned profiles
+        // and non-horizontal lower edges, not just their bounding rectangle.
+        let polygon = wall.effectiveOutline
+        let breaks = Array(Set(polygon.map(\.x))).sorted()
         var strips: [Strip] = []
+        guard breaks.count >= 2 else { return .init(strips:[],gross:0,net:0,openingArea:0) }
         for i in 1..<breaks.count {
             let lo = breaks[i-1], hi = breaks[i]
             guard hi-lo > 1e-7 else { continue }
-            let midpoint = wall.start + direction*((lo+hi)/2)
-            let pan = pans.filter { $0.boundaries.contains { contains(midpoint, polygon: $0) } }
-                .min { $0.plane.height(x: midpoint.x,z: midpoint.z) < $1.plane.height(x: midpoint.x,z: midpoint.z) }
-            func height(_ distance: Double) -> Double {
-                if wall.height.manualValue != nil { return wall.height.effectiveValue }
-                guard let pan else { return wall.height.effectiveValue }
-                let p = wall.start+direction*distance
-                return max(0,pan.plane.height(x:p.x,z:p.z)-wall.start.y)
+            let mid = (lo+hi)/2
+            let edges = polygon.indices.compactMap { index -> (RoomPoint,RoomPoint)? in
+                let a=polygon[index], b=polygon[(index+1)%polygon.count]
+                return min(a.x,b.x) < mid && mid < max(a.x,b.x) ? (a,b) : nil
             }
-            let manual = wall.height.manualValue != nil
-            strips.append(.init(x0:lo,x1:hi,h0:height(lo),h1:height(hi),
-                                heightSource:manual ? .manual : (pan?.provenance.source ?? wall.height.effectiveSource),
-                                manuallyValidated:manual ? wall.height.manuallyValidated : (pan?.manuallyValidated ?? wall.height.manuallyValidated)))
+            func y(_ edge:(RoomPoint,RoomPoint), _ x:Double) -> Double {
+                edge.0.y+(edge.1.y-edge.0.y)*(x-edge.0.x)/(edge.1.x-edge.0.x)
+            }
+            let ordered = edges.sorted { y($0,mid) < y($1,mid) }
+            for j in stride(from:0,to:ordered.count-1,by:2) {
+                let lower=ordered[j], upper=ordered[j+1]
+                strips.append(.init(x0:lo,x1:hi,h0:y(upper,lo),h1:y(upper,hi),
+                    heightSource:wall.height.effectiveSource,manuallyValidated:wall.height.manuallyValidated,
+                    b0:y(lower,lo),b1:y(lower,hi)))
+            }
         }
         let openings = room.openings.filter { $0.wallID == wall.id }
         var gross = 0.0, deduction = 0.0
         for strip in strips {
             let slope = (strip.h1-strip.h0)/(strip.x1-strip.x0)
             func height(_ x: Double) -> Double { strip.h0+slope*(x-strip.x0) }
-            gross += (strip.x1-strip.x0)*(strip.h0+strip.h1)/2
+            let bottomSlope = (strip.b1-strip.b0)/(strip.x1-strip.x0)
+            func bottom(_ x: Double) -> Double { strip.b0+bottomSlope*(x-strip.x0) }
+            gross += (strip.x1-strip.x0)*(strip.h0+strip.h1-strip.b0-strip.b1)/2
             var xs = [strip.x0,strip.x1]
             for o in openings {
                 let left = o.positionOnWall.effectiveValue, right = left+o.width.effectiveValue
@@ -76,15 +70,21 @@ enum PlaquistoWallGeometry {
                         if x > strip.x0 && x < strip.x1 { xs.append(x) }
                     }
                 }
+                if abs(bottomSlope) > 1e-9 {
+                    for y in [o.sillHeight.effectiveValue,o.sillHeight.effectiveValue+o.height.effectiveValue] {
+                        let x=strip.x0+(y-strip.b0)/bottomSlope
+                        if x>strip.x0 && x<strip.x1 { xs.append(x) }
+                    }
+                }
             }
             xs = Array(Set(xs)).sorted()
             for j in 1..<xs.count {
                 let lo = xs[j-1], hi = xs[j], mid = (lo+hi)/2
                 let active = openings.filter { mid >= $0.positionOnWall.effectiveValue && mid <= $0.positionOnWall.effectiveValue+$0.width.effectiveValue }
                 func unionHeight(_ x: Double) -> Double {
-                    let ranges = active.map { (max(0,$0.sillHeight.effectiveValue),min(height(x),$0.sillHeight.effectiveValue+$0.height.effectiveValue)) }
+                    let ranges = active.map { (max(bottom(x),$0.sillHeight.effectiveValue),min(height(x),$0.sillHeight.effectiveValue+$0.height.effectiveValue)) }
                         .filter { $0.1 > $0.0 }.sorted { $0.0 < $1.0 }
-                    var total = 0.0, top = 0.0
+                    var total = 0.0, top = bottom(x)
                     for r in ranges { total += max(0,r.1-max(top,r.0)); top = max(top,r.1) }
                     return total
                 }
@@ -95,8 +95,9 @@ enum PlaquistoWallGeometry {
     }
     static func triangles(wall: PlaquistoWall, room: PlaquistoRoomModel) -> [RoomPoint] {
         analyze(wall:wall,room:room).strips.flatMap { strip in
-            let a = wall.start+wall.direction*strip.x0, b = wall.start+wall.direction*strip.x1
-            let c = b+RoomPoint(x:0,y:strip.h1,z:0), d = a+RoomPoint(x:0,y:strip.h0,z:0)
+            let left = wall.start+wall.direction*strip.x0, right = wall.start+wall.direction*strip.x1
+            let a=left+RoomPoint(x:0,y:strip.b0,z:0), b=right+RoomPoint(x:0,y:strip.b1,z:0)
+            let c = right+RoomPoint(x:0,y:strip.h1,z:0), d = left+RoomPoint(x:0,y:strip.h0,z:0)
             return [a,b,c,a,c,d]
         }
     }
@@ -109,6 +110,8 @@ enum PlaquistoWallGeometry {
         for strip in analyze(wall:wall,room:room).strips {
             let slope = (strip.h1-strip.h0)/(strip.x1-strip.x0)
             func h(_ x:Double) -> Double { strip.h0+slope*(x-strip.x0) }
+            let bottomSlope=(strip.b1-strip.b0)/(strip.x1-strip.x0)
+            func base(_ x:Double) -> Double { strip.b0+bottomSlope*(x-strip.x0) }
             var xs = [strip.x0,strip.x1]
             for o in openings {
                 for x in [o.positionOnWall.effectiveValue,o.positionOnWall.effectiveValue+o.width.effectiveValue] {
@@ -118,6 +121,12 @@ enum PlaquistoWallGeometry {
                     for y in [o.sillHeight.effectiveValue,o.sillHeight.effectiveValue+o.height.effectiveValue] {
                         let x = strip.x0+(y-strip.h0)/slope
                         if x > strip.x0 && x < strip.x1 { xs.append(x) }
+                    }
+                }
+                if abs(bottomSlope)>1e-9 {
+                    for y in [o.sillHeight.effectiveValue,o.sillHeight.effectiveValue+o.height.effectiveValue] {
+                        let x=strip.x0+(y-strip.b0)/bottomSlope
+                        if x>strip.x0 && x<strip.x1 { xs.append(x) }
                     }
                 }
             }
@@ -130,12 +139,12 @@ enum PlaquistoWallGeometry {
                 }.map { (max(0,$0.sillHeight.effectiveValue),$0.sillHeight.effectiveValue+$0.height.effectiveValue) }
                     .filter { $0.1 > $0.0 }.sorted { $0.0 < $1.0 }
                 func band(_ lower:Double,_ upper:Double) {
-                    func point(_ x:Double,_ y:Double) -> RoomPoint { wall.start+wall.direction*x+RoomPoint(x:0,y:min(h(x),y),z:0) }
+                    func point(_ x:Double,_ y:Double) -> RoomPoint { wall.start+wall.direction*x+RoomPoint(x:0,y:max(base(x),min(h(x),y)),z:0) }
                     let a=point(lo,lower),b=point(hi,lower),c=point(hi,upper),d=point(lo,upper)
                     if hi-lo>1e-8 && c.y-b.y>1e-8 { result += [a,b,c] }
                     if hi-lo>1e-8 && d.y-a.y>1e-8 { result += [a,c,d] }
                 }
-                var bottom=0.0
+                var bottom=min(strip.b0,strip.b1)
                 for r in ranges {
                     if r.0>bottom { band(bottom,r.0) }
                     bottom=max(bottom,r.1)

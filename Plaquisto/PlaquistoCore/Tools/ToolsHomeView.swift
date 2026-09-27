@@ -115,8 +115,7 @@ struct ToolNumberField: View {
         HStack {
             Text(title)
             Spacer()
-            TextField("0", text: $text)
-                .keyboardType(.decimalPad)
+            PlaquistoNumericField(text: $text)
                 .multilineTextAlignment(.trailing)
                 .frame(maxWidth: 110)
                 .onChange(of: text) { _, newValue in
@@ -125,7 +124,7 @@ struct ToolNumberField: View {
                 }
             Text(unit).foregroundStyle(.secondary)
         }
-        .onAppear { text = value == 0 ? "" : value.formatted(.number.precision(.fractionLength(0...3))) }
+        .onAppear { text = value == 0 ? "" : value.formatted(.number.locale(Locale(identifier: "fr_FR")).grouping(.never).precision(.fractionLength(0...3))) }
         .onChange(of: value) { _, newValue in
             if newValue == 0 { if !text.isEmpty { text = "" } }
         }

@@ -62,9 +62,38 @@ enum CeilingJSONValue: Codable {
     var object: [String: CeilingJSONValue]? { if case let .object(value) = self { value } else { nil } }
 }
 
+/// Read-only catalogue projection, loaded with the existing cached catalogue request.
+/// IDs are resolved from records, never guessed from their spelling.
+struct WorkSummaryCatalogue {
+    struct Record {
+        let title: String?
+        let data: [String: CeilingJSONValue]
+    }
+    var records: [String: Record] = [:]
+    init() {}
+    init(data: Data) throws {
+        let root = try JSONDecoder().decode(CeilingJSONValue.self, from: data)
+        func visit(_ value: CeilingJSONValue) {
+            if let object = value.object {
+                if let id = object["id"]?.string, let fields = object["data"]?.object {
+                    records[id] = Record(title: object["title"]?.string, data: fields)
+                } else {
+                    object.values.forEach(visit)
+                }
+            } else { value.array?.forEach(visit) }
+        }
+        visit(root)
+    }
+    func name(_ id: String) -> String? {
+        guard let record = records[id] else { return nil }
+        return record.title ?? record.data["mechanical_family"]?.string ?? record.data["family"]?.string
+    }
+}
+
 @MainActor
 final class CeilingReferenceStore: ObservableObject {
     @Published var catalogue: CeilingCataloguePayload?
+    @Published var workSummaryCatalogue = WorkSummaryCatalogue()
     @Published var isLoading = true
     @Published var error: String?
     @Published var isUsingOfflineData = false
@@ -88,6 +117,7 @@ final class CeilingReferenceStore: ObservableObject {
             let decoded = try JSONDecoder().decode(CeilingCataloguePayload.self, from: data)
             guard !decoded.records.isEmpty else { throw URLError(.zeroByteResource) }
             catalogue = decoded
+            workSummaryCatalogue = (try? WorkSummaryCatalogue(data: data)) ?? .init()
             UserDefaults.standard.set(data, forKey: cacheKey)
             isUsingOfflineData = false
         } catch {
@@ -95,6 +125,7 @@ final class CeilingReferenceStore: ObservableObject {
                let cachedCatalogue = try? JSONDecoder().decode(CeilingCataloguePayload.self, from: cachedData),
                !cachedCatalogue.records.isEmpty {
                 catalogue = cachedCatalogue
+                workSummaryCatalogue = (try? WorkSummaryCatalogue(data: cachedData)) ?? .init()
                 isUsingOfflineData = true
             } else {
                 self.error = "Impossible de charger Plaquisto Admin. Une première connexion Internet est nécessaire."

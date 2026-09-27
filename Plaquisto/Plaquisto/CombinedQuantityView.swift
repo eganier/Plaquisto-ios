@@ -1,5 +1,53 @@
 import SwiftUI
 
+struct ProjectWorkQuantitySelectionView: View {
+    @EnvironmentObject private var store: ProjectStore
+    let projectID: UUID
+    @State private var selected: Set<UUID> = []
+    var body: some View {
+        Group {
+            if let project = store.project(id: projectID) {
+                let chosen = project.works.filter { selected.contains($0.id) }
+                List {
+                    if project.works.isEmpty {
+                        ContentUnavailableView("Aucun ouvrage", systemImage: "sum", description: Text("Ajoutez un ouvrage au projet pour préparer son quantitatif."))
+                    } else {
+                        Section("Ouvrages à inclure") {
+                            ForEach(project.works) { work in
+                                Button {
+                                    if selected.contains(work.id) { selected.remove(work.id) } else { selected.insert(work.id) }
+                                } label: {
+                                    HStack {
+                                        VStack(alignment: .leading) {
+                                            Text(work.name).foregroundStyle(.primary)
+                                            if work.surveySourceNeedsReview {
+                                                Label("Relevé modifié — à contrôler", systemImage: "exclamationmark.triangle.fill")
+                                                    .font(.caption).foregroundStyle(.orange)
+                                            }
+                                            Text([project.rooms.first { $0.id == work.roomID }?.name, work.level, work.zone].compactMap { $0 }.joined(separator: " · "))
+                                                .font(.caption).foregroundStyle(.secondary)
+                                        }
+                                        Spacer()
+                                        Image(systemName: selected.contains(work.id) ? "checkmark.circle.fill" : "circle")
+                                    }
+                                }.accessibilityAddTraits(selected.contains(work.id) ? .isSelected : [])
+                            }
+                        }
+                        Section {
+                            Text("\(chosen.count) ouvrage(s) sélectionné(s)")
+                                .font(.caption).foregroundStyle(.secondary)
+                            NavigationLink {
+                                CombinedQuantityView(works: chosen, title: chosen.count == project.works.count ? "Quantitatif du projet" : "Quantitatif sélectionné")
+                            } label: { Label("Afficher le quantitatif", systemImage: "sum") }
+                            .disabled(chosen.isEmpty)
+                        } footer: { Text("Chaque ouvrage est compté une seule fois.") }
+                    }
+                }
+            }
+        }.navigationTitle("Voir les quantitatifs").navigationBarTitleDisplayMode(.inline)
+    }
+}
+
 struct WorkSelectionView: View {
     let works: [WorkItem]
     @State private var selectedIDs: Set<UUID>
@@ -23,6 +71,10 @@ struct WorkSelectionView: View {
                             VStack(alignment: .leading, spacing: 4) {
                                 Text(work.name).foregroundStyle(.primary)
                                 Text(work.type.title).font(.caption).foregroundStyle(.secondary)
+                                if work.surveySourceNeedsReview {
+                                    Label("Relevé modifié — à contrôler", systemImage: "exclamationmark.triangle.fill")
+                                        .font(.caption).foregroundStyle(.orange)
+                                }
                             }
                             Spacer()
                             Image(systemName: selectedIDs.contains(work.id) ? "checkmark.circle.fill" : "circle")
@@ -56,23 +108,42 @@ struct WorkSelectionView: View {
 
 struct CombinedQuantityView: View {
     @StateObject private var store = CeilingReferenceStore()
+    @EnvironmentObject private var projectStore: ProjectStore
     let works: [WorkItem]
     let title: String
 
+    private var currentWorks: [WorkItem] {
+        works.map { work in projectStore.project(id: work.projectID)?.works.first { $0.id == work.id } ?? work }
+    }
+
     private var summary: CombinedQuantitySummary? {
-        store.catalogue.map { CombinedQuantityCalculator.calculate(works: works, catalogue: $0) }
+        store.catalogue.map { CombinedQuantityCalculator.calculate(works: currentWorks, catalogue: $0) }
     }
 
     var body: some View {
         Group {
-            if store.isLoading {
+            if works.isEmpty {
+                ContentUnavailableView("Aucun ouvrage à quantifier", systemImage: "sum",
+                    description: Text("Cette sélection ne contient aucun ouvrage. Le quantitatif est nul."))
+            } else if store.isLoading {
                 ProgressView("Calcul du quantitatif…")
             } else if let error = store.error {
                 ContentUnavailableView("Référentiel indisponible", systemImage: "wifi.exclamationmark", description: Text(error))
             } else if let summary {
                 List {
+                    let toReview = currentWorks.filter(\.surveySourceNeedsReview)
+                    if !toReview.isEmpty {
+                        Section("Quantités à contrôler") {
+                            ForEach(toReview) { work in
+                                VStack(alignment: .leading, spacing: 6) {
+                                    Text(work.name).font(.headline)
+                                    SurveySourceReviewNotice(work: work)
+                                }
+                            }
+                        }
+                    }
                     Section("Ouvrages inclus") {
-                        ForEach(works) { work in
+                        ForEach(currentWorks) { work in
                             NavigationLink { SavedWorkView(work: work) } label: {
                             if work.type == .openings {
                                 LabeledContent(work.name, value: "\(work.openingConfiguration?.openings.count ?? 0) ouverture(s)")
@@ -93,7 +164,7 @@ struct CombinedQuantityView: View {
         }
         .navigationTitle(title)
         .navigationBarTitleDisplayMode(.inline)
-        .task { if store.catalogue == nil { await store.load() } }
+        .task { if !works.isEmpty && store.catalogue == nil { await store.load() } }
     }
 
     private func format(_ value: Double) -> String { value.formatted(.number.precision(.fractionLength(0...2))) }
@@ -132,6 +203,11 @@ enum CombinedQuantityCalculator {
 
         var includedWorkIDs = Set<UUID>()
         for work in works where includedWorkIDs.insert(work.id).inserted {
+            if case .paintingBeta(let configuration) = work.payload {
+                totalArea += configuration.area
+                add(name: "Surface à peindre (bêta)", quantity: configuration.area, unit: "m²")
+                continue
+            }
             if work.type == .openings, let configuration = work.openingConfiguration {
                 let results = configuration.openings.map {
                     OpeningQuantityCalculator.calculate($0, context: configuration.context)
@@ -194,7 +270,7 @@ enum CombinedQuantityCalculator {
                 continue
             }
             guard let configuration = work.ceilingConfiguration else { continue }
-            let area = configuration.length * configuration.width
+            let area = configuration.enteredArea ?? configuration.length * configuration.width
             totalArea += area
             let prefix = configuration.layers == 1 ? "simple" : "double"
             let key = "\(prefix)_0\(Int((configuration.selectedSpacing * 100).rounded()))"
@@ -240,14 +316,18 @@ enum CombinedQuantityCalculator {
                 }
             }
 
-            addParements(configuration.firstSkin, catalogue: catalogue, add: add)
-            if configuration.layers == 2 { addParements(configuration.secondSkin, catalogue: catalogue, add: add) }
+            let coveringRatio = LayoutWorkGeometry.coveringAreaRatio(work.layoutDocument)
+            for item in LayoutWorkGeometry.ceilingInsulation(configuration, catalogue: catalogue, coveringRatio: coveringRatio) {
+                add(name: item.name, quantity: item.quantity, unit: "m²")
+            }
+            addParements(configuration.firstSkin, catalogue: catalogue, coveringRatio: coveringRatio, add: add)
+            if configuration.layers == 2 { addParements(configuration.secondSkin, catalogue: catalogue, coveringRatio: coveringRatio, add: add) }
         }
 
         return CombinedQuantitySummary(totalArea: totalArea, supplies: totals.values.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending })
     }
 
-    private static func addParements(_ selections: [FacingSelection], catalogue: CeilingCataloguePayload, add: (String, Double, String) -> Void) {
+    private static func addParements(_ selections: [FacingSelection], catalogue: CeilingCataloguePayload, coveringRatio: Double, add: (String, Double, String) -> Void) {
         for selection in selections {
             guard let facing = catalogue.parements.first(where: { $0.id == selection.facingID }),
                   let dimension = facing.data["dimensions"]?.array?.compactMap({ $0.object }).first(where: {
@@ -258,18 +338,18 @@ enum CombinedQuantityCalculator {
                   let length = dimension["length_mm"]?.number else { continue }
             let boardArea = width * length / 1_000_000
             guard boardArea > 0 else { continue }
-            let quantity = ceil(selection.area * 1.05 / boardArea)
+            let quantity = ceil(selection.area * coveringRatio * 1.05 / boardArea)
             add("\(facing.title) · \(Int(width)) × \(Int(length)) mm", quantity, "plaque(s)")
         }
     }
 }
 
-private extension WorkItem {
+extension WorkItem {
     var area: Double {
         switch type {
         case .ceilingOnFurring:
             guard let configuration = ceilingConfiguration else { return 0 }
-            return configuration.length * configuration.width
+            return configuration.enteredArea ?? configuration.length * configuration.width
         case .ceilingOnRailsAndStuds: return railStudCeilingConfiguration?.effectiveArea ?? 0
         case .modularCeiling: return modularCeilingConfiguration?.area ?? 0
         case .peripheralLiningStuds: return doublageConfiguration?.area ?? 0
@@ -279,6 +359,83 @@ private extension WorkItem {
         case .peripheralLiningFurrings: return furringLiningConfiguration?.area ?? 0
         case .peripheralLiningAdhesiveFacing: return adhesiveFacingConfiguration?.area ?? 0
         case .openings: return 0
+        case .paintingBeta:
+            guard case .paintingBeta(let configuration) = payload else { return 0 }
+            return configuration.area
         }
+    }
+}
+
+enum WorkTechnicalSummary {
+    static func text(for work: WorkItem, catalogue: WorkSummaryCatalogue) -> String {
+        var parts = [work.type.title]
+        var facingIDs: [String] = []
+        func number(_ value: Double, decimals: Int = 2) -> String {
+            value.formatted(.number.locale(Locale(identifier: "fr_FR")).precision(.fractionLength(0...decimals)))
+        }
+        func insulation(_ id: String, _ thickness: Double, lambda: Double? = nil) {
+            guard !id.isEmpty else { return }
+            let record = catalogue.records[id]
+            let name = record?.data["material"]?.string ?? catalogue.name(id)
+            var detail = name ?? ""
+            if thickness.isFinite && thickness > 0 {
+                detail += (detail.isEmpty ? "Isolant " : " ") + number(thickness) + " mm"
+                if let lambda = lambda ?? ThermalCalculator.catalogueLambda(
+                    conductivity: record?.data["conductivity"]?.string, lambda: record?.data["lambda_w_mk"]?.number),
+                   let resistance = ThermalCalculator.resistance(thicknessMM: thickness, lambda: lambda) {
+                    detail += " (R \(number(resistance)))"
+                }
+            }
+            if !detail.isEmpty { parts.append(detail) }
+        }
+        switch work.payload {
+        case .ceiling(let c):
+            insulation(c.insulationID, c.insulationThickness)
+            if c.insulationLayers == 2 { insulation(c.secondInsulationID ?? "", c.secondInsulationThickness ?? 0) }
+            facingIDs = (c.firstSkin + (c.layers > 1 ? c.secondSkin : [])).map(\.facingID)
+        case .railStudCeiling(let c):
+            parts.append("R\(c.studWidth) + M\(c.studWidth)")
+            if c.insulationEnabled {
+                insulation(c.firstInsulation.seriesID, Double(c.firstInsulation.thickness))
+                if c.insulationLayers == 2 { insulation(c.secondInsulation.seriesID, Double(c.secondInsulation.thickness)) }
+            }
+            facingIDs = (c.firstSkin + (c.facingLayers > 1 ? c.secondSkin : [])).map(\.productID)
+        case .modularCeiling(let c): parts.append("Dalles \(c.tileFormat.title)")
+        case .peripheralLining(let c):
+            parts.append(c.frame)
+            if c.insulationEnabled {
+                insulation(c.firstInsulation.familyID, Double(c.firstInsulation.thicknessMM), lambda: c.firstInsulation.lambda)
+                if c.insulationLayers == 2 { insulation(c.secondInsulation.familyID, Double(c.secondInsulation.thicknessMM), lambda: c.secondInsulation.lambda) }
+            }
+            facingIDs = (c.firstSkin + (c.layers > 1 ? c.secondSkin : [])).map(\.facingID)
+        case .furringLining(let c):
+            if c.insulationEnabled { insulation(c.firstInsulation.familyID, Double(c.firstInsulation.thicknessMM), lambda: c.firstInsulation.lambda) }
+            facingIDs = (c.firstSkin + (c.layers > 1 ? c.secondSkin : []) + (c.layers > 2 ? c.thirdSkin : [])).map(\.facingID)
+        case .distributionPartition(let c):
+            parts.append(c.frame)
+            if c.insulationEnabled { insulation(c.insulationID, Double(c.insulationThicknessMM)) }
+            facingIDs = (c.faceAFirst + c.faceBFirst + (c.layers > 1 ? c.faceASecond + c.faceBSecond : [])).map(\.facingID)
+        case .alveolarPartition(let c): facingIDs = c.panels.map(\.panelID)
+        case .bondedLining(let c):
+            // This product uses published complex R values, not an approximation e/lambda.
+            if c.insulationThicknessMM > 0 {
+                var detail = "Isolant \(c.insulationThicknessMM) mm"
+                let complexes = catalogue.records.values.flatMap { $0.data["complexes"]?.array ?? [] }
+                let resistance = complexes.compactMap(\.object).first {
+                    $0["insulation_thickness_mm"]?.number == Double(c.insulationThicknessMM)
+                    && abs(($0["lambda_w_mk"]?.number ?? 0) - c.lambda) < 0.0001
+                }?["thermal_resistance_m2_kw"]?.number
+                if let resistance, resistance.isFinite { detail += " (R \(number(resistance)))" }
+                parts.append(detail)
+            }
+            parts += c.allocations.map { $0.facing.title }
+        case .adhesiveFacing(let c): parts.append(c.facingFamily)
+        case .openings: break
+        case .paintingBeta: parts.append("Surface uniquement · consommables à venir")
+        }
+        var seen = Set<String>()
+        parts += facingIDs.compactMap { catalogue.name($0) }.filter { seen.insert($0).inserted }
+        if work.area.isFinite && work.area > 0 { parts.append("\(number(work.area)) m²") }
+        return parts.filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }.joined(separator: " • ")
     }
 }

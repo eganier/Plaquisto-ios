@@ -1,6 +1,7 @@
 import SwiftUI
 
 struct CloisonDistributionConfiguratorView: View {
+    @Environment(\.layoutCoveringAreaRatio) private var coveringAreaRatio
     enum GeometryMode: String, CaseIterable, Identifiable {
         case length = "Longueur"
         case surface = "Surface totale"
@@ -671,7 +672,7 @@ struct CloisonDistributionConfiguratorView: View {
         if skinCount == .double {
             allFacings += faceASecond + faceBSecond
         }
-        appendCombinedFacingRows(allFacings, factor: plateFactor, to: &rows)
+        appendCombinedFacingRows(allFacings, factor: plateFactor * coveringAreaRatio, to: &rows)
 
         let layerKey = skinCount == .single ? "simple" : "double"
         let mountingKey = mounting == .simple ? "simple" : "double"
@@ -689,7 +690,7 @@ struct CloisonDistributionConfiguratorView: View {
         rows.append(("Vis TRPF 13", format(mixedSpacingQuantity(table.frameScrews, standardKey: detailKey, layerKey: layerKey, mountingKey: mountingKey), "unités", rounded: true)))
 
         if insulationEnabled {
-            rows.append(("Isolation · \(insulationSummary)", format(actualArea * (table.coefficients["insulation_m2_m2"] ?? 1.10), "m²")))
+            rows.append(("Isolation · \(insulationSummary)", format(actualArea * coveringAreaRatio * (table.coefficients["insulation_m2_m2"] ?? 1.10), "m²")))
         }
         if jointTreatment {
             let bandKey = skinCount == .single ? "band_simple_skin_ml_m2" : "band_double_skin_ml_m2"

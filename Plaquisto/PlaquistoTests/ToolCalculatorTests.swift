@@ -1,7 +1,66 @@
 import XCTest
+import SwiftUI
 @testable import Plaquisto
 
 final class ToolCalculatorTests: XCTestCase {
+    @MainActor func testDecimalFieldPreservesPrecisionUntilUserActuallyEdits() async throws {
+        var value=2.537842
+        let host=UIHostingController(rootView:ZeroEmptyDecimalTextField(value:Binding(get:{ value },set:{ value=$0 })))
+        let window=UIWindow(frame:CGRect(x:0,y:0,width:390,height:844))
+        window.rootViewController=host; window.makeKeyAndVisible()
+        defer { window.isHidden=true; window.rootViewController=nil }
+        host.view.layoutIfNeeded()
+        try await Task.sleep(for:.milliseconds(250))
+        func field(in view:UIView) -> UITextField? {
+            (view as? UITextField) ?? view.subviews.lazy.compactMap { field(in:$0) }.first
+        }
+        let input=try XCTUnwrap(field(in:host.view))
+        XCTAssertEqual(input.text,"2,54")
+        XCTAssertEqual(value,2.537842)
+        input.delegate?.textFieldDidBeginEditing?(input)
+        input.delegate?.textFieldDidEndEditing?(input)
+        try await Task.sleep(for:.milliseconds(100))
+        XCTAssertEqual(value,2.537842,"Opening/closing the keyboard without editing must not round the model")
+        input.text="3,123456"; input.sendActions(for:.editingChanged)
+        input.delegate?.textFieldDidEndEditing?(input)
+        try await Task.sleep(for:.milliseconds(100))
+        XCTAssertEqual(value,3.123456,"Formatting after an edit must not round its value either")
+        input.text=""; input.sendActions(for:.editingChanged)
+        XCTAssertEqual(value,0)
+        input.text="12.5"; input.sendActions(for:.editingChanged)
+        XCTAssertEqual(value,12.5)
+        input.text="NaN"; input.sendActions(for:.editingChanged)
+        XCTAssertEqual(value,12.5)
+    }
+
+    func testNumericKeyboardEditingGrammar() {
+        func edit(_ text: String, _ range: NSRange, _ replacement: String, integer: Bool = false, signed: Bool = false) -> String? {
+            PlaquistoNumericInput.replacing(text, range: range, with: replacement, integer: integer, signed: signed)
+        }
+        XCTAssertEqual(edit("300", NSRange(location: 0, length: 3), "200"), "200")
+        XCTAssertEqual(edit("", NSRange(location: 0, length: 0), " 12.50 "), "12,50")
+        XCTAssertNil(edit("12,5", NSRange(location: 4, length: 0), ","))
+        XCTAssertNil(edit("", NSRange(location: 0, length: 0), "1,5", integer: true))
+        XCTAssertNil(edit("", NSRange(location: 0, length: 0), "-2"))
+        XCTAssertEqual(edit("", NSRange(location: 0, length: 0), "-2,5", signed: true), "-2,5")
+        XCTAssertEqual(edit("1", NSRange(location: 0, length: 1), ""), "")
+        XCTAssertNil(edit("", NSRange(location: 0, length: 0), "NaN"))
+        XCTAssertNil(edit("", NSRange(location: 0, length: 0), String(repeating: "9", count: 400)))
+        XCTAssertNil(edit("1", NSRange(location: 5, length: 1), "2"))
+        XCTAssertNil(edit("", NSRange(location: 0, length: 0), "999999999999999999999", integer: true))
+    }
+
+    func testNumericKeyboardDismissGestureThresholds() {
+        XCTAssertEqual(PlaquistoNumericInput.visibleKeyboardHeight(fullHeight: 320, translation: 100), 220)
+        XCTAssertEqual(PlaquistoNumericInput.visibleKeyboardHeight(fullHeight: 320, translation: -10), 320)
+        XCTAssertEqual(PlaquistoNumericInput.visibleKeyboardHeight(fullHeight: 320, translation: 500), 1)
+        XCTAssertEqual(PlaquistoNumericInput.visibleKeyboardHeight(fullHeight: 245, translation: 0), 245)
+        XCTAssertFalse(PlaquistoNumericInput.shouldDismiss(translation: -100, predicted: -200))
+        XCTAssertFalse(PlaquistoNumericInput.shouldDismiss(translation: 20, predicted: 30))
+        XCTAssertTrue(PlaquistoNumericInput.shouldDismiss(translation: 65, predicted: 65))
+        XCTAssertTrue(PlaquistoNumericInput.shouldDismiss(translation: 20, predicted: 160))
+    }
+
     func testWallAngleSharedResultsAndReflexExamples() throws {
         for (distance,interior,exterior) in [(100.0,60.0,300.0),(141.421356,90.0,270.0),(173.205081,120.0,240.0),(193.185165,150.0,210.0)] {
             let result = try WallAngleCalculator.calculate(equalSide:100,oppositeSide:distance)

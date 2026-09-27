@@ -1,6 +1,7 @@
 import SwiftUI
 
 struct DoublageConfiguratorView: View {
+    @Environment(\.layoutCoveringAreaRatio) private var coveringAreaRatio
     enum GeometryMode: String, CaseIterable, Identifiable { case length = "Longueur", surface = "Surface totale"; var id: Self { self } }
     enum SkinCount: String, CaseIterable, Identifiable { case single = "Simple peau", double = "Double peau"; var id: Self { self } }
     enum StudMounting: String, CaseIterable, Identifiable { case simple = "Montants simples", double = "Montants doubles"; var id: Self { self } }
@@ -13,7 +14,9 @@ struct DoublageConfiguratorView: View {
     @EnvironmentObject private var references: DoublageReferenceStore
     private let onSave: ((DoublageConfiguration) -> Void)?
     private let onClose: (() -> Void)?
+    private let showsCloseButton: Bool
     private let isEditing: Bool
+    private let measuredWallRuns: [MeasuredWallRun]?
     @State private var step = 1
     @State private var geometryMode = GeometryMode.length
     @State private var height = 0.0
@@ -46,12 +49,15 @@ struct DoublageConfiguratorView: View {
         startsAtResult: Bool = false,
         initialStep: Int? = nil,
         onSave: ((DoublageConfiguration) -> Void)? = nil,
-        onClose: (() -> Void)? = nil
+        onClose: (() -> Void)? = nil,
+        showsCloseButton: Bool = true
     ) {
         let configuration = initialConfiguration ?? DoublageConfiguration()
         self.onSave = onSave
         self.onClose = onClose
+        self.showsCloseButton = showsCloseButton
         self.isEditing = initialConfiguration != nil
+        self.measuredWallRuns = configuration.measuredWallRuns
         _step = State(initialValue: initialStep ?? (startsAtResult ? 6 : 1))
         _geometryMode = State(initialValue: configuration.geometryMode == "surface" ? .surface : .length)
         _height = State(initialValue: configuration.height)
@@ -83,7 +89,16 @@ struct DoublageConfiguratorView: View {
     private var facings: [DoublageFacingChoice] { references.facings }
     private var compatibility: DoublageFacingCompatibility? { references.compatibility }
     private var insulationFamilies: [DoublageInsulationFamily] { references.insulationFamilies }
-    private var actualLength: Double { geometryMode == .length ? enteredLength : (height > 0 ? enteredSurface / height : 0) }
+    private var activeMeasuredRuns: [MeasuredWallRun]? {
+        guard let measuredWallRuns, !measuredWallRuns.isEmpty,
+              geometryMode == .surface,
+              abs(measuredWallRuns.reduce(0) { $0 + $1.netArea } - enteredSurface) < 0.0001,
+              abs((measuredWallRuns.map(\.height).max() ?? 0) - height) < 0.0001 else { return nil }
+        return measuredWallRuns
+    }
+    private var actualLength: Double {
+        activeMeasuredRuns?.reduce(0) { $0 + $1.length } ?? (geometryMode == .length ? enteredLength : (height > 0 ? enteredSurface / height : 0))
+    }
     private var actualArea: Double { geometryMode == .surface ? enteredSurface : enteredLength * height }
     private var calculationWallCount: Int { specifiesWallCount ? wallCount : 1 }
     private var performanceGroupIDs: [String] {
@@ -171,10 +186,12 @@ struct DoublageConfiguratorView: View {
 
     private var header: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Button("Fermer") {
-                if let onClose { onClose() } else { reset() }
+            if showsCloseButton {
+                Button("Fermer") {
+                    if let onClose { onClose() } else { reset() }
+                }
+                .buttonStyle(.bordered).tint(.green)
             }
-            .buttonStyle(.bordered).tint(.green)
             Text("OUVRAGE").font(.caption.bold()).foregroundStyle(.secondary)
             Text("Doublage périphérique").font(.title2.bold())
             Label(references.isUsingOfflineData ? "Données enregistrées hors connexion" : "Données synchronisées avec Plaquisto Admin", systemImage: references.isUsingOfflineData ? "icloud.slash" : "checkmark.icloud")
@@ -218,13 +235,15 @@ struct DoublageConfiguratorView: View {
                 }
             }
             card {
-                LabeledContent(geometryMode == .length ? "Surface calculée" : "Longueur calculée", value: format(geometryMode == .length ? actualArea : actualLength, geometryMode == .length ? "m²" : "m"))
+                LabeledContent(measuredWallRuns != nil ? "Longueur totale relevée" : (geometryMode == .length ? "Surface calculée" : "Longueur calculée"), value: format(geometryMode == .length ? actualArea : actualLength, geometryMode == .length ? "m²" : "m"))
             }
-            Text(specifiesWallCount
+            Text(measuredWallRuns != nil ? "Dimensions issues des surfaces sélectionnées. Les longueurs de chaque mur restent distinctes et les ouvertures sont déjà déduites. Pour corriger une mesure, modifiez le relevé. La hauteur affichée est la hauteur maximale."
+                 : specifiesWallCount
                  ? "La hauteur sous plafond est obligatoire. Le nombre de murs est prérempli à 4 pour tenir compte des montants placés aux extrémités de chaque mur."
                  : "Le nombre de murs n’est pas renseigné. Le quantitatif des montants sera estimé uniquement à partir de la longueur totale et sera légèrement moins précis.")
                 .font(.footnote).foregroundStyle(.secondary)
         }
+        .disabled(measuredWallRuns != nil)
     }
 
     private var facingsStep: some View {
@@ -466,26 +485,32 @@ struct DoublageConfiguratorView: View {
     private var resultRows: [(String, String)] {
         guard actualArea > 0, actualLength > 0, height > 0, let table = references.quantityTable else { return [] }
         let rails = 2 * actualLength * 1.05
-        var studCount = DoublageStudCalculator.studs(
+        let baseStudCount = activeMeasuredRuns?.reduce(0) { sum, run in
+            sum + DoublageStudCalculator.studs(length: run.length, spacing: spacing, wallCount: 1, doubled: mounting == .double)
+        } ?? DoublageStudCalculator.studs(
             length: actualLength,
             spacing: spacing,
             wallCount: calculationWallCount,
             doubled: mounting == .double
         )
+        var studCount = baseStudCount
         if tiledAreaRequiresReducedSpacing && spacing > references.tiledAreaMaximumSpacing {
             let tiledLength = actualLength * effectiveTiledArea / actualArea
             let baseBays = Int(ceil(tiledLength / spacing))
             let tiledBays = Int(ceil(tiledLength / references.tiledAreaMaximumSpacing))
             studCount += max(0, tiledBays - baseBays) * (mounting == .double ? 2 : 1)
         }
-        let studs = Double(studCount) * height * 1.05
+        let measuredStudLength = activeMeasuredRuns?.reduce(0.0) { sum, run in
+            sum + Double(DoublageStudCalculator.studs(length: run.length, spacing: spacing, wallCount: 1, doubled: mounting == .double)) * run.height
+        }
+        let studs = ((measuredStudLength ?? Double(baseStudCount) * height) + Double(studCount - baseStudCount) * height) * 1.05
         let selectedFacings = firstSkin + (skinCount == .double ? secondSkin : [])
         var rows = allocationRows(selectedFacings)
         rows += [("Rails", format(rails, "ml")), ("Montants", format(studs, "ml"))]
         if insulationEnabled {
-            rows.append(("Isolation · 1re couche · \(insulationDescription(firstInsulation))", format(actualArea * (table.coefficients["insulation_m2_m2"] ?? 1.1), "m²")))
+            rows.append(("Isolation · 1re couche · \(insulationDescription(firstInsulation))", format(actualArea * coveringAreaRatio * (table.coefficients["insulation_m2_m2"] ?? 1.1), "m²")))
             if insulationLayerCount == .double {
-                rows.append(("Isolation · 2e couche · \(insulationDescription(secondInsulation))", format(actualArea * (table.coefficients["insulation_m2_m2"] ?? 1.1), "m²")))
+                rows.append(("Isolation · 2e couche · \(insulationDescription(secondInsulation))", format(actualArea * coveringAreaRatio * (table.coefficients["insulation_m2_m2"] ?? 1.1), "m²")))
             }
         }
         if vaporBarrier {
@@ -499,7 +524,8 @@ struct DoublageConfiguratorView: View {
             if let value = mixedSpacingQuantity(table.trpf13, mountingKey: mountingKey) { rows.append(("Vis TRPF 13", format(value, "unités", rounded: true))) }
         }
         if intermediateSupports, maxHeight > 0 {
-            let supportsPerLine = DoublageStudCalculator.studAxes(length: actualLength, spacing: spacing, wallCount: calculationWallCount)
+            let supportsPerLine = activeMeasuredRuns?.reduce(0) { $0 + DoublageStudCalculator.studAxes(length: $1.length, spacing: spacing, wallCount: 1) }
+                ?? DoublageStudCalculator.studAxes(length: actualLength, spacing: spacing, wallCount: calculationWallCount)
             let lines = max(1, Int(ceil(height / maxHeight)) - 1)
             rows.append(("Appuis intermédiaires pour montant sur mur support", "\(supportsPerLine * lines) unités"))
         }
@@ -526,7 +552,7 @@ struct DoublageConfiguratorView: View {
 
         for allocation in allocations {
             guard let facing = facing(for: allocation), let plateFormat = selectedFormat(allocation) else { continue }
-            let suppliedArea = allocation.surface * 1.05
+            let suppliedArea = allocation.surface * coveringAreaRatio * 1.05
             let plateArea = Double(plateFormat.widthMM * plateFormat.lengthMM) / 1_000_000
             let plateCount = Int(ceil(suppliedArea / max(plateArea, 0.01)))
             let key = "\(facing.id)|\(plateFormat.id)"
@@ -863,7 +889,8 @@ struct DoublageConfiguratorView: View {
             vaporBarrier: vaporBarrier,
             jointTreatment: jointTreatment,
             compoundChoice: compound == .paste ? "pate" : "poudre",
-            quantities: resultRows.compactMap { quantity(from: $0) }
+            quantities: resultRows.compactMap { quantity(from: $0) },
+            measuredWallRuns: activeMeasuredRuns
         )
     }
 
@@ -937,8 +964,7 @@ private struct IntegerRow: View {
         HStack {
             Text(title)
             Spacer()
-            TextField("4", value: $value, format: .number)
-                .keyboardType(.numberPad)
+            PlaquistoIntegerField(placeholder: "4", value: $value)
                 .multilineTextAlignment(.trailing)
                 .frame(maxWidth: 86)
         }
