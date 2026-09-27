@@ -35,7 +35,10 @@
   Contrôle visuel sur simulateur : plafond 3×3 m, six morceaux issus de quatre
   plaques, bascule quinconce à 120 cm, sélection de 4-2 avec 4-1 en pointillés
   dans la même plaque brute, cotes 120×60 cm, exécution du bouton Optimiser.
-  Ce nouveau lot n’est pas encore poussé sur main ni installé sur l’iPhone.
+  Livraison autorisée puis fusionnée et poussée sur `main` : `fb01f3e`.
+  Application signée installée et lancée sur l’iPhone d’Édouard, séquence 3252.
+  Confirmations : `/tmp/plaquisto-offcuts-install.json` et
+  `/tmp/plaquisto-offcuts-launch.json`.
 
 ## Ergonomie relevé, gestes et initialisation du calepinage — 27 septembre 2026
 
