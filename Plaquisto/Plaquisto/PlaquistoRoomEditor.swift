@@ -212,10 +212,10 @@ struct PlaquistoRoomEditor: View {
             }
         }
         .sheet(item: $estimateProposal) { estimateProposal in
-            WallCeilingEstimateView(document: document, proposal: estimateProposal) { edited in
+            WallCeilingEstimateView(document: document, proposal: estimateProposal,ceilingNumbers:ceilingNumbers) { edited in
                 try onSave(edited)
                 document = edited
-                selected = edited.room.ceilings.last?.id
+                selected = estimateProposal.ceilingID ?? edited.room.ceilings.last?.id
                 ceilingMode = 1
                 message = "Plafond estimé mis à jour. Les murs restent inchangés."
             }
@@ -310,6 +310,8 @@ struct SurveyPlanEditor: View {
     @State private var document: PlaquistoRoomDocument
     @State private var ceilingChoices: [WallCeilingEstimate.Proposal] = []
     @State private var choosingCeiling = false
+    @State private var pendingCeiling: WallCeilingEstimate.Proposal?
+    @State private var pendingCeilingSplit: UUID?
     @State private var splittingCeiling: UUID?
     @State private var selected: UUID?
     @State private var selectedDoor: UUID?
@@ -350,7 +352,7 @@ struct SurveyPlanEditor: View {
                     Button { zoom = 1; offset = .zero } label: { Image(systemName: "scope") }
                         .accessibilityLabel("Recentrer le plan")
                 }.buttonStyle(.bordered).padding()
-                Text(splittingCeiling != nil ? "Touchez deux points pour tracer une limite traversant le plafond. Vous pourrez découper à nouveau chaque zone." :
+                Text(splittingCeiling != nil ? "Séparer \(document.room.ceilings.first(where: { $0.id == splittingCeiling }).map { CeilingPlanNaming.title($0,in:document.room,numbers:ceilingNumbers) } ?? "le plafond") : touchez deux points pour tracer une limite traversant la zone orange." :
                      (drawingPartition ? "Touchez les deux extrémités de la nouvelle cloison." : "Touchez un mur ou une ouverture pour le modifier. Le scan d’origine est conservé."))
                     .font(.caption).foregroundStyle(.secondary).padding(.horizontal)
                 if splittingCeiling != nil {
@@ -398,41 +400,25 @@ struct SurveyPlanEditor: View {
                 }
             }
             .sheet(item: $proposal) { proposal in
-                WallCeilingEstimateView(document: document, proposal: proposal) { document = $0 }
+                WallCeilingEstimateView(document: document, proposal: proposal,ceilingNumbers:ceilingNumbers,
+                    appliesToPlan:true) { document = $0 }
             }
-            .confirmationDialog("Plafond à modifier", isPresented: $choosingCeiling, titleVisibility: .visible) {
-                ForEach(Array(ceilingChoices.enumerated()), id: \.element.id) { index, value in
-                    Button("Plafond \(index + 1)") { proposal = value }
+            .sheet(isPresented:$choosingCeiling,onDismiss:{
+                proposal = pendingCeiling; pendingCeiling = nil
+                if let id = pendingCeilingSplit {
+                    splittingCeiling = id; drawingPartition = false; firstPoint = nil
+                    selected = nil; selectedDoor = nil; pendingCeilingSplit = nil
                 }
+            }) {
+                CeilingZonePicker(room:document.room,choices:ceilingChoices,numbers:ceilingNumbers,onChoose:{ value in
+                    pendingCeiling = value; choosingCeiling = false
+                },onSplit:{ id in pendingCeilingSplit = id; choosingCeiling = false })
             }
         }
     }
 
     private var ceilingMenu: some View {
-        let choices=(try? WallCeilingEstimate.manualProposals(in:document.room)) ?? []
-        let vacant=choices.filter { $0.ceilingID == nil }
-        return Menu {
-            Section("Créer par pièce") {
-                ForEach(vacant) { value in
-                    let index=vacant.firstIndex { $0.id==value.id } ?? 0
-                    Button("Ajouter · zone \(index+1)") { proposal=value }
-                }
-                if vacant.isEmpty { Text("Toutes les zones fermées ont un plafond") }
-            }
-            Section("Plafonds existants") {
-                ForEach(document.room.ceilings) { ceiling in
-                    Menu(CeilingPlanNaming.title(ceiling,in:document.room,numbers:ceilingNumbers)) {
-                        Button("Modifier la forme et les hauteurs") {
-                            proposal=choices.first { $0.ceilingID==ceiling.id }
-                        }.disabled(!choices.contains { $0.ceilingID==ceiling.id })
-                        Button("Découper en deux zones",systemImage:"scissors") {
-                            splittingCeiling=ceiling.id; drawingPartition=false; firstPoint=nil
-                            selected=nil; selectedDoor=nil
-                        }.disabled(ceiling.provenance.source != .estimated)
-                    }
-                }
-            }
-        } label: { Label("Plafonds",systemImage:"square.3.layers.3d") }
+        Button { prepareCeiling() } label: { Label("Plafonds",systemImage:"square.3.layers.3d") }
     }
 
     private var controls: some View {
@@ -531,8 +517,9 @@ struct SurveyPlanEditor: View {
     private func prepareCeiling() {
         do {
             ceilingChoices = try WallCeilingEstimate.manualProposals(in: document.room)
-            if ceilingChoices.count == 1 { proposal = ceilingChoices.first }
-            else { choosingCeiling = true }
+            pendingCeiling = nil
+            pendingCeilingSplit = nil
+            choosingCeiling = true
         } catch { self.error = error.localizedDescription }
     }
     private func tap(_ p: RoomPoint, tolerance: Double) {
@@ -625,7 +612,7 @@ struct SurveyPlanEditor: View {
                             for p in boundary.dropFirst() { path.addLine(to:screen(p)) }
                             path.closeSubpath()
                         }
-                        context.fill(path,with:.color(.gray.opacity(0.07)),style:.init(eoFill:true))
+                        context.fill(path,with:.color(ceiling.id == splittingCeiling ? .orange.opacity(0.25) : .gray.opacity(0.07)),style:.init(eoFill:true))
                         context.stroke(path,with:.color(ceiling.id==splittingCeiling ? .orange : ArchitecturalPlanInk.wall.opacity(0.4)),lineWidth:1)
                     }
                     if let boundary=WallCeilingEstimate.footprint(of:ceiling,in:document.room),
@@ -760,11 +747,90 @@ private extension RoomPoint {
     var horizontalLength: Double { hypot(x,z) }
 }
 
+/// Show the footprint in the context of the whole plan before editing its height.
+/// No semantic room names are invented when the scan contains one open space.
+struct CeilingZonePicker: View {
+    @Environment(\.dismiss) private var dismiss
+    let room: PlaquistoRoomModel
+    let choices: [WallCeilingEstimate.Proposal]
+    var numbers: [String:Int] = [:]
+    let onChoose: (WallCeilingEstimate.Proposal) -> Void
+    let onSplit: (UUID) -> Void
+    var body: some View {
+        NavigationStack {
+            List {
+                Section {
+                    Text("Choisissez la zone sur laquelle travailler. Chaque plafond conserve sa forme et ses hauteurs.")
+                }
+                Section("Ajouter un plafond") {
+                    let vacant = choices.filter { $0.ceilingID == nil }
+                    ForEach(vacant) { choice in
+                        row(choice,title:"Créer un plafond",detail:"Dans la zone en orange")
+                    }
+                    if vacant.isEmpty {
+                        Text("Les zones fermées ont déjà un plafond. Pour séparer une cuisine ouverte et un salon, utilisez « Séparer en deux zones » ci-dessous.")
+                            .font(.footnote).foregroundStyle(.secondary)
+                    }
+                }
+                Section("Modifier un plafond") {
+                    ForEach(choices.filter { $0.ceilingID != nil }) { choice in
+                        if let ceiling = room.ceilings.first(where:{ $0.id == choice.ceilingID }) {
+                            row(choice,title:CeilingPlanNaming.title(ceiling,in:room,numbers:numbers),
+                                detail:ceiling.estimateSettings?.shape.title ?? "Modifier la forme et les hauteurs")
+                            Button { onSplit(ceiling.id) } label: {
+                                Label("Séparer \(CeilingPlanNaming.title(ceiling,in:room,numbers:numbers)) en deux zones",systemImage:"scissors")
+                                    .font(.subheadline)
+                            }
+                        }
+                    }
+                    Text("Cuisine ouverte et salon : séparez leur plafond en traçant une limite entre les deux espaces.")
+                        .font(.footnote).foregroundStyle(.secondary)
+                }
+            }
+            .navigationTitle("Choisir un plafond").navigationBarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem(placement:.cancellationAction) { Button("Fermer") { dismiss() } } }
+        }
+    }
+    private func row(_ choice: WallCeilingEstimate.Proposal, title: String, detail: String) -> some View {
+        Button { onChoose(choice) } label: {
+            HStack(spacing:14) {
+                Canvas { context, size in
+                    let points = room.walls.flatMap { [$0.start,$0.effectiveEnd] }+choice.boundary
+                    let x0 = points.map(\.x).min() ?? 0, z0 = points.map(\.z).min() ?? 0
+                    let w = max(0.1,(points.map(\.x).max() ?? 1)-x0)
+                    let h = max(0.1,(points.map(\.z).max() ?? 1)-z0)
+                    let scale = min((size.width-12)/w,(size.height-12)/h)
+                    func p(_ v:RoomPoint) -> CGPoint {
+                        .init(x:(v.x-x0-w/2)*scale+size.width/2,y:(v.z-z0-h/2)*scale+size.height/2)
+                    }
+                    var zone = Path()
+                    zone.addLines(choice.boundary.map(p)); zone.closeSubpath()
+                    context.fill(zone,with:.color(.orange.opacity(0.35)))
+                    context.stroke(zone,with:.color(.orange),lineWidth:2)
+                    for wall in room.walls {
+                        var line = Path(); line.move(to:p(wall.start)); line.addLine(to:p(wall.effectiveEnd))
+                        context.stroke(line,with:.color(.primary.opacity(0.65)),lineWidth:1.5)
+                    }
+                }.frame(width:100,height:78).background(.quaternary,in:RoundedRectangle(cornerRadius:10))
+                VStack(alignment:.leading,spacing:4) {
+                    Text(title).font(.headline)
+                    Text(detail).font(.caption).foregroundStyle(.secondary)
+                }
+                Spacer(minLength:0)
+                Image(systemName:"chevron.right").font(.caption)
+            }.padding(.vertical,4)
+        }.buttonStyle(.plain)
+    }
+}
+
 struct WallCeilingEstimateView: View {
     @Environment(\.dismiss) private var dismiss
     let document: PlaquistoRoomDocument
     let proposal: WallCeilingEstimate.Proposal
     private let unchangedInput: CeilingEstimateSettings
+    private let fitting: CeilingAutoFit
+    private let title: String
+    private let appliesToPlan: Bool
     let onSave: (PlaquistoRoomDocument) throws -> Void
     @State private var settings: CeilingEstimateSettings
     @State private var lowText: String
@@ -773,12 +839,28 @@ struct WallCeilingEstimateView: View {
     @State private var error: String?
     @State private var topView = false
     @State private var cameraReset = UUID()
+    @State private var estimatedRise: Bool
+    @State private var previousSettings: SettingsSnapshot?
+    @State private var draftsByShape: [CeilingEstimateSettings.Shape:SettingsSnapshot] = [:]
+    private struct SettingsSnapshot: Equatable {
+        let settings: CeilingEstimateSettings
+        let low: String
+        let high: String
+        let estimatedRise: Bool
+    }
 
     init(document: PlaquistoRoomDocument, proposal: WallCeilingEstimate.Proposal,
+         ceilingNumbers:[String:Int] = [:], appliesToPlan:Bool = false,
          onSave: @escaping (PlaquistoRoomDocument) throws -> Void) {
         self.document = document; self.proposal = proposal; self.onSave = onSave
+        self.appliesToPlan = appliesToPlan
         let target = proposal.ceilingID.flatMap { id in document.room.ceilings.first { $0.id == id } }
-        let settings = target?.estimateSettings ?? proposal.suggestedSettings
+        title = target.map { CeilingPlanNaming.title($0,in:document.room,numbers:ceilingNumbers) } ?? "Nouveau plafond"
+        let fitting = CeilingAutoFit(room:document.room,proposal:proposal)
+        self.fitting = fitting
+        let suggestion = fitting.suggest(shape:.flat)
+        let settings = target?.estimateSettings ?? suggestion.settings
+        _estimatedRise = State(initialValue:settings.riseIsEstimated == true)
         var rounded=settings
         rounded.lowHeight=(settings.lowHeight*100).rounded()/100
         rounded.highHeight=settings.shape == .flat ? rounded.lowHeight : (settings.highHeight*100).rounded()/100
@@ -786,6 +868,37 @@ struct WallCeilingEstimateView: View {
         _settings = State(initialValue: settings)
         _lowText = State(initialValue: settings.lowHeight.formatted(.number.precision(.fractionLength(2))))
         _highText = State(initialValue: settings.highHeight.formatted(.number.precision(.fractionLength(2))))
+    }
+    private var snapshot: SettingsSnapshot {
+        .init(settings:settings,low:lowText,high:highText,estimatedRise:estimatedRise)
+    }
+    private func restore(_ value: SettingsSnapshot) {
+        settings = value.settings; lowText = value.low; highText = value.high
+        estimatedRise = value.estimatedRise
+    }
+    private func changeShape(to shape: CeilingEstimateSettings.Shape) {
+        guard shape != settings.shape else { return }
+        draftsByShape[settings.shape] = snapshot
+        if let saved = draftsByShape[shape] {
+            previousSettings = snapshot
+            restore(saved)
+        } else { adjust(to:shape) }
+    }
+    private func adjust(to shape: CeilingEstimateSettings.Shape) {
+        let result = fitting.suggest(shape:shape,current:input)
+        let next = SettingsSnapshot(settings:result.settings,
+            low:result.settings.lowHeight.formatted(.number.precision(.fractionLength(2))),
+            high:result.settings.highHeight.formatted(.number.precision(.fractionLength(2))),
+            estimatedRise:result.estimatedRise)
+        guard next != snapshot else { return }
+        previousSettings = snapshot
+        restore(next)
+    }
+    private func undoAdjustment() {
+        guard let previousSettings else { return }
+        draftsByShape[settings.shape] = snapshot
+        restore(previousSettings)
+        self.previousSettings = nil
     }
     private var input: CeilingEstimateSettings? {
         func number(_ text: String) -> Double? {
@@ -829,13 +942,26 @@ struct WallCeilingEstimateView: View {
                         .frame(width:landscape ? geometry.size.width*0.48 : nil)
                     Form {
                         Section("Forme et hauteurs") {
-                            Picker("Forme",selection:$settings.shape) {
+                            Picker("Forme",selection:Binding(get:{ settings.shape },set:{ changeShape(to:$0) })) {
                                 ForEach(CeilingEstimateSettings.Shape.allCases) { shape in
                                     Text(shape.title).tag(shape)
                                 }
                             }
                             heightField(settings.shape == .flat ? "Hauteur sous plafond" : "Hauteur minimale",text:$lowText)
                             if settings.shape != .flat { heightField("Hauteur maximale",text:$highText) }
+                            Button("Ajuster aux murs",systemImage:"wand.and.stars") { adjust(to:settings.shape) }
+                                .accessibilityIdentifier("ceiling.fitWalls")
+                            if previousSettings != nil {
+                                Button("Annuler l’ajustement",systemImage:"arrow.uturn.backward") { undoAdjustment() }
+                            }
+                            if estimatedRise {
+                                Text("La pente ne peut pas être déduite des murs. Une forme de départ est proposée : ajustez la hauteur maximale et l’orientation.")
+                                    .font(.footnote).foregroundStyle(.orange)
+                            }
+                            if fitting.coverage < 0.75 {
+                                Text("Une partie des bords n’a pas de profil de mur exploitable. Vérifiez les hauteurs de cette zone.")
+                                    .font(.footnote).foregroundStyle(.secondary)
+                            }
                         }
                         if settings.shape != .flat {
                             Section("Réglage des pans") {
@@ -844,6 +970,10 @@ struct WallCeilingEstimateView: View {
                                     Slider(value:$settings.azimuth,in:(-Double.pi)...Double.pi)
                                         .accessibilityLabel("Orientation des pans")
                                         .accessibilityValue("\((settings.azimuth*180/Double.pi).formatted(.number.precision(.fractionLength(0)))) degrés")
+                                    Button("Tourner de 90°",systemImage:"rotate.right") {
+                                        let angle = settings.azimuth+Double.pi/2
+                                        settings.azimuth = atan2(sin(angle),cos(angle))
+                                    }.font(.subheadline)
                                 }
                                 if settings.shape != .singleSlope {
                                     VStack(alignment:.leading,spacing:8) {
@@ -859,6 +989,10 @@ struct WallCeilingEstimateView: View {
                             Section { Text(previewIssue).font(.footnote).foregroundStyle(.orange) }
                         }
                         Section {
+                            if appliesToPlan {
+                                Text("Appliquez ce plafond, puis enregistrez le plan pour conserver vos modifications.")
+                                    .font(.footnote).foregroundStyle(.secondary)
+                            }
                             DisclosureGroup("À propos des mesures") {
                                 Text("Les hauteurs préremplies sont des estimations, pas des mesures du plafond. Hauteurs mesurées depuis le sol ; cette création ne modifie jamais le contour des murs.")
                                 if proposal.maximumCornerAdjustment > 0.005 {
@@ -873,18 +1007,19 @@ struct WallCeilingEstimateView: View {
             }
             .background(Color(.systemGroupedBackground))
             .onChange(of:input,initial:true) { _, _ in refreshPreview() }
-            .navigationTitle("Plafond")
+            .navigationTitle(title)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement:.cancellationAction) { Button("Annuler") { dismiss() } }
                 ToolbarItem(placement:.confirmationAction) {
-                    Button("Enregistrer") {
+                    Button(appliesToPlan ? "Appliquer" : "Enregistrer") {
                         do {
                             guard input != nil, let previewDocument, previewIssue == nil else { throw WallCeilingEstimate.Failure.invalidHeight }
                             try onSave(previewDocument)
                             dismiss()
                         } catch { self.error=error.localizedDescription }
                     }.disabled(input == nil || previewDocument == nil || previewIssue != nil)
+                        .accessibilityLabel(appliesToPlan ? "Appliquer au plan" : "Enregistrer le plafond")
                 }
             }
             .alert("Plafond non enregistré",isPresented:Binding(get:{ error != nil },set:{ if !$0 { error=nil } })) {
@@ -897,8 +1032,9 @@ struct WallCeilingEstimateView: View {
         VStack(spacing:8) {
             ZStack {
                 if let previewDocument {
-                    RoomDomainScene(room:previewDocument.room,selected:$selected,ceilingMode:2,
-                        showFloor:true,topView:topView,cameraReset:cameraReset)
+                    RoomDomainScene(room:previewDocument.room,selected:.constant(selected),ceilingMode:2,
+                        showFloor:true,topView:topView,cameraReset:cameraReset,
+                        ceilingGaps:input.map { fitting.gaps(settings:$0) } ?? [])
                 } else {
                     ContentUnavailableView("Aperçu du plafond",systemImage:"cube.transparent",
                         description:Text("Renseignez les hauteurs pour afficher le plafond."))
@@ -924,6 +1060,10 @@ struct WallCeilingEstimateView: View {
                 Text("\(pans.reduce(0) { $0+PlaquistoSurfaceGeometry.area(of:$1) }.formatted(.number.precision(.fractionLength(2)))) m² · Hauteurs estimées, à vérifier")
                     .font(.caption).foregroundStyle(.secondary)
             }
+            if previewIssue == nil, let input, let gap = fitting.gaps(settings:input).first {
+                Text("Repères orange : écart avec les murs jusqu’à \((abs(gap.wall.y-gap.ceiling.y)*100).formatted(.number.precision(.fractionLength(0)))) cm")
+                    .font(.caption).foregroundStyle(.orange)
+            }
         }.padding(.horizontal,16).padding(.vertical,8)
     }
     private func heightField(_ title: String, text: Binding<String>) -> some View {
@@ -945,6 +1085,7 @@ struct RoomDomainScene: UIViewRepresentable {
     let showFloor: Bool
     let topView: Bool
     let cameraReset: UUID
+    var ceilingGaps: [CeilingAutoFit.Gap] = []
     func makeCoordinator() -> Coordinator { Coordinator(self) }
     func makeUIView(context:Context) -> SCNView {
         let view=SCNView(); view.scene=SCNScene()
@@ -963,6 +1104,22 @@ struct RoomDomainScene: UIViewRepresentable {
         coordinator.parent=self
         coordinator.lastRoom=room
         let root=view.scene!.rootNode
+        if previous.ceilingGaps != ceilingGaps || rebuild {
+            root.childNode(withName:"ceiling-fit-gaps",recursively:false)?.removeFromParentNode()
+            if !ceilingGaps.isEmpty {
+                let vertices = ceilingGaps.flatMap { [$0.wall,$0.ceiling] }
+                    .map { SCNVector3(Float($0.x),Float($0.y),Float($0.z)) }
+                let geometry = SCNGeometry(sources:[SCNGeometrySource(vertices:vertices)],
+                    elements:[SCNGeometryElement(indices:Array(0..<Int32(vertices.count)),primitiveType:.line)])
+                let material = SCNMaterial()
+                material.diffuse.contents = UIColor.systemOrange; material.lightingModel = .constant
+                material.readsFromDepthBuffer = false; material.writesToDepthBuffer = false
+                geometry.materials = [material]
+                let node = SCNNode(geometry:geometry); node.name = "ceiling-fit-gaps"
+                node.categoryBitMask = 2; node.renderingOrder = 30
+                root.addChildNode(node)
+            }
+        }
         let quality=MaquetteStyle.Quality.current
         if coordinator.quality != quality {
             coordinator.quality=quality

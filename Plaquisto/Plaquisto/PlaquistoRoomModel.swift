@@ -168,6 +168,8 @@ struct CeilingEstimateSettings: Codable, Equatable {
     var highHeight: Double
     var azimuth: Double = 0
     var ridgePosition: Double = 0.5
+    /// Optional for older files. True means the walls could not determine the pitch/ridge height.
+    var riseIsEstimated: Bool? = nil
     var isValid: Bool {
         [lowHeight, highHeight, azimuth, ridgePosition].allSatisfy(\.isFinite)
             && lowHeight > 0 && highHeight >= lowHeight && highHeight <= 1000

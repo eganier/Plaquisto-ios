@@ -1,5 +1,59 @@
 # Plaquisto — état du développement
 
+## Préréglage des plafonds après scan — 27 septembre 2026
+
+- Expérimentation isolée sur `codex/ceiling-auto-fit`, issue de `origin/main`
+  après fusion de la PR #1. Aucun changement du pipeline d’acquisition RoomPlan.
+- Nouveaux plafonds : forme plate par défaut, hauteur issue des murs de la zone.
+  Au premier choix d’une autre famille, recherche de l’orientation, des hauteurs
+  et du faîtage compatibles avec les profils hauts réellement conservés.
+  Calcul et génération du maillage partagent les mêmes équations de plans.
+- Échantillonnage limité aux bords du plafond choisi, au même niveau ; exclusion
+  des murs éloignés et des limites de découpe sans mur. Pondération par longueur,
+  ajustement robuste aux petits écarts ; préservation des profils fragmentés.
+  Les murs, les plafonds voisins et le relevé initial ne sont jamais modifiés.
+- Sans information suffisante sur le faîtage : proposition centrée orientée selon
+  la pièce, dénivelé initial de 50 cm ou conservation du dénivelé saisi. L’absence
+  de déduction est affichée et conservée dans `riseIsEstimated`, champ facultatif
+  pour les anciennes sauvegardes. Le résultat reste une hypothèse à vérifier.
+- Éditeur : « Ajuster aux murs », annulation du dernier ajustement utile (une
+  répétition identique ne détruit pas ce retour), conservation des corrections
+  par famille pendant l’édition, rotation de 90°, écarts >5 cm matérialisés en
+  orange dans l’aperçu. Les curseurs restent manuels et l’enregistrement explicite.
+- Plafonds multiples : sélecteur avec miniature situant chaque zone dans le plan,
+  ajout distinct et modification par identifiant, accès direct à la séparation
+  cuisine ouverte/salon. Titre Plafond A/B à la réouverture ; « Appliquer »
+  distingue le brouillon du plan de son enregistrement final. Correction d’une
+  position de faîtage après découpe qui pouvait sortir de la plage autorisée.
+- Tests : 278 tests iOS réussis, dont huit nouveaux scénarios (pignons décentrés,
+  rotation/translation, mono-pente, profils subdivisés, absence d’information,
+  étages, découpe et cuisine/salon indépendants après sauvegarde/relecture).
+  Log : `/tmp/plaquisto-ceiling-fit-full-tests.log`.
+- Les deux agents aux profils artisan expérimenté et novice ont relu le parcours.
+  Leurs retours sur la conservation des réglages, le faîtage non mesuré,
+  l’annulation répétée et la lisibilité de l’enregistrement ont été intégrés.
+  Les deux agents ont ensuite manipulé réellement l’éditeur sur simulateur, via
+  `Tests/run-room-model-proof.sh <simulateur> --ceiling-zones` : cuisine A plate
+  2,50 m / 16 m², salon B deux pans ajusté à 2,50–3,70 m / 18,66 m²,
+  réouverture indépendante, deux ajustements puis annulation vers 2,80 m saisis,
+  mémoire par forme, annulation de la fiche sans sauvegarde et enregistrement
+  final du plan suivi d’une relance conservant A/B et leurs valeurs.
+  Accès/annulation de la découpe vérifiés ; découpe effective couverte par tests
+  automatisés. Suite à leurs retours, accès direct au sélecteur visuel, titre
+  non tronqué, aucun numéro changeant sur les zones à créer, nom et remplissage
+  orange du plafond pendant une découpe. Ce sont des profils d’artisans simulés,
+  pas une validation de terrain sur un nouveau scan réel.
+- Compilation iPhone signée finale réussie :
+  `/tmp/plaquisto-ceiling-fit-device-final.log`. Preuve portable sauvegarde/relecture
+  et compilation de l’éditeur autonome réussies. Captures d’essai :
+  `/tmp/plaquisto-artisan-plan-ab.png`,
+  `/tmp/plaquisto-artisan-salon-b-250-370.png`,
+  `/tmp/plaquisto-artisan-memory-280.png`.
+  Développement sur `codex/ceiling-auto-fit`, commit fonctionnel `cf442bf`.
+- Installation demandée ensuite et confirmée sur l’iPhone à 14 h 51 le
+  27 septembre, séquence 3228 (`/tmp/plaquisto-ceiling-fit-install.json`).
+  Lancement confirmé (`/tmp/plaquisto-ceiling-fit-launch.json`).
+
 ## Relevés dans les projets, plafonds multiples et plan d’architecte — 26 septembre 2026
 
 - Relevés du projet : miniature 3D statique 288×216, cache borné à 24 images /
