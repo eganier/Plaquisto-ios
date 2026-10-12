@@ -233,15 +233,17 @@ struct LayoutManualContourEditor: View {
     let onSave: (Surface2D) -> Void
     let kind: LayoutSupportKind
     let title: String?
+    var allowsLayingOffset = true
     @State private var surface: Surface2D?
     @State private var drawing: Bool
     @State private var offsetEdges: Set<Int> = []
     @State private var offsetStart: Surface2D?
     @State private var lastOffsetValue = 0.0
-    @State private var editTopology = false
+    @State private var editTopology = true
     @State private var selection: LayoutPolygonSelection?
     @State private var dragOriginal: Surface2D?
     @State private var dragVertex: Int?
+    @State private var dragLocation: CGPoint?
     @State private var error: String?
     @State private var history: [Surface2D] = []
     @State private var scaleReference: Surface2D?
@@ -259,9 +261,10 @@ struct LayoutManualContourEditor: View {
     @GestureState private var magnification = 1.0
     @AppStorage("layout.showDimensions") private var showDimensions = true
     @AppStorage("layout.showAngles") private var showAngles = true
-    init(surface: Surface2D?, kind:LayoutSupportKind = .ceiling, title:String? = nil, onSave: @escaping (Surface2D) -> Void) {
+    init(surface: Surface2D?, kind:LayoutSupportKind = .ceiling, title:String? = nil, allowsLayingOffset: Bool = true, onSave: @escaping (Surface2D) -> Void) {
         self.kind = kind
         self.title = title
+        self.allowsLayingOffset = allowsLayingOffset
         var initial = surface; initial?.kind = kind
         // Before predefined shapes had an explicit provenance, they were saved
         // as "manual" too. The absence of a drawing intent identifies them and
@@ -287,6 +290,12 @@ struct LayoutManualContourEditor: View {
                         Button { showAngles.toggle() } label: {
                             LayoutVisibilityIcon(kind:.angle,state:showAngles ? .visible : .hidden).frame(width:52,height:42)
                         }.accessibilityLabel(showAngles ? "Masquer les angles" : "Afficher les angles")
+                        if allowsLayingOffset { Button { editTopology.toggle(); offsetEdges = [] } label: {
+                            Image(systemName:"rectangle.inset.filled").font(.title2)
+                                .foregroundStyle(editTopology ? Color.secondary : .orange)
+                                .frame(width:52,height:42)
+                        }.accessibilityLabel(editTopology ? "Activer le décalage des bords de plaque" : "Revenir aux sommets")
+                            .accessibilityValue(editTopology ? "Désactivé" : "Activé") }
                     }
                     GeometryReader { proxy in
                         let viewport = planViewport(surface:dragOriginal ?? surface, size:proxy.size)
@@ -319,6 +328,7 @@ struct LayoutManualContourEditor: View {
                                 }.flatMap { i in let p = viewport.screen(surface.contour[i]); return hypot(p.x-value.startLocation.x,p.y-value.startLocation.y) < 32 ? i : nil }
                             }
                             if let original = dragOriginal, let i = dragVertex {
+                                dragLocation = value.location
                                 let delta = viewport.world(value.location) - viewport.world(value.startLocation)
                                 var copy = original; copy.contour[i] = original.contour[i] + delta; self.surface = copy
                             } else {
@@ -330,7 +340,7 @@ struct LayoutManualContourEditor: View {
                                 if !pinching {
                                     pinching = true; viewBounds = viewport.bounds
                                     if let original = dragOriginal { self.surface = original; viewPan = dragPanOrigin }
-                                    dragOriginal = nil; dragVertex = nil
+                                    dragOriginal = nil; dragVertex = nil; dragLocation = nil
                                 }
                             }.onEnded { value in
                                 viewZoom = min(8,max(0.4,viewZoom*value.magnification))
@@ -372,10 +382,12 @@ struct LayoutManualContourEditor: View {
                             confirmingTopology = topologyVertex != nil || topologyEdge != nil
                         })
                         .overlay { LayoutPolygonAnnotations(surface:surface, viewport:viewport, showAngles:showAngles, showDimensions:showDimensions) { selection = $0 } }
-                        .overlay(alignment:.topTrailing) {
-                            Button { viewZoom = 1; viewPan = .zero; viewBounds = nil } label: {
-                                Image(systemName:"scope").padding(12).background(.regularMaterial,in:Circle())
-                            }.padding(8).accessibilityLabel("Recentrer le contour")
+                        .overlay {
+                            if let vertex = dragVertex, let finger = dragLocation, surface.contour.indices.contains(vertex) {
+                                LayoutVertexLoupe(points: surface.contour.map { viewport.screen($0) },
+                                    selected: vertex, finger: finger, available: proxy.size)
+                                    .allowsHitTesting(false).accessibilityHidden(true)
+                            }
                         }
                         .overlay(alignment:.bottomTrailing) {
                             Text(layoutArea(abs(LayoutGeometry.area(surface.contour)))).font(.subheadline.bold()).padding(9)
@@ -383,7 +395,7 @@ struct LayoutManualContourEditor: View {
                         }
                     }.padding(8)
                     scaleControls(surface)
-                    VStack(alignment:.leading,spacing:6) {
+                    if !editTopology { VStack(alignment:.leading,spacing:6) {
                         HStack {
                             Text("Décalage des bords de plaque").font(.subheadline.bold())
                             Spacer()
@@ -411,7 +423,7 @@ struct LayoutManualContourEditor: View {
                         }
                         Text("−5 cm : vers l’intérieur · 0 : au mur · +5 cm : vers l’extérieur").font(.caption2).foregroundStyle(.secondary)
                         if let warning = surface.layingWarning { Text(warning).font(.caption).foregroundStyle(.orange) }
-                    }.padding(.horizontal)
+                    }.padding(.horizontal) }
                     HStack {
                         Button("Redessiner", systemImage:"pencil.tip") { drawing = true }
                         Spacer()
@@ -427,7 +439,6 @@ struct LayoutManualContourEditor: View {
                 ToolbarItem(placement:.confirmationAction) { Button("Utiliser") { if let surface { onSave(surface); dismiss() } }.disabled(surface == nil || drawing) }
                 ToolbarItem(placement:.primaryAction) {
                     Menu {
-                        Toggle("Ajouter ou supprimer des sommets",isOn:$editTopology)
                     } label: { Image(systemName:"ellipsis.circle") }
                 }
             }
@@ -518,11 +529,46 @@ struct LayoutManualContourEditor: View {
         withAnimation(.easeOut(duration:0.18)) { drawing = false }
     }
     private func finishDrag() {
-        defer { dragOriginal = nil; dragVertex = nil }
+        defer { dragOriginal = nil; dragVertex = nil; dragLocation = nil }
         guard let original = dragOriginal, let i = dragVertex, let moved = surface else { return }
         guard moved.contour.indices.contains(i) else { return }
         do { let copy = try original.movingVertices(to:moved.contour); history.append(original); surface = copy; error = nil; resetScale() }
         catch { surface = original; self.error = error.localizedDescription }
     }
     private func resetScale() { scaleReference = nil; scaleValue = 1; scaleStart = nil; offsetEdges.removeAll() }
+}
+
+/// A geometry loupe, not a second interactive viewport. It never alters hit tests.
+private struct LayoutVertexLoupe: View {
+    let points: [CGPoint]
+    let selected: Int
+    let finger: CGPoint
+    let available: CGSize
+    var body: some View {
+        let diameter = min(120.0, max(60, available.width - 16))
+        let radius = diameter / 2
+        let center = CGPoint(x: max(radius + 8, min(available.width - radius - 8, finger.x - 110)),
+            y: max(radius + 8, min(available.height - radius - 8, finger.y - 80)))
+        Canvas { context, size in
+            let focus = points[selected]
+            func zoom(_ p: CGPoint) -> CGPoint { .init(x: size.width/2 + (p.x-focus.x)*2.5, y: size.height/2 + (p.y-focus.y)*2.5) }
+            var path = Path()
+            for (i, point) in points.enumerated() {
+                if i == 0 { path.move(to: zoom(point)) } else { path.addLine(to: zoom(point)) }
+            }
+            path.closeSubpath()
+            context.fill(path, with: .color(.teal.opacity(0.1)))
+            context.stroke(path, with: .color(.teal), lineWidth: 3)
+            for point in points {
+                let p = zoom(point)
+                context.fill(Path(ellipseIn: .init(x: p.x-4, y: p.y-4, width: 8, height: 8)), with: .color(.teal))
+            }
+            var cross = Path()
+            cross.move(to: .init(x: radius-12, y: radius)); cross.addLine(to: .init(x: radius+12, y: radius))
+            cross.move(to: .init(x: radius, y: radius-12)); cross.addLine(to: .init(x: radius, y: radius+12))
+            context.stroke(cross, with: .color(.orange), lineWidth: 1)
+        }.frame(width: diameter, height: diameter).background(.white).clipShape(Circle())
+            .overlay(Circle().stroke(.white, lineWidth: 4))
+            .shadow(color: .black.opacity(0.2), radius: 8, y: 3).position(center)
+    }
 }

@@ -32,12 +32,21 @@ struct SupplyListingRow: Identifiable {
 /// Builds a purchasing-oriented list: installation roles are removed when they
 /// refer to the very same product, while each useful measurement is retained.
 enum SupplyListingConsolidator {
+    /// Legacy assembly stored as one unit: preserve its count for EACH component.
+    static func components(_ entry: SupplyListingEntry) -> [SupplyListingEntry] {
+        guard entry.name.trimmingCharacters(in: .whitespacesAndNewlines) == "Cheville et piton",
+              ["unité", "unités", "unité(s)"].contains(entry.unit) else { return [entry] }
+        return ["Cheville crampon 8 mm", "Piton de suspension 8 mm"].map {
+            .init(name: $0, quantity: entry.quantity, unit: "unités")
+        }
+    }
+
     static func rows(_ entries: [SupplyListingEntry]) -> [SupplyListingRow] {
         var namesInOrder: [String] = []
         var unitsInOrder: [String: [String]] = [:]
         var totals: [String: [String: Double]] = [:]
 
-        for entry in entries where entry.quantity > 0 {
+        for entry in entries.flatMap(components) where entry.quantity > 0 {
             let name = canonicalName(entry.name)
             let unit = canonicalUnit(entry.unit)
             if totals[name] == nil {
@@ -62,6 +71,7 @@ enum SupplyListingConsolidator {
 
     static func canonicalName(_ rawName: String) -> String {
         var name = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let insulation = canonicalInsulationName(name) { return insulation }
 
         for prefix in ["Première peau · ", "Deuxième peau · ", "Troisième peau · "] where name.hasPrefix(prefix) {
             name.removeFirst(prefix.count)
@@ -71,14 +81,88 @@ enum SupplyListingConsolidator {
             name = "Parement · " + String(name.dropFirst(prefix.count))
         }
 
-        if name.hasPrefix("Appuis intermédiaires pour doublage sur fourrure — ") {
-            return "Appuis intermédiaires pour doublage sur fourrure"
+        if name == "Appuis intermédiaires pour doublage sur fourrure"
+            || name.hasPrefix("Appuis intermédiaires pour doublage sur fourrure — ") {
+            return "Appuis intermédiaires pour fourrures"
         }
 
         if name.hasSuffix(" — longueur") {
             name.removeLast(" — longueur".count)
         }
+        if name.range(of: "^Rail R[0-9]+$", options: .regularExpression) != nil {
+            return "Rails " + name.dropFirst(5)
+        }
+        if name.range(of: "^Montant M[0-9]+(?:/[0-9]+)?$", options: .regularExpression) != nil {
+            return "Montants " + name.dropFirst(8)
+        }
+        switch name.lowercased() {
+        case "vis ttpc · parement", "vis ttpc · première peau": return "Vis TTPC 25"
+        case "vis ttpc · deuxième peau": return "Vis TTPC 35"
+        case "suspente hourdis à griffe à serrer": return "Suspente hourdis à serrer"
+        case "suspente hourdis", "suspente hourdis à griffe", "suspentes hourdis simples": return "Suspentes hourdis simples"
+        case "cornière d’angle", "cornière d'angle", "cornières périphériques", "cornières", "cornière": return "Cornière"
+        case "demi collier", "demi-collier": return "Demi-collier"
+        case "bande pp grand rouleau", "bande à joint": return "Bande à joint"
+        case "vis ttpc 35 mm (2e parement)", "vis ttpc 35": return "Vis TTPC 35"
+        case "vis trpf 13 · solidarisation des montants", "vis trpf 13 · fixation des suspentes",
+             "vis trpf 13": return "Vis TRPF 13"
+        case "fourrures f45", "fourrure f45", "fourrures f45/f47", "fourrure f45/f47",
+             "fourrures de renfort", "fourrures latérales", "fourrures transversales",
+             "fourrures latérales d’embrasure", "fourrures transversales d’embrasure": return "Fourrures F45/F47"
+        case "vis ttpc 25 mm (1er parement)", "vis ttpc 25mm (1er parement)",
+             "vis ttpc 25 ou 35", "viss ttpc 25 ou 35", "vis ttpc 25", "vis ttpc 25 mm": return "Vis TTPC 25"
+        case "enduit en poudre", "enduit poudre collage, charge, finition": return "Enduit à joints en poudre"
+        case "enduit en pâte", "enduit pâte prêt à l’emploi, collage, charge, finition": return "Enduit à joints en pâte"
+        default: break
+        }
         return name
+    }
+
+    /// Keep the complete catalogue designation; never infer a product from its
+    /// material alone. Layer placement and derived R are not purchasing identities.
+    static func insulationName(reference: String, thicknessMM: Double, lambda: Double?) -> String {
+        func number(_ value: Double) -> String {
+            let text = String(value)
+            return (text.hasSuffix(".0") ? String(text.dropLast(2)) : text).replacingOccurrences(of: ".", with: ",")
+        }
+        var reference = reference
+        if let lambda, lambda.isFinite, lambda > 0,
+           let range = reference.range(of: #" · λ ([0-9]+(?:[.,][0-9]+)?)$"#, options: .regularExpression),
+           let recorded = Double(reference[range].replacingOccurrences(of: " · λ ", with: "").replacingOccurrences(of: ",", with: ".")),
+           abs(recorded - lambda) < 1e-10 {
+            reference.removeSubrange(range)
+        }
+        let base = "Isolation · \(reference) · \(number(thicknessMM)) mm"
+        guard let lambda, lambda.isFinite, lambda > 0 else { return base }
+        return base + " · λ \(number(lambda))"
+    }
+
+    private static func canonicalInsulationName(_ raw: String) -> String? {
+        var name = raw
+        if name.hasPrefix("Isolation · ") { name.removeFirst("Isolation · ".count) }
+        for prefix in ["1re couche · ", "2e couche · "] where name.hasPrefix(prefix) {
+            name.removeFirst(prefix.count)
+        }
+        // Only known complete legacy formats; retain unknown qualifiers and
+        // incomplete references unchanged instead of merging approximately.
+        let patterns = [
+            (#"^(.+?)(?:, | · )λ ([0-9]+(?:[.,][0-9]+)?)(?:, | · )([0-9]+(?:[.,][0-9]+)?) mm(?:[,· ]+R [0-9]+(?:[.,][0-9]+)?)?$"#, 2, 3),
+            (#"^(.+?)(?:, | · )([0-9]+(?:[.,][0-9]+)?) mm(?:, | · )λ ([0-9]+(?:[.,][0-9]+)?)(?:[,· ]+R [0-9]+(?:[.,][0-9]+)?)?$"#, 3, 2)
+        ]
+        for (pattern, lambdaIndex, thicknessIndex) in patterns {
+            guard let regex = try? NSRegularExpression(pattern: pattern),
+                  let match = regex.firstMatch(in: name, range: NSRange(name.startIndex..., in: name)),
+                  let referenceRange = Range(match.range(at: 1), in: name),
+                  let lambdaRange = Range(match.range(at: lambdaIndex), in: name),
+                  let thicknessRange = Range(match.range(at: thicknessIndex), in: name),
+                  let lambda = Double(name[lambdaRange].replacingOccurrences(of: ",", with: ".")), lambda > 0, lambda.isFinite,
+                  let thickness = Double(name[thicknessRange].replacingOccurrences(of: ",", with: ".")), thickness > 0, thickness.isFinite
+            else { continue }
+            let reference = String(name[referenceRange])
+            guard reference != "Isolant", !reference.contains("λ") else { return nil }
+            return insulationName(reference: reference, thicknessMM: thickness, lambda: lambda)
+        }
+        return nil
     }
 
     static func canonicalUnit(_ rawUnit: String) -> String {
@@ -191,6 +275,18 @@ struct OpeningContext: Codable, Equatable {
     var doubledStuds: Bool
     var revealDepth: Double?
     var ceilingLengthInStudDirection: Double?
+    /// Exact source profile (including flange width), optional for old archives.
+    var frame: String? = nil
+
+    static func profileName(frame: String?, rail: Bool) -> String {
+        let prefix = rail ? "Rails" : "Montants"
+        guard let frame,
+              let range = frame.range(of: rail ? "\\bR[0-9]+\\b" : "\\bM[0-9]+(?:/[0-9]+)?\\b", options: .regularExpression)
+        else { return "\(prefix) — référence à préciser" }
+        return "\(prefix) \(frame[range])"
+    }
+    var studName: String { Self.profileName(frame: frame, rail: false) }
+    var railName: String { Self.profileName(frame: frame, rail: true) }
 
     init(
         system: OpeningWorkSystem = .furringLining,
@@ -198,7 +294,8 @@ struct OpeningContext: Codable, Equatable {
         spacing: Double = 0.60,
         doubledStuds: Bool = false,
         revealDepth: Double? = nil,
-        ceilingLengthInStudDirection: Double? = nil
+        ceilingLengthInStudDirection: Double? = nil,
+        frame: String? = nil
     ) {
         self.system = system
         self.hsp = hsp
@@ -206,6 +303,7 @@ struct OpeningContext: Codable, Equatable {
         self.doubledStuds = doubledStuds
         self.revealDepth = revealDepth
         self.ceilingLengthInStudDirection = ceilingLengthInStudDirection
+        self.frame = frame
     }
 }
 
@@ -339,4 +437,5 @@ struct OpeningHeightSuggestion: Identifiable, Equatable {
     /// Profondeur minimale de tapée imposée par la composition de l'ouvrage lié.
     /// Nil pour les systèmes qui ne portent pas cette règle métier.
     var minimumJoineryLiningDepth: Double?
+    var frame: String? = nil
 }

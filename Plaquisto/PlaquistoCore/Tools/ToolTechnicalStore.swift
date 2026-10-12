@@ -119,7 +119,10 @@ final class ToolTechnicalStore: ObservableObject {
             guard let id = record["id"] as? String, let title = record["title"] as? String else { return [] }
             return array(dictionary(record["data"])?["dimensions"]).compactMap { dimension in
                 guard let width = number(dimension["width_mm"]), let length = number(dimension["length_mm"]), width > 0, length > 0 else { return nil }
-                return .init(id: "\(id)-\(width)-\(length)", title: title, width: width, length: length)
+                return .init(id: LayoutCatalogFormat.identifier(productID:id,width:width,length:length), title: title, width: width, length: length,
+                    productID:id, fourTaperedEdges:dictionary(record["data"])?["function"] as? String == "quatre_bords_amincis",
+                    family:dictionary(record["data"])?["nominal_family"] as? String ?? title,
+                    function:dictionary(record["data"])?["function"] as? String ?? "standard")
             }
         }
 

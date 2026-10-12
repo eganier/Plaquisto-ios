@@ -21,6 +21,7 @@ struct OpeningLabView: View {
     @State private var selectedHeightSourceID: UUID?
     private let heightOptions: [OpeningWorkSystem: [OpeningHeightSuggestion]]
     private let roomName: String?
+    private let attachedToWork: Bool
     private let onSave: ((OpeningConfiguration) -> Void)?
 
     private let green = Color(red: 0.05, green: 0.42, blue: 0.31)
@@ -49,6 +50,7 @@ struct OpeningLabView: View {
         initialConfiguration: OpeningConfiguration? = nil,
         heightOptions: [OpeningWorkSystem: [OpeningHeightSuggestion]] = [:],
         roomName: String? = nil,
+        attachedToWork: Bool = false,
         onSave: ((OpeningConfiguration) -> Void)? = nil
     ) {
         var configuration = initialConfiguration ?? OpeningConfiguration()
@@ -61,6 +63,7 @@ struct OpeningLabView: View {
                 configuration.context.hsp = suggestion.height
                 configuration.context.spacing = suggestion.spacing
                 configuration.context.doubledStuds = suggestion.doubledStuds
+                configuration.context.frame = suggestion.frame
                 selectedSourceID = suggestion.id
             }
         } else {
@@ -72,11 +75,13 @@ struct OpeningLabView: View {
                 configuration.context.hsp = suggestion.height
                 configuration.context.spacing = suggestion.spacing
                 configuration.context.doubledStuds = suggestion.doubledStuds
+                configuration.context.frame = suggestion.frame
             }
         }
         _context = State(initialValue: configuration.context)
         _openings = State(initialValue: configuration.openings)
         _selectedHeightSourceID = State(initialValue: selectedSourceID)
+        self.attachedToWork = attachedToWork
         self.heightOptions = heightOptions
         self.roomName = roomName ?? configuration.roomName
         self.onSave = onSave
@@ -151,6 +156,7 @@ struct OpeningLabView: View {
             .presentationBackgroundInteraction(.enabled(upThrough: .medium))
         }
         .onChange(of: context.system) { _, system in
+            context.frame = nil
             openings.removeAll { !system.availableOpeningKinds.contains($0.kind) }
             if system == .furringCeiling { context.spacing = 0.40 }
             if system == .railStudCeiling { context.spacing = 0.60 }
@@ -160,6 +166,7 @@ struct OpeningLabView: View {
                 context.hsp = suggestion.height
                 context.spacing = suggestion.spacing
                 context.doubledStuds = suggestion.doubledStuds
+                context.frame = suggestion.frame
                 selectedHeightSourceID = suggestion.id
             } else {
                 context.hsp = 0
@@ -167,11 +174,13 @@ struct OpeningLabView: View {
             }
         }
         .onChange(of: selectedHeightSourceID) { _, sourceID in
+            context.frame = nil
             guard let sourceID,
                   let suggestion = heightOptions[context.system]?.first(where: { $0.id == sourceID }) else { return }
             context.hsp = suggestion.height
             context.spacing = suggestion.spacing
             context.doubledStuds = suggestion.doubledStuds
+            context.frame = suggestion.frame
         }
         .onChange(of: context.hsp) { _, newHeight in
             guard let sourceID = selectedHeightSourceID,
@@ -191,7 +200,7 @@ struct OpeningLabView: View {
         Section("Système accueillant l’ouverture") {
             Picker("Système accueillant l’ouverture", selection: $context.system) {
                 ForEach(OpeningWorkSystem.allCases) { Text($0.title).tag($0) }
-            }
+            }.disabled(attachedToWork)
         }
 
         if !context.system.isCeiling {
@@ -203,8 +212,8 @@ struct OpeningLabView: View {
                             Text("\(option.sourceWorkName) · \(height(option.height))")
                                 .tag(Optional(option.id))
                         }
-                        Text("Saisie manuelle").tag(UUID?.none)
-                    }
+                        if !attachedToWork { Text("Saisie manuelle").tag(UUID?.none) }
+                    }.disabled(attachedToWork)
                 }
                 if options.isEmpty || selectedHeightSourceID == nil {
                     DecimalField(title: "Hauteur sous plafond", value: $context.hsp, suffix: "m")

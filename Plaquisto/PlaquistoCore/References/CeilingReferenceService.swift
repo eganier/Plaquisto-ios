@@ -25,6 +25,117 @@ struct CeilingCataloguePayload: Codable {
     }
 }
 
+/// Resolves the administrator's size table without embedding production ranges
+/// in iOS. A gap, overlap or fractional millimetre never guesses a reference.
+enum GalvanizedHangerSelection {
+    static func wholeMillimeters(plenumCM: Double) -> Int? {
+        let mm = plenumCM * 10
+        guard mm.isFinite, mm >= 0, mm <= 1_000_000,
+              abs(mm - mm.rounded()) < 0.000001 else { return nil }
+        return Int(mm.rounded())
+    }
+
+    static func usesSizing(_ system: CeilingReferenceRecord) -> Bool {
+        system.data["components"]?.array?.contains {
+            $0.object?["selection"]?.string == "galvanized_hanger"
+        } == true
+    }
+
+    static func reference(plenumCM: Double, support: String, catalogue: CeilingCataloguePayload) -> CeilingReferenceRecord? {
+        guard let mm = wholeMillimeters(plenumCM: plenumCM) else { return nil }
+        let prefix: String
+        switch support {
+        case "Plancher bois horizontal": prefix = ""
+        case "Plancher hourdis béton": prefix = "hourdis_"
+        default: return nil
+        }
+        let matches = catalogue.quantitatifs.filter { record in
+            guard record.status == "Publié", record.data["category"]?.string == "galvanized_hanger",
+                  record.data["unit"]?.string == "unité",
+                  let length = record.data["length_mm"]?.number,
+                  let min = record.data["\(prefix)plenum_min_mm"]?.number,
+                  let max = record.data["\(prefix)plenum_max_mm"]?.number,
+                  length.isFinite, min.isFinite, max.isFinite,
+                  length > 0, min >= 0, max >= min, max <= length,
+                  length.rounded() == length, min.rounded() == min, max.rounded() == max else { return false }
+            return Double(mm) >= min && Double(mm) <= max
+        }
+        return matches.count == 1 ? matches[0] : nil
+    }
+
+    static func components(for system: CeilingReferenceRecord, plenumCM: Double,
+                           catalogue: CeilingCataloguePayload) -> [CeilingJSONValue] {
+        let selected = reference(plenumCM: plenumCM, support: system.data["support"]?.string ?? "", catalogue: catalogue)
+        return (system.data["components"]?.array ?? []).map { value in
+            guard var object = value.object,
+                  object["selection"]?.string == "galvanized_hanger" else { return value }
+            // Old projects outside the new table keep their quantities but no
+            // incorrect size or price is silently assigned to them.
+            object["name"] = .string(selected?.title ?? "Suspentes acier galvanisées — taille à préciser")
+            if let selected { object["reference_id"] = .string(selected.id) }
+            return .object(object)
+        }
+    }
+}
+
+enum CompositeHangerSelection {
+    static func usesSizing(_ system: CeilingReferenceRecord) -> Bool {
+        system.data["components"]?.array?.contains { $0.object?["selection"]?.string == "composite_hanger" } == true
+    }
+
+    static func reference(plenumCM: Double, support: String, catalogue: CeilingCataloguePayload) -> CeilingReferenceRecord? {
+        guard support == "Plancher bois horizontal",
+              let mm = GalvanizedHangerSelection.wholeMillimeters(plenumCM: plenumCM) else { return nil }
+        let matches = catalogue.quantitatifs.filter { record in
+            guard record.status == "Publié", record.data["category"]?.string == "composite_hanger",
+                  record.data["support"]?.string == support, record.data["unit"]?.string == "unité",
+                  let model = record.data["model"]?.string, !model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                  let min = record.data["plenum_min_mm"]?.number, let max = record.data["plenum_max_mm"]?.number,
+                  min.isFinite, max.isFinite, min >= 0, max >= min,
+                  min.rounded() == min, max.rounded() == max else { return false }
+            return Double(mm) >= min && Double(mm) <= max
+        }
+        return matches.count == 1 ? matches[0] : nil
+    }
+}
+
+enum CeilingHangerComponents {
+    static func resolve(for system: CeilingReferenceRecord, plenumCM: Double,
+                        catalogue: CeilingCataloguePayload) -> [CeilingJSONValue] {
+        let selected = CompositeHangerSelection.reference(plenumCM: plenumCM,
+            support: system.data["support"]?.string ?? "", catalogue: catalogue)
+        return GalvanizedHangerSelection.components(for: system, plenumCM: plenumCM, catalogue: catalogue).map { value in
+            guard var object = value.object, object["selection"]?.string == "composite_hanger" else { return value }
+            object["name"] = .string(selected?.title ?? "Suspente composite pour pare-vapeur — modèle à préciser")
+            object.removeValue(forKey: "reference_id")
+            if let selected { object["reference_id"] = .string(selected.id) }
+            return .object(object)
+        }
+    }
+}
+
+enum CeilingInsulationDefaults {
+    static func firstThickness(available: [Double], betweenWood: Bool) -> Double {
+        let choices = available.filter { $0.isFinite && $0 > 0 }.sorted()
+        if betweenWood, choices.contains(60) { return 60 }
+        // Never invent a thickness missing from the published product series.
+        return choices.first ?? 0
+    }
+}
+
+enum CeilingFixingDefaults {
+    /// Only receives systems already filtered for support, plenum and ceiling shape.
+    static func preferred(in compatible: [CeilingReferenceRecord], vaporBarrier: Bool) -> CeilingReferenceRecord? {
+        if vaporBarrier, let composite = compatible.first(where: { $0.id == "FIX-BOIS-PARE-VAPEUR" }) {
+            return composite
+        }
+        for id in ["FIX-BOIS-GALVA", "FIX-HOURDIS-GALVA", "FIX-HOURDIS-GRIFFE-GALVA"] {
+            if let galvanized = compatible.first(where: { $0.id == id }) { return galvanized }
+        }
+        return compatible.first
+    }
+}
+
 enum CeilingJSONValue: Codable {
     case string(String)
     case number(Double)

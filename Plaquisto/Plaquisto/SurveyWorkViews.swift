@@ -13,16 +13,25 @@ import CryptoKit
         guard let data=try? encoder.encode(survey.checkpoints) else { return nil }
         return survey.id.uuidString+SHA256.hash(data:data).map { String(format:"%02x",$0) }.joined()
     }
-    static func image(for survey:ProjectSurveyRecord, dark: Bool = false) -> UIImage? {
+    static func image(for survey:ProjectSurveyRecord, dark: Bool = false, selected: Set<String> = []) -> UIImage? {
         guard let geometryKey=key(for:survey) else { return nil }
-        let key = geometryKey + (dark ? "/dark" : "/light")
+        let key = geometryKey + "/" + MaquetteRendering.current.rawValue + (dark ? "/dark" : "/light") + selected.sorted().joined(separator:"|")
         if let image=cache.object(forKey:key as NSString) { return image }
         let surfaces=SurveyWorkGeometry.surfaces(in:survey)
         guard !surfaces.isEmpty else { return nil }
         let scene=SurveySceneRenderer.make(survey:survey,surfaces:surfaces)
         // Roofs remain stored; hide them only in this cutaway thumbnail.
-        for surface in surfaces where surface.source.kind == .ceiling {
-            scene.rootNode.childNode(withName:surface.id,recursively:false)?.isHidden=true
+        for surface in surfaces {
+            guard let node = scene.rootNode.childNode(withName:surface.id,recursively:false) else { continue }
+            let ceiling = surface.source.kind == .ceiling
+            node.isHidden = ceiling && !selected.contains(surface.id)
+            if !selected.isEmpty {
+                node.opacity = selected.contains(surface.id) ? 1 : 0.25
+                if ceiling && selected.contains(surface.id) && MaquetteRendering.current == .elevated { node.opacity=0.8 }
+                node.geometry?.firstMaterial = MaquetteStyle.material(ceiling ? .ceiling : .wall,
+                    state:selected.contains(surface.id) ? .selected : .normal,translucent:node.opacity < 1)
+                MaquetteStyle.updateEdges(on:node,selected:selected.contains(surface.id))
+            }
         }
         SurveySceneRenderer.frame(scene,aspect:4.0/3.0)
         MaquetteStyle.installStudio(in:scene,quality:.economical)
@@ -31,15 +40,17 @@ import CryptoKit
         let renderer=SCNRenderer(device:nil,options:nil)
         renderer.scene=scene; renderer.pointOfView=scene.rootNode.childNode(withName:"camera",recursively:false)
         if let camera=renderer.pointOfView?.camera { MaquetteStyle.configure(camera,quality:.economical) }
-        let image=renderer.snapshot(atTime:0,with:CGSize(width:288,height:216),antialiasingMode:.multisampling2X)
-        cache.setObject(image,forKey:key as NSString,cost:288*216*4)
+        let image=renderer.snapshot(atTime:0,with:CGSize(width:576,height:432),antialiasingMode:.multisampling2X)
+        cache.setObject(image,forKey:key as NSString,cost:576*432*4)
         return image
     }
 }
 
 struct SurveyThumbnailView: View {
+    @AppStorage(MaquetteRendering.preferenceKey) private var rendering = MaquetteRendering.elevated.rawValue
     @Environment(\.colorScheme) private var colorScheme
     let survey:ProjectSurveyRecord
+    var selected: Set<String> = []
     @State private var preview:UIImage?
     var body:some View {
         ZStack {
@@ -51,11 +62,11 @@ struct SurveyThumbnailView: View {
             }
         }
         .accessibilityHidden(true)
-        .task(id:"\(SurveyThumbnailRenderer.key(for:survey) ?? survey.id.uuidString)/\(colorScheme)") {
+        .task(id:"\(SurveyThumbnailRenderer.key(for:survey) ?? survey.id.uuidString)/\(colorScheme)/\(selected.sorted())/\(rendering)") {
             preview=nil
             await Task.yield()
             guard !Task.isCancelled else { return }
-            preview=SurveyThumbnailRenderer.image(for:survey,dark:colorScheme == .dark)
+            preview=SurveyThumbnailRenderer.image(for:survey,dark:colorScheme == .dark,selected:selected)
         }
     }
 }
@@ -65,25 +76,41 @@ struct SurveyThumbnailView: View {
 struct SurveyWorkSelectionView: View {
     @EnvironmentObject private var store: ProjectStore
     let surveyID: UUID
+    let preferredType: WorkType?
+    var onFinished: (() -> Void)?
     @State private var selectionsByMode: [String: Set<String>] = [:]
     @State private var kind = SurveySurfaceSource.Kind.wall
     @State private var painting = false
     @State private var workType = WorkType.peripheralLiningStuds
+    @State private var ceilingType = WorkType.ceilingOnFurring
     @State private var workName = ""
     @State private var creating: SurveyWorkFormDraft?
-    @State private var savedName: String?
     @State private var showsPlan = true
+
+    init(surveyID: UUID, preferredType: WorkType? = nil, name: String = "", onFinished: (() -> Void)? = nil) {
+        self.surveyID = surveyID; self.preferredType = preferredType; self.onFinished = onFinished
+        _kind = State(initialValue: preferredType?.category == .ceilings ? .ceiling : .wall)
+        _painting = State(initialValue: preferredType == .paintingBeta)
+        _workType = State(initialValue: preferredType?.category == .wallInsulation ? preferredType! : .peripheralLiningStuds)
+        _ceilingType = State(initialValue: preferredType?.category == .ceilings ? preferredType! : .ceilingOnFurring)
+        _workName = State(initialValue: name)
+        _showsPlan = State(initialValue: preferredType == nil)
+    }
 
     private var selectionMode: String { "\(painting)/\(kind.rawValue)" }
     private var selected: Set<String> { selectionsByMode[selectionMode] ?? [] }
 
     private var survey: ProjectSurveyRecord? { store.surveys.first { $0.id == surveyID } }
-    private var candidates: [SurveyWorkSurface] { survey.map(SurveyWorkGeometry.surfaces) ?? [] }
+    private var candidates: [SurveyWorkSurface] {
+        guard let survey else { return [] }
+        return SurveyWorkGeometry.surfaces(in: survey).filter { !SurveyWorkGeometry.isHidden($0, in: survey) }
+    }
     private var visible: [SurveyWorkSurface] { candidates.filter { $0.source.kind == kind } }
     private var unavailableCount: Int {
         (survey?.checkpoints ?? []).reduce(0) { total, checkpoint in
             let offered = Set(visible.filter { $0.source.checkpointID == checkpoint.id }.map { $0.source.surfaceID })
-            let expected = kind == .wall ? checkpoint.document.room.walls.map(\.id) : checkpoint.document.room.slopes.filter(\.accepted).map(\.id)
+            let hidden=Set(checkpoint.document.room.ceilings.filter { $0.isHidden == true }.flatMap(\.slopeIDs))
+            let expected = kind == .wall ? checkpoint.document.room.walls.map(\.id) : checkpoint.document.room.slopes.filter { $0.accepted && !hidden.contains($0.id) }.map(\.id)
             return total + expected.filter { !offered.contains($0) }.count
         }
     }
@@ -123,24 +150,23 @@ struct SurveyWorkSelectionView: View {
         .safeAreaInset(edge: .bottom) { selectionBar }
         .sheet(item: $creating) { draft in
             SurveyWorkForm(draft: draft) {
-                creating = nil; selectionsByMode[selectionMode] = []; savedName = draft.name
+                creating = nil; selectionsByMode[selectionMode] = []
+                if let project { store.showProject(project.id) }
+                onFinished?()
             }
         }
-        .alert("Ouvrage créé", isPresented: Binding(get: { savedName != nil }, set: { if !$0 { savedName = nil } })) {
-            Button("Continuer la sélection") { savedName = nil }
-        } message: { Text("\(savedName ?? "") est disponible dans votre projet avec ses composants et son quantitatif.") }
     }
 
     private var previewSection: some View {
         Section {
-                Picker("Traitement", selection: $painting) {
+                if preferredType == nil { Picker("Traitement", selection: $painting) {
                     Text("Doublage / plafond").tag(false)
-                    Text("Peinture (bêta)").tag(true)
-                }.pickerStyle(.segmented)
-                Picker("Surfaces", selection: $kind) {
+                    Text("Peinture et ratissages").tag(true)
+                }.pickerStyle(.segmented) }
+                if preferredType == nil || painting { Picker("Surfaces", selection: $kind) {
                     Text("Murs").tag(SurveySurfaceSource.Kind.wall)
                     Text("Plafonds").tag(SurveySurfaceSource.Kind.ceiling)
-                }.pickerStyle(.segmented)
+                }.pickerStyle(.segmented) }
                 Picker("Vue du relevé", selection: $showsPlan) {
                     Text("Plan 2D").tag(true)
                     Text("Vue 3D").tag(false)
@@ -180,14 +206,14 @@ struct SurveyWorkSelectionView: View {
         Section(checkpoint.document.room.name ?? "Pièce") {
             if !checkpoint.isUsableForWork {
                 SurveyCheckpointStatusLabel(checkpoint: checkpoint)
-                Text("Ces surfaces ne peuvent pas encore être attribuées. Contrôlez les dimensions et les ouvertures, puis validez le relevé.")
+                Text("La géométrie de ces surfaces doit être corrigée avant leur utilisation.")
                     .font(.footnote).foregroundStyle(.secondary)
             }
             ForEach(values) { value in surfaceRow(value) }
             NavigationLink {
                 ProjectSurveyRoomView(surveyID: surveyID, checkpoint: checkpoint)
             } label: {
-                Label("Contrôler \(checkpoint.document.room.name ?? "la pièce")", systemImage: "ruler")
+                Label("Modifier \(checkpoint.document.room.name ?? "la pièce")", systemImage: "ruler")
             }
         }
     }
@@ -216,15 +242,20 @@ struct SurveyWorkSelectionView: View {
                 LabeledContent("Surface brute", value: area(grossArea))
                 LabeledContent("Ouvertures déduites", value: area(max(0, grossArea - netArea)))
                 LabeledContent("Surface nette", value: area(netArea))
-                if painting {
-                    LabeledContent("Traitement", value: "Peinture (bêta)")
+                if let preferredType {
+                    LabeledContent("Ouvrage", value: preferredType.title)
+                } else if painting {
+                    LabeledContent("Traitement", value: "Peinture et ratissages")
                 } else if kind == .wall {
                     Picker("Système", selection: $workType) {
                         Text("Rails et montants").tag(WorkType.peripheralLiningStuds)
                         Text("Lisses et fourrures").tag(WorkType.peripheralLiningFurrings)
                     }
                 } else {
-                    LabeledContent("Système", value: "Plafond sur fourrures")
+                    Picker("Système",selection:$ceilingType) {
+                        Text("Fourrures").tag(WorkType.ceilingOnFurring)
+                        Text("Rails et montants").tag(WorkType.ceilingOnRailsAndStuds)
+                    }
                 }
                 TextField("Nom de l’ouvrage (facultatif)", text: $workName)
             } header: { Text("Nouvel ouvrage") } footer: {
@@ -249,7 +280,7 @@ struct SurveyWorkSelectionView: View {
 
     private func continueToForm() {
         guard let project, !chosen.isEmpty else { return }
-        let type: WorkType = painting ? .paintingBeta : (kind == .ceiling ? .ceilingOnFurring : workType)
+        let type: WorkType = painting ? .paintingBeta : (kind == .ceiling ? ceilingType : workType)
         let typedName = workName.trimmingCharacters(in: .whitespacesAndNewlines)
         creating = .init(surveyID: surveyID, selections: chosen,
             name: typedName.isEmpty ? store.defaultWorkName(projectID: project.id, type: type) : typedName,
@@ -258,49 +289,6 @@ struct SurveyWorkSelectionView: View {
 }
 
 /// Deliberately limited to a metric surface; no invented paint yield or supplies.
-struct PaintingBetaConfiguratorView: View {
-    let readOnlyArea: Bool
-    let onSave: (PaintingBetaConfiguration) -> Void
-    @State private var area: Double
-
-    init(initialConfiguration: PaintingBetaConfiguration = .init(), readOnlyArea: Bool = false,
-         onSave: @escaping (PaintingBetaConfiguration) -> Void) {
-        self.readOnlyArea = readOnlyArea; self.onSave = onSave
-        _area = State(initialValue: initialConfiguration.area)
-    }
-    var body: some View {
-        Form {
-            Section("Surface à peindre") {
-                if readOnlyArea {
-                    LabeledContent("Surface nette", value: "\(area.formatted(.number.precision(.fractionLength(2)))) m²")
-                } else {
-                    HStack {
-                        Text("Surface")
-                        Spacer()
-                        ZeroEmptyDecimalTextField(value: $area).multilineTextAlignment(.trailing).frame(width: 100)
-                        Text("m²").foregroundStyle(.secondary)
-                    }
-                }
-            }
-            Section {
-                Label("Formulaire provisoire", systemImage: "paintbrush")
-                Text("Cette première version conserve les surfaces à peindre. La préparation, les couches et les consommables seront ajoutés ultérieurement.")
-                    .font(.footnote).foregroundStyle(.secondary)
-                if readOnlyArea {
-                    Text("Les ouvertures sont déjà déduites. Pour changer les dimensions, modifiez le contour de la surface source.")
-                        .font(.footnote).foregroundStyle(.secondary)
-                }
-            }
-            Section {
-                Button("Enregistrer") { onSave(.init(area: area)) }
-                    .disabled(!area.isFinite || area <= 0)
-            }
-        }
-        .navigationTitle("Peinture (bêta)")
-        .navigationBarTitleDisplayMode(.inline)
-    }
-}
-
 struct SurveyWorkFormDraft: Identifiable {
     let id = UUID()
     let surveyID: UUID
@@ -316,6 +304,9 @@ struct SurveyWorkForm: View {
     @StateObject private var lining = DoublageReferenceStore()
     @StateObject private var furring = FurringLiningReferenceStore()
     @StateObject private var partition = CloisonDistributionReferenceStore()
+    @StateObject private var automaticReferences = CeilingReferenceStore()
+    @StateObject private var automaticFormats = ToolTechnicalStore()
+    @State private var preparingLayouts = false
     let draft: SurveyWorkFormDraft
     let onSaved: () -> Void
     @State private var error: String?
@@ -334,6 +325,8 @@ struct SurveyWorkForm: View {
                         readOnlyArea: true) { save(.paintingBeta($0)) }
                 case .ceilingOnFurring:
                     CeilingConfiguratorView(initialConfiguration: SurveyWorkGeometry.ceiling(draft.selections), lockScannedGeometry: true) { save(.ceiling($0)) }
+                case .ceilingOnRailsAndStuds:
+                    RailStudCeilingConfiguratorView(initialConfiguration:SurveyWorkGeometry.railStudCeiling(draft.selections),lockScannedGeometry:true) { save(.railStudCeiling($0)) }
                 case .peripheralLiningStuds:
                     DoublageConfiguratorView(initialConfiguration: SurveyWorkGeometry.lining(draft.selections),
                         onSave: { save(.peripheralLining($0)) }, onClose: { dismiss() }, showsCloseButton: false)
@@ -349,16 +342,41 @@ struct SurveyWorkForm: View {
             }
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Fermer") { dismiss() } } }
         }
+        .disabled(preparingLayouts)
+        .interactiveDismissDisabled(preparingLayouts)
+        .overlay {
+            if preparingLayouts { ProgressView("Optimisation des calepinages…").padding(24).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 18)) }
+        }
+        .task { await automaticReferences.load(); await automaticFormats.load() }
         .alert("Enregistrement impossible", isPresented: Binding(get: { error != nil }, set: { if !$0 { error = nil } })) {
             Button("OK") { error = nil }
         } message: { Text(error ?? "") }
     }
     private func save(_ payload: WorkConfiguration) {
-        do {
-            try store.createSurveyWork(surveyID: draft.surveyID, selections: draft.selections,
-                name: draft.name, type: draft.type, payload: payload, roomID: draft.roomID)
-            onSaved()
-        } catch { self.error = error.localizedDescription }
+        guard !preparingLayouts else { return }
+        preparingLayouts = true
+        Task {
+            defer { preparingLayouts = false }
+            do {
+                let now = Date()
+                var work = WorkItem(id: UUID(), projectID: UUID(), name: draft.name, type: draft.type, payload: payload, createdAt: now, updatedAt: now)
+                work.components = draft.selections.map { selection in
+                    var component = WorkComponentRecord(name: selection.surface.name, surface: selection.surface)
+                    component.surveySource = selection.source
+                    component.referenceSideRoomID = selection.roomID
+                    return component
+                }
+                if automaticReferences.catalogue == nil { await automaticReferences.load() }
+                if automaticFormats.layoutFormats.isEmpty { await automaticFormats.load() }
+                let formats = automaticFormats.layoutFormats, catalogue = automaticReferences.catalogue
+                let prepared = try await Task.detached(priority: .userInitiated) {
+                    try AutomaticSurveyLayout.prepare(work, formats: formats, catalogue: catalogue)
+                }.value
+                try store.createSurveyWork(surveyID: draft.surveyID, selections: draft.selections,
+                    name: draft.name, type: draft.type, payload: payload, roomID: draft.roomID, automatic: prepared)
+                onSaved()
+            } catch { self.error = error.localizedDescription }
+        }
     }
 }
 
@@ -375,7 +393,9 @@ struct SurveySurfacePlan: View {
     @State private var zoom: CGFloat = 1
     @State private var offset = CGSize.zero
     @GestureState private var pinch: CGFloat = 1
-    @GestureState private var drag = CGSize.zero
+    @State private var drag = CGSize.zero
+    @State private var cachedDrawing: [DrawingSurface]?
+    @State private var cachedLabels: [(title:String,point:CGPoint)] = []
 
     private struct DrawingSurface {
         let id: String
@@ -391,7 +411,7 @@ struct SurveySurfacePlan: View {
         var offset = 0.0
         let separate = survey.checkpoints.count > 1 && survey.checkpoints.contains { $0.spatialLinkState == .needsLink }
         for checkpoint in survey.checkpoints {
-            let values = surfaces.filter { $0.source.checkpointID == checkpoint.id }
+            let values = surfaces.filter { $0.source.checkpointID == checkpoint.id && !SurveyWorkGeometry.isHidden($0, in: survey) }
             let points = values.flatMap(\.triangles)
             let minX = points.map(\.x).min() ?? 0
             let maxX = points.map(\.x).max() ?? 0
@@ -426,8 +446,8 @@ struct SurveySurfacePlan: View {
     }
 
     var body: some View {
-        let elements = drawing
-        let labels = ceilingLabels(elements)
+        let elements = cachedDrawing ?? drawing
+        let labels = cachedDrawing == nil ? ceilingLabels(elements) : cachedLabels
         GeometryReader { proxy in
             let points = elements.flatMap(\.points)
             let minX = points.map(\.x).min() ?? 0, maxX = points.map(\.x).max() ?? 1
@@ -496,11 +516,13 @@ struct SurveySurfacePlan: View {
             })
             .simultaneousGesture(MagnifyGesture().updating($pinch) { value, state, _ in state = value.magnification }
                 .onEnded { value in zoom = min(8, max(1, zoom * value.magnification)) })
-            .simultaneousGesture(DragGesture(minimumDistance: 8).updating($drag) { value, state, _ in state = value.translation }
+            .simultaneousGesture(DragGesture(minimumDistance: 3).onChanged { drag = $0.translation }
                 .onEnded { value in
                     offset = CGSize(width: min(limitX, max(-limitX, offset.width + value.translation.width)),
                                     height: min(limitY, max(-limitY, offset.height + value.translation.height)))
+                    drag = .zero
                 })
+            .transaction { $0.animation = nil }
             .overlay(alignment: .topTrailing) {
                 Button { zoom = 1; offset = .zero } label: { Image(systemName: "scope").padding(10) }
                     .buttonStyle(.borderless).background(.regularMaterial, in: Circle()).padding(8)
@@ -509,9 +531,16 @@ struct SurveySurfacePlan: View {
             .overlay {
                 if elements.isEmpty { Text("Aucune surface exploitable dans ce relevé").font(.footnote).padding() }
             }
+            .onAppear { refreshDrawing() }
+            .onChange(of: survey) { _,_ in refreshDrawing() }
+            .onChange(of: surfaces) { _,_ in refreshDrawing() }
             .clipped()
         }
         .accessibilityLabel("Plan 2D de sélection des surfaces")
+    }
+    private func refreshDrawing() {
+        let elements = drawing
+        cachedDrawing = elements; cachedLabels = ceilingLabels(elements)
     }
 
     private func ceilingLabels(_ elements:[DrawingSurface]) -> [(title:String,point:CGPoint)] {
@@ -560,9 +589,9 @@ struct SurveySurfacePlan: View {
 
 /// Presentation-only solids/materials. All selection IDs and quantity geometry stay unchanged.
 @MainActor enum SurveySceneRenderer {
-    static let background = MaquetteStyle.background
+    static var background: UIColor { MaquetteStyle.background }
     /// Extrude the hole-aware wall mesh. Boundary edges include door/window reveals.
-    static func wallSolid(_ triangles: [RoomPoint], normal: RoomPoint, thickness: Double) -> [RoomPoint] {
+    nonisolated static func wallSolid(_ triangles: [RoomPoint], normal: RoomPoint, thickness: Double) -> [RoomPoint] {
         let offset = normal*(thickness/2)
         var output: [RoomPoint] = [], edges: [String:(RoomPoint,RoomPoint,Int)] = [:]
         func key(_ p: RoomPoint) -> String { "\(Int64((p.x*100000).rounded()))/\(Int64((p.y*100000).rounded()))/\(Int64((p.z*100000).rounded()))" }
@@ -605,6 +634,7 @@ struct SurveySurfacePlan: View {
                 let mesh = MaquetteStyle.geometry(triangles.map(transform))
                 mesh.firstMaterial = MaquetteStyle.material(surface.source.kind == .ceiling ? .ceiling : .wall)
                 let node = SCNNode(geometry:mesh); node.name = surface.id; node.categoryBitMask = 1; node.castsShadow = true
+                MaquetteStyle.attachEdges(to:node,points:triangles.map(transform))
                 scene.rootNode.addChildNode(node)
             }
             for floor in checkpoint.document.room.floors {
@@ -651,7 +681,7 @@ struct SurveySurfacePlan: View {
     }
 }
 
-private final class SurveyArchitecturalView: SCNView {
+private final class SurveyArchitecturalView: UprightSurveySceneView {
     var needsInitialFraming = true
     override func layoutSubviews() {
         super.layoutSubviews()
@@ -662,6 +692,7 @@ private final class SurveyArchitecturalView: SCNView {
 }
 
 struct SurveySurfaceScene: UIViewRepresentable {
+    @AppStorage(MaquetteRendering.preferenceKey) private var rendering = MaquetteRendering.elevated.rawValue
     @Environment(\.colorScheme) private var colorScheme
     let survey: ProjectSurveyRecord
     let surfaces: [SurveyWorkSurface]
@@ -682,6 +713,7 @@ struct SurveySurfaceScene: UIViewRepresentable {
         return view
     }
     func updateUIView(_ view: SCNView, context: Context) {
+        _ = rendering
         update(view,coordinator:context.coordinator)
         MaquetteStyle.updateBackground(view, dark: colorScheme == .dark)
     }
@@ -715,21 +747,27 @@ struct SurveySurfaceScene: UIViewRepresentable {
             }
         }
         let quality=MaquetteStyle.Quality.current
-        if coordinator.quality != quality, let scene=view.scene {
+        if coordinator.quality != quality || coordinator.rendering != MaquetteRendering.current, let scene=view.scene {
             coordinator.quality=quality
+            coordinator.rendering=MaquetteRendering.current
             MaquetteStyle.configure(view,quality:quality)
             MaquetteStyle.installStudio(in:scene,quality:quality)
             if let camera=view.pointOfView?.camera { MaquetteStyle.configure(camera,quality:quality) }
+            for floor in scene.rootNode.childNodes where floor.name?.hasPrefix("floor/") == true {
+                floor.geometry?.firstMaterial=MaquetteStyle.material(.floor)
+            }
         }
         for surface in surfaces {
             guard let node = view.scene?.rootNode.childNode(withName:surface.id,recursively:false) else { continue }
             let ceiling = surface.source.kind == .ceiling
-            node.isHidden = ceiling && !(showsCeilings ?? (kind == .ceiling))
+            node.isHidden = SurveyWorkGeometry.isHidden(surface, in: survey) || (ceiling && !(showsCeilings ?? (kind == .ceiling)))
             node.opacity = ceiling ? 0.88 : (kind == .ceiling ? 0.32 : 1)
+            if ceiling && selected.contains(surface.id) && MaquetteRendering.current == .elevated { node.opacity=0.8 }
             node.geometry?.firstMaterial = MaquetteStyle.material(ceiling ? .ceiling : .wall,
                 state:selected.contains(surface.id) ? .selected : (claimed.contains(surface.id) ? .claimed : .normal),
                 translucent:node.opacity < 1)
             node.castsShadow = !node.isHidden && node.opacity == 1
+            MaquetteStyle.updateEdges(on:node,selected:selected.contains(surface.id))
         }
     }
     struct GeometryKey:Equatable {
@@ -742,6 +780,7 @@ struct SurveySurfaceScene: UIViewRepresentable {
         var geometryKey:GeometryKey?
         var geometryBuildCount=0
         var quality:MaquetteStyle.Quality?
+        var rendering:MaquetteRendering?
         var resetToken = -1
         var selectableIDs = Set<String>()
         init(onTap: @escaping (String) -> Void) { self.onTap = onTap }

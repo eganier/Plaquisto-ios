@@ -229,7 +229,7 @@ struct BondedLiningConfiguratorView: View {
     private var jointsStep: some View {
         VStack(alignment: .leading, spacing: 18) {
             sectionTitle("Bandes à joint")
-            card { Toggle("Prévoir le traitement des bandes à joint", isOn: $jointTreatment); if jointTreatment { Divider(); LabeledContent("Enduit", value: "Enduit en poudre") } }
+            card { Toggle("Prévoir le traitement des bandes à joint", isOn: $jointTreatment); if jointTreatment { Divider(); LabeledContent("Enduit", value: "Enduit à joints en poudre") } }
         }
     }
 
@@ -271,7 +271,7 @@ struct BondedLiningConfiguratorView: View {
         rows.append(.init(name: references.quantities.names["adhesive"] ?? "Mortier adhésif", quantity: actualArea * references.quantities.adhesive, unit: "kg"))
         if jointTreatment {
             rows.append(.init(name: references.quantities.names["band"] ?? "Bande à joint", quantity: actualArea * references.quantities.band, unit: "ml"))
-            rows.append(.init(name: references.quantities.names["powder"] ?? "Enduit en poudre", quantity: actualArea * references.quantities.powder, unit: "kg"))
+            rows.append(.init(name: references.quantities.names["powder"] ?? "Enduit à joints en poudre", quantity: actualArea * references.quantities.powder, unit: "kg"))
         }
         return BondedLiningConfiguration(geometryMode: geometryMode == .surface ? "surface" : "length", height: height, enteredLength: enteredLength, enteredSurface: enteredSurface, allocations: allocations, lambda: selectedLambda, hasReveal: revealMode == .required, revealMM: selectedRevealMM, insulationThicknessMM: selectedThicknessMM, widthMM: selectedWidthMM, panelHeightMM: selectedHeightMM, jointTreatment: jointTreatment, quantities: rows)
     }

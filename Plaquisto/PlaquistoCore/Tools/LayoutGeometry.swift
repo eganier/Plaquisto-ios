@@ -1,5 +1,33 @@
 import Foundation
 
+/// Screen-space placement only; never changes a cut or its stock coordinates.
+enum LayoutNumberCallout {
+    static func rect(anchor:CGPoint, size:CGSize, viewport:CGRect, occupied:[CGRect], displaced:Bool) -> CGRect {
+        let safe = viewport.insetBy(dx:4,dy:4)
+        func bounded(_ center:CGPoint) -> CGRect {
+            let x=min(max(center.x-size.width/2,safe.minX),max(safe.minX,safe.maxX-size.width))
+            let y=min(max(center.y-size.height/2,safe.minY),max(safe.minY,safe.maxY-size.height))
+            return CGRect(x:x,y:y,width:size.width,height:size.height)
+        }
+        if !displaced { return bounded(anchor) }
+        var best=bounded(CGPoint(x:anchor.x+28,y:anchor.y-24)), bestScore=Double.infinity
+        for radius in stride(from:28.0,through:136.0,by:18) {
+            for direction in 0..<8 {
+                let angle=Double(direction)*Double.pi/4-Double.pi/4
+                let rect=bounded(CGPoint(x:anchor.x+cos(angle)*radius,y:anchor.y+sin(angle)*radius))
+                let overlap=occupied.reduce(0.0) { sum, other in
+                    let intersection=rect.insetBy(dx:-3,dy:-3).intersection(other)
+                    return sum+(intersection.isNull ? 0 : intersection.width*intersection.height)
+                }
+                let score=overlap*1000+hypot(rect.midX-anchor.x,rect.midY-anchor.y)
+                if score<bestScore-0.001 { bestScore=score; best=rect }
+            }
+            if bestScore<1000 { break }
+        }
+        return best
+    }
+}
+
 struct LayoutLayingOffset: Codable, Equatable {
     enum Unit: String, Codable { case millimetres }
     var unit = Unit.millimetres

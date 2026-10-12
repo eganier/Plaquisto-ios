@@ -10,8 +10,8 @@ struct AlveolarPartitionConfiguratorView: View {
     }
 
     private enum Compound: String, CaseIterable, Identifiable {
-        case powder = "Enduit en poudre"
-        case paste = "Enduit en pâte"
+        case powder = "Enduit à joints en poudre"
+        case paste = "Enduit à joints en pâte"
         var id: Self { self }
     }
 
@@ -355,7 +355,7 @@ struct AlveolarPartitionConfiguratorView: View {
         rows.append((componentName("ttpc35", fallback: "Vis TTPC 35"), format(totals.ttpc35, "unités", rounded: true)))
         rows.append((componentName("ttpc70", fallback: "Vis TTPC 70"), format(totals.ttpc70, "unités", rounded: true)))
         if jointTreatment {
-            rows.append((componentName("band", fallback: "Bande PP grand rouleau"), format(totals.band, "ml")))
+            rows.append((SupplyListingConsolidator.canonicalName(componentName("band", fallback: "Bande à joint")), format(totals.band, "ml")))
             if compound == .powder {
                 rows.append((componentName("powder", fallback: compound.rawValue), format(totals.powder, "kg")))
             } else {

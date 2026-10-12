@@ -5,7 +5,7 @@ struct DoublageConfiguratorView: View {
     enum GeometryMode: String, CaseIterable, Identifiable { case length = "Longueur", surface = "Surface totale"; var id: Self { self } }
     enum SkinCount: String, CaseIterable, Identifiable { case single = "Simple peau", double = "Double peau"; var id: Self { self } }
     enum StudMounting: String, CaseIterable, Identifiable { case simple = "Montants simples", double = "Montants doubles"; var id: Self { self } }
-    enum Compound: String, CaseIterable, Identifiable { case powder = "Enduit en poudre", paste = "Enduit en pâte"; var id: Self { self } }
+    enum Compound: String, CaseIterable, Identifiable { case powder = "Enduit à joints en poudre", paste = "Enduit à joints en pâte"; var id: Self { self } }
     enum InsulationLayerCount: String, CaseIterable, Identifiable { case single = "Simple épaisseur", double = "Double épaisseur"; var id: Self { self } }
 
     typealias FacingAllocation = DoublageFacingSelection
@@ -22,6 +22,7 @@ struct DoublageConfiguratorView: View {
     @State private var height = 0.0
     @State private var enteredLength = 0.0
     @State private var enteredSurface = 0.0
+    @State private var finishedDepthMM = 0.0
     @State private var specifiesWallCount = true
     @State private var wallCount = 4
     @State private var skinCount = SkinCount.single
@@ -58,6 +59,7 @@ struct DoublageConfiguratorView: View {
         self.showsCloseButton = showsCloseButton
         self.isEditing = initialConfiguration != nil
         self.measuredWallRuns = configuration.measuredWallRuns
+        _finishedDepthMM = State(initialValue: configuration.finishedDepthMM ?? 0)
         _step = State(initialValue: initialStep ?? (startsAtResult ? 6 : 1))
         _geometryMode = State(initialValue: configuration.geometryMode == "surface" ? .surface : .length)
         _height = State(initialValue: configuration.height)
@@ -126,7 +128,7 @@ struct DoublageConfiguratorView: View {
     private var frameIsAccepted: Bool { maxHeight >= height || (intermediateSupports && maxHeight > 0) }
     private var canContinue: Bool {
         switch step {
-        case 1: return height > 0 && (!specifiesWallCount || wallCount > 0) && (geometryMode == .length ? enteredLength > 0 : enteredSurface > 0)
+        case 1: return finishedDepthMM.isFinite && (0...1000).contains(finishedDepthMM) && height > 0 && (!specifiesWallCount || wallCount > 0) && (geometryMode == .length ? enteredLength > 0 : enteredSurface > 0)
         case 2: return allocationsAreComplete && !performanceGroupIDs.isEmpty && tiledAreaSurfaceIsValid
         case 3: return frameIsAccepted
         case 4: return !insulationEnabled || insulationSelectionIsComplete(firstInsulation) && (insulationLayerCount == .single || insulationSelectionIsComplete(secondInsulation))
@@ -168,7 +170,8 @@ struct DoublageConfiguratorView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
                     switch step {
-                    case 1: dimensionsStep
+                    case 1:
+                        dimensionsStep
                     case 2: facingsStep
                     case 3: framingStep
                     case 4: insulationStep
@@ -242,6 +245,12 @@ struct DoublageConfiguratorView: View {
                  ? "La hauteur sous plafond est obligatoire. Le nombre de murs est prérempli à 4 pour tenir compte des montants placés aux extrémités de chaque mur."
                  : "Le nombre de murs n’est pas renseigné. Le quantitatif des montants sera estimé uniquement à partir de la longueur totale et sera légèrement moins précis.")
                 .font(.footnote).foregroundStyle(.secondary)
+            if let runs=measuredWallRuns, runs.contains(where:{$0.openingCount != nil}) {
+                card {
+                    LabeledContent("Ouvertures reconnues",value:"\(runs.reduce(0){$0+($1.openingCount ?? 0)})")
+                    LabeledContent("Surface déjà déduite",value:format(runs.reduce(0){$0+($1.openingArea ?? 0)},"m²"))
+                }
+            }
         }
         .disabled(measuredWallRuns != nil)
     }
@@ -506,7 +515,8 @@ struct DoublageConfiguratorView: View {
         let studs = ((measuredStudLength ?? Double(baseStudCount) * height) + Double(studCount - baseStudCount) * height) * 1.05
         let selectedFacings = firstSkin + (skinCount == .double ? secondSkin : [])
         var rows = allocationRows(selectedFacings)
-        rows += [("Rails", format(rails, "ml")), ("Montants", format(studs, "ml"))]
+        rows += [(OpeningContext.profileName(frame: frame, rail: true), format(rails, "ml")),
+                 (OpeningContext.profileName(frame: frame, rail: false), format(studs, "ml"))]
         if insulationEnabled {
             rows.append(("Isolation · 1re couche · \(insulationDescription(firstInsulation))", format(actualArea * coveringAreaRatio * (table.coefficients["insulation_m2_m2"] ?? 1.1), "m²")))
             if insulationLayerCount == .double {
@@ -867,6 +877,10 @@ struct DoublageConfiguratorView: View {
 
     private func configurationSnapshot() -> DoublageConfiguration {
         DoublageConfiguration(
+            finishedDepthMM: finishedDepthMM.isFinite && finishedDepthMM > 0 ? finishedDepthMM : nil,
+            facingDepthMM: [firstSkin, secondSkin].prefix(skinCount == .double ? 2 : 1).reduce(0) { total, layer in
+                total + (layer.compactMap { facing(for: $0).flatMap { LiningDepthEstimate.boardThickness($0.mechanicalFamily) } }.max() ?? 13)
+            },
             geometryMode: geometryMode == .surface ? "surface" : "length",
             height: height,
             enteredLength: enteredLength,
@@ -904,6 +918,7 @@ struct DoublageConfiguratorView: View {
 
     private func reset() {
         step = 1; geometryMode = .length; height = 0; enteredLength = 0; enteredSurface = 0; specifiesWallCount = true; wallCount = 4
+        finishedDepthMM = 0
         skinCount = .single; firstSkin = [FacingAllocation()]; secondSkin = [FacingAllocation()]
         technique = "Rails et montants"; frame = "R48 + M48"; mounting = .simple; spacing = 0.6; tiledArea = false; tiledAreaSurface = 0
         intermediateSupports = false; insulationEnabled = true; insulationLayerCount = .single

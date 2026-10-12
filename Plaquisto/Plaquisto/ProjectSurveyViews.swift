@@ -166,7 +166,7 @@ struct ProjectSurveyDetailsListView: View {
                         }
                     }
                 } header: { Text("Pièces du relevé") } footer: {
-                    Text("Ouvrez une pièce pour contrôler sa géométrie en 3D ou en vue de dessus. Les captures indépendantes restent séparées tant que leur position relative n’est pas établie.")
+                    Text("Ouvrez une pièce en 3D ou en vue de dessus. Les captures indépendantes restent séparées tant que leur position relative n’est pas établie.")
                 }
             }
             .navigationTitle(survey.name)
@@ -330,11 +330,11 @@ struct SurveyCheckpointStatusLabel: View {
         Group {
             switch checkpoint.effectiveWorkState {
             case .provisional:
-                Label("Relevé provisoire · contrôle nécessaire", systemImage: "exclamationmark.triangle")
+                Label("Relevé récupéré pendant l’acquisition", systemImage: "info.circle")
             case .awaitingValidation:
-                Label("Relevé à valider avant attribution", systemImage: "checkmark.shield")
+                Label("Relevé disponible pour les ouvrages", systemImage: "checkmark.seal")
             case .validated:
-                Label("Relevé validé pour les ouvrages", systemImage: "checkmark.seal")
+                Label("Relevé disponible pour les ouvrages", systemImage: "checkmark.seal")
             }
         }
         .font(.caption)
@@ -347,8 +347,6 @@ struct ProjectSurveyRoomView: View {
     let surveyID: UUID
     let checkpoint: ProjectRoomScanCheckpoint
     @State private var expectedDocument: PlaquistoRoomDocument?
-    @State private var confirmsValidation = false
-    @State private var validationError: String?
 
     private var currentCheckpoint: ProjectRoomScanCheckpoint {
         store.surveys.first { $0.id == surveyID }?.checkpoints.first { $0.id == checkpoint.id } ?? checkpoint
@@ -361,31 +359,5 @@ struct ProjectSurveyRoomView: View {
                 expectedDocument: expectedDocument ?? checkpoint.document, document: edited)
             expectedDocument = edited
         }
-        .safeAreaInset(edge: .bottom) {
-            VStack(alignment: .leading, spacing: 8) {
-                SurveyCheckpointStatusLabel(checkpoint: currentCheckpoint)
-                if !currentCheckpoint.isUsableForWork {
-                    Text("Contrôlez les contours, dimensions et ouvertures. Seules les corrections déjà enregistrées seront validées.")
-                        .font(.caption).foregroundStyle(.secondary)
-                    Button("Valider le relevé pour les ouvrages") { confirmsValidation = true }
-                        .buttonStyle(.borderedProminent).frame(maxWidth: .infinity)
-                }
-            }
-            .frame(maxWidth: .infinity, alignment: .leading).padding().background(.regularMaterial)
-        }
-        .confirmationDialog("Valider les mesures enregistrées ?", isPresented: $confirmsValidation, titleVisibility: .visible) {
-            Button("J’ai contrôlé le relevé, valider") {
-                do {
-                    try store.validateSurveyCheckpoint(surveyID: surveyID, checkpointID: checkpoint.id,
-                        expectedDocument: expectedDocument ?? checkpoint.document)
-                } catch { validationError = error.localizedDescription }
-            }
-            Button("Continuer le contrôle", role: .cancel) {}
-        } message: {
-            Text("Les surfaces pourront être utilisées pour créer des ouvrages. Cette validation confirme votre contrôle ; elle ne garantit pas la précision du scan.")
-        }
-        .alert("Validation impossible", isPresented: Binding(get: { validationError != nil }, set: { if !$0 { validationError = nil } })) {
-            Button("OK") { validationError = nil }
-        } message: { Text(validationError ?? "") }
     }
 }

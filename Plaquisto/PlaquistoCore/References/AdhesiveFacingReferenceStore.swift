@@ -23,6 +23,10 @@ struct AdhesiveFacingFormat: Identifiable, Hashable {
     let heightMM: Int
     var id: String { "\(widthMM)x\(heightMM)" }
     var title: String { "\(widthMM) × \(heightMM) mm" }
+
+    static func selected(id: String, in formats: [Self]) -> Self? {
+        formats.first { $0.id == id } ?? formats.first
+    }
 }
 
 struct AdhesiveFacingQuantityTable {

@@ -29,8 +29,8 @@ struct FurringLiningConfiguratorView: View {
     }
 
     private enum Compound: String, CaseIterable, Identifiable {
-        case powder = "Enduit en poudre"
-        case paste = "Enduit en pâte"
+        case powder = "Enduit à joints en poudre"
+        case paste = "Enduit à joints en pâte"
         var id: Self { self }
     }
 
@@ -47,6 +47,7 @@ struct FurringLiningConfiguratorView: View {
     @State private var height = 0.0
     @State private var enteredLength = 0.0
     @State private var enteredSurface = 0.0
+    @State private var finishedDepthMM = 0.0
     @State private var specifiesWallCount = true
     @State private var wallCount = 4
 
@@ -74,6 +75,7 @@ struct FurringLiningConfiguratorView: View {
         let configuration = initialConfiguration ?? FurringLiningConfiguration()
         self.onSave = onSave; self.onClose = onClose; self.showsCloseButton = showsCloseButton; self.isEditing = initialConfiguration != nil
         self.measuredWallRuns = configuration.measuredWallRuns
+        _finishedDepthMM = State(initialValue: configuration.finishedDepthMM ?? 0)
         _step = State(initialValue: initialStep ?? (startsAtResult ? 6 : 1))
         _geometryMode = State(initialValue: configuration.geometryMode == "surface" ? .surface : .length)
         _height = State(initialValue: configuration.height); _enteredLength = State(initialValue: configuration.enteredLength); _enteredSurface = State(initialValue: configuration.enteredSurface)
@@ -200,10 +202,19 @@ struct FurringLiningConfiguratorView: View {
         return thermalResistance(firstInsulation)
     }
 
+    private var selectedSupportModel: FurringIntermediateSupport? {
+        FurringIntermediateSupportSelection.select(
+            thicknessMM: insulationEnabled ? firstInsulation.thicknessMM : 0,
+            directMasonry: !includesHorizontalSupportFurring, models: catalogue.supportModels)
+    }
+    private var supportSupplyName: String {
+        selectedSupportModel?.title ?? FurringIntermediateSupportSelection.unspecifiedName
+    }
+
     private var canContinue: Bool {
         switch step {
         case 1:
-            return height > 0 && (!specifiesWallCount || wallCount > 0) && (geometryMode == .length ? enteredLength > 0 : enteredSurface > 0)
+            return finishedDepthMM.isFinite && (0...1000).contains(finishedDepthMM) && height > 0 && (!specifiesWallCount || wallCount > 0) && (geometryMode == .length ? enteredLength > 0 : enteredSurface > 0)
         case 2:
             return allLayersAreComplete && selectedRule != nil && tiledAreaIsValid
         case 3:
@@ -264,7 +275,8 @@ struct FurringLiningConfiguratorView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
                     switch step {
-                    case 1: dimensionsStep
+                    case 1:
+                        dimensionsStep
                     case 2: facingsStep
                     case 3: framingStep
                     case 4: insulationStep
@@ -336,6 +348,12 @@ struct FurringLiningConfiguratorView: View {
                  ? "La hauteur sous plafond est obligatoire. Le nombre de murs est prérempli à 4 afin de tenir compte des fourrures placées aux extrémités de chaque mur."
                  : "Le nombre de murs n’est pas renseigné. Le quantitatif des fourrures sera estimé uniquement à partir de la longueur totale et sera légèrement moins précis.")
                 .font(.footnote).foregroundStyle(.secondary)
+            if let runs=measuredWallRuns, runs.contains(where:{$0.openingCount != nil}) {
+                card {
+                    LabeledContent("Ouvertures reconnues",value:"\(runs.reduce(0){$0+($1.openingCount ?? 0)})")
+                    LabeledContent("Surface déjà déduite",value:format(runs.reduce(0){$0+($1.openingArea ?? 0)},"m²"))
+                }
+            }
         }
         .disabled(measuredWallRuns != nil)
     }
@@ -452,13 +470,14 @@ struct FurringLiningConfiguratorView: View {
             }
             if selectedSupportLines > 0 {
                 card {
-                    Toggle("Ajouter les fourrures horizontales de fixation des appuis", isOn: $includesHorizontalSupportFurring)
-                    Text("Désactivez cette option lorsque les appuis intermédiaires sont fixés directement dans la maçonnerie.")
+                    Toggle("Fixation directe des appuis dans la maçonnerie", isOn: Binding(
+                        get: { !includesHorizontalSupportFurring },
+                        set: { includesHorizontalSupportFurring = !$0 }))
+                    Text("La fixation directe supprime les fourrures horizontales de fixation des appuis.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
-                if includesHorizontalSupportFurring {
-                } else {
+                if !includesHorizontalSupportFurring {
                     infoCard("Les appuis sont considérés comme fixés directement dans la maçonnerie. Aucune fourrure horizontale supplémentaire n’est ajoutée.", icon: "checkmark.circle", color: .green)
                 }
             }
@@ -479,6 +498,13 @@ struct FurringLiningConfiguratorView: View {
                 sectionTitle("Isolant")
                 insulationCard(selection: $firstInsulation)
                 card { LabeledContent("Résistance thermique totale", value: "R = \(thermalResistanceTotal.formatted(.number.precision(.fractionLength(2)))) m²·K/W") }
+            }
+            if selectedSupportLines > 0 {
+                if let model = selectedSupportModel {
+                    card { LabeledContent("Appuis retenus", value: model.title) }
+                } else {
+                    warningCard("Aucun modèle d’appui du catalogue ne correspond à cette épaisseur d’isolant et à ce mode de fixation. Le nombre d’appuis reste compté, avec un modèle à préciser et sans prix attribué.")
+                }
             }
             sectionTitle("Pare-vapeur")
             card {
@@ -546,7 +572,7 @@ struct FurringLiningConfiguratorView: View {
             card {
                 ForEach(Array(resultRows.enumerated()), id: \.offset) { index, row in
                     if index > 0 { Divider() }
-                    LabeledContent(row.0, value: row.1)
+                    LabeledContent(SupplyListingConsolidator.canonicalName(row.0), value: row.1)
                 }
             }
             DisclosureGroup(isExpanded: $configurationExpanded) {
@@ -556,7 +582,8 @@ struct FurringLiningConfiguratorView: View {
                     Divider(); editableConfigurationRow("Parement", value: selectedRule?.title ?? skinCount.title, targetStep: 2)
                     Divider(); editableConfigurationRow("Entraxe des fourrures", value: tiledAreaRequires40CM ? "\(Int(standardFurringSpacing * 100)) cm + zone carrelée à 40 cm" : "\(Int(standardFurringSpacing * 100)) cm", targetStep: 3)
                     Divider(); editableConfigurationRow("Lignes d’appuis", value: "\(selectedSupportLines)", targetStep: 3)
-                    Divider(); editableConfigurationRow("Fourrures horizontales d’appuis", value: includesHorizontalSupportFurring ? "Oui" : "Non", targetStep: 3)
+                    Divider(); editableConfigurationRow("Fixation directe dans la maçonnerie", value: includesHorizontalSupportFurring ? "Non" : "Oui", targetStep: 3)
+                    Divider(); editableConfigurationRow("Appuis retenus", value: supportSupplyName, targetStep: 4)
                     Divider(); editableConfigurationRow("Isolation", value: insulationEnabled ? "Une épaisseur" : "Non", targetStep: 4)
                     if insulationEnabled { Divider(); editableConfigurationRow("Résistance thermique totale", value: "R = \(thermalResistanceTotal.formatted(.number.precision(.fractionLength(2)))) m²·K/W", targetStep: 4) }
                     Divider(); editableConfigurationRow("Pare-vapeur", value: vaporBarrier ? vaporBarrierInstallation.rawValue : "Non", targetStep: 4)
@@ -597,7 +624,7 @@ struct FurringLiningConfiguratorView: View {
         var rows = totals.keys.sorted().map { key in (key, format(totals[key]!.0, totals[key]!.1)) }
         rows.append((catalogue.quantities.name("furring", fallback: "Fourrures F45/F47"), format(totalFurringLength, "ml")))
         rows.append((catalogue.quantities.name("rail", fallback: "Rails pour fourrure ou lisses de doublage"), format(actualLength * 2 * catalogue.quantities["rail_waste_factor"], "ml")))
-        rows.append((catalogue.quantities.name("supports", fallback: "Appuis intermédiaires pour doublage sur fourrure"), "\(furringCount * selectedSupportLines) unités"))
+        rows.append((supportSupplyName, "\(furringCount * selectedSupportLines) unités"))
 
         let screwFactor = spacingQuantityFactor
         if skinCount == .single {
@@ -902,10 +929,19 @@ struct FurringLiningConfiguratorView: View {
 
     private func configurationSnapshot() -> FurringLiningConfiguration {
         FurringLiningConfiguration(
+            finishedDepthMM: finishedDepthMM.isFinite && finishedDepthMM > 0 ? finishedDepthMM : nil,
+            facingDepthMM: selectedLayers.reduce(0) { total, layer in
+                total + (layer.compactMap { facing(for: $0).flatMap { LiningDepthEstimate.boardThickness($0.mechanicalFamily) } }.max() ?? 13)
+            },
             geometryMode: geometryMode == .surface ? "surface" : "length", height: height, enteredLength: enteredLength, enteredSurface: enteredSurface,
             wallCount: specifiesWallCount ? wallCount : nil, layers: skinCount.rawValue, firstSkin: firstSkin, secondSkin: secondSkin, thirdSkin: thirdSkin,
             tiledArea: tiledArea, tiledAreaSurface: tiledAreaSurface, selectedSupportLines: selectedSupportLines,
-            furringSpacing: standardFurringSpacing, includesHorizontalSupportFurring: includesHorizontalSupportFurring, insulationEnabled: insulationEnabled,
+            furringSpacing: standardFurringSpacing, includesHorizontalSupportFurring: includesHorizontalSupportFurring,
+            intermediateSupportReferenceID: selectedSupportModel?.id,
+            intermediateSupportTitle: supportSupplyName,
+            maximumSupportSpacing: selectedRule?.maximumSupportSpacing,
+            firstSupportHeightWhenMultiple: catalogue.firstSupportHeightWhenMultiple,
+            insulationEnabled: insulationEnabled,
             firstInsulation: firstInsulation, vaporBarrier: vaporBarrier,
             vaporBarrierInstallation: vaporBarrierInstallation == .tapedOnFurrings ? "taped_on_furrings" : "through_supports",
             jointTreatment: jointTreatment, compoundChoice: compound == .paste ? "pate" : "poudre", quantities: quantitySnapshot,
@@ -924,6 +960,7 @@ struct FurringLiningConfiguratorView: View {
 
     private func reset() {
         step = 1; geometryMode = .length; height = 0; enteredLength = 0; enteredSurface = 0; specifiesWallCount = true; wallCount = max(1, catalogue.defaultWallCount)
+        finishedDepthMM = 0
         skinCount = .single; firstSkin = [.init()]; secondSkin = [.init()]; thirdSkin = [.init()]
         tiledArea = false; tiledAreaSurface = 0; selectedSupportLines = 1; supportLinesWereEdited = false; includesHorizontalSupportFurring = true
         insulationEnabled = true; firstInsulation = .init()

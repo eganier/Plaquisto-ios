@@ -6,6 +6,42 @@ struct FurringLiningPayload: Codable {
     let regles: DoublageReferenceRecord?
     let quantitatif: DoublageReferenceRecord?
     let isolants: [DoublageReferenceRecord]
+    var appuis: [DoublageReferenceRecord]? = nil
+}
+
+struct FurringIntermediateSupport: Identifiable, Equatable {
+    let id: String
+    let title: String
+    let minimumMM: Int
+    let maximumMM: Int
+    let directMasonry: Bool
+
+    init?(record: DoublageReferenceRecord) {
+        guard record.data["category"]?.string == "intermediate_support",
+              record.data["unit"]?.string == "unité",
+              let model = record.data["model"]?.string, !model.trimmingCharacters(in: .whitespaces).isEmpty,
+              let min = record.data["insulation_min_mm"]?.number,
+              let max = record.data["insulation_max_mm"]?.number,
+              min.isFinite, max.isFinite, min >= 0, max > min, max <= 1_000_000,
+              min.rounded() == min, max.rounded() == max,
+              let direct = record.data["direct_masonry"]?.bool else { return nil }
+        id = record.id; title = record.title; minimumMM = Int(min); maximumMM = Int(max); directMasonry = direct
+    }
+}
+
+enum FurringIntermediateSupportSelection {
+    static let unspecifiedName = "Appuis intermédiaires pour fourrures — modèle à préciser"
+
+    /// Tapée (explicit or estimated) deliberately never participates in selection.
+    static func select(thicknessMM: Int, directMasonry: Bool, models: [FurringIntermediateSupport]) -> FurringIntermediateSupport? {
+        guard thicknessMM >= 0 else { return nil }
+        let candidates = models.filter { $0.directMasonry == directMasonry && $0.minimumMM <= thicknessMM && thicknessMM <= $0.maximumMM }
+        guard let largest = candidates.max(by: { $0.minimumMM < $1.minimumMM }) else { return nil }
+        // Only a shared endpoint is allowed; inconsistent overlapping Admin data is not guessed.
+        guard candidates.allSatisfy({ $0.id == largest.id || $0.maximumMM == largest.minimumMM }),
+              candidates.filter({ $0.id == largest.id }).count == 1 else { return nil }
+        return largest
+    }
 }
 
 struct FurringLiningSupportRule: Identifiable {
@@ -65,6 +101,10 @@ final class FurringLiningReferenceStore: ObservableObject {
     @Published private(set) var isLoading = true
     @Published private(set) var error: String?
     private let endpoint = URL(string: "https://plaquisto-admin.vercel.app/api/ios/catalogue")!
+
+    var supportModels: [FurringIntermediateSupport] {
+        (payload?.appuis ?? []).compactMap(FurringIntermediateSupport.init(record:))
+    }
 
     var rules: [FurringLiningSupportRule] {
         payload?.regles?.data["support_rules"]?.array?.compactMap { item in

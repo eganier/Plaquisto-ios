@@ -82,7 +82,7 @@ private final class ScannerLiveRoomDelegate: NSObject, RoomCaptureSessionDelegat
     func captureSession(_ session: RoomCaptureSession, didEndWith data: CapturedRoomData, error: Error?) {
         let token = snapshotGeneration()
         // Keep native preview callbacks; Plaquisto presents its editable result
-        // after the single RoomBuilder pass.
+        // after native RoomBuilder processing (standard fallback on failure).
         downstream?.captureSession(session, didEndWith: data, error: error)
         Task { @MainActor in await model?.processEndedRoom(data, error: error, generation: token) }
     }
@@ -101,6 +101,7 @@ struct ScannerRoomCaptureRepresentable: UIViewRepresentable {
 
 @MainActor
 final class ScannerDebugModel: NSObject, ObservableObject {
+    private let visualEvidence = ScanEvidenceRecorder()
     private let locationCapture=ScanLocationCapture()
     @Published private(set) var campaign = ScanCampaignDraft()
     @Published private(set) var liveOverview = ScanLiveOverview()
@@ -113,6 +114,11 @@ final class ScannerDebugModel: NSObject, ObservableObject {
     private var lastLiveCheckpoint = Date.distantPast
     private var lastOverviewUpdate = Date.distantPast
     private var currentRawRoom: CapturedRoom?
+    private var nativeProcessingState = "not_started"
+    private var nativeProcessingFallback: String?
+    private var rawCaptureArchived = false
+    private var nativeInputGeometry: PlaquistoRoomModel?
+    private var nativeOutputGeometry: PlaquistoRoomModel?
     private var chunkStartedAt = Date()
     private var finishWatchdog: Task<Void, Never>?
     @Published private(set) var needsSaveRetry = false
@@ -188,6 +194,7 @@ final class ScannerDebugModel: NSObject, ObservableObject {
     var canStart: Bool { roomPlanSupported }
 
     func prepareForCapture() {
+        visualEvidence.stop()
         locationCapture.stop()
         finishWatchdog?.cancel()
         needsSaveRetry = false
@@ -202,6 +209,11 @@ final class ScannerDebugModel: NSObject, ObservableObject {
         processingChunkID = nil
         finishingCampaign = false
         currentRawRoom = nil
+        nativeProcessingState = "not_started"
+        nativeProcessingFallback = nil
+        rawCaptureArchived = false
+        nativeInputGeometry = nil
+        nativeOutputGeometry = nil
         currentRoomName = "Pièce à identifier"
         roomAdapter = RoomPlanAdapter()
         diagnosticEvents = []
@@ -249,6 +261,13 @@ final class ScannerDebugModel: NSObject, ObservableObject {
         // RoomPlan owns acquisition. No custom mesh configuration, ceiling
         // polling or world-origin correction. Ceilings are edited after capture.
         captureView.captureSession.run(configuration: roomConfiguration)
+        visualEvidence.start { [weak self] in
+            guard let self, self.captureStarted, !self.isProcessing, !self.cancellationRequested,
+                  let roomID = self.liveRoom?.id, let frame = self.arSession.currentFrame,
+                  case .normal = frame.camera.trackingState else { return nil }
+            let orientation = self.captureView.window?.windowScene?.interfaceOrientation ?? .portrait
+            return (ScanEvidenceStore.Snapshot(frame: frame, orientation: orientation), roomID)
+        }
         recordCaptureEvent("capture_started", "Acquisition RoomPlan native unique")
         recordCaptureEvent("ceiling_postscan_only", "Aucune recherche ni validation de plafond pendant le scan ; création explicite dans l’éditeur")
         debugLog("Capture native démarrée")
@@ -256,6 +275,7 @@ final class ScannerDebugModel: NSObject, ObservableObject {
 
     func finishCapture() {
         guard captureStarted, !finishingCampaign else { return }
+        visualEvidence.stop()
         finishingCampaign = true
         let campaignID = campaign.id
         finishWatchdog?.cancel()
@@ -298,6 +318,7 @@ final class ScannerDebugModel: NSObject, ObservableObject {
     }
 
     func cancelCapture() {
+        visualEvidence.stop(discard: true)
         locationCapture.stop()
         recordCaptureEvent("capture_cancelled", "Annulation utilisateur")
         finishWatchdog?.cancel()
@@ -398,17 +419,47 @@ final class ScannerDebugModel: NSObject, ObservableObject {
             guard let self, !Task.isCancelled, self.campaign.id == context.campaignID,
                   self.captureStarted, !self.cancellationRequested else { return }
             do {
-                let room = try await RoomBuilder(options: []).capturedRoom(from: data)
+                self.nativeInputGeometry=context.liveRoom
+                self.nativeProcessingState="processing"
+                self.statusText="Finalisation du relevé par Apple…"
+                self.recordCaptureEvent("native_processing_started","RoomBuilder avec beautifyObjects ; aucune correction géométrique maison")
+                let directory=ScanCampaignStore.directory.appendingPathComponent(context.campaignID.uuidString,isDirectory:true)
+                // Raw encoding can be large; keep it off the UI thread.
+                let archive=Task.detached(priority:.utility) {
+                    try NativeRoomPostProcessing.archiveInput(data,directory:directory,chunkID:context.id)
+                }
+                do {
+                    try await archive.value
+                    guard !Task.isCancelled, self.campaign.id == context.campaignID,
+                          self.captureStarted, !self.cancellationRequested else { return }
+                    self.rawCaptureArchived=true
+                } catch {
+                    guard !Task.isCancelled, self.campaign.id == context.campaignID,
+                          self.captureStarted, !self.cancellationRequested else { return }
+                    self.recordCaptureEvent("raw_capture_archive_failed",error.localizedDescription)
+                }
+                try Task.checkCancellation()
+                let outcome=try await NativeRoomPostProcessing.process { options in
+                    try await RoomBuilder(options:options).capturedRoom(from:data)
+                }
                 guard !Task.isCancelled, self.campaign.id == context.campaignID,
                       self.captureStarted, !self.cancellationRequested else { return }
-                await self.complete(with: room, context: context)
+                self.nativeProcessingState=outcome.beautified ? "beautified" : "unbeautified_fallback"
+                self.nativeProcessingFallback=outcome.fallbackReason
+                if let reason=outcome.fallbackReason {
+                    self.campaign.assemblyMessage="La finalisation améliorée Apple a échoué. Le relevé utilise la reconstruction native standard."
+                    self.recordCaptureEvent("native_processing_fallback",reason)
+                }
+                await self.complete(with: outcome.value, context: context)
             } catch {
                 guard !Task.isCancelled, self.campaign.id == context.campaignID,
                       self.captureStarted, !self.cancellationRequested else { return }
                 // Keep the recoverable draft when native final processing fails.
+                self.nativeProcessingState="failed"
+                self.recordCaptureEvent("native_processing_failed",error.localizedDescription)
                 self.campaign.assemblyMessage = "Une portion du relevé reste à vérifier : \(error.localizedDescription)"
                 self.persistCampaign()
-                self.finalizeCampaign()
+                await self.finalizeCampaign()
             }
         }
     }
@@ -435,8 +486,9 @@ final class ScannerDebugModel: NSObject, ObservableObject {
             "chunkID": activeChunkID.uuidString,
             "meshConfigurationActive": liveMeshConfigurationActive,
             "meshAnchors": liveMeshAnchorCount,
-            "ceilingWorkflow": "postscan_manual",
-            "wallGeometry": "native_polygon_corners",
+            "ceilingWorkflow": "postscan_automatic_editable",
+            "generatedCeilings": campaign.chunks.reduce(0) { $0+$1.document.room.ceilings.count },
+            "wallGeometry": "native_profiles_with_conservative_plan_straightening",
             "meshSamplingEnabled": false,
             "meshFaces": 0,
             "ceilingMeshFaces": liveCeilingFaceCount,
@@ -451,25 +503,74 @@ final class ScannerDebugModel: NSObject, ObservableObject {
             "captureEvents": object(campaign.captureEvents ?? []) ?? []
         ]
         if let summary { report["summary"] = object(summary) }
+        func anonymous(_ room:PlaquistoRoomModel?) -> Any {
+            guard var room else { return NSNull() }
+            room.name=nil
+            return object(room) ?? NSNull()
+        }
+        report["nativePostProcessing"] = [
+            "requestedOptions":["beautifyObjects"],
+            "state":nativeProcessingState,
+            "fallbackReason":nativeProcessingFallback as Any? ?? NSNull(),
+            "rawCaptureArchived":rawCaptureArchived,
+            // Live is not raw CapturedRoomData; label the stages explicitly.
+            "lastLiveGeometry":anonymous(nativeInputGeometry),
+            "adaptedFinalGeometry":anonymous(nativeOutputGeometry),
+            // Keep Apple's own result too, to distinguish acquisition/native
+            // reconstruction issues from mistakes in our portable conversion.
+            "finalRoomPlanResult":object(capturedRoom) ?? NSNull(),
+            "structureBuilder":"not_applicable_single_continuous_capture"
+        ]
+        if ScanEvidencePolicy.enabled {
+            // Counts only: temporary photographs must never leak into a shared diagnostic.
+            report["visualEvidenceLab"] = ["state": visualEvidence.status,
+                "savedImages": visualEvidence.saved, "imagesWithDepth": visualEvidence.withDepth,
+                "retentionHours": 24, "uploaded": false] as [String: Any]
+        }
         if let contourDiagnostic { report["captureNote"] = contourDiagnostic }
         if let data = try? JSONSerialization.data(withJSONObject: report, options: [.sortedKeys]) {
             campaign.captureDiagnostic = String(data: data, encoding: .utf8)
         }
     }
 
-    private func finalizeCampaign() {
+    private func finalizeCampaign() async {
         guard !Task.isCancelled, captureStarted, !cancellationRequested else { return }
         transitionWatchdog?.cancel()
         restoreIdleTimer()
         arSession.pause()
         captureStarted = false
         recordCaptureEvent("capture_processed", "Résultat RoomPlan transmis à l’éditeur")
+        // Only after Apple's final native geometry; fitting never competes with
+        // acquisition/rendering on the main thread or changes the AR world frame.
+        let campaignID = campaign.id
+        let chunks = campaign.includedChunks.filter { $0.processingPending != true }
+        let fitting = Task.detached(priority:.userInitiated) {
+            var documents: [UUID:PlaquistoRoomDocument] = [:]
+            for chunk in chunks {
+                guard !Task.isCancelled else { break }
+                documents[chunk.id] = WallCeilingEstimate.addingAutomaticCeilings(to:chunk.document)
+            }
+            return documents
+        }
+        let documents = await withTaskCancellationHandler(operation: { await fitting.value },
+            onCancel: { fitting.cancel() })
+        guard !Task.isCancelled, campaign.id == campaignID, !cancellationRequested, !didFinish else { return }
+        for i in campaign.chunks.indices {
+            if let document = documents[campaign.chunks[i].id] {
+                campaign.chunks[i].document = document
+                if latestDocument?.room.id == document.room.id {
+                    latestDocument = document
+                    updateDocument(document)
+                }
+            }
+        }
         finishDurably()
     }
 
     /// Completion is durable before the UI claims success; failure keeps an
     /// explicit retry path and the entire in-memory survey intact.
     private func finishDurably() {
+        visualEvidence.stop()
         locationCapture.stop()
         finishWatchdog?.cancel()
         isProcessing = false
@@ -499,17 +600,23 @@ final class ScannerDebugModel: NSObject, ObservableObject {
         // Ne pas relire currentFrame ici : le snapshot a été figé dans finishCapture.
         capturedRoom = rawRoom
         var room = context.adapter.convert(rawRoom, preserving: context.liveRoom)
+        // Snapshot before automatic ceilings or any subsequent user edit.
+        nativeOutputGeometry=room
         guard !room.walls.isEmpty || !room.floors.isEmpty else {
             // Keep the last recoverable checkpoint if native processing returns no geometry.
             if campaign.chunks.isEmpty { fail(nil) }
-            else { finalizeCampaign() }
+            else { await finalizeCampaign() }
             return
         }
         let usages = RoomPlanAdapter.usages(in: rawRoom)
         room.name = ScanRoomUsage.proposedName(usages)
+        let simplification = ScanWallSimplification.process(PlaquistoRoomDocument(room: room))
+        var document = simplification.document
+        room = document.room
+        recordCaptureEvent("wall_simplification", "\(simplification.mergedGroups) groupes fusionnés, \(simplification.removedFragments) fragments retirés ; tolérances 4 cm / 6° / jonction 5 cm / hauteur 4 cm.")
         let chunk = ScanRoomChunk(id: context.id, referenceGroupID: context.groupID,
             name: room.name ?? "Pièce à identifier", usages: usages,
-            document: PlaquistoRoomDocument(room: room), capturedAt: context.startedAt, processingPending: false)
+            document: document, capturedAt: context.startedAt, processingPending: false)
         campaign.upsert(chunk, preserveName: false)
         liveOverview.update(id: context.id, room: room)
         // Persist native portable geometry, with no automatic ceiling inference.
@@ -519,9 +626,8 @@ final class ScannerDebugModel: NSObject, ObservableObject {
             try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
             try JSONEncoder().encode(rawRoom).write(to: folder.appendingPathComponent(context.id.uuidString + ".roomplan"), options: .atomic)
         } catch { errorMessage = "Le modèle portable est sauvegardé, mais pas son cache RoomPlan : \(error.localizedDescription)" }
-        contourDiagnostic = "Capture RoomPlan native. Plafonds à créer après le scan dans Modifier le plan. Les contours de murs proviennent de polygonCorners, sans reconstruction depuis un plafond."
+        contourDiagnostic = "Capture RoomPlan native continue. Finalisation Apple : \(nativeProcessingState). Redressement conservateur : \(simplification.mergedGroups) groupes, \(simplification.removedFragments) fragments fusionnés. Profils verticaux conservés ; original disponible dans initialRoom ; plafonds créés séparément après reconstruction."
         meshPreview = nil
-        var document = PlaquistoRoomDocument(room: room)
         if let index = campaign.chunks.firstIndex(where: { $0.id == context.id }) {
             room.name = campaign.chunks[index].name
             document.room.name = room.name
@@ -560,16 +666,17 @@ final class ScannerDebugModel: NSObject, ObservableObject {
         debugLog("RoomPlan — murs: \(result.walls), sols: \(result.floors), portes: \(result.doors), fenêtres: \(result.windows), ouvertures: \(result.openings), objets: \(result.objects)")
         debugLog("Session commune — configuration mesh active: \(result.meshConfigurationActive), delegate ARKit conservé: \(result.arDelegateRetained)")
         debugLog("ARKit — ancres mesh: \(result.meshAnchors), faces mesh: \(result.meshFaces), ancres plafond: \(result.ceilingMeshAnchors), faces plafond: \(result.ceilingMeshFaces)")
-        debugLog("Plafonds : création après scan uniquement, sans reconstruction automatique")
+        debugLog("Plafonds : création automatique après scan uniquement, contours natifs conservés")
         debugLog(String(format: "Candidats plafond — faces: %d, horizontales: %d, inclinées: %d, surface: %.2f m²", result.geometricCeilingFaces, result.geometricHorizontalFaces, result.geometricSlopedFaces, result.geometricCeilingArea))
         if let firstSurface = room.walls.first {
             debugLog("Point mur Plaquisto témoin: \(firstSurface.start)")
         }
         guard persistCampaign() else { fail(nil); return }
-        finalizeCampaign()
+        await finalizeCampaign()
     }
 
     func fail(_ error: Error?) {
+        visualEvidence.stop()
         recordCaptureEvent("capture_failed", error?.localizedDescription ?? "Erreur de capture")
         finishWatchdog?.cancel()
         transitionWatchdog?.cancel()

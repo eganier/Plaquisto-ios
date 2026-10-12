@@ -94,7 +94,9 @@ enum LayoutWorkGeometry {
         // new waste coefficient is invented for this previously absent row.
         return selections.compactMap { id, thickness in
             guard !id.isEmpty, let record = catalogue.isolation.first(where: { $0.id == id }) else { return nil }
-            return ("Isolation · \(record.title) · \(thickness.formatted(.number.precision(.fractionLength(0...1)))) mm", area)
+            let lambda = ThermalCalculator.catalogueLambda(conductivity: record.data["conductivity"]?.string,
+                                                            lambda: record.data["lambda_w_mk"]?.number)
+            return (SupplyListingConsolidator.insulationName(reference: record.title, thicknessMM: thickness, lambda: lambda), area)
         }
     }
     static func ceiling(_ document:LayoutDocument?, base:CeilingConfiguration = .init()) -> CeilingConfiguration {

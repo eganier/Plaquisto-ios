@@ -256,6 +256,22 @@ struct LayoutSettingsForm: View {
     let surface: Surface2D
     @State private var layer: LayoutLayer
     @State private var compatibilityMessage: String?
+    private var selectedFormat:LayoutCatalogFormat? { catalogue.layoutFormats.first { $0.id == layer.catalogFormatID } }
+    private var families:[String] { Array(Set(catalogue.layoutFormats.map(\.family))).sorted() }
+    private var products:[LayoutCatalogFormat] {
+        var seen=Set<String>()
+        return catalogue.layoutFormats.filter { $0.family == selectedFormat?.family && seen.insert($0.productID ?? $0.id).inserted }
+    }
+    private var dimensions:[LayoutCatalogFormat] {
+        guard let product=selectedFormat?.productID else { return [] }
+        return catalogue.layoutFormats.filter { $0.productID == product }
+    }
+    private func select(_ format:LayoutCatalogFormat?) {
+        guard let format else { return }
+        layer.catalogFormatID=format.id; layer.manualFacing=false
+        layer.sheetWidth=format.width; layer.sheetLength=format.length
+        layer.fourTaperedEdges=format.fourTaperedEdges
+    }
     init(layer: LayoutLayer, surface: Surface2D, onSave: @escaping (LayoutLayer) -> Void) {
         self.surface = surface; self.onSave = onSave
         var copy = layer
@@ -266,44 +282,31 @@ struct LayoutSettingsForm: View {
         NavigationStack {
             Form {
                 Section("Format de plaque") {
-                    Picker("Catalogue Plaquisto", selection: Binding(get: { layer.catalogFormatID ?? "manual" }, set: { id in
-                        layer.catalogFormatID = id == "manual" ? nil : id
-                        if let format = catalogue.layoutFormats.first(where: { $0.id == id }) { layer.sheetWidth = format.width; layer.sheetLength = format.length }
+                    Picker("Type de parement",selection:Binding(get:{selectedFormat?.family ?? ""},set:{ family in
+                        select(catalogue.layoutFormats.first { $0.family == family && $0.width == layer.sheetWidth && $0.length == layer.sheetLength }
+                            ?? catalogue.layoutFormats.first { $0.family == family })
                     })) {
-                        Text("Saisie manuelle").tag("manual")
-                        ForEach(catalogue.layoutFormats) { Text($0.label).tag($0.id) }
+                        if selectedFormat == nil { Text("Choisir un type").tag("") }
+                        ForEach(families,id:\.self) { Text($0).tag($0) }
                     }
-                    LayoutDimensionField(title: "Largeur de plaque", millimetres: $layer.sheetWidth).disabled(layer.catalogFormatID != nil)
-                    LayoutDimensionField(title: "Longueur de plaque", millimetres: $layer.sheetLength).disabled(layer.catalogFormatID != nil)
-                    if catalogue.layoutFormats.isEmpty { Text("Le catalogue n’est pas disponible. Vous pouvez saisir le format manuellement.").font(.footnote).foregroundStyle(.secondary) }
-                }
-                Section("Sens de pose") {
-                    LayoutLivePreview(surface:surface,layer:layer).frame(height:210)
-                    if surface.kind == .ceiling { Picker("Mur de référence",selection:Binding(get:{layer.referenceEdge ?? -1},set:{ value in
-                        layer.referenceEdge = value < 0 ? nil : value
-                        if value >= 0 { layer.orientation = .horizontal }
-                        layer.offset = .zero
-                    })) {
-                        Text("Axes du plan").tag(-1)
-                        ForEach(surface.contour.indices,id:\.self) { i in
-                            Text("\(vertexName(i))–\(vertexName((i+1)%surface.contour.count)) · \(layoutCM((surface.contour[(i+1)%surface.contour.count]-surface.contour[i]).length))").tag(i)
-                        }
-                    } }
-                    Picker("Grand côté des plaques",selection:$layer.orientation) {
-                        Text(layer.referenceEdge == nil ? "Horizontal" : "Parallèle au mur").tag(LayoutOrientation.horizontal)
-                        Text(layer.referenceEdge == nil ? "Vertical" : "Perpendiculaire").tag(LayoutOrientation.vertical)
-                    }.pickerStyle(.segmented)
-                    Text(surface.kind == .wall ? "Orientation du grand côté des plaques par rapport au sol. L’ossature reste verticale." : "Orientation du grand côté de la plaque. Le départ de la grille est le premier angle du mur choisi.").font(.footnote).foregroundStyle(.secondary)
-                }
-                if layer.furring != nil {
-                    Section("Coordination avec les fourrures") {
-                        if let compatibilityMessage { Label(compatibilityMessage,systemImage:"exclamationmark.triangle.fill").foregroundStyle(.orange) }
-                        Button("Caler les plaques sur les fourrures") { layer = LayoutPlanning.alignBoards(to:layer,support:surface.kind) }
-                            .disabled(surface.kind == .ceiling && !LayoutPlanning.compatibleSpacings(layer).contains(layer.furring?.spacing ?? 0))
-                        Text(LayoutPlanning.aligned(layer) ? "Les joints parallèles aux fourrures sont alignés sur la trame." : "Les plaques sont décalées de la trame de fourrures.").font(.footnote)
+                    if selectedFormat != nil {
+                        Picker("Fonction",selection:Binding(get:{selectedFormat?.productID ?? ""},set:{ product in
+                            select(catalogue.layoutFormats.first { $0.productID == product && $0.width == layer.sheetWidth && $0.length == layer.sheetLength }
+                                ?? catalogue.layoutFormats.first { $0.productID == product })
+                        })) { ForEach(products) { Text($0.title).tag($0.productID ?? "") } }
+                        Picker("Largeur de plaque",selection:Binding(get:{layer.sheetWidth},set:{ width in
+                            select(dimensions.first { $0.width == width && $0.length == layer.sheetLength } ?? dimensions.first { $0.width == width })
+                        })) { ForEach(Array(Set(dimensions.map(\.width))).sorted(),id:\.self) { Text(layoutCM($0)).tag($0) } }
+                        Picker("Longueur de plaque",selection:Binding(get:{layer.sheetLength},set:{ length in
+                            select(dimensions.first { $0.width == layer.sheetWidth && $0.length == length })
+                        })) { ForEach(dimensions.filter { $0.width == layer.sheetWidth }) { Text(layoutCM($0.length)).tag($0.length) } }
+                    } else {
+                        LabeledContent("Format enregistré",value:"\(layoutCM(layer.sheetWidth)) × \(layoutCM(layer.sheetLength))")
                     }
+                    if catalogue.layoutFormats.isEmpty { Text("Catalogue indisponible : le parement enregistré est conservé.").font(.footnote).foregroundStyle(.secondary) }
+                    if let compatibilityMessage { Label(compatibilityMessage,systemImage:"exclamationmark.triangle.fill").foregroundStyle(.orange) }
                 }
-                Section("Pose et chutes") {
+                if surface.kind == .wall { Section("Pose") {
                     Toggle("Pose en quinconce",isOn:Binding(get:{layer.staggered == true},set:{ value in
                         layer.staggered=value; layer.staggerOffset=nil
                         if value { layer=LayoutPlanning.alignBoards(to:layer,support:surface.kind) }
@@ -315,12 +318,7 @@ struct LayoutSettingsForm: View {
                         Text("Le quinconce nécessite une ossature compatible. Pour un mur couvert en une seule hauteur de plaque, il n’ajoute pas de joint horizontal.")
                             .font(.footnote).foregroundStyle(.secondary)
                     }
-                    Toggle("Réutiliser les chutes",isOn:Binding(get:{layer.reuseOffcuts != false},set:{layer.reuseOffcuts=$0}))
-                    Text("Dans ce calepinage uniquement : morceaux d’au moins 20 cm dans chaque direction, en contact avec deux fourrures ou une périphérie et une fourrure. Les morceaux 2-1 et 2-2 proviennent de la même plaque.")
-                        .font(.footnote).foregroundStyle(.secondary)
-                    Text("Proposition de découpe sans rotation des chutes. Les bords amincis et les prescriptions du système de pose restent à vérifier ; ce n’est pas une validation technique de l’ensemble des joints.")
-                        .font(.footnote).foregroundStyle(.secondary)
-                }
+                } }
             }
             .scrollDismissesKeyboard(.interactively)
             .onChange(of:layer.sheetLength) { _,_ in reconcileSpacing() }

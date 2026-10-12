@@ -3,6 +3,720 @@ import SwiftUI
 @testable import Plaquisto
 
 final class SheetLayoutEngineTests: XCTestCase {
+    func testAutomaticPartitionHasTwoMirroredFacesAndSharedFrameForEverySkin() throws {
+        let surface = Surface2D(name:"Cloison",kind:.wall,contour:LayoutPreset.rectangle.contour(length:2600,height:2400,secondaryHeight:0))
+        var c = CloisonDistributionConfiguration(); c.layers=2; c.geometryMode="surface"; c.enteredSurface=6.24
+        c.faceAFirst=[.init(facingID:"ba13",formatID:"1200x2400",surface:6.24)]
+        c.faceASecond=c.faceAFirst; c.faceBFirst=c.faceAFirst; c.faceBSecond=c.faceAFirst
+        var work=WorkItem(id:UUID(),projectID:UUID(),name:"Cloison",type:.distributionPartition,payload:.distributionPartition(c),createdAt:Date(),updatedAt:Date())
+        var component=WorkComponentRecord(name:"Cloison",surface:surface)
+        component.surveySource = .init(surveyID:UUID(),checkpointID:UUID(),surfaceID:UUID(),boundaryIndex:0,kind:.wall,capturedAt:Date())
+        work.components=[component]
+        let prepared=try AutomaticSurveyLayout.prepare(work,formats:[],catalogue:nil)
+        let part=prepared.components[0]
+        XCTAssertEqual(part.localLayoutSideIDs?.count,2)
+        XCTAssertEqual(part.plans.count,2)
+        XCTAssertTrue(part.plans.allSatisfy { $0.layers.count == 2 && $0.layers.allSatisfy { $0.furring == nil } })
+        let front=try XCTUnwrap(part.document(for:part.plans[0]))
+        let back=try XCTUnwrap(part.document(for:part.plans[1]))
+        XCTAssertEqual(back.surface,front.surface.mirroredComponentSide())
+        let frontFrame=try XCTUnwrap(front.layers[0].furring)
+        let backFrame=try XCTUnwrap(back.layers[0].furring)
+        XCTAssertEqual(backFrame.offset, -frontFrame.offset,accuracy:0.001)
+        for plan in part.plans {
+            let doc=try XCTUnwrap(part.document(for:plan))
+            for layer in doc.layers {
+                var materialized=layer; materialized.furring=doc.layers[0].furring
+                XCTAssertTrue(LayoutPlanning.aligned(materialized))
+            }
+        }
+        XCTAssertEqual(try JSONDecoder().decode(WorkComponentRecord.self,from:JSONEncoder().encode(part)),part)
+    }
+
+    func testCutQualityAllowsNarrowAttachedTipButRejectsSeparateSmallPiece() throws {
+        let contour: [LayoutPoint] = [.init(x:0,y:0),.init(x:800,y:0),.init(x:800,y:400),
+            .init(x:1000,y:400),.init(x:1000,y:500),.init(x:800,y:500),.init(x:800,y:800),.init(x:0,y:800)]
+        let surface = Surface2D(name:"Pointe",kind:.wall,contour:contour)
+        let layer = LayoutLayer(sheetWidth:1200,sheetLength:2400)
+        let result = try SheetLayoutEngine.calculate(surface:surface,layer:layer)
+        XCTAssertEqual(result.pieceCount,1)
+        XCTAssertTrue(LayoutCutQuality.smallPieces(result).isEmpty)
+        let thin = Surface2D(name:"Chute",kind:.wall,contour:[.init(x:0,y:0),.init(x:100,y:0),.init(x:100,y:800),.init(x:0,y:800)])
+        XCTAssertEqual(LayoutCutQuality.smallPieces(try SheetLayoutEngine.calculate(surface:thin,layer:layer)).count,1)
+    }
+
+    func testOptimizationAvoidsTwentyCentimetreIndependentRemainderAndAlignsFrame() throws {
+        let surface = Surface2D(name:"Plafond",kind:.ceiling,contour:LayoutPreset.rectangle.contour(length:2600,height:4800,secondaryHeight:0))
+        var layer = LayoutLayer(sheetWidth:1200,sheetLength:2400,furring:.init())
+        layer.orientation = .vertical
+        XCTAssertFalse(LayoutCutQuality.smallPieces(try SheetLayoutEngine.calculate(surface:surface,layer:layer)).isEmpty)
+        let optimized = try LayoutPlanning.optimize(surface:surface,layer:layer,furring:false,alignFraming:true)
+        let result = try SheetLayoutEngine.calculate(surface:surface,layer:optimized)
+        XCTAssertTrue(LayoutCutQuality.smallPieces(result).isEmpty)
+        XCTAssertTrue(LayoutPlanning.aligned(optimized))
+        XCTAssertEqual(result.netArea,2600*4800,accuracy:0.1)
+    }
+
+    func testAutomaticSurveyPlansPreserveOpeningsAndExistingUserPlan() throws {
+        let surface = Surface2D(name:"Mur",kind:.wall,contour:LayoutPreset.rectangle.contour(length:2600,height:2400,secondaryHeight:0),openings:[
+            .init(kind:.window,contour:LayoutPreset.rectangle.contour(length:600,height:800,secondaryHeight:0).map { $0 + .init(x:800,y:900) })])
+        var c = FurringLiningConfiguration(); c.geometryMode="surface"; c.enteredSurface=5.76
+        c.firstSkin=[.init(facingID:"ba13",formatID:"1200x2400",surface:5.76)]
+        c.maximumSupportSpacing=1.35; c.selectedSupportLines=1
+        var work=WorkItem(id:UUID(),projectID:UUID(),name:"Doublage",type:.peripheralLiningFurrings,payload:.furringLining(c),createdAt:Date(),updatedAt:Date())
+        var component=WorkComponentRecord(name:"Mur",surface:surface)
+        component.surveySource = .init(surveyID:UUID(),checkpointID:UUID(),surfaceID:UUID(),boundaryIndex:0,kind:.wall,capturedAt:Date())
+        work.components=[component]
+        let prepared=try AutomaticSurveyLayout.prepare(work,formats:[],catalogue:nil)
+        XCTAssertEqual(prepared.components[0].surface,surface)
+        XCTAssertEqual(prepared.components[0].plans.count,1)
+        let plan=try XCTUnwrap(prepared.components[0].plans.first)
+        let document=try XCTUnwrap(prepared.components[0].document(for:plan))
+        XCTAssertEqual(document.surface.openings,surface.openings)
+        XCTAssertNotNil(document.layers[0].furring)
+        work.components=prepared.components
+        work.components[0].plans[0].layers[0].offset.x=321
+        XCTAssertEqual(try AutomaticSurveyLayout.prepare(work,formats:[],catalogue:nil).components,work.components)
+        component.surveySource=nil; work.components=[component]
+        XCTAssertTrue(try AutomaticSurveyLayout.prepare(work,formats:[],catalogue:nil).components[0].plans.isEmpty)
+    }
+
+    func testFixedLiningEdgesAndHorizontalRowsRespectFormAndRamp() throws {
+        let wall=Surface2D(name:"Rampant",kind:.wall,contour:[
+            .init(x:0,y:0),.init(x:4000,y:0),.init(x:4000,y:4000),.init(x:0,y:2000)])
+        var c=FurringLiningConfiguration()
+        c.selectedSupportLines=2; c.maximumSupportSpacing=1.35
+        c.firstSupportHeightWhenMultiple=0.6; c.includesHorizontalSupportFurring=true
+        var layer=WorkLayoutDefaults.document(surface:wall,configuration:.furringLining(c)).layers[0]
+        let result=try LayoutFurringEngine.calculate(surface:wall,layer:layer)
+        let fixed=result.wallFixedProfiles
+        let left=try XCTUnwrap(fixed.first { $0.role == .leftFurring })
+        let right=try XCTUnwrap(fixed.first { $0.role == .rightAngle })
+        XCTAssertEqual(left.line.start.x,120,accuracy:0.001)
+        XCTAssertEqual(left.line.end.y,2060,accuracy:0.001)
+        XCTAssertEqual(right.line.start.x,3880,accuracy:0.001)
+        let rows=fixed.filter { $0.role == .supportHorizontal }.map(\.line)
+        XCTAssertEqual(rows.count,2)
+        XCTAssertEqual(rows[0].start.y,600,accuracy:0.001)
+        XCTAssertEqual(rows[0].start.x,0,accuracy:0.001)
+        XCTAssertEqual(rows[1].start.y,1950,accuracy:0.001)
+        XCTAssertEqual(rows[1].start.x,1400,accuracy:0.001,"Extra row begins where wall exceeds 2 × 1.35 m")
+        XCTAssertTrue(result.supportPoints.allSatisfy { p in rows.contains { LayoutGeometry.distance(p,to:$0.start,$0.end)<0.01 } })
+        layer.furring?.offset=120
+        let moved=try LayoutFurringEngine.calculate(surface:wall,layer:layer)
+        XCTAssertEqual(moved.wallFixedProfiles,fixed)
+        XCTAssertEqual(moved.lines.filter { abs($0.start.x-120)<0.01 && abs($0.end.x-120)<0.01 }.count,1)
+        c.includesHorizontalSupportFurring=false
+        layer=WorkLayoutDefaults.document(surface:wall,configuration:.furringLining(c)).layers[0]
+        let without=try LayoutFurringEngine.calculate(surface:wall,layer:layer)
+        XCTAssertTrue(without.wallFixedProfiles.allSatisfy { $0.role != .supportHorizontal })
+        XCTAssertEqual(without.wallFixedProfiles.count,2)
+        XCTAssertEqual(without.supportPoints,result.supportPoints)
+        let roundTrip=try JSONDecoder().decode(FurringLiningConfiguration.self,from:JSONEncoder().encode(c))
+        XCTAssertEqual(roundTrip.maximumSupportSpacing,1.35)
+        XCTAssertEqual(roundTrip.includesHorizontalSupportFurring,false)
+    }
+
+    func testHorizontalSupportRowsAreCutByOpenings() throws {
+        var c=FurringLiningConfiguration(); c.maximumSupportSpacing=1.35
+        c.includesHorizontalSupportFurring=true
+        let wall=openingWall()
+        let layer=WorkLayoutDefaults.document(surface:wall,configuration:.furringLining(c)).layers[0]
+        let geometry=LayoutPlanning.worldFurring(surface:wall,layer:layer)
+        let rows=geometry.wallFixedProfiles.filter { $0.role == .supportHorizontal }.map(\.line)
+        XCTAssertEqual(rows.count,2)
+        XCTAssertEqual(rows.map { $0.start.x },[0,2000])
+        XCTAssertEqual(rows.map { $0.end.x },[1000,4000])
+        XCTAssertEqual(rows.map { $0.start.y },[1350,1350])
+    }
+
+    func testSplicesCountContinuousThreeMetreLengthsNotOpeningsOrAngles() {
+        for (length,count) in [(0.0,0),(3000,0),(3001,1),(6000,1),(6001,2),(9000,2),(9001,3)] {
+            XCTAssertEqual(LayoutFurringEngine.splices(lengthMM:length),count)
+        }
+        let a=LayoutJoint(start:.init(x:0,y:0),end:.init(x:0,y:2500))
+        let touching=LayoutJoint(start:a.end,end:.init(x:0,y:5000))
+        let separated=LayoutJoint(start:.init(x:0,y:3000),end:.init(x:0,y:5500))
+        XCTAssertEqual(LayoutFurringResult(lines:[a,touching]).furringSpliceCount,1)
+        XCTAssertEqual(LayoutFurringResult(lines:[a,separated]).furringSpliceCount,0)
+        let angle=LayoutJoint(start:.init(x:100,y:0),end:.init(x:100,y:7000))
+        let result=LayoutFurringResult(lines:[a,touching,angle],wallFixedProfiles:[.init(line:angle,role:.rightAngle)])
+        XCTAssertEqual(result.furringSpliceCount,1)
+    }
+
+    func testCalageMovesTheOtherLayerAndPreservesFixedProfiles() throws {
+        let wall=openingWall()
+        var layer=WorkLayoutDefaults.document(surface:wall,configuration:.furringLining(.init())).layers[0]
+        layer.offset.x=1320; layer.furring?.offset=50
+        let fixed=LayoutPlanning.worldFurring(surface:wall,layer:layer).wallFixedProfiles
+        let boards=LayoutPlanning.alignOtherLayer(layer,surface:wall,framingMode:true)
+        XCTAssertEqual(boards.furring,layer.furring)
+        XCTAssertNotEqual(boards.offset,layer.offset)
+        let framing=LayoutPlanning.alignOtherLayer(layer,surface:wall,framingMode:false)
+        XCTAssertEqual(framing.offset,layer.offset)
+        XCTAssertNotEqual(framing.furring?.offset,layer.furring?.offset)
+        XCTAssertEqual(LayoutPlanning.worldFurring(surface:wall,layer:framing).wallFixedProfiles,fixed)
+    }
+
+    func testRepeatedLengthLabelsChooseOneVisibleRepresentativePerDirection() {
+        let lines: [LayoutJoint] = [
+            .init(start:.init(x:0,y:0),end:.init(x:0,y:3000)),
+            .init(start:.init(x:600,y:3000),end:.init(x:600,y:0)),
+            .init(start:.init(x:1200,y:0),end:.init(x:1200,y:3000)),
+            .init(start:.init(x:0,y:0),end:.init(x:3000,y:0)),
+            .init(start:.init(x:1800,y:0),end:.init(x:1800,y:2500))]
+        XCTAssertEqual(LayoutDimensionLabels.representatives(lines,preferred:Set(lines.indices)),[0,3,4])
+        XCTAssertEqual(LayoutDimensionLabels.representatives(lines,preferred:[1,2]),[1])
+        XCTAssertTrue(LayoutDimensionLabels.representatives(lines,preferred:[]).isEmpty)
+    }
+    private func openingWall(_ kind: LayoutOpeningKind = .window) -> Surface2D {
+        Surface2D(name:"Mur",kind:.wall,
+            contour:LayoutPreset.rectangle.contour(length:4000,height:2600,secondaryHeight:0),
+            openings:[.init(kind:kind,contour:[.init(x:1000,y:kind == .window ? 800 : 0),.init(x:2000,y:kind == .window ? 800 : 0),.init(x:2000,y:2000),.init(x:1000,y:2000)])])
+    }
+    func testFixedOpeningProfilesAtFiveCentimetresAndShortFurrings() throws {
+        let wall=openingWall()
+        var c=FurringLiningConfiguration(); c.selectedSupportLines=2; c.furringSpacing=0.6
+        var layer=WorkLayoutDefaults.document(surface:wall,configuration:.furringLining(c)).layers[0]
+        let first=try LayoutFurringEngine.calculate(surface:wall,layer:layer)
+        XCTAssertEqual(first.openingProfiles.count,8)
+        let sides=first.openingProfiles.filter { $0.role == .side }
+        XCTAssertEqual(sides.map { $0.line.start.x }.sorted(),[950,2050])
+        XCTAssertEqual(first.openingProfiles.filter { $0.role == .horizontal }.map { $0.line.start.y }.sorted(),[750,2050])
+        XCTAssertEqual(Set(first.openingProfiles.filter { $0.role == .shortVertical }.map { $0.line.start.x }),[1050,1950])
+        XCTAssertFalse(first.supportPoints.isEmpty)
+        layer.furring?.offset=123
+        let moved=try LayoutFurringEngine.calculate(surface:wall,layer:layer)
+        XCTAssertEqual(first.openingProfiles,moved.openingProfiles)
+        XCTAssertNotEqual(first.lines,moved.lines)
+        let restored=try JSONDecoder().decode(LayoutLayer.self,from:JSONEncoder().encode(layer))
+        XCTAssertEqual(restored.furring?.intermediateSupportLines,2)
+    }
+    func testDoorHasNoSillAndStudsHaveNoExtraShortFurrings() {
+        let f=LayoutOpeningFraming.profiles(surface:openingWall(.door),system:.furring)
+        XCTAssertEqual(f.filter { $0.role == .horizontal }.count,1)
+        XCTAssertEqual(f.filter { $0.role == .shortVertical }.count,2)
+        let studs=LayoutOpeningFraming.profiles(surface:openingWall(),system:.studs)
+        XCTAssertEqual(studs.count,4)
+        XCTAssertTrue(studs.allSatisfy { $0.role != .shortVertical })
+    }
+    func testMovingFrameSnapsAndMergesIntoOpeningSide() throws {
+        let wall=openingWall()
+        var layer=WorkLayoutDefaults.document(surface:wall,configuration:.furringLining(.init())).layers[0]
+        layer.furring?.spacing=600; layer.furring?.offset=345
+        let offset=try XCTUnwrap(LayoutPlanning.snappedOpeningSupport(layer,surface:wall,tolerance:10))
+        layer.furring?.offset=offset
+        XCTAssertEqual(layer.furring?.offset,350)
+        let result=try LayoutFurringEngine.calculate(surface:wall,layer:layer)
+        let left=result.lines.filter { abs($0.start.x-950)<0.5 && abs($0.end.x-950)<0.5 }
+        XCTAssertEqual(left.count,1)
+        XCTAssertEqual((left[0].end-left[0].start).length,2600,accuracy:0.001)
+    }
+    func testPlateSnapUsesNearestRegularLineNotOpeningReinforcement() throws {
+        let wall=openingWall()
+        var layer=WorkLayoutDefaults.document(surface:wall,configuration:.furringLining(.init())).layers[0]
+        layer.furring?.spacing=600; layer.furring?.offset=0
+        layer.offset.x=949
+        XCTAssertEqual(LayoutPlanning.snappedWallBoards(layer,surface:wall,tolerance:10).offset.x,949)
+        layer.offset.x=1194
+        XCTAssertEqual(LayoutPlanning.snappedWallBoards(layer,surface:wall,tolerance:10).offset.x,1200,accuracy:0.001)
+        layer.offset.x=1320
+        XCTAssertEqual(LayoutPlanning.alignBoards(to:layer,support:.wall).offset.x,1200,accuracy:0.001)
+    }
+    func testCeilingStartsLandscapeUsingReferenceWhenSuitable() throws {
+        let frame=LayoutGridFrame(origin:.init(x:850,y:730),angle:0.63)
+        let contour=LayoutPreset.rectangle.contour(length:6000,height:2500,secondaryHeight:0).map(frame.world)
+        let initial=try XCTUnwrap(LayoutViewport.initialCeilingAlignment(contour,referenceEdge:0))
+        XCTAssertEqual(initial.index,0)
+        let bounds=LayoutBounds(points:contour.map { LayoutViewport.rotated($0,by:initial.angle) })
+        XCTAssertEqual(bounds.width,6000,accuracy:0.001)
+        XCTAssertEqual(bounds.height,2500,accuracy:0.001)
+        let shortReference=try XCTUnwrap(LayoutViewport.initialCeilingAlignment(contour,referenceEdge:1))
+        let wide=LayoutBounds(points:contour.map { LayoutViewport.rotated($0,by:shortReference.angle) })
+        XCTAssertGreaterThan(wide.width,wide.height)
+        // The following user-controlled step follows the contour, not the board reference.
+        XCTAssertEqual(LayoutViewport.nextHorizontalEdge(contour,after:initial.index)?.index,1)
+        XCTAssertNil(LayoutViewport.initialCeilingAlignment([],referenceEdge:0))
+    }
+
+    func testViewCyclesCeilingEdgesWithoutChangingScaleOrGeometry() throws {
+        let contour:[LayoutPoint] = [.init(x:100,y:200),.init(x:4600,y:500),.init(x:4100,y:3200),.init(x:0,y:2800)]
+        let pivot = LayoutViewport.geometricCenter(contour)
+        let base = LayoutViewport(bounds:LayoutViewport.fittedBounds(contour,rotation:0,pivot:pivot),size:.init(width:390,height:600),zoom:2.4,pan:.init(width:12,height:25),pivot:pivot)
+        var index:Int?
+        for expected in [0,1,2,3,0] {
+            let next = try XCTUnwrap(LayoutViewport.nextHorizontalEdge(contour,after:index))
+            XCTAssertEqual(next.index,expected)
+            index = next.index
+            for mirrored in [false,true] {
+                var view = base; view.rotation = next.angle; view.mirrored = mirrored
+                let a = view.screen(contour[next.index]), b = view.screen(contour[(next.index+1)%contour.count])
+                XCTAssertEqual(a.y,b.y,accuracy:0.000001)
+                XCTAssertEqual(view.scale,base.scale)
+                XCTAssertEqual(view.screen(pivot).y,base.screen(pivot).y,accuracy:0.000001)
+                let back=view.world(a)
+                XCTAssertEqual(back.x,contour[next.index].x,accuracy:0.000001)
+                XCTAssertEqual(back.y,contour[next.index].y,accuracy:0.000001)
+            }
+        }
+        XCTAssertNil(LayoutViewport.nextHorizontalEdge([],after:nil))
+        XCTAssertEqual(LayoutViewport.nextHorizontalEdge([.init(x:0,y:0),.init(x:0,y:0),.init(x:100,y:0),.init(x:100,y:100)],after:nil)?.index,1)
+        XCTAssertEqual(LayoutViewport.nextHorizontalEdge(contour,after:99)?.index,0)
+    }
+
+    func testRailStudInsulationReadsPublishedConductivity() throws {
+        let json = #"{"id":"glass","kind":"insulation_series","title":"Laine de verre","summary":"","sourcePage":1,"status":"Publié","data":{"material":"Laine de verre","conductivity":"λ ≈ 0,035","values":[{"thickness_mm":100,"max_weight_kg_m2":2},{"thickness_mm":200,"max_weight_kg_m2":4}]}}"#
+        var record = try JSONDecoder().decode(CeilingReferenceRecord.self,from:Data(json.utf8))
+        let series = try XCTUnwrap(LabInsulationSeries.decode(record))
+        XCTAssertEqual(series.lambda,0.035,accuracy:0.000001)
+        XCTAssertEqual(series.thicknesses,[100,200])
+        XCTAssertEqual(series.weight(for:200),4,accuracy:0.000001)
+        XCTAssertEqual(series.resistance(for:100),0.1/0.035,accuracy:0.000001)
+        record = try JSONDecoder().decode(CeilingReferenceRecord.self,from:Data(json.replacingOccurrences(of:"\"conductivity\":\"λ ≈ 0,035\"",with:"\"lambda_w_mk\":0.032").utf8))
+        XCTAssertEqual(try XCTUnwrap(LabInsulationSeries.decode(record)).lambda,0.032)
+        record = try JSONDecoder().decode(CeilingReferenceRecord.self,from:Data(json.replacingOccurrences(of:"λ ≈ 0,035",with:"non renseigné").utf8))
+        XCTAssertNil(LabInsulationSeries.decode(record))
+    }
+
+    func testFirstRailStudCeilingLayoutReusesExplicitWorkDimensions() throws {
+        var configuration = RailStudCeilingConfiguration()
+        configuration.length = 5.3; configuration.width = 3.7
+        configuration.firstSkin = [.init(productID:"board",dimensionID:"1200x2400",area:19.61)]
+        let component = WorkLayoutDefaults.firstComponent(name:"Plafond A",configuration:.railStudCeiling(configuration))
+        let document = try XCTUnwrap(component.initialDocument(sideRoomID:nil,configuration:.railStudCeiling(configuration)))
+        XCTAssertEqual(document.surface.bounds.width,5300,accuracy:0.001)
+        XCTAssertEqual(document.surface.bounds.height,3700,accuracy:0.001)
+        XCTAssertEqual(document.layers[0].sheetLength,2400)
+        XCTAssertEqual(document.layers[0].furring?.spacing,600)
+        configuration.dimensionsSpecified = false; configuration.area = 19.61
+        XCTAssertNil(WorkLayoutDefaults.firstComponent(name:"Plafond A",configuration:.railStudCeiling(configuration)).surface)
+        configuration.dimensionsSpecified = true; configuration.width = .nan
+        XCTAssertNil(WorkLayoutDefaults.firstComponent(name:"Plafond A",configuration:.railStudCeiling(configuration)).surface)
+    }
+
+    func testPeripheralFurringsStayAtTenCentimetresWhileGridMoves() throws {
+        let surface=offcutCeiling(3600,4800)
+        var layer=offcutLayer; layer.referenceEdge=0
+        layer.furring?.orientation = .horizontal
+        layer.furring?.peripheralInset=100
+        let first=LayoutPlanning.worldFurring(surface:surface,layer:layer)
+        layer.furring?.offset=170
+        let moved=LayoutPlanning.worldFurring(surface:surface,layer:layer)
+        XCTAssertEqual(first.peripheralLines,moved.peripheralLines)
+        XCTAssertEqual(first.peripheralLines.count,2)
+        XCTAssertEqual(first.peripheralLines.map{$0.start.y}.sorted(),[100,4700])
+        XCTAssertNotEqual(first.lines,moved.lines)
+        XCTAssertTrue(moved.peripheralLines.allSatisfy { moved.lines.contains($0) })
+        layer.furring?.offset=100
+        let coincident=LayoutPlanning.worldFurring(surface:surface,layer:layer)
+        for fixed in coincident.peripheralLines { XCTAssertEqual(coincident.lines.filter{$0 == fixed}.count,1) }
+        XCTAssertEqual(try JSONDecoder().decode(LayoutLayer.self,from:JSONEncoder().encode(layer)),layer)
+    }
+
+    func testPeripheralFurringsRotateWithTheirOwnReferenceAndStopAtOpenings() throws {
+        var surface=offcutCeiling(3600,4800)
+        surface.openings=[.init(kind:.stairwell,contour:LayoutBounds(min:.init(x:1500,y:50),max:.init(x:2100,y:400)).polygon)]
+        var layer=offcutLayer; layer.referenceEdge=0
+        layer.furring?.orientation = .horizontal; layer.furring?.peripheralInset=100
+        let result=LayoutPlanning.worldFurring(surface:surface,layer:layer)
+        XCTAssertEqual(result.peripheralLines.count,3)
+        XCTAssertFalse(result.lines.contains { LayoutGeometry.contains(($0.start+$0.end)*0.5,in:surface.openings[0].contour) })
+        layer.furring?.usesOwnReference=true; layer.furring?.referenceEdge=1
+        let own=LayoutPlanning.worldFurring(surface:surface,layer:layer)
+        XCTAssertEqual(own.peripheralLines.count,2)
+        for line in own.peripheralLines { XCTAssertEqual(line.start.x,line.end.x,accuracy:0.001) }
+    }
+
+    func testNoPerimeterSupportFlowsFromFormEvenForExistingManualFacingPlan() {
+        var c=CeilingConfiguration(); c.perimeterSupport=false
+        let doc=WorkLayoutDefaults.document(surface:offcutCeiling(),configuration:.ceiling(c))
+        XCTAssertEqual(doc.layers[0].furring?.peripheralInset,100)
+        var manual=offcutLayer; manual.manualFacing=true
+        XCTAssertEqual(WorkLayoutDefaults.resolvingFacing(manual,configuration:.ceiling(c),formats:[]).furring?.peripheralInset,100)
+        c.perimeterSupport=true
+        XCTAssertNil(WorkLayoutDefaults.resolvingSupport(doc.layers[0],configuration:.ceiling(c)).furring?.peripheralInset)
+    }
+
+    func testManualWallDistanceShiftsGridAndPreservesSpacingAndFixedSupports() throws {
+        let surface=offcutCeiling(3600,4800)
+        for orientation in [LayoutOrientation.horizontal,.vertical] {
+            var layer=offcutLayer; layer.referenceEdge=0
+            layer.furring?.orientation=orientation; layer.furring?.peripheralInset=100
+            let before=LayoutPlanning.worldFurring(surface:surface,layer:layer)
+            let line=try XCTUnwrap(before.lines.first { !before.peripheralLines.contains($0) })
+            let dimension=try XCTUnwrap(LayoutPlanning.framingWallDimensions(line,surface:surface).min(by:{$0.distance<$1.distance}))
+            let edited=try LayoutPlanning.settingFurringDistance(layer,surface:surface,dimension:dimension,distance:750)
+            let after=LayoutPlanning.worldFurring(surface:surface,layer:edited)
+            XCTAssertEqual(edited.furring?.spacing,layer.furring?.spacing)
+            XCTAssertEqual(after.peripheralLines,before.peripheralLines)
+            XCTAssertTrue(after.lines.flatMap{LayoutPlanning.framingWallDimensions($0,surface:surface)}.contains{abs($0.distance-750)<0.001})
+            XCTAssertThrowsError(try LayoutPlanning.settingFurringDistance(layer,surface:surface,dimension:dimension,distance:-10))
+        }
+    }
+
+    func testFurringSnapRespectsIndependentReference() throws {
+        let surface=offcutCeiling(3600,4800)
+        var layer=offcutLayer; layer.referenceEdge=0
+        layer.furring?.orientation = .horizontal; layer.furring?.offset=14
+        let joint=LayoutJoint(start:.init(x:0,y:1200),end:.init(x:3600,y:1200))
+        XCTAssertEqual(try XCTUnwrap(LayoutPlanning.snappedFurringOffset(layer,surface:surface,joints:[joint],tolerance:20)),0,accuracy:0.001)
+        XCTAssertNil(LayoutPlanning.snappedFurringOffset(layer,surface:surface,joints:[joint],tolerance:5))
+        layer.furring?.usesOwnReference=true; layer.furring?.referenceEdge=1
+        XCTAssertNil(LayoutPlanning.snappedFurringOffset(layer,surface:surface,joints:[joint],tolerance:20))
+    }
+
+    func testAutomaticLightingUsesFurringFrameWithExactGridAndNinetyDegreeSwitch() throws {
+        var surface=offcutCeiling(6000,4800)
+        let rotation=LayoutGridFrame(origin:.init(x:2000,y:-1000),angle:0.43)
+        surface.contour=surface.contour.map(rotation.world)
+        var layer=offcutLayer; layer.referenceEdge=0
+        layer.furring?.orientation = .horizontal
+        XCTAssertEqual(LayoutPlanning.automaticSpotCounts,[1,2,3,4,6,8,9,10,12])
+        XCTAssertNil(LayoutPlanning.spotPattern(5))
+        XCTAssertNil(LayoutPlanning.spotPattern(7))
+        XCTAssertNil(LayoutPlanning.spotPattern(11))
+        for count in LayoutPlanning.automaticSpotCounts {
+            for perpendicular in [false,true] {
+                var settings=LayoutLighting(count:count,spread:0.6)
+                settings.perpendicularToFurring=perpendicular
+                let result=try LayoutPlanning.lighting(settings,surface:surface,layer:layer)
+                XCTAssertEqual(result.positions.count,count)
+                XCTAssertTrue(LayoutPlanning.lightingFits(result,surface:surface))
+                var frame=LayoutPlanning.framingFrame(surface:surface,layer:layer)
+                if perpendicular { frame.angle += .pi/2 }
+                let grid=try XCTUnwrap(LayoutPlanning.spotGrid(count))
+                let local=result.positions.map(frame.local)
+                XCTAssertEqual(Set(local.map { Int($0.x.rounded()) }).count,grid.columns)
+                XCTAssertEqual(Set(local.map { Int($0.y.rounded()) }).count,grid.rows)
+                XCTAssertEqual(result.diameter,68)
+            }
+        }
+    }
+
+    func testTwelveSpotGridsKeepTheirRowsColumnsAndEqualIntervals() throws {
+        let surface=offcutCeiling(8000,6000)
+        var layer=offcutLayer; layer.referenceEdge=0; layer.furring?.orientation = .horizontal
+        for grid in LayoutTwelveSpotGrid.allCases {
+            for perpendicular in [false,true] {
+                var settings=LayoutLighting(count:12,spread:0.6)
+                settings.twelveSpotGrid=grid; settings.perpendicularToFurring=perpendicular
+                let lighting=try LayoutPlanning.lighting(settings,surface:surface,layer:layer)
+                var frame=LayoutPlanning.framingFrame(surface:surface,layer:layer)
+                if perpendicular { frame.angle += .pi/2 }
+                let points=lighting.positions.map(frame.local)
+                XCTAssertEqual(points.count,12)
+                XCTAssertEqual(Set(points.map { Int($0.x.rounded()) }).count,grid.columns)
+                XCTAssertEqual(Set(points.map { Int($0.y.rounded()) }).count,grid.rows)
+                for row in 0..<grid.rows {
+                    for column in 1..<grid.columns {
+                        let i=row*grid.columns+column
+                        XCTAssertEqual(points[i].x-points[i-1].x,points[1].x-points[0].x,accuracy:0.001)
+                        XCTAssertEqual(points[i].y,points[i-1].y,accuracy:0.001)
+                    }
+                }
+                XCTAssertTrue(LayoutPlanning.lightingFits(lighting,surface:surface))
+                XCTAssertEqual(try JSONDecoder().decode(LayoutLighting.self,from:JSONEncoder().encode(lighting)),lighting)
+            }
+        }
+    }
+
+    func testGeneratedLightingSpreadChangesEachFramingAxisIndependently() throws {
+        var surface=offcutCeiling(7000,5000)
+        let rotation=LayoutGridFrame(origin:.init(x:500,y:-1000),angle:0.37)
+        surface.contour=surface.contour.map(rotation.world)
+        var layer=offcutLayer; layer.referenceEdge=0; layer.furring?.orientation = .horizontal
+        for count in [4,6,8,9,10,12] {
+            for perpendicular in [false,true] {
+                var settings=LayoutLighting(count:count,spread:0.5)
+                settings.perpendicularToFurring=perpendicular
+                var frame=LayoutPlanning.framingFrame(surface:surface,layer:layer)
+                if perpendicular { frame.angle += .pi/2 }
+                let original=try LayoutPlanning.lighting(settings,surface:surface,layer:layer).positions.map(frame.local)
+                settings.widthSpread=0.8
+                let wider=try LayoutPlanning.lighting(settings,surface:surface,layer:layer).positions.map(frame.local)
+                settings.lengthSpread=0.7
+                let longer=try LayoutPlanning.lighting(settings,surface:surface,layer:layer).positions.map(frame.local)
+                for i in original.indices {
+                    XCTAssertEqual(wider[i].y,original[i].y,accuracy:0.001)
+                    XCTAssertEqual(longer[i].x,wider[i].x,accuracy:0.001)
+                }
+                XCTAssertEqual(LayoutBounds(points:wider).width/LayoutBounds(points:original).width,1.6,accuracy:0.001)
+                XCTAssertEqual(LayoutBounds(points:longer).height/LayoutBounds(points:wider).height,1.4,accuracy:0.001)
+            }
+        }
+    }
+
+    func testAxisSpacingAndQuarterTurnPreserveManualPositionsAndCenter() throws {
+        let frame=LayoutGridFrame(origin:.init(x:2000,y:2000),angle:0.41)
+        let positions=[LayoutPoint(x:-700,y:-600),.init(x:650,y:-500),.init(x:800,y:550),.init(x:-750,y:550)]
+        var original=LayoutLighting(count:4,spread:0.5,positions:positions.map(frame.world))
+        original.kinds=[.light,.socket,.light,.light]
+        var settings=original; settings.widthSpread=0.75; settings.lengthSpread=0.3
+        let adjusted=LayoutPlanning.adjustedLighting(original,from:original,to:settings,frame:frame)
+        for i in positions.indices {
+            let point=frame.local(adjusted.positions[i])
+            XCTAssertEqual(point.x,positions[i].x*1.5,accuracy:0.001)
+            XCTAssertEqual(point.y,positions[i].y*0.6,accuracy:0.001)
+        }
+        var turnedSettings=settings; turnedSettings.perpendicularToFurring=true
+        let turned=LayoutPlanning.adjustedLighting(adjusted,from:settings,to:turnedSettings,frame:frame)
+        let expected=LayoutPlanning.rotatedLighting(adjusted,selected:Set(positions.indices),angle:.pi/2)
+        for i in positions.indices { XCTAssertEqual((turned.positions[i]-expected.positions[i]).length,0,accuracy:0.001) }
+        let restored=LayoutPlanning.adjustedLighting(turned,from:turnedSettings,to:original,frame:frame)
+        for i in positions.indices { XCTAssertEqual((restored.positions[i]-original.positions[i]).length,0,accuracy:0.001) }
+        XCTAssertEqual(restored.kinds,original.kinds)
+        XCTAssertEqual(try JSONDecoder().decode(LayoutLighting.self,from:JSONEncoder().encode(turned)),turned)
+        let subset=LayoutPlanning.scaledLighting(original,selected:[0,1,2],widthFactor:1.2,lengthFactor:0.8,frame:frame)
+        XCTAssertEqual(subset.positions[3],original.positions[3])
+        let before=original.positions.prefix(3).reduce(LayoutPoint.zero,+)
+        let after=subset.positions.prefix(3).reduce(LayoutPoint.zero,+)
+        XCTAssertEqual((before-after).length,0,accuracy:0.001)
+    }
+
+    func testLegacyManualLightingLoadsWithoutRegenerationOrNewSettings() throws {
+        let data=Data("{\"count\":3,\"spread\":0.65,\"diameter\":75,\"dicePattern\":true,\"positions\":[{\"x\":500,\"y\":700},{\"x\":1100,\"y\":1500},{\"x\":1900,\"y\":2100}]}".utf8)
+        let saved=try JSONDecoder().decode(LayoutLighting.self,from:data)
+        XCTAssertEqual(saved.resolvedWidthSpread,0.65)
+        XCTAssertEqual(saved.resolvedLengthSpread,0.65)
+        XCTAssertNil(saved.twelveSpotGrid)
+        XCTAssertNil(saved.widthSpread)
+        XCTAssertNil(saved.lengthSpread)
+        XCTAssertEqual(LayoutPlanning.adjustedLighting(saved,from:saved,to:saved,frame:.init(angle:0.4)),saved)
+        XCTAssertEqual(try JSONDecoder().decode(LayoutLighting.self,from:JSONEncoder().encode(saved)),saved)
+        let surface=offcutCeiling(5000,4000)
+        let added=try LayoutPlanning.addingSpot(to:saved,at:.init(x:3000,y:1800),surface:surface)
+        XCTAssertEqual(Array(added.positions.prefix(3)),saved.positions)
+        XCTAssertEqual(added.diameter,75)
+        XCTAssertEqual(added.count,4)
+        for count in [5,11] {
+            let manual=LayoutLighting(count:count,positions:(0..<count).map { .init(x:500+Double($0)*300,y:900) })
+            let decoded=try JSONDecoder().decode(LayoutLighting.self,from:JSONEncoder().encode(manual))
+            XCTAssertEqual(decoded,manual)
+            XCTAssertTrue(LayoutPlanning.lightingFits(decoded,surface:surface))
+            XCTAssertEqual(LayoutPlanning.adjustedLighting(decoded,from:decoded,to:decoded,frame:.init()),manual)
+        }
+    }
+
+    func testAutomaticLightingRejectsInvalidAxesAndUnusableSurface() throws {
+        let surface=offcutCeiling(5000,4000)
+        var settings=LayoutLighting()
+        settings.widthSpread = .nan
+        XCTAssertThrowsError(try LayoutPlanning.lighting(settings,surface:surface))
+        settings.widthSpread=0.5; settings.lengthSpread=0
+        XCTAssertThrowsError(try LayoutPlanning.lighting(settings,surface:surface))
+        settings.lengthSpread=0.5
+        XCTAssertThrowsError(try LayoutPlanning.lighting(settings,surface:offcutCeiling(50,50)))
+    }
+
+    func testLightingAlignmentUsesFurringAxesAndKeepsOtherSpotsUntouched() throws {
+        let surface=offcutCeiling(6000,4800)
+        let frame=LayoutGridFrame(origin:.init(x:2000,y:2000),angle:0.4)
+        let lighting=LayoutLighting(count:4,positions:[.init(x:0,y:0),.init(x:500,y:100),.init(x:1300,y:-100),.init(x:1000,y:1000)].map(frame.world))
+        let aligned=try LayoutPlanning.arrangedLighting(lighting,selected:[0,1,2],reference:1,action:.horizontal,surface:surface,frame:frame)
+        for i in 0...2 { XCTAssertEqual(frame.local(aligned.positions[i]).y,100,accuracy:0.001) }
+        XCTAssertEqual(aligned.positions[3],lighting.positions[3])
+        let spaced=try LayoutPlanning.arrangedLighting(aligned,selected:[0,1,2],reference:nil,action:.distributeX,surface:surface,frame:frame)
+        XCTAssertEqual(frame.local(spaced.positions[1]).x,650,accuracy:0.001)
+    }
+
+    func testDimensionDisplayRoundsOnlyTextToOneDecimal() {
+        XCTAssertEqual(layoutCM(1234.56),"123,5 cm")
+        XCTAssertEqual(layoutCM(1200),"120 cm")
+    }
+
+    func testBelowCeilingCameraIsInvertibleAndKeepsScale() {
+        let ceiling=offcutCeiling()
+        let top=LayoutViewport(bounds:ceiling.bounds,size:.init(width:390,height:700),zoom:2.3,pan:.init(width:21,height:-32))
+        var bottom=top; bottom.mirrored=true
+        XCTAssertEqual(top.scale,bottom.scale)
+        for p in ceiling.contour + [.init(x:700,y:900)] {
+            let restored=bottom.world(bottom.screen(p))
+            XCTAssertEqual(restored.x,p.x,accuracy:0.00001)
+            XCTAssertEqual(restored.y,p.y,accuracy:0.00001)
+        }
+        XCTAssertEqual(bottom.worldDelta(.init(width:42,height:0)).x,-top.worldDelta(.init(width:42,height:0)).x,accuracy:0.00001)
+        let pan=bottom.constrainedPan(.init(width:100_000,height:-100_000),contour:ceiling.contour)
+        let bounded=LayoutViewport(bounds:ceiling.bounds,size:bottom.size,zoom:bottom.zoom,pan:pan,mirrored:true)
+        let points=ceiling.contour.map(bounded.screen)
+        XCTAssertLessThanOrEqual(points.map(\.x).min()!,bottom.size.width-49)
+        XCTAssertGreaterThanOrEqual(points.map(\.y).max()!,49)
+    }
+
+    func testSupportHitTestIgnoresOutsideAndOpenings() {
+        var ceiling=offcutCeiling()
+        ceiling.openings=[.init(kind:.other,contour:LayoutBounds(min:.init(x:500,y:500),max:.init(x:1000,y:1000)).polygon)]
+        XCTAssertTrue(LayoutPlanning.hitSupport(.init(x:200,y:200),surface:ceiling))
+        XCTAssertFalse(LayoutPlanning.hitSupport(.init(x:-200,y:200),surface:ceiling))
+        XCTAssertFalse(LayoutPlanning.hitSupport(.init(x:700,y:700),surface:ceiling))
+    }
+
+    func testIndependentFramingDoesNotTurnWhenBoardReferenceChanges() throws {
+        let ceiling=offcutCeiling(3600,4800)
+        var first=offcutLayer; first.referenceEdge=0
+        first.furring?.orientation = .horizontal
+        first.furring?.referenceEdge=0; first.furring?.usesOwnReference=true
+        first.furring?.offset=80
+        var second=first; second.referenceEdge=1
+        let a=try SheetLayoutEngine.calculate(surface:ceiling,layer:first)
+        let b=try SheetLayoutEngine.calculate(surface:ceiling,layer:second)
+        func endpoints(_ r:SheetLayoutResult) -> [LayoutPoint] {
+            r.furring.lines.flatMap { [r.frame.world($0.start),r.frame.world($0.end)] }
+        }
+        let pointsA=endpoints(a),pointsB=endpoints(b)
+        XCTAssertEqual(pointsA.count,pointsB.count)
+        for p in pointsA { XCTAssertTrue(pointsB.contains { ($0-p).length<0.01 }) }
+        let optimized=try LayoutPlanning.optimize(surface:ceiling,layer:second,furring:true)
+        XCTAssertEqual(optimized.offset,second.offset)
+        XCTAssertEqual(optimized.referenceEdge,second.referenceEdge)
+        XCTAssertEqual(optimized.furring?.referenceEdge,0)
+    }
+
+    func testJunctionEmphasisAndFacingWallDimensions() {
+        let room=offcutCeiling(2400,3000)
+        let line=LayoutJoint(start:.init(x:0,y:1200),end:.init(x:2400,y:1200))
+        XCTAssertTrue(LayoutPlanning.isJunction(line,joints:[.init(start:.init(x:500,y:1200),end:.init(x:1800,y:1200))]))
+        XCTAssertFalse(LayoutPlanning.isJunction(line,joints:[.init(start:.init(x:500,y:1300),end:.init(x:1800,y:1300))]))
+        let distances=LayoutPlanning.framingWallDimensions(line,surface:room).map { ($0.end-$0.start).length }.sorted()
+        XCTAssertEqual(distances,[1200,1800])
+    }
+
+    private func quantityWork(peripheral:Bool=true) -> WorkItem {
+        let room=offcutCeiling(2400,3600),layer=offcutLayer
+        var component=WorkComponentRecord(name:"Salon",surface:room)
+        component.framing=layer.furring
+        component.plans=[.init(layers:[layer])]
+        var c=CeilingConfiguration(length:2.4,width:3.6); c.perimeterSupport=peripheral
+        var work=WorkItem(id:UUID(),projectID:UUID(),name:"Plafond",type:.ceilingOnFurring,configuration:c,createdAt:Date(),updatedAt:Date())
+        work.components=[component]
+        return work
+    }
+
+    func testLayoutQuantityMarginsAndPeripheralSupports() throws {
+        let supported=quantityWork(),free=quantityWork(peripheral:false)
+        let a=try LayoutQuantityCalculator.make(work:supported,formats:[])
+        let b=try LayoutQuantityCalculator.make(work:free,formats:[])
+        let document=try XCTUnwrap(supported.components[0].document(for:supported.components[0].plans[0]))
+        let result=try SheetLayoutEngine.calculate(surface:document.surface,layer:document.layers[0])
+        XCTAssertEqual(a.boards[0].quantity,ceil(Double(result.purchasedSheetCount)*1.1))
+        XCTAssertEqual(a.area,8.64,accuracy:0.0001)
+        XCTAssertEqual(a.perimeterMeters,12*1.1,accuracy:0.0001)
+        XCTAssertEqual(b.perimeterMeters,0)
+        XCTAssertEqual(b.hangers-a.hangers,2*result.furring.lines.count)
+        XCTAssertEqual(a.framingMeters,result.furring.lines.reduce(0) { $0+($1.end-$1.start).length/1000 }*1.1,accuracy:0.0001)
+        var form=CeilingConfiguration(length:4,width:3); form.perimeterSupport=false
+        XCTAssertEqual(LayoutQuantityCalculator.estimatedAdditionalEndHangers(form),12)
+        form.perimeterSupport=true
+        XCTAssertEqual(LayoutQuantityCalculator.estimatedAdditionalEndHangers(form),0)
+    }
+
+    func testSpliceTakeoffReplacesOnlyCoveredSurfaceEstimateAndSurvivesSave() throws {
+        var work=quantityWork()
+        var configuration=try XCTUnwrap(work.ceilingConfiguration)
+        // One planned part covers half of the ouvrage.
+        configuration.enteredArea=17.28
+        work.payload = .ceiling(configuration)
+        let takeoff=try LayoutQuantityCalculator.make(work:work,formats:[])
+        let document=try XCTUnwrap(work.components[0].document(for:work.components[0].plans[0]))
+        let calculated=try SheetLayoutEngine.calculate(surface:document.surface,layer:document.layers[0])
+        XCTAssertEqual(takeoff.furringSplices,calculated.furring.furringSpliceCount)
+        XCTAssertEqual(takeoff.framingCoverage,0.5,accuracy:0.001)
+        XCTAssertEqual(try JSONDecoder().decode(LayoutQuantityTakeoff.self,from:JSONEncoder().encode(takeoff)),takeoff)
+        let item=CeilingReferenceRecord(id:"QTY-ECLISSE",kind:"quantitatif",title:"Éclisse",summary:"",sourcePage:0,status:"active",
+            data:["unit":.string("unité"),"values":.object(["simple_060":.number(0.25)])])
+        let catalogue=CeilingCataloguePayload(version:"test",ouvrage:nil,isolation:[],systemesFixation:[],parements:[],
+            quantitatifs:[item],pareVapeur:[],regles:[])
+        work.layoutQuantityTakeoff=takeoff
+        let total=CombinedQuantityCalculator.calculate(works:[work],catalogue:catalogue)
+        XCTAssertEqual(try XCTUnwrap(total.supplies.first { $0.name == "Éclisse" }).quantity,
+            Double(takeoff.furringSplices ?? 0)+17.28*0.25*0.5,accuracy:0.001)
+        var legacy=takeoff; legacy.furringSplices=nil; work.layoutQuantityTakeoff=legacy
+        let old=CombinedQuantityCalculator.calculate(works:[work],catalogue:catalogue)
+        XCTAssertEqual(try XCTUnwrap(old.supplies.first { $0.name == "Éclisse" }).quantity,17.28*0.25,accuracy:0.001)
+    }
+
+    func testPartialQuantityUsesSurfaceProportionAndKeepsUnplannedParts() throws {
+        var work=quantityWork()
+        var c=CeilingConfiguration(length:4,width:5); c.perimeterSupport=true
+        work.payload = .ceiling(c)
+        work.components.append(.init(name:"Cuisine — non calepinée"))
+        let first=try LayoutQuantityCalculator.make(work:work,formats:[])
+        XCTAssertEqual(first.area,8.64,accuracy:0.0001)
+        XCTAssertEqual(first.framingCoverage,8.64/20,accuracy:0.0001)
+        XCTAssertEqual(first.boardCoverage(0),8.64/20,accuracy:0.0001)
+        var second=work.components[0]; second.id=UUID(); second.name="Cuisine"
+        work.components[1]=second
+        let both=try LayoutQuantityCalculator.make(work:work,formats:[])
+        XCTAssertEqual(both.framingCoverage,17.28/20,accuracy:0.0001)
+        XCTAssertEqual(both.framingMeters,first.framingMeters*2,accuracy:0.0001)
+    }
+
+    func testQuantitySnapshotRoundTripInvalidationAndIncompletePlans() throws {
+        var work=quantityWork()
+        work.layoutQuantityTakeoff=try LayoutQuantityCalculator.make(work:work,formats:[])
+        let restored=try JSONDecoder().decode(WorkItem.self,from:JSONEncoder().encode(work))
+        XCTAssertEqual(LayoutQuantityCalculator.validated(restored),work.layoutQuantityTakeoff)
+        work.components[0].plans[0].layers[0].offset.x += 50
+        XCTAssertNil(LayoutQuantityCalculator.validated(work))
+        XCTAssertEqual(LayoutQuantityCalculator.applicable(work),try LayoutQuantityCalculator.make(work:work,formats:[]),"A changed plan recalculates without a second approval")
+        XCTAssertEqual(LayoutQuantityCalculator.applicable(work)?.fingerprint,LayoutQuantityCalculator.fingerprint(work))
+        work.components.append(.init(name:"Cuisine"))
+        XCTAssertNoThrow(try LayoutQuantityCalculator.make(work:work,formats:[]))
+        work=quantityWork(); work.components[0].geometryRevision=1
+        XCTAssertThrowsError(try LayoutQuantityCalculator.make(work:work,formats:[]))
+        var obsolete=try LayoutQuantityCalculator.make(work:quantityWork(),formats:[])
+        obsolete.configurationFingerprint=LayoutQuantityCalculator.configurationFingerprint(work)
+        work.layoutQuantityTakeoff=obsolete
+        XCTAssertNil(LayoutQuantityCalculator.applicable(work),"An obsolete snapshot must not hide an unusable plan")
+        work=quantityWork(); var doubleSkin=CeilingConfiguration(length:2.4,width:3.6); doubleSkin.layers=2; work.payload = .ceiling(doubleSkin)
+        let partial=try LayoutQuantityCalculator.make(work:work,formats:[])
+        XCTAssertEqual(partial.boardCoverage(0),1)
+        XCTAssertEqual(partial.boardCoverage(1),0)
+    }
+
+    func testRailStudQuantityUsesStoredSpacingAndRejectsExcessiveSpan() throws {
+        var work=quantityWork()
+        var c=RailStudCeilingConfiguration()
+        c.length=2.4; c.width=3.6
+        c.frameMode="suspended"; c.assembly="double"; c.suspensionSpacingMeters=2
+        c.suppliesPerSuspension=[.init(name:"Suspente",quantity:1,unit:"unité")]
+        work.payload = .railStudCeiling(c); work.type = .ceilingOnRailsAndStuds
+        let rail=try LayoutQuantityCalculator.make(work:work,formats:[])
+        let furring=try LayoutQuantityCalculator.make(work:quantityWork(),formats:[])
+        XCTAssertEqual(rail.framingMeters,furring.framingMeters*2,accuracy:0.0001)
+        XCTAssertLessThanOrEqual(rail.hangers,furring.hangers)
+        c.frameMode="selfSupporting"; c.maximumSpanMeters=1
+        work.payload = .railStudCeiling(c)
+        XCTAssertThrowsError(try LayoutQuantityCalculator.make(work:work,formats:[]))
+    }
+
+    func testRailCeilingFixingPairSplitsBeforeAndAfterLayoutTakeoff() throws {
+        var work = quantityWork()
+        var configuration = RailStudCeilingConfiguration()
+        configuration.length = 2.4; configuration.width = 3.6
+        configuration.frameMode = "suspended"; configuration.suspensionSpacingMeters = 1.2
+        configuration.quantities = [.init(name: "Cheville et piton", quantity: 20, unit: "unité")]
+        configuration.suppliesPerSuspension = [.init(name: "Cheville et piton", quantity: 1, unit: "unité")]
+        work.payload = .railStudCeiling(configuration); work.type = .ceilingOnRailsAndStuds
+        let catalogue = CeilingCataloguePayload(version: "test", ouvrage: nil, isolation: [], systemesFixation: [], parements: [], quantitatifs: [], pareVapeur: [], regles: [])
+        let before = CombinedQuantityCalculator.calculate(works: [work], catalogue: catalogue)
+        XCTAssertEqual(before.supplies.first(where: { $0.name == "Cheville crampon 8 mm" })?.quantity, 20)
+        let takeoff = try LayoutQuantityCalculator.make(work: work, formats: [])
+        work.layoutQuantityTakeoff = takeoff
+        let after = CombinedQuantityCalculator.calculate(works: [work], catalogue: catalogue)
+        for name in ["Cheville crampon 8 mm", "Piton de suspension 8 mm"] {
+            XCTAssertEqual(after.supplies.first(where: { $0.name == name })?.quantity, Double(takeoff.hangers))
+        }
+        XCTAssertFalse(after.supplies.contains(where: { $0.name == "Cheville et piton" }))
+        configuration.quantities = ["Cheville crampon 8 mm", "Piton de suspension 8 mm"].map { .init(name: $0, quantity: 20, unit: "unité") }
+        configuration.suppliesPerSuspension = ["Cheville crampon 8 mm", "Piton de suspension 8 mm"].map { .init(name: $0, quantity: 1, unit: "unités") }
+        work.payload = .railStudCeiling(configuration)
+        // Replacing a configuration intentionally invalidates its prior takeoff.
+        work.layoutQuantityTakeoff = try LayoutQuantityCalculator.make(work: work, formats: [])
+        let updated = CombinedQuantityCalculator.calculate(works: [work], catalogue: catalogue)
+        XCTAssertEqual(updated.supplies.map(\.name), after.supplies.map(\.name))
+        XCTAssertEqual(updated.supplies.map(\.quantity), after.supplies.map(\.quantity))
+    }
+
     private func offcutCeiling(_ width:Double=2400,_ height:Double=3000) -> Surface2D {
         var value=surface(width:width,height:height); value.kind = .ceiling; return value
     }
@@ -16,7 +730,7 @@ final class SheetLayoutEngineTests: XCTestCase {
         XCTAssertEqual(result.savedSheetCount,1)
         XCTAssertEqual(result.netArea,7_200_000,accuracy:0.01)
         XCTAssertEqual(result.wasteArea,1_440_000,accuracy:0.01)
-        XCTAssertEqual(result.sheets.flatMap(\.pieces).compactMap{$0.stock?.label},["1","2","3-1","3-2"])
+        XCTAssertEqual(result.sheets.flatMap(\.pieces).compactMap{$0.stock?.label},["1","2-1","3","2-2"])
         XCTAssertEqual(result,try SheetLayoutEngine.calculate(surface:ceiling,layer:offcutLayer))
         try assertCutStockIsFeasible(result)
     }
@@ -27,7 +741,7 @@ final class SheetLayoutEngineTests: XCTestCase {
         let tooSmall=try SheetLayoutEngine.calculate(surface:offcutCeiling(2400,2599),layer:offcutLayer)
         XCTAssertEqual(tooSmall.purchasedSheetCount,4)
         var noReuse=offcutLayer; noReuse.reuseOffcuts=false
-        XCTAssertEqual(try SheetLayoutEngine.calculate(surface:offcutCeiling(),layer:noReuse).purchasedSheetCount,4)
+        XCTAssertEqual(try SheetLayoutEngine.calculate(surface:offcutCeiling(),layer:noReuse).purchasedSheetCount,3)
         noReuse.reuseOffcuts=true; noReuse.furring=nil
         XCTAssertEqual(try SheetLayoutEngine.calculate(surface:offcutCeiling(),layer:noReuse).purchasedSheetCount,4)
     }
@@ -47,6 +761,93 @@ final class SheetLayoutEngineTests: XCTestCase {
         var withOpening=room
         withOpening.openings=[.init(kind:.other,contour:LayoutBounds(min:.init(x:1500,y:500),max:.init(x:2000,y:1500)).polygon)]
         XCTAssertFalse(LayoutOffcutPacking.hasSupports(piece,surface:withOpening,furring:.init(lines:[first])))
+    }
+
+    func testFourTaperedEdgesRejectReuseWithCutEdgeAgainstAnotherBoard() throws {
+        var layer=offcutLayer
+        layer.fourTaperedEdges=true
+        let result=try SheetLayoutEngine.calculate(surface:offcutCeiling(),layer:layer)
+        XCTAssertEqual(result.purchasedSheetCount,4)
+        layer.fourTaperedEdges=false
+        XCTAssertEqual(try SheetLayoutEngine.calculate(surface:offcutCeiling(),layer:layer).purchasedSheetCount,3)
+    }
+
+    func testFourTaperedEdgesStillReuseOppositePeripheryCuts() throws {
+        var layer=offcutLayer
+        layer.fourTaperedEdges=true; layer.offset.y=600
+        let result=try SheetLayoutEngine.calculate(surface:offcutCeiling(2400,3600),layer:layer)
+        XCTAssertGreaterThan(result.savedSheetCount,0)
+        try assertCutStockIsFeasible(result)
+        assertFactoryJoints(result)
+    }
+
+    func testFourTaperedEdgesPreservedWithStaggerOpeningsAndRotatedReference() throws {
+        var room=offcutCeiling(4300,3700)
+        room.openings=[.init(kind:.other,contour:LayoutBounds(min:.init(x:1400,y:1100),max:.init(x:2000,y:1900)).polygon)]
+        for orientation in LayoutOrientation.allCases {
+            for staggered in [false,true] {
+                var layer=offcutLayer
+                layer.orientation=orientation; layer.fourTaperedEdges=true
+                layer.staggered=staggered; layer.referenceEdge=1
+                layer.offset = .init(x:-300,y:-500)
+                let result=try SheetLayoutEngine.calculate(surface:room,layer:layer)
+                try assertCutStockIsFeasible(result)
+                assertFactoryJoints(result)
+                XCTAssertEqual(result.netArea,4300*3700-600*800,accuracy:0.1)
+            }
+        }
+    }
+
+    private func assertFactoryJoints(_ result:SheetLayoutResult, file:StaticString=#filePath,line:UInt=#line) {
+        for sheet in result.sheets {
+            let contacts=LayoutOffcutPacking.sharedEdges(of:sheet,joints:result.joints)
+            for piece in sheet.pieces {
+                guard let stock=piece.stock else { XCTFail("Missing stock",file:file,line:line); continue }
+                XCTAssertTrue(LayoutOffcutPacking.factoryEdges(contacts,origin:stock.origin,size:.init(x:sheet.width,y:sheet.height)),file:file,line:line)
+            }
+        }
+    }
+
+    func testBoardNumbersFollowLongAxisInBothOrientations() throws {
+        for orientation in LayoutOrientation.allCases {
+            var layer=offcutLayer; layer.orientation=orientation
+            let result=try SheetLayoutEngine.calculate(surface:offcutCeiling(4800,4800),layer:layer)
+            let a=result.sheets[0].origin,b=result.sheets[1].origin
+            XCTAssertEqual(orientation == .vertical ? a.x : a.y,orientation == .vertical ? b.x : b.y)
+            XCTAssertEqual(orientation == .vertical ? b.y-a.y : b.x-a.x,2400,accuracy:0.001)
+            XCTAssertEqual(result.sheets[0].pieces[0].stock?.label,"1")
+            XCTAssertEqual(result.sheets[1].pieces[0].stock?.label,"2")
+        }
+    }
+
+    func testOffsetNumbersRemainInViewportAndAvoidExistingNumbers() {
+        let viewport=CGRect(x:0,y:0,width:300,height:400)
+        let occupied=[CGRect(x:145,y:180,width:35,height:22)]
+        for anchor in [CGPoint(x:150,y:200),CGPoint(x:3,y:3),CGPoint(x:299,y:399)] {
+            let rect=LayoutNumberCallout.rect(anchor:anchor,size:.init(width:35,height:22),viewport:viewport,occupied:occupied,displaced:true)
+            XCTAssertTrue(viewport.contains(rect))
+            XCTAssertFalse(occupied.contains { $0.intersects(rect) })
+            XCTAssertGreaterThan(hypot(rect.midX-anchor.x,rect.midY-anchor.y),10)
+        }
+    }
+
+    @MainActor func testCeilingOrientationAutomaticallyOptimizesAndKeepsLastRapidChoice() async throws {
+        let model=LayoutEditorModel(persistsStandaloneLibrary:false)
+        var document=LayoutDocument.newSupport(offcutCeiling())
+        model.apply(document)
+        XCTAssertFalse(model.isOptimizing)
+        document.layers[0].orientation = .horizontal
+        model.apply(document)
+        XCTAssertTrue(model.isOptimizing)
+        document.layers[0].referenceEdge=1
+        model.apply(document)
+        for _ in 0..<1000 {
+            if !model.isOptimizing { break }
+            try await Task.sleep(for:.milliseconds(20))
+        }
+        XCTAssertFalse(model.isOptimizing)
+        let expected=try LayoutPlanning.optimize(surface:document.surface,layer:document.layers[0],furring:false)
+        XCTAssertEqual(model.document?.layers.first,expected)
     }
 
     func testSupportBoundaryRecognitionIsSymmetricAndDoesNotCountOneLineTwice() {
@@ -179,7 +980,7 @@ final class SheetLayoutEngineTests: XCTestCase {
             XCTAssertGreaterThanOrEqual(b.min.y,0)
             XCTAssertLessThanOrEqual(b.max.x,sheet.width)
             XCTAssertLessThanOrEqual(b.max.y,sheet.height)
-            XCTAssertEqual(sibling.stock?.label,"3-1")
+            XCTAssertEqual(sibling.stock?.label,"2-1")
         }
     }
 
@@ -265,6 +1066,101 @@ final class SheetLayoutEngineTests: XCTestCase {
         XCTAssertEqual(layer.furring?.spacing,500)
         XCTAssertNotNil(layer.referenceEdge)
         XCTAssertTrue(LayoutVisibilitySettings().framing.isVisible)
+    }
+
+    func testFourTaperedEdgesFlowFromOuvrageAndSurviveSaveWithoutCatalogue() throws {
+        var allocation=FacingSelection(facingID:"four",dimensionID:"1200x2400",area:20)
+        allocation.fourTaperedEdges=true
+        var configuration=CeilingConfiguration(); configuration.firstSkin=[allocation]
+        let document=WorkLayoutDefaults.document(surface:offcutCeiling(),configuration:.ceiling(configuration))
+        XCTAssertEqual(document.layers[0].fourTaperedEdges,true)
+        let restored=try JSONDecoder().decode(LayoutDocument.self,from:JSONEncoder().encode(document))
+        XCTAssertEqual(restored.layers[0].fourTaperedEdges,true)
+        let catalog=[LayoutCatalogFormat(id:"four-1200-2400",title:"Plaque",width:1200,length:2400,productID:"four",fourTaperedEdges:true)]
+        XCTAssertEqual(WorkLayoutDefaults.fourTaperedEdges(configuration:.ceiling(configuration),layer:document.layers[0],formats:catalog),true)
+        var rail=RailStudCeilingConfiguration()
+        rail.firstSkin=[.init(productID:"four",dimensionID:"1200x2400",area:20,fourTaperedEdges:true)]
+        XCTAssertEqual(WorkLayoutDefaults.document(surface:offcutCeiling(),configuration:.railStudCeiling(rail)).layers[0].fourTaperedEdges,true)
+    }
+
+    func testCanvasControlsDoNotChangePhysicalZoomWhenViewportHeightChanges() {
+        let bounds=offcutCeiling().bounds
+        let size=CGSize(width:380,height:600)
+        let initial=LayoutViewport(bounds:bounds,size:size,zoom:2,pan:.zero,fittingSize:size)
+        let smaller=LayoutViewport(bounds:bounds,size:.init(width:380,height:470),zoom:2,pan:.init(width:0,height:65),fittingSize:size)
+        XCTAssertEqual(initial.scale,smaller.scale,accuracy:0.000001)
+        XCTAssertEqual(initial.screen(bounds.center),smaller.screen(bounds.center))
+    }
+
+    private var fourEdgeFormat: LayoutCatalogFormat {
+        let product = "FACING-BA13-QUATRE-BORDS-AMINCIS"
+        return .init(id:LayoutCatalogFormat.identifier(productID:product,width:1200,length:2400),
+                     title:"BA13 quatre bords amincis",width:1200,length:2400,productID:product,fourTaperedEdges:true)
+    }
+
+    func testOuvrageImportsProductIdentityAndAppliesFactoryEdgeRuleAfterReload() throws {
+        let format = fourEdgeFormat
+        var allocation = FacingSelection(facingID:format.productID!,dimensionID:"1200x2400",area:20)
+        allocation.fourTaperedEdges = true
+        var configuration = CeilingConfiguration(); configuration.firstSkin = [allocation]
+        let initial = WorkLayoutDefaults.document(surface:offcutCeiling(),configuration:.ceiling(configuration))
+        XCTAssertEqual(initial.layers[0].catalogFormatID,format.id)
+        let restored = try JSONDecoder().decode(LayoutDocument.self,from:JSONEncoder().encode(initial))
+        let layer = WorkLayoutDefaults.resolvingFacing(restored.layers[0],configuration:nil,formats:[])
+        XCTAssertEqual(layer.catalogFormatID,format.id)
+        XCTAssertEqual(layer.fourTaperedEdges,true)
+        // Use the bottom reference edge: the last row yields offcuts whose
+        // reuse would otherwise put a cut edge against the following board.
+        var bottomAligned = layer; bottomAligned.referenceEdge = 0
+        let result = try SheetLayoutEngine.calculate(surface:restored.surface,layer:bottomAligned)
+        XCTAssertEqual(result.purchasedSheetCount,4)
+        assertFactoryJoints(result)
+    }
+
+    func testLegacyOuvrageRecoversExactFacingWhenCatalogueArrives() throws {
+        var configuration = CeilingConfiguration()
+        configuration.firstSkin = [.init(facingID:fourEdgeFormat.productID!,dimensionID:"1200.0x2400.0",area:20)]
+        var legacy = offcutLayer
+        legacy.fourTaperedEdges = false // Former form default must not override the known product.
+        legacy.offset = .init(x:35,y:48); legacy.staggered = true
+        let unavailable = WorkLayoutDefaults.resolvingFacing(legacy,configuration:.ceiling(configuration),formats:[])
+        XCTAssertEqual(unavailable.catalogFormatID,fourEdgeFormat.id)
+        let fixed = WorkLayoutDefaults.resolvingFacing(unavailable,configuration:.ceiling(configuration),formats:[fourEdgeFormat])
+        XCTAssertEqual(fixed.fourTaperedEdges,true)
+        XCTAssertEqual(fixed.offset,legacy.offset)
+        XCTAssertEqual(fixed.staggered,true)
+        XCTAssertEqual(WorkLayoutDefaults.resolvingFacing(fixed,configuration:.ceiling(configuration),formats:[fourEdgeFormat]),fixed)
+    }
+
+    func testExplicitManualFacingIsNotOverwrittenByOuvrageOrReload() throws {
+        var configuration = CeilingConfiguration()
+        configuration.firstSkin = [.init(facingID:fourEdgeFormat.productID!,dimensionID:"1200x2400",area:20)]
+        var manual = offcutLayer; manual.manualFacing = true; manual.fourTaperedEdges = false
+        let restored = try JSONDecoder().decode(LayoutLayer.self,from:JSONEncoder().encode(manual))
+        XCTAssertEqual(WorkLayoutDefaults.resolvingFacing(restored,configuration:.ceiling(configuration),formats:[fourEdgeFormat]),manual)
+    }
+
+    func testExplicitCatalogueFacingWinsOverSameSizedOuvrageFacing() {
+        var configuration = CeilingConfiguration()
+        configuration.firstSkin = [.init(facingID:fourEdgeFormat.productID!,dimensionID:"1200x2400",area:20)]
+        let standard = LayoutCatalogFormat(id:"standard",title:"BA13 standard",width:1200,length:2400,productID:"standard",fourTaperedEdges:false)
+        var layer = offcutLayer; layer.catalogFormatID = standard.id; layer.fourTaperedEdges = true
+        let result = WorkLayoutDefaults.resolvingFacing(layer,configuration:.ceiling(configuration),formats:[fourEdgeFormat,standard])
+        XCTAssertEqual(result.catalogFormatID,standard.id)
+        XCTAssertEqual(result.fourTaperedEdges,false)
+    }
+
+    func testRailCeilingFacingIdentityAndLargestAreaAreImported() {
+        var configuration = RailStudCeilingConfiguration()
+        configuration.firstSkin = [
+            .init(productID:"standard",dimensionID:"1200x2400",area:3,fourTaperedEdges:false),
+            .init(productID:fourEdgeFormat.productID!,dimensionID:"1200x2400",area:10,fourTaperedEdges:true),
+            .init(productID:"long",dimensionID:"1200x3000",area:5,fourTaperedEdges:false)
+        ]
+        let layer = WorkLayoutDefaults.document(surface:offcutCeiling(),configuration:.railStudCeiling(configuration)).layers[0]
+        XCTAssertEqual(layer.catalogFormatID,fourEdgeFormat.id)
+        XCTAssertEqual(layer.fourTaperedEdges,true)
+        XCTAssertEqual(layer.sheetLength,2400)
     }
 
     func testExistingComponentLayoutIsNotResetByOuvrageDefaults() throws {
@@ -855,8 +1751,9 @@ final class SheetLayoutEngineTests: XCTestCase {
         layer.furring?.spacing = 500
         XCTAssertEqual(LayoutPlanning.alignBoards(to:layer,support:.ceiling),layer)
         layer.furring?.spacing = 600
+        layer.furring?.orientation = .vertical // Wall framing is always vertical.
         let wall = LayoutPlanning.alignBoards(to:layer,support:.wall)
-        XCTAssertEqual(wall.offset,.init(x:1345,y:0), "Legacy wall action is unchanged")
+        XCTAssertEqual(wall.offset,.init(x:1200,y:3600), "Wall boards use the nearest vertical support, preserving the height offset")
     }
 
     func testOptimizationNeverWorsensCountsOrFurringMetres() throws {

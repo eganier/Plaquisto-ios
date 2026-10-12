@@ -1,12 +1,20 @@
 import SwiftUI
 
+final class PlaquistoOrientationDelegate: NSObject, UIApplicationDelegate {
+    func application(_ application: UIApplication, supportedInterfaceOrientationsFor window: UIWindow?) -> UIInterfaceOrientationMask {
+        .portrait
+    }
+}
+
 @main
 struct PlaquistoApp: App {
+    @UIApplicationDelegateAdaptor(PlaquistoOrientationDelegate.self) private var orientationDelegate
     @StateObject private var projectStore = ProjectStore()
 
     var body: some Scene {
         WindowGroup {
             PlaquistoRootView()
+                .preferredColorScheme(.light)
                 .environmentObject(projectStore)
                 #if DEBUG
                 .environment(\.beforeAfterAccount, BeforeAfterAccountContext(allowsLabWatermarkControl: true))
@@ -16,6 +24,7 @@ struct PlaquistoApp: App {
 }
 
 private struct PlaquistoRootView: View {
+    @EnvironmentObject private var store: ProjectStore
     @State private var selectedTab = AppTab.projects
     @State private var showingAccount = false
 
@@ -43,6 +52,9 @@ private struct PlaquistoRootView: View {
             .tag(AppTab.stock)
         }
         .tint(Color(red: 0.12, green: 0.38, blue: 0.29))
+        .onChange(of:store.projectNavigationRequest) { _, request in
+            if request != nil { selectedTab = .projects }
+        }
         .sheet(isPresented: $showingAccount) {
             AccountSettingsView()
         }
@@ -70,19 +82,6 @@ private struct AppSectionPlaceholder: View {
     }
 }
 
-struct AccountToolbarButton: ToolbarContent {
-    let action: () -> Void
-
-    var body: some ToolbarContent {
-        ToolbarItem(placement: .topBarTrailing) {
-            Button(action: action) {
-                Image(systemName: "person.crop.circle")
-            }
-            .accessibilityLabel("Compte et réglages")
-        }
-    }
-}
-
 private struct AccountSettingsView: View {
     @Environment(\.dismiss) private var dismiss
 
@@ -102,15 +101,9 @@ private struct AccountSettingsView: View {
                     LabeledContent("Entreprise", value: "À configurer")
                 }
 
+                MaquetteRenderingSettingsSection()
+
                 Section("Application") {
-                    NavigationLink("Réglages de l’application") {
-                        ContentUnavailableView(
-                            "Réglages",
-                            systemImage: "gearshape",
-                            description: Text("Les préférences de Plaquisto seront regroupées ici.")
-                        )
-                        .navigationTitle("Réglages")
-                    }
                     LabeledContent("Données métier", value: "Plaquisto Admin")
                     LabeledContent("Mises à jour", value: "Automatiques")
                 }

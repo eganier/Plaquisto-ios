@@ -77,6 +77,28 @@ struct LayoutFurringForm: View {
                         Text("Verticales").tag(LayoutOrientation.vertical)
                     }.pickerStyle(.segmented)
                 } } else { Section { Label("Ossature verticale, perpendiculaire au sol",systemImage:"arrow.up") } }
+                if surface.kind == .wall, let system=layer.furring?.openingSystem {
+                    Section("Encadrements des ouvertures") {
+                        let geometry=LayoutPlanning.worldFurring(surface:surface,layer:layer)
+                        Text("Renforts fixes à 5 cm des ouvertures (mesurés à l’axe). La trame mobile peut se caler et fusionner sur les renforts latéraux.").font(.footnote)
+                        let horizontal=geometry.openingProfiles.filter { $0.role == .horizontal }.reduce(0.0) { $0+($1.line.end-$1.line.start).length/1000 }
+                        LabeledContent(system == .furring ? "Cornières d’encadrement" : "Rails d’encadrement",value:"\(horizontal.formatted(.number.precision(.fractionLength(1)))) ml")
+                        if system == .furring {
+                            Text("Profils fixes à 12 cm des bords : fourrure à gauche, cornière à droite.").font(.caption).foregroundStyle(.secondary)
+                            LabeledContent("Appuis intermédiaires sur le plan",value:"\(geometry.supportPoints.count)")
+                            LabeledContent("Traverses horizontales",value:layer.furring?.includesHorizontalSupportFurring == false ? "Sans — fixation dans la maçonnerie" : "Selon les lignes d’appuis")
+                            if layer.furring?.maximumSupportSpacing == nil {
+                                Text("Hauteurs indicatives pour cet ancien ouvrage. Réenregistrez son formulaire pour récupérer la règle d’appuis du catalogue.").font(.caption).foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                }
+                if layer.furring?.isFurringSystem != false && (surface.kind == .ceiling || layer.furring?.openingSystem == .furring) {
+                    Section("Raccords des fourrures") {
+                        LabeledContent("Éclisses sur le plan",value:"\(LayoutPlanning.worldFurring(surface:surface,layer:layer).furringSpliceCount)")
+                        Text("Une éclisse à chaque raccord de longueurs de 3 m, par tronçon continu.").font(.caption).foregroundStyle(.secondary)
+                    }
+                }
                 Section(surface.kind == .wall ? "Entraxe de l’ossature" : "Entraxe des fourrures") {
                     Picker("Entraxe",selection:binding(\.spacing)) {
                         Text("40 cm").tag(400.0); Text("50 cm").tag(500.0); Text("60 cm").tag(600.0)
@@ -85,7 +107,7 @@ struct LayoutFurringForm: View {
                     if !compatible {
                         Label("Format de plaque incompatible avec cet entraxe. Choisissez un format compatible ci-dessous.",systemImage:"exclamationmark.triangle.fill").foregroundStyle(.orange)
                         ForEach(formats.prefix(12)) { format in
-                            Button(format.label) { layer.sheetWidth = format.width; layer.sheetLength = format.length; layer.catalogFormatID = format.id }
+                            Button(format.label) { layer.sheetWidth = format.width; layer.sheetLength = format.length; layer.catalogFormatID = format.id; layer.manualFacing = false; layer.fourTaperedEdges = format.fourTaperedEdges }
                         }
                         if formats.isEmpty { Text("Aucun format compatible chargé. Modifiez le format dans Plaques.").font(.footnote) }
                     }
@@ -129,7 +151,13 @@ struct LayoutLightingSpacingForm: View {
     let selected:Set<Int>
     let onSave:(LayoutLighting)->Void
     @State private var factor = 1.0
-    private var preview:LayoutLighting { LayoutPlanning.scaledLighting(lighting,selected:selected,factor:factor) }
+    @State private var lengthFactor = 1.0
+    private var preview:LayoutLighting {
+        guard surface.kind == .ceiling else { return LayoutPlanning.scaledLighting(lighting,selected:selected,factor:factor) }
+        var frame = LayoutPlanning.framingFrame(surface:surface,layer:layer)
+        if lighting.perpendicularToFurring == true { frame.angle += .pi/2 }
+        return LayoutPlanning.scaledLighting(lighting,selected:selected,widthFactor:factor,lengthFactor:lengthFactor,frame:frame)
+    }
     private var valid:Bool { LayoutPlanning.lightingFits(preview,surface:surface) }
     var body:some View {
         NavigationStack {
@@ -148,11 +176,15 @@ struct LayoutLightingSpacingForm: View {
                     }.frame(height:280)
                 }
                 Section("Écartement de \(selected.count) points") {
-                    Slider(value:$factor,in:0.25...3).accessibilityLabel("Multiplier l’écartement du groupe")
-                    LabeledContent("Écartement",value:"× \(factor.formatted(.number.precision(.fractionLength(2))))")
-                    Text("Vers la gauche pour rapprocher, vers la droite pour écarter. Le centre du groupe et les positions relatives sont conservés.").font(.footnote).foregroundStyle(.secondary)
+                    LabeledContent(surface.kind == .ceiling ? "Largeur" : "Écartement",value:"× \(factor.formatted(.number.precision(.fractionLength(2))))")
+                    Slider(value:$factor,in:0.25...3).accessibilityLabel(surface.kind == .ceiling ? "Écartement en largeur" : "Multiplier l’écartement du groupe")
+                    if surface.kind == .ceiling {
+                        LabeledContent("Longueur",value:"× \(lengthFactor.formatted(.number.precision(.fractionLength(2))))")
+                        Slider(value:$lengthFactor,in:0.25...3).accessibilityLabel("Écartement en longueur")
+                    }
+                    Text("Vers la gauche pour rapprocher, vers la droite pour écarter. Le centre du groupe reste fixe.").font(.footnote).foregroundStyle(.secondary)
                     if !valid { Label("Le groupe rencontre un bord, une ouverture ou un autre point. Réduisez l’écartement.",systemImage:"exclamationmark.triangle").foregroundStyle(.orange) }
-                    Button("Revenir à l’écartement initial") { factor = 1 }
+                    Button("Revenir à l’écartement initial") { factor = 1; lengthFactor = 1 }
                 }
             }
             .navigationTitle("Régler l’écartement").navigationBarTitleDisplayMode(.inline)
@@ -226,7 +258,35 @@ struct LayoutWallElectricalForm: View {
     }
 }
 
+struct LayoutFurringDistanceForm: View {
+    @Environment(\.dismiss) private var dismiss
+    @State var value:Double
+    let onSave:(Double)throws->Void
+    @State private var error:String?
+    var body:some View {
+        NavigationStack {
+            Form {
+                LayoutDimensionField(title:"Distance mur / fourrure",millimetres:$value)
+                Text("La trame se déplace en conservant l’entraxe. Les fourrures périphériques à 10 cm restent fixes.").font(.footnote).foregroundStyle(.secondary)
+                if let error { Text(error).foregroundStyle(.red) }
+            }.navigationTitle("Positionner les fourrures").navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement:.cancellationAction) { Button("Annuler") { dismiss() } }
+                    ToolbarItem(placement:.confirmationAction) {
+                        Button("Valider") {
+                            do { try onSave(value); dismiss() }
+                            catch { self.error="Cette distance ne place pas une fourrure mobile dans le plafond. Vérifiez la valeur et le contour." }
+                        }
+                    }
+                }
+        }
+    }
+}
+
 struct LayoutLightingForm: View {
+    private struct PreviewKey: Equatable { var settings:LayoutLighting; var generation:Int }
+    @State private var regenerate = 0
+    @State private var lastRegeneration = 0
     @Environment(\.dismiss) private var dismiss
     let surface: Surface2D
     let layer: LayoutLayer
@@ -239,18 +299,14 @@ struct LayoutLightingForm: View {
     @State private var placementCenter: LayoutPoint?
     @State private var generation = 0
     @State private var lastSettings: LayoutLighting?
-    @State private var rotationOriginal: LayoutLighting?
-    @State private var rotationLatch: Double?
-    @State private var rotationDelta = 0.0
-    @State private var placementRotation = 0.0
-    @AppStorage("layout.snapSpots") private var snapSpots = true
     init(surface:Surface2D,layer:LayoutLayer,settings:LayoutLighting?,onSave:@escaping(LayoutLighting?)->Void) {
-        self.surface = surface; self.layer = layer; self.onSave = onSave; _settings = State(initialValue:settings ?? .init())
+        self.surface = surface; self.layer = layer; self.onSave = onSave
+        _settings = State(initialValue:settings ?? .init())
     }
     var body: some View {
         NavigationStack {
-            Form {
-                Section {
+            GeometryReader { container in
+                VStack(spacing:8) {
                     GeometryReader { proxy in
                     ZStack {
                         LayoutLivePreview(surface:surface,layer:layer)
@@ -265,7 +321,6 @@ struct LayoutLightingForm: View {
                     }
                     .contentShape(Rectangle())
                     .highPriorityGesture(DragGesture(minimumDistance:3).onChanged { value in
-                        guard rotationOriginal == nil else { return }
                         guard let preview else { return }
                         if groupOrigin == nil { groupOrigin = preview }
                         guard let original = groupOrigin else { return }
@@ -279,51 +334,71 @@ struct LayoutLightingForm: View {
                         } else { preview = groupOrigin; error = LayoutLightingEditError.invalidPlacement.localizedDescription }
                         groupOrigin = nil
                     })
-                    .simultaneousGesture(RotationGesture().onChanged { angle in
-                        if rotationOriginal == nil {
-                            if let original = groupOrigin { preview = original; groupOrigin = nil }
-                            rotationOriginal = preview
-                        }
-                        guard let original = rotationOriginal else { return }
-                        let selected = Set(original.positions.indices)
-                        let snap = snapSpots ? LayoutPlanning.snappedLightingRotation(-angle.radians,lighting:original,selected:selected,contour:surface.contour,latched:rotationLatch) : (angle:-angle.radians,latch:nil)
-                        if snap.latch != nil && rotationLatch == nil { UISelectionFeedbackGenerator().selectionChanged() }
-                        rotationDelta = snap.angle; rotationLatch = snap.latch
-                        preview = LayoutPlanning.rotatedLighting(original,selected:selected,angle:snap.angle)
-                    }.onEnded { _ in
-                        if let current = preview, LayoutPlanning.lightingFits(current,surface:surface) {
-                            placementRotation += rotationDelta; placementCenter = center(current); error = nil
-                        } else { preview = rotationOriginal; error = LayoutLightingEditError.invalidPlacement.localizedDescription }
-                        rotationOriginal = nil; rotationLatch = nil; rotationDelta = 0
-                    })
-                    }.frame(height:230)
-                    Label("Glissez pour déplacer le groupe. Tournez avec deux doigts pour l’orienter.",systemImage:"hand.draw").font(.footnote).foregroundStyle(.secondary)
-                    Toggle("Aimantation sur les côtés",isOn:$snapSpots)
-                    if rotationLatch != nil { Text("Spots alignés sur un côté").font(.caption).foregroundStyle(.orange) }
-                }
+                    }.frame(height:min(320,max(150,container.size.height*0.40)))
+                        .background(Color(.secondarySystemGroupedBackground),in:RoundedRectangle(cornerRadius:24))
+                        .clipShape(RoundedRectangle(cornerRadius:24)).padding(.horizontal)
+                    Text("Glissez sur le dessin pour déplacer les spots.")
+                        .font(.caption).foregroundStyle(.secondary)
+                Form {
                 Section("Répartition des spots") {
-                    Stepper("Nombre de spots : \(settings.count)",value:$settings.count,in:1...64)
-                    LayoutDimensionField(title:"Diamètre du perçage",millimetres:$settings.diameter,unit:"mm",displayScale:1)
-                    Text("Écarter les spots")
-                    Slider(value:$settings.spread,in:0.2...1.2).accessibilityLabel("Écartement des spots")
-                    Button("Centrer tous les spots") {
-                        guard let current = preview else { return }
-                        do {
-                            let centered = try LayoutPlanning.centeredLighting(current,selected:Set(current.positions.indices),surface:surface)
-                            preview = centered; placementCenter = center(centered); error = nil
-                        } catch { self.error = error.localizedDescription }
+                    LazyVGrid(columns:[GridItem(.adaptive(minimum:58))]) {
+                        ForEach(LayoutPlanning.automaticSpotCounts,id:\.self) { count in
+                            Button {
+                                settings.count=count; settings.positions=[]
+                                placementCenter=nil
+                                regenerate += 1
+                            } label: {
+                                VStack(spacing:4) {
+                                    Canvas { context,size in
+                                        for p in LayoutPlanning.spotPattern(count,twelve:settings.twelveSpotGrid ?? .sixByTwo) ?? [] {
+                                            let x=size.width/2+p.x*size.width*0.3, y=size.height/2+p.y*size.height*0.3
+                                            let radius=Double(count >= 10 ? 2 : 3)
+                                            context.fill(Path(ellipseIn:.init(x:x-radius,y:y-radius,width:radius*2,height:radius*2)),with:.color(.primary))
+                                        }
+                                    }.frame(width:38,height:32)
+                                    Text("\(count)")
+                                }.frame(maxWidth:.infinity).padding(5)
+                                    .background(settings.count == count ? Color.accentColor.opacity(0.15) : Color(.tertiarySystemFill),in:RoundedRectangle(cornerRadius:9))
+                            }.buttonStyle(.plain).accessibilityLabel("Disposition de \(count) spots")
+                        }
                     }
-                    Text("L’écartement rapproche ou éloigne vos spots sans refaire leur disposition. Seul un changement du nombre recrée une répartition régulière.").font(.footnote).foregroundStyle(.secondary)
-                    Text("Répartition régulière si la forme le permet. Les ouvertures et les bords sont exclus. Aucun calcul électrique ou photométrique.").font(.footnote).foregroundStyle(.secondary)
+                    if settings.count == 12 {
+                        Picker("Disposition",selection:Binding(get:{ settings.twelveSpotGrid ?? .sixByTwo },set:{ settings.twelveSpotGrid = $0 })) {
+                            ForEach(LayoutTwelveSpotGrid.allCases,id:\.self) { grid in Text(grid.title).tag(grid) }
+                        }.pickerStyle(.segmented)
+                    }
+                    Button {
+                        settings.perpendicularToFurring = !(settings.perpendicularToFurring ?? false)
+                    } label: {
+                        Label(settings.perpendicularToFurring == true ? "90° · Perpendiculaire aux fourrures" : "90° · Dans le sens des fourrures",systemImage:"rotate.right")
+                    }
+                    if settings.count > 1 {
+                        Text("Écartement en largeur")
+                        Slider(value:Binding(get:{ settings.resolvedWidthSpread },set:{ settings.widthSpread = $0 }),in:0.2...1.2)
+                            .accessibilityLabel("Écartement en largeur")
+                        Text("Écartement en longueur")
+                        Slider(value:Binding(get:{ settings.resolvedLengthSpread },set:{ settings.lengthSpread = $0 }),in:0.2...1.2)
+                            .accessibilityLabel("Écartement en longueur")
+                        Text("Les deux écartements suivent les axes de la disposition. Ils conservent vos déplacements manuels.").font(.footnote).foregroundStyle(.secondary)
+                    }
+                    LabeledContent("Diamètre du perçage",value:"\(settings.diameter.formatted(.number.precision(.fractionLength(0)))) mm")
+                    Text("Choisissez une disposition pour recréer une grille. Vous pouvez ensuite déplacer chaque spot sur le plan.").font(.footnote).foregroundStyle(.secondary)
                     if let error { Text(error).foregroundStyle(.orange) }
                 }
                 Section { Button("Retirer l’éclairage",role:.destructive) { onSave(nil); dismiss() } }
-            }.navigationTitle("Éclairage").navigationBarTitleDisplayMode(.inline)
+                }
+                }
+            }.background(Color(.systemGroupedBackground))
+                .navigationTitle("Répartition automatique").navigationBarTitleDisplayMode(.inline)
                 .scrollDismissesKeyboard(.interactively)
-                .task(id:settings) { await update(preserveExisting:true) }
+                .task(id:PreviewKey(settings:settings,generation:regenerate)) {
+                    let fresh = lastRegeneration != regenerate
+                    lastRegeneration=regenerate
+                    await update(preserveExisting:!fresh)
+                }
                 .toolbar {
                     ToolbarItem(placement:.cancellationAction) { Button("Annuler") { dismiss() } }
-                    ToolbarItem(placement:.confirmationAction) { Button("Appliquer") { if let preview { onSave(preview); dismiss() } }.disabled(preview == nil || groupOrigin != nil || rotationOriginal != nil || preview.map{ !LayoutPlanning.lightingFits($0,surface:surface) } == true) }
+                    ToolbarItem(placement:.confirmationAction) { Button("Appliquer") { if let preview { onSave(preview); dismiss() } }.disabled(preview == nil || groupOrigin != nil || preview.map{ !LayoutPlanning.lightingFits($0,surface:surface) } == true) }
                 }
         }
     }
@@ -339,31 +414,27 @@ struct LayoutLightingForm: View {
             hasLoaded = true
             if !settings.positions.isEmpty {
                 preview = settings; placementCenter = center(settings)
-                placementRotation = (LayoutPlanning.lightingDirection(settings,selected:Set(settings.positions.indices)) ?? 0).truncatingRemainder(dividingBy:.pi/2)
                 error = LayoutPlanning.lightingFits(settings,surface:surface) ? nil : LayoutLightingEditError.invalidPlacement.localizedDescription
                 return
             }
         }
-        if preserveExisting, let previousSettings, previousSettings.count == settings.count, var current = preview {
-            if previousSettings.spread > 0 && previousSettings.spread != settings.spread {
-                current = LayoutPlanning.scaledLighting(current,selected:Set(current.positions.indices),factor:settings.spread/previousSettings.spread)
-            }
-            current.diameter = settings.diameter
-            current.spread = settings.spread
+        if preserveExisting, let previousSettings, previousSettings.count == settings.count,
+           previousSettings.twelveSpotGrid == settings.twelveSpotGrid, let existing = preview {
+            let current = LayoutPlanning.adjustedLighting(existing,from:previousSettings,to:settings,
+                frame:LayoutPlanning.framingFrame(surface:surface,layer:layer))
             preview = current
             error = LayoutPlanning.lightingFits(current,surface:surface) ? nil : LayoutLightingEditError.invalidPlacement.localizedDescription
             return
         }
         preview = nil
         do { try await Task.sleep(nanoseconds:80_000_000) } catch { return }
-        let input = settings, support = surface
-        let worker = Task.detached(priority:.userInitiated) { Result { try LayoutPlanning.lighting(input,surface:support) } }
+        let input = settings, support = surface, framing=layer
+        let worker = Task.detached(priority:.userInitiated) { Result { try LayoutPlanning.lighting(input,surface:support,layer:framing) } }
         let result = await withTaskCancellationHandler(operation:{ await worker.value },onCancel:{ worker.cancel() })
         guard !Task.isCancelled, revision == generation, settings == input else { return }
         switch result {
         case .success(let value):
-            let rotated = LayoutPlanning.rotatedLighting(value,selected:Set(value.positions.indices),angle:placementRotation)
-            let adjusted = preserveExisting ? placementCenter.map { LayoutPlanning.translatedLighting(rotated,indices:Set(rotated.positions.indices),delta:$0-center(rotated)) } ?? rotated : rotated
+            let adjusted = preserveExisting ? placementCenter.map { LayoutPlanning.translatedLighting(value,indices:Set(value.positions.indices),delta:$0-center(value)) } ?? value : value
             preview = adjusted
             error = LayoutPlanning.lightingFits(adjusted,surface:surface) ? nil : "Le groupe dépasse le plafond ou une ouverture : déplacez-le sur l’aperçu, ou recentrez la répartition."
         case .failure: preview = nil; error = "Impossible de placer tous les spots avec cet écartement et ce diamètre. Réduisez l’écartement ou le nombre."

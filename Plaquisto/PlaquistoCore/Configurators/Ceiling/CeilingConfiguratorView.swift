@@ -61,6 +61,7 @@ struct CeilingConfiguratorView: View {
     @State private var firstInsulationLocation: String
     @State private var secondInsulationLocation: String
     @State private var selectedSpacing: Double
+    @State private var perimeterSupport: Bool
     @State private var trackedMinimumPlenum: Double?
     @State private var showSpacingWarning = false
     @State private var showDimensionsWarning = false
@@ -108,6 +109,7 @@ struct CeilingConfiguratorView: View {
         _firstInsulationLocation = State(initialValue: initialConfiguration.firstInsulationLocation ?? "between")
         _secondInsulationLocation = State(initialValue: initialConfiguration.secondInsulationLocation ?? "below")
         _selectedSpacing = State(initialValue: initialConfiguration.selectedSpacing)
+        _perimeterSupport = State(initialValue: initialConfiguration.perimeterSupport ?? true)
         _trackedMinimumPlenum = State(initialValue: nil)
         _fixingSystemID = State(initialValue: initialConfiguration.fixingSystemID)
         _layers = State(initialValue: initialConfiguration.layers)
@@ -266,8 +268,7 @@ struct CeilingConfiguratorView: View {
     }
     private var plenumSectionTitle: String {
         guard isWoodSupport else { return "Plénum" }
-        let structure = isSlopedCeiling ? "chevrons" : "solives"
-        return "Plénum (entre la partie basse des \(structure) et la partie supérieure du BA13)"
+        return "Plénum (distance comprise entre l’ossature métallique du faux-plafond et le talon de la solive)"
     }
     private var insulationBelowStructureMM: Double {
         guard !insulationID.isEmpty else { return 0 }
@@ -289,12 +290,13 @@ struct CeilingConfiguratorView: View {
     }
     private var minimumPlenum: Double {
         let requiredInsulationPlenumMM = isWoodSupport ? insulationBelowStructureMM : totalInsulationThicknessMM
-        return max(minimumFixingPlenumCM, requiredInsulationPlenumMM / 10)
+        // Round the calculated minimum upward; user entry itself is integer mm.
+        return ceil(max(minimumFixingPlenumCM * 10, requiredInsulationPlenumMM) - 0.000001) / 10
     }
-    private var additionalPlenumBinding: Binding<Double> {
+    private var additionalPlenumMMBinding: Binding<Int> {
         Binding(
-            get: { max(0, plenum - minimumPlenum) },
-            set: { plenum = minimumPlenum + max(0, $0) }
+            get: { Int((max(0, plenum - minimumPlenum) * 10).rounded()) },
+            set: { plenum = minimumPlenum + Double(max(0, $0)) / 10 }
         )
     }
     private var maximumSpacing: Double? {
@@ -314,7 +316,15 @@ struct CeilingConfiguratorView: View {
             guard system.data["support"]?.string == support,
                   let minimum = system.data["plenum_min_mm"]?.number,
                   let maximum = system.data["plenum_max_mm"]?.number,
-                  plenumMM >= minimum, plenumMM <= maximum else { return false }
+                  plenumMM >= minimum - 0.000001, plenumMM <= maximum + 0.000001 else { return false }
+            if GalvanizedHangerSelection.usesSizing(system) {
+                guard let catalogue,
+                      GalvanizedHangerSelection.reference(plenumCM: plenum, support: support, catalogue: catalogue) != nil else { return false }
+            }
+            if CompositeHangerSelection.usesSizing(system) {
+                guard let catalogue,
+                      CompositeHangerSelection.reference(plenumCM: plenum, support: support, catalogue: catalogue) != nil else { return false }
+            }
             return true
         }
     }
@@ -330,7 +340,7 @@ struct CeilingConfiguratorView: View {
     private var fixingSystemCount: Double {
         guard let row = quantityItems.first(where: { $0.id == "QTY-FIXATION" }),
               let ratio = row.data["values"]?.object?[quantityConfigurationKey]?.number else { return 0 }
-        return ratio * area
+        return ratio * area + LayoutQuantityCalculator.estimatedAdditionalEndHangers(configuration)
     }
     private var otherSupplies: [Supply] {
         var result: [Supply] = []
@@ -341,6 +351,7 @@ struct CeilingConfiguratorView: View {
         }
 
         for item in quantityItems where !["QTY-FIXATION", "QTY-PLAQUE"].contains(item.id) {
+            if item.id == "QTY-CORNIERE" && !perimeterSupport { continue }
             if !jointTreatment && ["QTY-BANDE", "QTY-ENDUIT-POUDRE", "QTY-ENDUIT-PATE"].contains(item.id) { continue }
             if jointTreatment && compoundChoice == "poudre" && item.id == "QTY-ENDUIT-PATE" { continue }
             if jointTreatment && compoundChoice == "pate" && item.id == "QTY-ENDUIT-POUDRE" { continue }
@@ -400,11 +411,11 @@ struct CeilingConfiguratorView: View {
         }
         .task {
             if store.catalogue == nil { await store.load() }
+            normalizeCeilingShapeSelections(preservingSpacing:isEditing || preserveInitialSpacing)
             if shouldApplyDefaultInsulation {
                 applyDefaultInsulationIfAvailable()
                 shouldApplyDefaultInsulation = false
             }
-            normalizeCeilingShapeSelections(preservingSpacing:isEditing || preserveInitialSpacing)
             plenum = max(plenum, minimumPlenum)
             trackedMinimumPlenum = minimumPlenum
             normalizeFacingAllocations()
@@ -419,6 +430,9 @@ struct CeilingConfiguratorView: View {
             plenum = newValue + existingExtra
             trackedMinimumPlenum = newValue
             fixingSystemID = ""
+        }
+        .onChange(of: vaporBarrier) { _, _ in
+            fixingSystemID = CeilingFixingDefaults.preferred(in: compatibleSystems, vaporBarrier: vaporBarrier)?.id ?? ""
         }
         .tint(Color(red: 0.12, green: 0.38, blue: 0.29))
         .toolbar {
@@ -560,7 +574,13 @@ struct CeilingConfiguratorView: View {
                 }
                 .onChange(of: support) { _, _ in
                     fixingSystemID = ""
-                    normalizeInsulationLocations()
+                    if isWoodSupport {
+                        firstInsulationLocation = "between"
+                        secondInsulationLocation = "below"
+                        if !isEditing { insulationThickness = preferredFirstInsulationThickness }
+                    } else {
+                        normalizeInsulationLocations()
+                    }
                 }
             }
             Section {
@@ -585,11 +605,17 @@ struct CeilingConfiguratorView: View {
 
                     Text("Première couche")
                         .font(.headline)
+                    if isWoodSupport {
+                        Picker("Emplacement", selection: $firstInsulationLocation) {
+                            Text(betweenStructureTitle).tag("between")
+                            Text(belowStructureTitle).tag("below")
+                        }
+                    }
                     Picker("Type d’isolant", selection: insulationTypeBinding) {
                         ForEach(insulationTypes, id: \.self) { Text($0).tag($0) }
                     }
                     .onChange(of: insulationID) { _, _ in
-                        insulationThickness = insulationPoints.first?.thickness ?? 0
+                        insulationThickness = preferredFirstInsulationThickness
                         selectedSpacing = maximumSpacing ?? 0.4
                         fixingSystemID = ""
                     }
@@ -611,12 +637,6 @@ struct CeilingConfiguratorView: View {
                         selectedSpacing = maximumSpacing ?? 0.4
                         fixingSystemID = ""
                     }
-                    if isWoodSupport {
-                        Picker("Emplacement", selection: $firstInsulationLocation) {
-                            Text(betweenStructureTitle).tag("between")
-                            Text(belowStructureTitle).tag("below")
-                        }
-                    }
                     if let insulationThermalResistance {
                         LabeledContent("Résistance thermique", value: "R = \(insulationThermalResistance.formatted(.number.precision(.fractionLength(2)))) m²·K/W")
                     }
@@ -624,6 +644,12 @@ struct CeilingConfiguratorView: View {
                     if insulationLayers == 2 {
                         Text("Deuxième couche")
                             .font(.headline)
+                        if isWoodSupport {
+                            Picker("Emplacement", selection: $secondInsulationLocation) {
+                                Text(betweenStructureTitle).tag("between")
+                                Text(belowStructureTitle).tag("below")
+                            }
+                        }
                         Picker("Type d’isolant", selection: secondInsulationTypeBinding) {
                             ForEach(insulationTypes, id: \.self) { Text($0).tag($0) }
                         }
@@ -649,12 +675,6 @@ struct CeilingConfiguratorView: View {
                         .onChange(of: secondInsulationThickness) { _, _ in
                             selectedSpacing = maximumSpacing ?? 0.4
                             fixingSystemID = ""
-                        }
-                        if isWoodSupport {
-                            Picker("Emplacement", selection: $secondInsulationLocation) {
-                                Text(betweenStructureTitle).tag("between")
-                                Text(belowStructureTitle).tag("below")
-                            }
                         }
                     }
 
@@ -687,6 +707,9 @@ struct CeilingConfiguratorView: View {
                 }
                 .pickerStyle(.segmented)
                 LabeledContent("Maximum recommandé", value: maximumSpacing.map { "\(Int($0 * 100)) cm" } ?? "Non couvert")
+                Toggle("Fixer une cornière en périphérie",isOn:$perimeterSupport)
+                Text(perimeterSupport ? "Le comptage du calepinage utilise la périphérie comme appui aux extrémités." : "Sans cornière, prévoyez une suspente à chaque extrémité des fourrures. Leur nombre est estimé ici, puis affiné par le calepinage.")
+                    .font(.footnote).foregroundStyle(.secondary)
             }
             if spacingIsAboveRecommendation {
                 Section {
@@ -696,16 +719,30 @@ struct CeilingConfiguratorView: View {
             }
             Section {
                 LabeledContent("Plénum minimal calculé", value: "\(format(minimumPlenum)) cm")
-                MeasureField(label: "Marge supplémentaire", value: additionalPlenumBinding, unit: "cm")
+                HStack {
+                    Text("Marge supplémentaire")
+                    Spacer()
+                    PlaquistoIntegerField(value: additionalPlenumMMBinding)
+                        .multilineTextAlignment(.trailing)
+                        .frame(width: 90)
+                    Text("mm").foregroundStyle(.secondary)
+                }
                 LabeledContent("Plénum retenu", value: "\(format(plenum)) cm")
+                if GalvanizedHangerSelection.wholeMillimeters(plenumCM: plenum) == nil {
+                    Text("Renseignez une marge en millimètres entiers pour actualiser le plénum.")
+                        .font(.footnote).foregroundStyle(.orange)
+                }
             } header: {
                 Text(plenumSectionTitle)
             }
             Section {
-                Label(isWoodSupport
-                      ? "Sur un plancher bois, le plénum minimal intègre uniquement l’épaisseur des couches d’isolant placées sous les solives ou les chevrons."
-                      : "Sur ce support, le plénum minimal intègre toute l’épaisseur d’isolant sélectionnée.",
-                      systemImage: "info.circle")
+                if isWoodSupport {
+                    WoodCeilingPlenumDiagram(plenumCM: plenum)
+                        .listRowSeparator(.hidden)
+                } else {
+                    Label("Sur ce support, le plénum minimal intègre toute l’épaisseur d’isolant sélectionnée.",
+                          systemImage: "info.circle")
+                }
                 Text("Vous pouvez ajouter une marge pour le passage de gaines, de canalisations ou l’installation de spots.")
                     .foregroundStyle(.secondary)
             }
@@ -718,7 +755,9 @@ struct CeilingConfiguratorView: View {
                 } else {
                     Picker("Système", selection: $fixingSystemID) {
                         Text("Sélectionner").tag("")
-                        ForEach(compatibleSystems) { Text($0.title).tag($0.id) }
+                        ForEach(compatibleSystems) { system in
+                            Text(fixingSystemTitle(system)).tag(system.id)
+                        }
                     }
                 }
             }
@@ -747,8 +786,8 @@ struct CeilingConfiguratorView: View {
                 Toggle("Prévoir le traitement des bandes", isOn: $jointTreatment)
                 if jointTreatment {
                     Picker("Type d’enduit", selection: $compoundChoice) {
-                        Text("Enduit en poudre").tag("poudre")
-                        Text("Enduit en pâte").tag("pate")
+                        Text("Enduit à joints en poudre").tag("poudre")
+                        Text("Enduit à joints en pâte").tag("pate")
                     }
                 }
             }
@@ -808,7 +847,7 @@ struct CeilingConfiguratorView: View {
             }
             Section("Traitement des joints") {
                 LabeledContent("Bandes à joint", value: jointTreatment ? "Oui" : "Non")
-                if jointTreatment { LabeledContent("Enduit retenu", value: compoundChoice == "poudre" ? "Enduit en poudre" : "Enduit en pâte") }
+                if jointTreatment { LabeledContent("Enduit retenu", value: compoundChoice == "poudre" ? "Enduit à joints en poudre" : "Enduit à joints en pâte") }
             }
             Section("Autres fournitures indicatives") {
                 ForEach(otherSupplies) { supply in
@@ -934,7 +973,7 @@ struct CeilingConfiguratorView: View {
         case 2:
             let secondLayerIsValid = insulationID.isEmpty || insulationLayers == 1 || (selectedSecondInsulation != nil && selectedSecondInsulationPoint != nil)
             return (insulationID.isEmpty || selectedInsulationPoint != nil) && secondLayerIsValid
-        case 3: return plenum >= minimumPlenum && maximumSpacing != nil && spacingChoices.contains(selectedSpacing)
+        case 3: return plenum >= minimumPlenum && GalvanizedHangerSelection.wholeMillimeters(plenumCM: plenum) != nil && maximumSpacing != nil && spacingChoices.contains(selectedSpacing)
         case 4: return selectedFixingSystem != nil
         case 5: return allocationsAreValid(firstSkin) && (layers == 1 || allocationsAreValid(secondSkin))
         case 6: return !jointTreatment || ["poudre", "pate"].contains(compoundChoice)
@@ -960,7 +999,9 @@ struct CeilingConfiguratorView: View {
 
     private func prepareDefaults() {
         if step == 0 && support.isEmpty { support = supports.first ?? "" }
-        if step == 3 && fixingSystemID.isEmpty { fixingSystemID = compatibleSystems.first?.id ?? "" }
+        if step == 3 && selectedFixingSystem == nil {
+            fixingSystemID = CeilingFixingDefaults.preferred(in: compatibleSystems, vaporBarrier: vaporBarrier)?.id ?? ""
+        }
         if step == 4 { ensureFacingAllocations() }
     }
 
@@ -1000,7 +1041,12 @@ struct CeilingConfiguratorView: View {
         guard insulationID.isEmpty,
               let record = preferredInsulation(in: availableInsulationSeries) else { return }
         insulationID = record.id
-        insulationThickness = insulationPoints.first?.thickness ?? 0
+        insulationThickness = preferredFirstInsulationThickness
+    }
+
+    private var preferredFirstInsulationThickness: Double {
+        CeilingInsulationDefaults.firstThickness(available: insulationPoints.map(\.thickness),
+                                                betweenWood: isWoodSupport && firstInsulationLocation == "between")
     }
 
     private func normalizeInsulationLocations() {
@@ -1115,8 +1161,8 @@ struct CeilingConfiguratorView: View {
             selectedSpacing: selectedSpacing,
             fixingSystemID: fixingSystemID,
             layers: layers,
-            firstSkin: firstSkin,
-            secondSkin: secondSkin,
+            firstSkin: firstSkin.map(withEdgeInformation),
+            secondSkin: secondSkin.map(withEdgeInformation),
             jointTreatment: jointTreatment,
             compoundChoice: compoundChoice,
             ceilingShape: ceilingShape,
@@ -1125,12 +1171,20 @@ struct CeilingConfiguratorView: View {
             secondInsulationThickness: secondInsulationThickness,
             firstInsulationLocation: firstInsulationLocation,
             secondInsulationLocation: secondInsulationLocation,
-            furringDirection: furringDirection
+            furringDirection: furringDirection,
+            perimeterSupport: perimeterSupport
         )
     }
 
     private func allocationsAreValid(_ allocations: [FacingAllocation]) -> Bool {
         !allocations.isEmpty && abs(allocations.reduce(0) { $0 + $1.area } - area) < 0.01 && allocations.allSatisfy { !$0.facingID.isEmpty && !$0.dimensionID.isEmpty && $0.area > 0 }
+    }
+    private func withEdgeInformation(_ allocation: FacingAllocation) -> FacingAllocation {
+        var result = allocation
+        if let facing = facings.first(where: { $0.id == allocation.facingID }) {
+            result.fourTaperedEdges = facing.data["function"]?.string == "quatre_bords_amincis"
+        }
+        return result
     }
 
     private func dimensions(for facingID: String) -> [FacingDimension] {
@@ -1208,14 +1262,26 @@ struct CeilingConfiguratorView: View {
     }
 
     private func components(for system: CeilingReferenceRecord?) -> [FixingComponent] {
-        system?.data["components"]?.array?.compactMap { value in
+        guard let system, let catalogue else { return [] }
+        return CeilingHangerComponents.resolve(for: system, plenumCM: plenum, catalogue: catalogue).compactMap { value in
             guard let object = value.object,
                   let name = object["name"]?.string,
                   let quantity = object["quantity"]?.number,
                   let unit = object["unit"]?.string,
                   let calculation = object["calculation"]?.string else { return nil }
             return FixingComponent(name: name, quantity: quantity, unit: unit, calculation: calculation)
-        } ?? []
+        }
+    }
+
+    private func fixingSystemTitle(_ system: CeilingReferenceRecord) -> String {
+        if CompositeHangerSelection.usesSizing(system), let catalogue,
+           let reference = CompositeHangerSelection.reference(plenumCM: plenum, support: support, catalogue: catalogue) {
+            return reference.title
+        }
+        guard GalvanizedHangerSelection.usesSizing(system), let catalogue,
+              let reference = GalvanizedHangerSelection.reference(plenumCM: plenum, support: support, catalogue: catalogue),
+              let length = reference.data["length_mm"]?.number else { return system.title }
+        return "\(system.title) · \(Int(length)) mm"
     }
 
     private func vaporBarrierComponents(for record: CeilingReferenceRecord) -> [VaporBarrierComponent] {
@@ -1245,6 +1311,101 @@ struct CeilingConfiguratorView: View {
 
     private func formattedQuantity(_ value: Double, unit: String) -> String {
         unit == "unité" ? String(Int(ceil(value))) : format(value)
+    }
+}
+
+/// Schematic section shared by horizontal and sloped wood-supported ceilings.
+/// The displayed value is the form's existing plenum, not a new calculation.
+/// Its witness line runs from the timber underside to the plasterboard top.
+struct WoodCeilingPlenumDiagram: View {
+    let plenumCM: Double
+    @Environment(\.locale) private var locale
+    @ScaledMetric(relativeTo: .callout) private var valueFontSize = 17
+
+    var measurement: String {
+        "\(plenumCM.formatted(.number.locale(locale).precision(.fractionLength(0...1)))) cm"
+    }
+
+    var body: some View {
+        Canvas { context, size in
+            // Fixed schematic proportions keep the value and connection readable
+            // even for very small/large plenums; this is not a scale drawing.
+            let scale = min(size.width / 360, size.height / 230)
+            context.translateBy(x: (size.width - 360 * scale) / 2,
+                                y: (size.height - 230 * scale) / 2)
+            context.scaleBy(x: scale, y: scale)
+            let ink = Color(red: 0.19, green: 0.29, blue: 0.37)
+            let metal = Color(red: 0.72, green: 0.84, blue: 0.93)
+            // Same selected-surface orange as the elevated 3D maquette.
+            let orange = Color(red: 1, green: 0.43, blue: 0.08)
+
+            func draw(_ path: Path, fill: Color) {
+                context.fill(path, with: .color(fill))
+                context.stroke(path, with: .color(ink), lineWidth: 1.2)
+            }
+
+            draw(Path(CGRect(x: 14, y: 8, width: 332, height: 60)), fill: orange)
+            draw(Path(CGRect(x: 14, y: 207, width: 332, height: 13)),
+                 fill: Color(red: 0.89, green: 0.90, blue: 0.91))
+
+            // Shallow U-channel with inward returns, directly on the board.
+            let channel = Path { path in
+                path.move(to: CGPoint(x: 125, y: 185))
+                for point in [CGPoint(x: 140, y: 185), CGPoint(x: 140, y: 190),
+                              CGPoint(x: 130, y: 190), CGPoint(x: 130, y: 203),
+                              CGPoint(x: 170, y: 203), CGPoint(x: 170, y: 190),
+                              CGPoint(x: 160, y: 190), CGPoint(x: 160, y: 185),
+                              CGPoint(x: 175, y: 185), CGPoint(x: 175, y: 207),
+                              CGPoint(x: 125, y: 207)] {
+                    path.addLine(to: point)
+                }
+                path.closeSubpath()
+            }
+            draw(channel, fill: Color(red: 0.48, green: 0.62, blue: 0.71))
+
+            // Shoulders above the lips, notches around them, rounded tongue below.
+            let hanger = Path { path in
+                path.move(to: CGPoint(x: 138, y: 22))
+                for point in [CGPoint(x: 162, y: 22), CGPoint(x: 162, y: 177),
+                              CGPoint(x: 169, y: 177), CGPoint(x: 169, y: 183),
+                              CGPoint(x: 160, y: 183), CGPoint(x: 160, y: 191),
+                              CGPoint(x: 167, y: 191), CGPoint(x: 167, y: 194)] {
+                    path.addLine(to: point)
+                }
+                path.addQuadCurve(to: CGPoint(x: 150, y: 203), control: CGPoint(x: 160, y: 203))
+                path.addQuadCurve(to: CGPoint(x: 133, y: 194), control: CGPoint(x: 140, y: 203))
+                for point in [CGPoint(x: 133, y: 191), CGPoint(x: 140, y: 191),
+                              CGPoint(x: 140, y: 183), CGPoint(x: 131, y: 183),
+                              CGPoint(x: 131, y: 177), CGPoint(x: 138, y: 177)] {
+                    path.addLine(to: point)
+                }
+                path.closeSubpath()
+            }
+            draw(hanger, fill: metal)
+            for y in stride(from: 34.0, through: 166.0, by: 15) {
+                draw(Path(ellipseIn: CGRect(x: 147.5, y: y, width: 5, height: 5)),
+                     fill: y < 68 ? orange : Color.white)
+            }
+
+            let label = context.resolve(Text(measurement)
+                .font(.system(size: min(valueFontSize, 25), weight: .semibold))
+                .foregroundColor(ink))
+            let middleY: CGFloat = (68 + 207) / 2
+            let halfGap = label.measure(in: CGSize(width: 160, height: 70)).height / 2 + 7
+            let dimension = Path { path in
+                path.move(to: CGPoint(x: 260, y: 68))
+                path.addLine(to: CGPoint(x: 260, y: middleY - halfGap))
+                path.move(to: CGPoint(x: 260, y: middleY + halfGap))
+                path.addLine(to: CGPoint(x: 260, y: 207))
+            }
+            context.stroke(dimension, with: .color(ink), lineWidth: 1)
+            context.draw(label, at: CGPoint(x: 260, y: middleY))
+        }
+        .aspectRatio(360.0 / 230.0, contentMode: .fit)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Plénum, du dessous de la solive au dessus de la plaque de plâtre")
+        .accessibilityValue(measurement)
+        .accessibilityIdentifier("woodCeilingPlenumDiagram")
     }
 }
 

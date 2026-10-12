@@ -104,6 +104,11 @@ struct RoomPlane: Codable, Equatable {
     func height(x: Double, z: Double) -> Double { a*x+b*z+c }
     var slopeDegrees: Double { atan(hypot(a,b))*180 / .pi }
 }
+struct CeilingSplitOrigin: Codable, Equatable {
+    var operationID: UUID
+    var sourceSlopeID: UUID
+    var ancestorSlopeIDs: [UUID]? = nil
+}
 struct PlaquistoSlope: Codable, Equatable, Identifiable {
     var id = UUID()
     var plane: RoomPlane
@@ -111,6 +116,7 @@ struct PlaquistoSlope: Codable, Equatable, Identifiable {
     var provenance: GeometryProvenance
     var accepted = false
     var manuallyValidated = false
+    var splitOrigin: CeilingSplitOrigin? = nil
 }
 struct PlaquistoCeiling: Codable, Equatable, Identifiable {
     var id = UUID()
@@ -121,6 +127,8 @@ struct PlaquistoCeiling: Codable, Equatable, Identifiable {
     var footprint: [RoomPoint]? = nil
     var floorElevation: Double? = nil
     var planNumber: Int? = nil
+    /// Presentation only. Geometry and existing work quantities remain intact.
+    var isHidden: Bool? = nil
 }
 
 enum CeilingPlanNaming {
@@ -347,7 +355,8 @@ struct ProjectRoomScanCheckpoint: Codable, Equatable, Identifiable {
     var updatedAt = Date()
 
     var effectiveWorkState: SurveyCheckpointWorkState { workState ?? .awaitingValidation }
-    var isUsableForWork: Bool { effectiveWorkState == .validated }
+    /// Availability depends on valid geometry, not a second manual approval.
+    var isUsableForWork: Bool { (try? document.validate()) != nil }
 }
 
 /// A project-bound 3D survey. Apple acquisition artefacts are intentionally absent:
@@ -378,7 +387,15 @@ struct ProjectSurveyRecord: Codable, Equatable, Identifiable {
     /// Original capture report; optional for archives created before diagnostics.
     var captureDiagnostic: String? = nil
     var captureLocation: ScanLocationFix? = nil
+    var capturedAt: Date? = nil
+    /// Address resolved from the capture location, independent of the project's address.
+    var captureAddress: String? = nil
     var ceilingPlanNumbers: [String:Int]? = nil
+    var scanDate: Date {
+        capturedAt ?? captureLocation?.capturedAt
+            ?? checkpoints.map { $0.document.initialRoom.metadata.createdAt }.filter { $0.timeIntervalSince1970 > 0 }.min()
+            ?? createdAt
+    }
 }
 
 extension PlaquistoRoomDocument {
@@ -409,7 +426,10 @@ extension PlaquistoRoomDocument {
                 return value
             }
             result.slopes = source.slopes.map { slope in
-                var value = slope; value.id = slopeIDs[slope.id]!; return value
+                var value = slope; value.id = slopeIDs[slope.id]!
+                // A copied survey starts a new editing history.
+                value.splitOrigin = nil
+                return value
             }
             result.ceilings = source.ceilings.map { ceiling in
                 var value = ceiling

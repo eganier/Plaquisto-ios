@@ -111,18 +111,25 @@ struct LayoutLayer: Codable, Equatable, Identifiable {
     var orientation = LayoutOrientation.vertical
     var offset = LayoutPoint.zero
     var catalogFormatID: String? = nil
+    // Distinguishes an explicit manual choice from legacy plans missing their product.
+    var manualFacing: Bool? = nil
     // Optional fields keep previously saved documents readable without migration.
     var referenceEdge: Int? = nil
+    /// Preserves the original physical grid when its support is subdivided.
+    var inheritedGridFrame: LayoutGridFrame? = nil
     var furring: LayoutFurringSettings? = nil
     var staggered: Bool? = nil
     var staggerOffset: Double? = nil
     var reuseOffcuts: Bool? = nil
+    // Persisted with the plan: only 4BA requires factory edges at every joint.
+    var fourTaperedEdges: Bool? = nil
     var cellWidth: Double { orientation == .vertical ? min(sheetWidth, sheetLength) : max(sheetWidth, sheetLength) }
     var cellHeight: Double { orientation == .vertical ? max(sheetWidth, sheetLength) : min(sheetWidth, sheetLength) }
     func forSupport(_ kind:LayoutSupportKind) -> Self {
         guard kind == .wall else { return self }
         var copy = self
         copy.referenceEdge = nil
+        copy.inheritedGridFrame = nil
         copy.furring?.orientation = .vertical
         copy.furring?.parallelToBoards = orientation == .vertical
         return copy
@@ -144,6 +151,19 @@ struct LayoutFurringSettings: Codable, Equatable {
     var spacing = 600.0
     var offset = 0.0
     var orientation: LayoutOrientation? = nil
+    var referenceEdge: Int? = nil
+    var usesOwnReference: Bool? = nil
+    /// No perimeter angle: independent, immovable support lines 100 mm from the walls.
+    var peripheralInset: Double? = nil
+    var inheritedGridFrame: LayoutGridFrame? = nil
+    /// Original physical perimeter, not the artificial boundary between two parts.
+    var peripheralReferenceContour: [LayoutPoint]? = nil
+    var openingSystem: LayoutOpeningFramingSystem? = nil
+    var isFurringSystem: Bool? = nil
+    var intermediateSupportLines: Int? = nil
+    var includesHorizontalSupportFurring: Bool? = nil
+    var maximumSupportSpacing: Double? = nil // millimetres, Admin rule snapshot
+    var firstSupportHeightWhenMultiple: Double? = nil
 
     func resolvedOrientation(boardOrientation: LayoutOrientation) -> LayoutOrientation {
         if let orientation { return orientation }
@@ -175,7 +195,7 @@ extension LayoutLayer {
 
 // Engine and cut sheets stay in grid coordinates. Only the overview is transformed.
 // This prevents rotated cuts from being measured using a world-axis bounding box.
-struct LayoutGridFrame: Equatable {
+struct LayoutGridFrame: Codable, Equatable {
     var origin = LayoutPoint.zero
     var angle = 0.0
     func world(_ p: LayoutPoint) -> LayoutPoint {
@@ -187,6 +207,7 @@ struct LayoutGridFrame: Equatable {
     }
     static func make(surface: Surface2D, layer: LayoutLayer) -> Self {
         guard surface.kind == .ceiling else { return .init() }
+        if let inherited=layer.inheritedGridFrame { return inherited }
         guard let i = layer.referenceEdge, surface.contour.indices.contains(i) else { return .init() }
         let a = surface.contour[i], d = surface.contour[(i+1)%surface.contour.count]-a
         return .init(origin: a, angle: atan2(d.y,d.x))
@@ -200,11 +221,199 @@ struct LayoutFurringContact: Equatable {
 struct LayoutFurringResult: Equatable {
     var lines: [LayoutJoint] = []
     var contacts: [LayoutFurringContact] = []
+    var peripheralLines: [LayoutJoint] = []
+    var openingProfiles: [LayoutOpeningProfile] = []
+    var supportPoints: [LayoutPoint] = []
+    var wallFixedProfiles: [LayoutWallFixedProfile] = []
+    var fixedLines: [LayoutJoint] { peripheralLines + openingProfiles.map(\.line) + wallFixedProfiles.map(\.line) }
+    var furringSpliceCount: Int {
+        let angles=openingProfiles.filter { $0.role == .horizontal }.map(\.line)
+            + wallFixedProfiles.filter { $0.role == .rightAngle }.map(\.line)
+        let furrings=lines.filter { line in !angles.contains { LayoutOpeningFraming.same($0,line) } }
+        return LayoutFurringEngine.continuousLengths(furrings).reduce(0) { $0 + LayoutFurringEngine.splices(lengthMM:$1) }
+    }
+}
+struct LayoutWallFixedProfile: Equatable {
+    enum Role { case leftFurring, rightAngle, supportHorizontal }
+    var line: LayoutJoint
+    var role: Role
+}
+
+enum LayoutOpeningFramingSystem: String, Codable { case furring, studs }
+struct LayoutOpeningProfile: Equatable {
+    enum Role { case side, shortVertical, horizontal }
+    var line: LayoutJoint
+    var role: Role
+}
+
+enum LayoutOpeningFraming {
+    /// Physical millimetres. The 50 mm clearance is measured to the profile axis.
+    static func profiles(surface: Surface2D, system: LayoutOpeningFramingSystem) -> [LayoutOpeningProfile] {
+        guard surface.kind == .wall else { return [] }
+        var profiles: [LayoutOpeningProfile] = []
+        let wall = surface.bounds
+        func add(_ a: LayoutPoint, _ b: LayoutPoint, _ role: LayoutOpeningProfile.Role) {
+            let line = LayoutJoint(start: a, end: b)
+            for clipped in clip(line, to: surface) where (clipped.end-clipped.start).length > 0.5 {
+                // Neighboring openings can share one physical support.
+                if !profiles.contains(where: { same($0.line, clipped) }) { profiles.append(.init(line: clipped, role: role)) }
+            }
+        }
+        for opening in surface.openings {
+            let b = opening.bounds, left = b.min.x - 50, right = b.max.x + 50
+            let top = b.max.y + 50, bottom = b.min.y - 50
+            let hasSill = opening.kind == .window || opening.kind == .other || opening.kind == .roofWindow
+            for x in [left, right] { add(.init(x: x, y: wall.min.y), .init(x: x, y: wall.max.y), .side) }
+            add(.init(x: left, y: top), .init(x: right, y: top), .horizontal)
+            if hasSill { add(.init(x: left, y: bottom), .init(x: right, y: bottom), .horizontal) }
+            if system == .furring {
+                // The short pieces sit 100 mm inward from the full-height side
+                // profiles. The side clearance itself remains 50 mm from the opening.
+                for x in [left + 100, right - 100] where x > left && x < right {
+                    if top < wall.max.y { add(.init(x: x, y: top), .init(x: x, y: wall.max.y), .shortVertical) }
+                    if hasSill, bottom > wall.min.y { add(.init(x: x, y: wall.min.y), .init(x: x, y: bottom), .shortVertical) }
+                }
+            }
+        }
+        return profiles
+    }
+    static func same(_ a: LayoutJoint, _ b: LayoutJoint) -> Bool {
+        ((a.start-b.start).length < 0.5 && (a.end-b.end).length < 0.5) ||
+        ((a.start-b.end).length < 0.5 && (a.end-b.start).length < 0.5)
+    }
+    static func clip(_ line: LayoutJoint, to surface: Surface2D) -> [LayoutJoint] {
+        let a = line.start, d = line.end-a
+        guard d.length > 0.5 else { return [] }
+        var cuts = [0.0, 1.0]
+        for polygon in [surface.contour] + surface.openings.map(\.contour) {
+            for edge in LayoutGeometry.edges(polygon) { cuts += LayoutGeometry.splitParameters(.init(a:a,b:line.end),by:edge) }
+        }
+        cuts = Array(Set(cuts)).sorted()
+        return zip(cuts,cuts.dropFirst()).compactMap { lo, hi in
+            let middle = a+d*((lo+hi)/2)
+            let boundary = LayoutGeometry.edges(surface.contour).contains { LayoutGeometry.distance(middle,to:$0.a,$0.b)<0.01 }
+            guard hi-lo>1e-8, LayoutGeometry.contains(middle,in:surface.contour) || boundary,
+                  !surface.openings.contains(where:{LayoutGeometry.contains(middle,in:$0.contour)}) else { return nil }
+            return .init(start:a+d*lo,end:a+d*hi)
+        }
+    }
+    /// Subtract coincident fixed pieces, rather than counting/painting two profiles.
+    static func subtractFixed(_ line: LayoutJoint, fixed: [LayoutJoint]) -> [LayoutJoint] {
+        let d=line.end-line.start, length=d.length
+        guard length>0.5 else { return [] }
+        let u=d*(1/length)
+        var intervals=[(0.0,length)]
+        for f in fixed {
+            let a=f.start-line.start, b=f.end-line.start
+            guard abs(a.x*u.y-a.y*u.x)<0.5, abs(b.x*u.y-b.y*u.x)<0.5 else { continue }
+            let lo=min(a.x*u.x+a.y*u.y,b.x*u.x+b.y*u.y), hi=max(a.x*u.x+a.y*u.y,b.x*u.x+b.y*u.y)
+            intervals=intervals.flatMap { start,end -> [(Double,Double)] in
+                if hi<=start || lo>=end { return [(start,end)] }
+                return [(start,min(end,lo)),(max(start,hi),end)].filter { $0.1-$0.0>0.5 }
+            }
+        }
+        return intervals.map { .init(start:line.start+u*$0.0,end:line.start+u*$0.1) }
+    }
 }
 
 enum LayoutFurringEngine {
-    static func calculate(surface: Surface2D, layer: LayoutLayer) throws -> LayoutFurringResult {
+    /// Reunite touching subdivisions on one axis, never bridge an opening.
+    static func continuousLengths(_ lines:[LayoutJoint]) -> [Double] {
+        var groups:[String:[(Double,Double)]]=[:]
+        for line in lines {
+            let delta=line.end-line.start, length=delta.length
+            guard line.start.finite, line.end.finite, length>0.001 else { continue }
+            var u=delta*(1/length)
+            if u.x < -0.000001 || (abs(u.x)<0.000001 && u.y<0) { u=u * -1 }
+            let distance = -u.y*line.start.x+u.x*line.start.y
+            let key="\(Int((atan2(u.y,u.x)*1_000_000).rounded()))/\(Int((distance*1000).rounded()))"
+            let a=u.x*line.start.x+u.y*line.start.y, b=u.x*line.end.x+u.y*line.end.y
+            groups[key,default:[]].append((min(a,b),max(a,b)))
+        }
+        return groups.values.flatMap { intervals -> [Double] in
+            var merged:[(Double,Double)]=[]
+            for range in intervals.sorted(by:{$0.0<$1.0}) {
+                if let last=merged.last, range.0 <= last.1+0.001 {
+                    merged[merged.count-1].1=max(last.1,range.1)
+                } else { merged.append(range) }
+            }
+            return merged.map { $0.1-$0.0 }
+        }
+    }
+    static func splices(lengthMM:Double) -> Int {
+        guard lengthMM.isFinite, lengthMM > 0, lengthMM < 10_000_000 else { return 0 }
+        return max(0,Int(ceil((lengthMM-0.001)/3000))-1)
+    }
+
+    /// Horizontal rows in the wall's physical frame, independent of grid offset.
+    /// A supplementary row under a slope exists only where the local wall height
+    /// requires it; user-added rows beyond the recommendation remain present.
+    static func wallSupportRows(surface:Surface2D, settings:LayoutFurringSettings) -> [LayoutJoint] {
+        let count=max(0,min(12,settings.intermediateSupportLines ?? 0)), b=surface.bounds
+        guard count > 0, b.height > 0 else { return [] }
+        let maximum=settings.maximumSupportSpacing
+        let validRule=maximum.map { $0.isFinite && $0 >= 1 && $0 <= 100_000 } ?? false
+        let spacing=validRule ? maximum! : b.height/Double(count+1)
+        let recommended=max(1,Int(ceil(b.height/spacing))-1)
+        let first=settings.firstSupportHeightWhenMultiple.flatMap { $0.isFinite && $0 > 0 ? $0 : nil } ?? 600
+        let step=count > recommended ? min(spacing,max(0,b.height-first)/Double(count)) : spacing
+        var rows:[LayoutJoint]=[]
+        for index in 0..<count {
+            let elevation:Double
+            if !validRule { elevation=spacing*Double(index+1) }
+            else if count == 1 { elevation=min(spacing,max(0,b.height-100)) }
+            else { elevation=min(b.height,first+Double(index)*step) }
+            let y=b.min.y+elevation
+            let threshold=validRule && count <= recommended && index > 0 ? max(y,b.min.y+Double(index+1)*spacing) : y
+            let line=LayoutJoint(start:.init(x:b.min.x,y:y),end:.init(x:b.max.x,y:y))
+            for clipped in LayoutOpeningFraming.clip(line,to:surface) {
+                var xs=[clipped.start.x,clipped.end.x]
+                // Changes in the outer upper envelope, not openings, determine
+                // where the row becomes necessary.
+                for edge in LayoutGeometry.edges(surface.contour) {
+                    if edge.a.x > clipped.start.x && edge.a.x < clipped.end.x { xs.append(edge.a.x) }
+                    let dy=edge.b.y-edge.a.y
+                    if abs(dy)>0.001 {
+                        let t=(threshold-edge.a.y)/dy
+                        let x=edge.a.x+(edge.b.x-edge.a.x)*t
+                        if t>=0 && t<=1 && x>clipped.start.x && x<clipped.end.x { xs.append(x) }
+                    }
+                }
+                xs=Array(Set(xs)).sorted()
+                var retained:[LayoutJoint]=[]
+                for (lo,hi) in zip(xs,xs.dropFirst()) where hi-lo>0.5 {
+                    let probe=LayoutPoint(x:(lo+hi)/2,y:threshold+0.01)
+                    guard LayoutGeometry.contains(probe,in:surface.contour) else { continue }
+                    if let last=retained.last, abs(last.end.x-lo)<0.01 { retained[retained.count-1].end.x=hi }
+                    else { retained.append(.init(start:.init(x:lo,y:y),end:.init(x:hi,y:y))) }
+                }
+                rows += retained
+            }
+        }
+        return rows
+    }
+
+    static func calculate(surface: Surface2D, layer: LayoutLayer, gridFrame:LayoutGridFrame = .init()) throws -> LayoutFurringResult {
         guard let settings = layer.furring else { return .init() }
+        guard gridFrame.origin.finite, gridFrame.angle.isFinite,
+              settings.inheritedGridFrame.map({ $0.origin.finite && $0.angle.isFinite }) ?? true,
+              settings.peripheralReferenceContour?.allSatisfy(\.finite) ?? true else { throw LayoutGeometryError.invalidFormat }
+        if surface.kind == .ceiling, settings.usesOwnReference == true {
+            var localLayer = layer; localLayer.referenceEdge = settings.referenceEdge
+            localLayer.inheritedGridFrame = nil
+            let frame = settings.inheritedGridFrame.map { LayoutGridFrame(origin:gridFrame.local($0.origin),angle:$0.angle-gridFrame.angle) } ?? (settings.referenceEdge == nil
+                ? LayoutGridFrame(origin:gridFrame.local(.zero),angle:-gridFrame.angle)
+                : LayoutGridFrame.make(surface:surface,layer:localLayer))
+            var local = surface
+            local.contour = surface.contour.map(frame.local)
+            local.openings = surface.openings.map { var o=$0; o.contour=o.contour.map(frame.local); return o }
+            localLayer.furring?.usesOwnReference = false
+            localLayer.furring?.peripheralReferenceContour = settings.peripheralReferenceContour?.map { frame.local(gridFrame.local($0)) }
+            let result = try calculate(surface:local,layer:localLayer)
+            return .init(lines:result.lines.map { .init(start:frame.world($0.start),end:frame.world($0.end)) },
+                         contacts:result.contacts.map { .init(point:frame.world($0.point),edgeIndex:$0.edgeIndex,distance:$0.distance) },
+                         peripheralLines:result.peripheralLines.map { .init(start:frame.world($0.start),end:frame.world($0.end)) })
+        }
         guard [400.0,500.0,600.0].contains(settings.spacing), settings.offset.isFinite else { throw LayoutGeometryError.invalidFormat }
         // In grid coordinates the long side is X for horizontal boards, Y otherwise.
         let alongX = surface.kind == .wall ? false : settings.resolvedOrientation(boardOrientation: layer.orientation) == .horizontal
@@ -216,10 +425,54 @@ enum LayoutFurringEngine {
         let offset = settings.offset.truncatingRemainder(dividingBy:step)
         guard low.isFinite, high.isFinite, (high-low)/step <= 2000 else { throw LayoutGeometryError.tooLarge }
         let first = Int(ceil((low-offset-0.001)/step)), last = Int(floor((high-offset+0.001)/step))
-        guard first <= last else { return .init() }
         var result = LayoutFurringResult()
-        for index in first...last {
+        if let system = settings.openingSystem, surface.kind == .wall {
+            result.openingProfiles = LayoutOpeningFraming.profiles(surface: surface, system: system)
+        }
+        let wallRows = surface.kind == .wall && settings.openingSystem == .furring
+            ? wallSupportRows(surface:surface,settings:settings) : []
+        if surface.kind == .wall, settings.openingSystem == .furring {
+            if b.width > 240 {
+                for (x,role) in [(b.min.x+120,LayoutWallFixedProfile.Role.leftFurring),(b.max.x-120,.rightAngle)] {
+                    let line=LayoutJoint(start:.init(x:x,y:b.min.y),end:.init(x:x,y:b.max.y))
+                    result.wallFixedProfiles += LayoutOpeningFraming.clip(line,to:surface).map { .init(line:$0,role:role) }
+                }
+            }
+            if settings.includesHorizontalSupportFurring != false {
+                result.wallFixedProfiles += wallRows.map { .init(line:$0,role:.supportHorizontal) }
+            }
+        }
+        let inset = surface.kind == .ceiling ? settings.peripheralInset ?? 0 : 0
+        guard inset.isFinite, inset >= 0, inset <= 1000 else { throw LayoutGeometryError.invalidFormat }
+        let perimeter = settings.peripheralReferenceContour?.map(gridFrame.local) ?? surface.contour
+        let perimeterBounds = LayoutBounds(points:perimeter)
+        let perimeterLow = across(perimeterBounds.min), perimeterHigh = across(perimeterBounds.max)
+        if inset > 0, perimeterHigh-perimeterLow > inset*2 {
+            let winding = LayoutGeometry.area(perimeter) >= 0 ? 1.0 : -1.0
+            for edge in LayoutGeometry.edges(perimeter) {
+                let d = edge.b-edge.a, length=d.length
+                // Slightly oblique walls keep a true perpendicular 10 cm reserve.
+                guard length>1, abs(along(d))/length >= cos(Double.pi/12) else { continue }
+                let shift=LayoutPoint(x:-d.y/length,y:d.x/length)*(inset*winding)
+                let a=edge.a+shift, b=edge.b+shift
+                let segment=LayoutJoint(start:a,end:b)
+                var cuts=[0.0,1.0]
+                for loop in [surface.contour]+surface.openings.map(\.contour) {
+                    for other in LayoutGeometry.edges(loop) {
+                        cuts += LayoutGeometry.splitParameters(.init(a:a,b:b),by:other)
+                    }
+                }
+                cuts=Array(Set(cuts)).sorted()
+                for (lo,hi) in zip(cuts,cuts.dropFirst()) where hi-lo>1e-8 {
+                    let middle=a+(b-a)*((lo+hi)/2)
+                    guard LayoutPlanning.hitSupport(middle,surface:surface) else { continue }
+                    result.peripheralLines.append(.init(start:segment.start+(b-a)*lo,end:segment.start+(b-a)*hi))
+                }
+            }
+        }
+        for index in (first <= last ? Array(first...last) : []) {
             let coordinate = offset+Double(index)*step
+            if inset>0, (coordinate < perimeterLow+inset-0.001 || coordinate > perimeterHigh-inset+0.001) { continue }
             var intersections: [LayoutPoint] = []
             var contacts: [LayoutFurringContact] = []
             for (loopIndex,loop) in ([surface.contour]+surface.openings.map(\.contour)).enumerated() {
@@ -249,10 +502,27 @@ enum LayoutFurringEngine {
                     segments.append(.init(start:a,end:z))
                 }
             }
-            result.lines.append(contentsOf:segments)
+            result.lines.append(contentsOf:segments.filter { segment in
+                !result.peripheralLines.contains { fixed in
+                    LayoutGeometry.distance(segment.start,to:fixed.start,fixed.end)<0.5 &&
+                    LayoutGeometry.distance(segment.end,to:fixed.start,fixed.end)<0.5
+                }
+            })
             result.contacts.append(contentsOf:contacts.filter { contact in
                 segments.contains { (contact.point-$0.start).length < 0.01 || (contact.point-$0.end).length < 0.01 }
             })
+        }
+        result.lines = result.lines.flatMap { LayoutOpeningFraming.subtractFixed($0, fixed: result.fixedLines) }
+        result.lines += result.fixedLines
+        if surface.kind == .wall, settings.openingSystem == .furring, let count = settings.intermediateSupportLines, count > 0 {
+            for line in result.lines where abs(line.end.x-line.start.x)<0.5 {
+                if result.wallFixedProfiles.contains(where:{ $0.role == .rightAngle && LayoutOpeningFraming.same($0.line,line) }) { continue }
+                for row in wallRows where line.start.x >= row.start.x-0.01 && line.start.x <= row.end.x+0.01 {
+                    let p=LayoutPoint(x:line.start.x,y:row.start.y)
+                    if LayoutGeometry.distance(p,to:line.start,line.end)<0.01,
+                       !result.supportPoints.contains(where:{($0-p).length<0.01}) { result.supportPoints.append(p) }
+                }
+            }
         }
         return result
     }
@@ -336,12 +606,13 @@ enum SheetLayoutEngine {
         guard surface.openings.count <= 100 else { throw LayoutGeometryError.tooLarge }
         for opening in surface.openings { try LayoutGeometry.validate(opening.contour) }
         let frame = LayoutGridFrame.make(surface:surface,layer:layer)
+        guard frame.origin.finite, frame.angle.isFinite else { throw LayoutGeometryError.invalidFormat }
         var surface = surface
         surface.contour = surface.contour.map(frame.local)
         surface.openings = surface.openings.map { opening in
             var copy = opening; copy.contour = copy.contour.map(frame.local); return copy
         }
-        let furring = try LayoutFurringEngine.calculate(surface:surface,layer:layer)
+        let furring = try LayoutFurringEngine.calculate(surface:surface,layer:layer,gridFrame:frame)
         let measured = surface
         surface.contour = try surface.layingContour()
         let w = layer.cellWidth, h = layer.cellHeight
@@ -367,7 +638,8 @@ enum SheetLayoutEngine {
                 sheets.append(.init(id: id, number: sheets.count + 1, origin: origin, width: w, height: h, pieces: pieces))
         }
         let joints = LayoutBoardGrid.joints(sheets.flatMap(\.pieces))
-        sheets = try LayoutOffcutPacking.assign(sheets, surface:measured, furring:furring, enabled:layer.reuseOffcuts != false)
+        sheets = try LayoutOffcutPacking.assign(sheets, surface:measured, furring:furring, enabled:true,
+            preserveFactoryEdges: surface.kind == .ceiling && layer.fourTaperedEdges == true)
         return .init(sheets: sheets, joints: joints, frame:frame,
                      furring:furring,staggerDistance:LayoutBoardGrid.staggerDistance(layer))
     }
@@ -419,7 +691,11 @@ enum LayoutBoardGrid {
             result.append(.init(id:"\(col):\(row)",origin:p))
         } }
         guard result.count<=2000 else { throw LayoutGeometryError.tooLarge }
-        return result
+        return result.sorted {
+            let a = $0.origin, b = $1.origin
+            return vertical ? (a.x == b.x ? a.y < b.y : a.x < b.x)
+                : (a.y == b.y ? a.x < b.x : a.y < b.y)
+        }
     }
 
     /// Split shared intervals at T junctions. Exact endpoint-key matching misses
@@ -499,9 +775,12 @@ enum LayoutOffcutPacking {
     }
 
     static func assign(_ input:[LayoutSheetPlacement], surface:Surface2D,
-                       furring:LayoutFurringResult, enabled:Bool) throws -> [LayoutSheetPlacement] {
+                       furring:LayoutFurringResult, enabled:Bool, preserveFactoryEdges:Bool = false) throws -> [LayoutSheetPlacement] {
         guard let first=input.first else { return input }
         let size=LayoutPoint(x:first.width,y:first.height)
+        let joints = preserveFactoryEdges ? LayoutBoardGrid.joints(input.flatMap(\.pieces)) : []
+        // Precompute only the joints touching each group, outside the packing search.
+        let contacts = input.map { sharedEdges(of:$0, joints:joints) }
         let envelopes=input.map { LayoutBounds(points:$0.pieces.flatMap(\.contour)) }
         let eligible=input.map { sheet in
             enabled && !sheet.isFull && sheet.pieces.allSatisfy {
@@ -517,25 +796,36 @@ enum LayoutOffcutPacking {
         for index in order {
             try Task.checkCancellation()
             let box=envelopes[index]
-            var candidate:(stock:Int,rect:Int,score:Double)?
+            var candidate:(stock:Int,rect:Int,score:Double,occupied:LayoutBounds)?
             if eligible[index] {
                 for s in stocks.indices { for r in stocks[s].free.indices {
                     let free=stocks[s].free[r]
                     guard box.width<=free.width+0.001,box.height<=free.height+0.001 else { continue }
                     let score=free.width*free.height-box.width*box.height
-                    if candidate == nil || score<candidate!.score { candidate=(s,r,score) }
+                    // Try all corners: the required factory edge may be at the
+                    // far end of the purchased board, not at the scrap's origin.
+                    let anchors = [free.min, .init(x:free.max.x-box.width,y:free.min.y),
+                        .init(x:free.min.x,y:free.max.y-box.height),
+                        .init(x:free.max.x-box.width,y:free.max.y-box.height)]
+                    for anchor in anchors {
+                        let origin = box.min-anchor
+                        guard !preserveFactoryEdges || factoryEdges(contacts[index],origin:origin,size:size) else { continue }
+                        if candidate == nil || score<candidate!.score {
+                            candidate=(s,r,score,.init(min:anchor,max:anchor + .init(x:box.width,y:box.height)))
+                        }
+                    }
                 } }
             }
             let stock:Int, occupied:LayoutBounds
             if let candidate {
                 stock=candidate.stock
                 let free=stocks[stock].free.remove(at:candidate.rect)
-                occupied = .init(min:free.min,max:free.min + .init(x:box.width,y:box.height))
+                occupied = candidate.occupied
                 stocks[stock].free += remainder(of:free,removing:occupied)
             } else {
                 stock=stocks.count
                 // Retain the original cutting position for an ineligible group.
-                let lower=eligible[index] ? LayoutPoint.zero : box.min-input[index].origin
+                let lower=eligible[index] && !preserveFactoryEdges ? LayoutPoint.zero : box.min-input[index].origin
                 occupied = .init(min:lower,max:lower + .init(x:box.width,y:box.height))
                 stocks.append(.init(free:enabled ? remainder(of:.init(min:.zero,max:size),removing:occupied) : []))
             }
@@ -556,6 +846,29 @@ enum LayoutOffcutPacking {
             result[i].pieces[j].stock = .init(number:numbers[use.stock]!,part:totals[use.stock]! > 1 ? rank : nil,origin:use.origin)
         } }
         return result
+    }
+    static func sharedEdges(of sheet:LayoutSheetPlacement, joints:[LayoutJoint]) -> [LayoutJoint] {
+        sheet.pieces.flatMap { piece in
+            LayoutGeometry.edges(piece.contour).compactMap { edge in
+                let v = edge.b-edge.a
+                guard v.length > 0.001 else { return nil }
+                let touches = joints.contains { joint in
+                    guard abs(LayoutGeometry.cross(v,joint.start-edge.a))/v.length < 0.001,
+                          abs(LayoutGeometry.cross(v,joint.end-edge.a))/v.length < 0.001 else { return false }
+                    let u = v*(1/v.length)
+                    func along(_ p:LayoutPoint) -> Double { let d=p-edge.a; return d.x*u.x+d.y*u.y }
+                    return min(v.length,max(along(joint.start),along(joint.end))) - max(0,min(along(joint.start),along(joint.end))) > 0.001
+                }
+                return touches ? LayoutJoint(start:edge.a,end:edge.b) : nil
+            }
+        }
+    }
+    static func factoryEdges(_ contacts:[LayoutJoint], origin:LayoutPoint, size:LayoutPoint) -> Bool {
+        contacts.allSatisfy { edge in
+            let a=edge.start-origin, b=edge.end-origin
+            return [0.0,size.x].contains { abs(a.x-$0)<0.001 && abs(b.x-$0)<0.001 } ||
+                [0.0,size.y].contains { abs(a.y-$0)<0.001 && abs(b.y-$0)<0.001 }
+        }
     }
     private static func remainder(of free:LayoutBounds, removing box:LayoutBounds) -> [LayoutBounds] {
         // Four disjoint rectangles outside the reserved envelope. Holes and

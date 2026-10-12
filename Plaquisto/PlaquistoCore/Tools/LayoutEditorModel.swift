@@ -7,6 +7,13 @@ struct LayoutCatalogFormat: Identifiable, Hashable {
     var title: String
     var width: Double
     var length: Double
+    var productID: String? = nil
+    var fourTaperedEdges = false
+    var family = ""
+    var function = ""
+    static func identifier(productID: String, width: Double, length: Double) -> String {
+        "\(productID)-\(width)-\(length)"
+    }
     var label: String { "\(title) · \(Int(width / 10)) × \(Int(length / 10)) cm" }
 }
 
@@ -49,6 +56,7 @@ final class LayoutEditorModel: ObservableObject {
     private var future: [LayoutDocument] = []
     private var calculation: Task<Void, Never>?
     private var revision = 0
+    private var pendingBoardOptimization = false
     private let defaults: UserDefaults
     private let draftKey = "plaquisto.tools.layout.draft.v1"
     private let libraryKey = "plaquisto.tools.layout.library.v1"
@@ -88,6 +96,13 @@ final class LayoutEditorModel: ObservableObject {
         past = []; future = []; result = nil; error = nil; isCalculating = false; updateHistory()
     }
 
+    func reloadSavedLibrary() {
+        guard persistsStandaloneLibrary, document == nil,
+              let data=defaults.data(forKey:libraryKey) else { return }
+        do { savedDocuments=try JSONDecoder().decode([SavedLayoutDocument].self,from:data) }
+        catch { saveError="Les calepinages enregistrés n’ont pas pu être relus." }
+    }
+
     func saveCurrentAndClose() {
         guard persistsStandaloneLibrary else { return }
         guard let document else { return }
@@ -124,8 +139,15 @@ final class LayoutEditorModel: ObservableObject {
         var newValue = newValue
         newValue.layers = newValue.layers.map { $0.forSurface(newValue.surface) }
         guard newValue != document else { return }
+        let shouldOptimize = newValue.surface.kind == .ceiling && document?.surface.id == newValue.surface.id &&
+            document?.layers.first.map { old in
+                newValue.layers.first.map { old.orientation != $0.orientation || old.referenceEdge != $0.referenceEdge } ?? false
+            } == true
         if let document { past.append(document); if past.count > 100 { past.removeFirst() } }
         future = []; document = newValue; updateHistory(); persistDraft(); recalculate()
+        if shouldOptimize {
+            if isOptimizing { pendingBoardOptimization = true } else { optimize(furring:false) }
+        }
     }
 
     func preview(_ value: LayoutDocument) {
@@ -141,12 +163,16 @@ final class LayoutEditorModel: ObservableObject {
         guard let original = document, let layer = original.layers.first, !isOptimizing else { return }
         isOptimizing = true; optimizationMessage = nil
         Task {
+            defer {
+                isOptimizing = false
+                if pendingBoardOptimization { pendingBoardOptimization = false; optimize(furring:false) }
+            }
             let worker = Task.detached(priority:.userInitiated) {
                 try LayoutPlanning.optimize(surface:original.surface,layer:layer,furring:furring)
             }
             do {
                 let value = try await worker.value
-                guard document == original else { isOptimizing = false; return }
+                guard document == original else { return }
                 var copy = original; copy.layers[0] = value; apply(copy)
                 optimizationMessage = value == layer ? "Aucune meilleure disposition trouvée parmi les essais." : "Meilleure disposition testée appliquée. Vous pouvez annuler cette modification."
             } catch { optimizationMessage = error.localizedDescription }
@@ -240,7 +266,7 @@ final class LayoutEditorModel: ObservableObject {
 }
 
 func layoutCM(_ millimetres: Double) -> String {
-    (millimetres / 10).formatted(.number.locale(Locale(identifier: "fr_FR")).precision(.fractionLength(0...2))) + " cm"
+    (millimetres / 10).formatted(.number.locale(Locale(identifier: "fr_FR")).precision(.fractionLength(0...1))) + " cm"
 }
 func layoutMM(_ millimetres: Double) -> String {
     millimetres.formatted(.number.locale(Locale(identifier: "fr_FR")).precision(.fractionLength(0...1))) + " mm"

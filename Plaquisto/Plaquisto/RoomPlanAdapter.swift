@@ -2,6 +2,44 @@ import Foundation
 import RoomPlan
 import simd
 
+/// Native processing policy only: no inferred walls, angle snapping or changes
+/// to the capture's coordinate frame. Injectable builder keeps fallback testable
+/// without requiring a physical LiDAR device.
+enum NativeRoomPostProcessing {
+    struct Outcome<Value> {
+        let value: Value
+        let beautified: Bool
+        let fallbackReason: String?
+    }
+    static let options: RoomBuilder.ConfigurationOptions = [.beautifyObjects]
+
+    static func process<Value>(build: (RoomBuilder.ConfigurationOptions) async throws -> Value) async throws -> Outcome<Value> {
+        try Task.checkCancellation()
+        do {
+            let value=try await build(options)
+            try Task.checkCancellation()
+            return .init(value:value,beautified:true,fallbackReason:nil)
+        } catch {
+            // Cancellation must never trigger an expensive second reconstruction.
+            if error is CancellationError { throw error }
+            try Task.checkCancellation()
+            let reason=error.localizedDescription
+            let value=try await build([])
+            try Task.checkCancellation()
+            return .init(value:value,beautified:false,fallbackReason:reason)
+        }
+    }
+
+    /// Preserve CapturedRoomData, not just CapturedRoom: it is the input required
+    /// to replay RoomBuilder later. One raw sidecar per acquisition, written
+    /// before processing, separate from the final .roomplan and edited document.
+    static func archiveInput<T:Encodable>(_ data:T, directory:URL, chunkID:UUID) throws {
+        try FileManager.default.createDirectory(at:directory,withIntermediateDirectories:true)
+        let url=directory.appendingPathComponent(chunkID.uuidString+".roomplan-capture")
+        try JSONEncoder().encode(data).write(to:url,options:.atomic)
+    }
+}
+
 // Capture boundary. One instance per acquisition; source IDs are only lookup keys.
 final class RoomPlanAdapter {
     static func usages(in room: CapturedRoom) -> [ScanRoomUsage] {

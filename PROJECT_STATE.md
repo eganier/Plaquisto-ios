@@ -1,5 +1,1178 @@
 # Plaquisto — état du développement
 
+## Coupe stable, nettoyage maillage plafond/DAE et propositions graphiques — 12 octobre 2026
+
+- Coupe plafond : panneau de confirmation réservé dès l’entrée dans le mode découpe, transparent/inactif avant l’aperçu. Instructions stables. Cela évite la réduction du canvas et le recentrage à la levée du doigt ; validation de la dernière ligne affichée, sans recalcul depuis la position de relâchement.
+- `SurveyCeilingCutConfirmation` testé en largeurs 240/390/750 et grandes tailles de texte ; 3 tests coupe/layout réussis (`/tmp/plaquisto-ceiling-cut-stability-tests.log`). Pas encore de vérification gestuelle sur iPhone.
+- Raccords artificiels de triangles coplanaires : résolution optionnelle des jonctions A–C / A–B–C avant extraction des contours, activée pour génération et coupe des plafonds. Déduplication des faces identiques, refus de contours ambigus/non-manifold, aucun moyennage de hauteur/pente. Trous et îlots restent distincts. N’aplatit pas les vrais pans estimés ou dessinés ; pas de migration destructrice des anciens relevés.
+- DAE : positions identiques partagées par index au sein de chaque maillage, normales conservées par face pour les vraies arêtes. Aucun soudage entre objets distincts ou à travers un écart réel. Les triangles restent nécessaires au format, mais leurs sommets ne sont plus systématiquement isolés.
+- Designer mandaté : trois pistes comparables, sources et PNG dans `/Users/edouard/Documents/ChatGPT/Plaquisto/outputs/calepinage-design-2026-10-12/`. Préférence proposée « Lecture précise », alternatives « Plan de chantier » et « Calques doux ». Joints fins, fourrures lisibles, appui horizontal distinct, sélection orange. Aucun redesign iOS appliqué avant choix utilisateur.
+- Validation finale : 154/154 tests réussis (SurveyCaptureTests, CeilingMeshCleanupTests, ScanWallSimplificationTests), confirmé par xcresult ; journal `/tmp/plaquisto-scan-cleanup-regressions-v2.log`. Build signé PlaquistoLab réussi `/tmp/plaquisto-ceiling-cleanup-device.log`. Ces changements du 12 octobre ne sont pas encore installés sur téléphone.
+
+## Redressement/fusion des fragments de murs — 11 octobre 2026
+
+- Ajout `ScanWallSimplification`, uniquement sur la géométrie finale des nouveaux scans RoomPlan, avant génération des plafonds. `initialRoom` et cache natif restent inchangés ; aucun retraitement automatique des anciens ouvrages.
+- Tolérances doublées à la demande utilisateur : distance à la droite commune 4 cm, orientation 6°, distance des extrémités 5 cm, désaccord de hauteur au raccord 4 cm. La droite passe par les deux extrémités extérieures, pas de moyenne itérative qui dérive.
+- Fusion uniquement de chaînes adjacentes : refus des branches/jonctions en T, vrais angles, marches, faces parallèles séparées et modifications manuelles. Conservation des profils verticaux/rampants et identités/dimensions des ouvertures ; repérage des ouvertures transféré au mur fusionné. Limite supplémentaire de variation de surface 1 %, raccordement du contour du sol et validation géométrique avant application.
+- Validation : 9 tests `ScanWallSimplificationTests` + régression fusion manuelle sous rampant réussis (10/10), journal `/tmp/plaquisto-wall-simplification-tests-v2.log`. Première exécution corrigée uniquement côté assertions : epsilon flottant et date fixture ISO-8601 sans fractions. Build iPhone signé réussi `/tmp/plaquisto-wall-simplification-device.log`.
+- 11 octobre 2026 à 23:42 : mise à jour `fr.plaquisto.lab` installée sur l’iPhone 16 Pro `6A65A405-C70C-5FEF-88B6-B110C4E648B8`, sans désinstallation. Un nouveau scan réel reste à réaliser pour apprécier les seuils et le rendu sur place.
+- Lancement automatique refusé car iPhone verrouillé (`FBSOpenApplicationErrorDomain Locked`) ; ouvrir Plaquisto Lab manuellement après déverrouillage.
+- Diagnostic Safari demandé : produit KNAUF 3525447, « boîte de 50 », 25,24 € HT. Référence 300 mm correctement cochée, conversion vide donc bouton désactivé. `core.js` ne reconnaît le nombre qu’avec suffixe pièces/pcs/unités. Vérification locale : diviseur 50 => 0,45432 €/unité après -10 %. Aucun rattachement/prix modifié pendant ce diagnostic.
+
+## Installation iPhone — 11 octobre 2026, 23:07
+
+- Dernières sources compilées en Debug signé pour `PlaquistoLab` (équipe U6X2KSN84X), build réussi `/tmp/plaquisto-appuis-device-build.log`, produit `/tmp/PlaquistoPricesDevice/Build/Products/Debug-iphoneos/Plaquisto Lab.app`.
+- Mise à jour `fr.plaquisto.lab` installée puis lancée avec succès sur l’iPhone 16 Pro d’Edouard (`6A65A405-C70C-5FEF-88B6-B110C4E648B8`). Pas de désinstallation ni suppression de données.
+- Inclut les appuis intermédiaires par modèle, les suspentes galvanisées/composites, les changements isolation/plénum et la correction d’identités stables à l’enregistrement des ouvrages issus du relevé. Les parcours tactiles restent à valider sur téléphone.
+
+## Appuis intermédiaires par modèle, 11 octobre 2026
+
+- Dernière décision utilisateur : sélection uniquement selon l’épaisseur d’isolant (aucune priorité à la tapée, même explicite). Tableau conservé dans Admin avec tapées descriptives. Sept références `QTY-APPUI-FOURRURE-{15-45,75,100,120,140,75-160,200}`, prix unitaires laissés à renseigner.
+- Étape 3 doublage fourrures : option remplacée par « Fixation directe des appuis dans la maçonnerie », désactivée par défaut. Liaison inverse à `includesHorizontalSupportFurring` pour conserver les anciens choix et le comportement calepinage/quantitatif. Fixation directe : modèles 15-45 (0–60 mm) ou 75-160 (75–160 mm). Sur fourrure horizontale : 75/100/120/140/200 avec bornes du tableau, modèle supérieur aux limites communes (120 mm → 140). Aucun modèle deviné dans les trous/hors plages : quantité conservée, « modèle à préciser », sans prix attribué.
+- API `doublageFourrures.appuis` alimente la sélection iOS, sans table métier codée en dur dans l’app. Identité/libellé du modèle mémorisés avec configuration ; utilisés dans quantitatifs, minimum automatique du calepinage et appuis des ouvertures rattachées. Recalcul géométrique reconnaît aussi les libellés spécifiques. Les modèles restent séparés au regroupement des fournitures.
+- Admin commit `c31693f` poussé main, déploiement Vercel réussi, insertion des sept fiches via Admin authentifié. Tableau Fournitures > Systèmes vérifié et API publique contrôlée pour les sept plages exactes. Édition dédiée isolant/tapée indicative/fixation, contrôle des chevauchements hors limites communes. Aucun prix existant modifié.
+- Extension reconstruite/signée et mise à jour dans `/Users/edouard/Applications/Point P vers Plaquisto.app`. Sept références visibles/exportables indépendamment (542 références, 385 cibles Admin), ancien rattachement générique conservé. Vérification Safari : 3 118 produits et 60 associations conservés, recherche « Appuis intermédiaires » laissée ouverte.
+- Vérifications : 36 tests Admin + build Next/TypeScript ; 31 tests extension + build macOS ; 11 tests iOS (3 appuis + 3 composite + 5 galvanisé) réussis, journal `/tmp/plaquisto-appuis-ios-tests.log`. Aucun déploiement iPhone effectué.
+
+## Suspentes composites par modèle, 11 octobre 2026
+
+- Cinq références Admin `QTY-SUSPENTE-COMPOSITE-{FERMETTE,12-16,16-20,20-24,24-28}` : plages de plénum inclusives 20–80 / 81–160 / 161–200 / 201–240 / 241–280 mm. Pas de longueur physique inventée (colonne fournie vide), prix à l’unité distincts et laissés à renseigner. Support bois pour plafonds horizontaux/rampants ; aucune compatibilité hourdis inventée.
+- Système `FIX-BOIS-PARE-VAPEUR` migré par marqueur de sélection, vis/coefficients/limites conservés. iOS utilise les plages publiées pour choisir un seul modèle entier-mm, affiché au choix système et dans les quantitatifs formulaire/projet ; aucun prix deviné en cas de référence absente, plage ambiguë ou hors tableau. Préférence composite si pare-vapeur prévue conservée. Les anciens relevés/formulaires ne sont pas réécrits.
+- Admin commit `8235157` poussé main, Vercel réussi. Ouverture authentifiée Admin pour persister les cinq nouvelles fiches et migrer le système ; UI et API publique `/api/ios/catalogue` vérifiées avec toutes les plages exactes. Édition dédiée modèle/minimum/maximum dans Fournitures > Systèmes de fixation.
+- Extension reconstruite/signée et mise à jour dans `/Users/edouard/Applications/Point P vers Plaquisto.app` : cinq nouvelles références exportables visibles, ancienne référence générique locale conservée pour ne pas casser d’associations. 3 118 produits et 60 associations toujours présents ; aucun prix copié ni publié.
+- Vérifications : 31 tests Admin, build Next/TypeScript, 30 tests extension et build macOS réussis. 8 tests Swift composite/galvanisé réussis, y compris tous les mm de chaque plage, frontières, cas invalides, composants préservés et préférence de fixation. Résultat `build/Logs/Test/Test-Plaquisto-2026.10.11_21-57-40-+0200.xcresult`, journal `/tmp/plaquisto-composite-tests.log`. Aucune installation iPhone effectuée.
+
+## Plénum, suspentes par longueur et isolation, 11 octobre 2026
+
+- Formulaire plafond fourrures horizontal/rampant sur bois : diagramme SwiftUI Canvas flat (solive orange, suspente et fourrure bleu-gris, placo clair), cote dynamique en cm, trait interrompu autour du chiffre. Texte de plénum remplacé selon demande. Première couche proposée entre solives/chevrons, deuxième dessous ; emplacement avant type ; première épaisseur 60 mm si publiée pour l’isolant choisi. Les configurations enregistrées conservent leurs choix à l’ouverture.
+- Saisie du supplément de plénum en millimètres entiers. Sept références `QTY-SUSPENTE-GALVA-{80,180,240,300,400,500,600}` ; sélection unique depuis les plages Admin, sans table métier dupliquée en production iOS. Quantitatifs formulaire/projet utilisent le libellé de longueur pour le rattachement tarifaire ; accessoires hourdis/vis et coefficients conservés.
+- Bois : 20–60 / 61–150 / 151–210 / 211–270 / 271–370 / 371–470 / 471–570 mm. Hourdis : 20–70 / 71–170 / 171–230 / 231–290 / 291–390 / 391–490 / 491–590 mm. Minimum propre au système hourdis à serrer conservé à 60 mm. Plages entières et non chevauchantes contrôlées dans Admin ; un ancien projet hors plage n’est pas associé arbitrairement à un prix.
+- Préférence de fixation : galvanisé bois/hourdis, composite bois si pare-vapeur prévu, uniquement parmi les systèmes compatibles (forme/support/plénum). Un choix manuel compatible reste conservé ; changer le choix pare-vapeur réapplique la préférence.
+- Admin `d764f59` poussé sur main, Vercel réussi. Session Admin authentifiée ouverte pour persister les nouvelles références et migrer les trois systèmes sans réinitialiser la base. Les sept références et les deux tableaux ont été vérifiés dans l’UI Fournitures puis via `/api/ios/catalogue` en production. Aucun tarif créé ou modifié.
+- Extension Point P vers Plaquisto reconstruite/signée et mise à jour dans `/Users/edouard/Applications` : sept longueurs visibles et exportables, 3 118 produits et 60 associations existantes vérifiés conservés dans Safari. Nouveaux prix laissés à renseigner. 29 tests Node au total (28 existants + couverture sept tailles), build extension réussi.
+- Admin : 28 tests métier réussis, TypeScript et build Next réussis. Exécution iOS finale : **7 tests diagramme/sélection/isolation/préférence galvanisé-composite réussis**, zéro échec (`/tmp/plaquisto-hangers-defaults-tests.log`, résultat `build/Logs/Test/Test-Plaquisto-2026.10.11_21-46-28-+0200.xcresult`). Aucune installation iPhone dans ce lot.
+
+## Vérification du refus d’enregistrement sur fourrures, 11 octobre 2026
+
+- Capture `IMG_7151.PNG` : refus à l’étape Résultat du doublage sur lisses et fourrures. Le contrôle incriminé compare notamment les surfaces du calepinage préparé hors du store avec celles reconstruites à l’enregistrement. Des UUID recréés aléatoirement suffisaient à faire échouer cette égalité sans changement de dimensions ; la correction d’identités stables du 9 octobre est déjà présente dans les sources.
+- Le dernier binaire iPhone documenté, `/tmp/PlaquistoPricesDevice/Build/Products/Debug-iphoneos/Plaquisto Lab.app/Plaquisto Lab`, a été construit le 9 octobre à 23 h 12. Il contient le calepinage automatique mais pas la chaîne `plaquisto-survey-projection/v1/` du correctif ; le binaire simulateur actuel la contient. Les tests de cette correction datent de 23 h 31–23 h 32, après ce build iPhone. Cela explique probablement la récurrence sur le téléphone ; l’archive exacte du relevé de la capture n’a pas été fournie.
+- Couverture ajoutée dans `ProjectStoreTests` : préparation externe puis sauvegarde/relecture d’un doublage fourrures à trois murs tournés, hauteurs non arrondies, porte et fenêtres qui se chevauchent ; conservation des contours, ouvertures, surfaces nettes et plans. Les mesures réellement arrondies/modifiées, runs absents et nombre de murs incorrect restent rejetés atomiquement. Aucun assouplissement des contrôles métier ni nouveau changement de géométrie.
+- Validation : compilation simulateur réussie et **6 tests ciblés réussis**, zéro échec, dont les deux nouvelles régressions fourrures, partition avec/sans porte, plafond multi-frontières avec trémie, rejet de géométrie/configuration altérées et champs SwiftUI désactivés conservant leur précision. Journal `/tmp/plaquisto-survey-furring-save-tests.log`, résultat `build/Logs/Test/Test-Plaquisto-2026.10.11_21-41-06-+0200.xcresult`. Aucun commit, push ni installation iPhone dans cette vérification.
+
+## Quantitatifs actualisés sans seconde validation, 9 octobre 2026
+
+- Sauvegarder un calepinage de plafond sur fourrures ou rails/montants actualise son quantitatif dans la transaction du plan ; le dialogue de confirmation et le message orange d’attente d’accord sont supprimés.
+- Les sous-parties non calepinées conservent leur estimation au prorata. Les détails inutilisables ne réutilisent jamais un ancien quantitatif : estimation du formulaire et indication explicite dans la vue des quantités.
+- Les anciennes quantités périmées sont recalculées et persistées au chargement. Les changements du relevé réactualisent également le calcul sans approbation supplémentaire. Les identifiants de formats sont conservés pour retrouver les libellés des parements.
+- Une modification de contour scanné applique immédiatement la nouvelle surface au formulaire lié. L’estimation automatique initiale d’un plafond ne bloque plus les quantités d’un plan ensuite modifié.
+- Vérifié : compilation simulateur et **403 tests réussis** (`ProjectStoreTests`, `SheetLayoutEngineTests`, `SurveyCaptureTests`), journal `/tmp/plaquisto-auto-quantity-tests-verified.log`. Test ajouté : sauvegarde et modification d’une sous-partie, prorata 50 %, rechargement et migration d’une ancienne quantité en attente. Aucun commit, push ni installation dans cette intervention.
+
+## Correction enregistrement ouvrage depuis relevé, 9 octobre 2026
+
+- La projection relevé → surfaces 2D produit désormais des identités stables par
+  relevé/checkpoint/mur ou pan/frontière, y compris pour les trous des plafonds.
+  La préparation asynchrone du calepinage ne déclenche plus un faux changement
+  de dimensions lorsque le store reconstruit les mêmes surfaces à la sauvegarde.
+- Comparaison stricte des contours, ouvertures, repères et configuration conservée ;
+  aucun contournement du contrôle de source périmée. Identités des surfaces déjà
+  sauvegardées conservées par la synchronisation existante.
+- Régressions reproduisant le chemin formulaire réel (préparation externe) :
+  cloison avec/sans porte, doublage, plafond à frontières distinctes avec trémie,
+  rejet de changements réels. 402 tests ProjectStore/SurveyCapture/SheetLayoutEngine
+  réussis ; compilation simulateur réussie. Pas encore installé sur iPhone.
+
+## Calepinages automatiques et estimation tarifaire, 9 octobre 2026
+
+- Création d’un ouvrage depuis un relevé : préparation hors thread UI des plans
+  sur les contours réels, avec formats/parements/entraxes du formulaire. Systèmes
+  actuellement attribuables depuis le relevé : plafonds fourrures ou rails/montants,
+  doublages fourrures ou montants, cloisons créées dans le plan. Peinture exclue.
+  Aucune géométrie inventée depuis une simple surface ; plans existants préservés.
+- Optimisation : pénalise prioritairement les petites pièces indépendantes de
+  moins de 300 mm (dimensions, aire et bandes obliques), sans pénaliser une petite
+  pointe attachée à une grande pièce. Recherche bornée, pas une garantie de
+  solution sur tout contour : avertissement si des découpes contraintes subsistent.
+  Ossature calée sur les joints quand compatible avec l’entraxe choisi, sans
+  modifier ce dernier. Toutes les peaux et faces utilisent l’ossature commune.
+- Cloisons : deux identités A/B indépendantes des pièces propriétaires, miroir de
+  géométrie/ossature, plaques propres à chaque face, ossature comptée une fois.
+  Copie remappe ces identités. Anciennes données sans ce champ restent compatibles.
+- Snapshot des besoins automatiques : maximum par fourniture entre formulaire et
+  plan, sans réduction automatique ni double marge. Config modifiée invalide le
+  snapshot ; impossibilité de rapprochement conservée comme avertissement.
+- Tarifs : nouveau `SupplyPrices.swift`, lecture séparée `/api/ios/prices`.
+  Estimation HT proportionnelle, REP comprise, fourchette -5/+5 %, aucun arrondi
+  au conditionnement. Raccordement exact produit/format/unité pour les parements
+  et référence quantitative/unité/variante standard (papier pour bande). Le pont
+  depuis les anciens libellés est volontairement strict : pas d’équivalence floue.
+  Autres variantes/familles non résolues restent non chiffrées. API absente, prix
+  proposé, ambigu ou expiré : jamais zéro implicite. Cache hors ligne avec date
+  de validité contrôlée, Europe/Paris comme Admin.
+- Vue quantitatif ouvrage/projet et partage texte : fourchette, état partiel et
+  liste des fournitures non chiffrées ; référence de révision dans le partage.
+  Pas de devis contractuel ni prix figé dans le projet : affichage recalculé avec
+  les tarifs validés disponibles ; le fichier partagé conserve son état exporté.
+- Admin (autre dépôt) : tableau `/tarifs`, API protégée d’édition, API publique
+  filtrée, huit propositions extraites du devis. Prix et provenance séparés des
+  coefficients techniques ; source/fournisseur non exposés publiquement.
+  Admin publié sur main (`f0bee65`), déploiement Vercel réussi. Exemples réels
+  retirés du dépôt public et des bundles ; import JSON local de brouillons.
+  Migration SQL appliquée en production après confirmation de publication.
+  Huit prix importés en base privée : six validés (trois formats BA13, vis25/35,
+  bande papier), deux proposés (poudre lente/rapide, choix standard à confirmer).
+  API production HTTP200 : six lignes, aucune provenance fournisseur exposée.
+  Page Admin /tarifs vérifiée en session authentifiée : huit lignes enregistrées.
+  Lab signé installé et lancé sur l’iPhone d’Edouard (fr.plaquisto.lab), sans
+  désinstallation ni effacement. Journal `/tmp/plaquisto-prices-device-build.log`.
+  Aucun commit/push iOS dans ce lot.
+- Vérifications : 258 tests iOS réussis, dont copie des deux faces des cloisons,
+  sauvegarde/relecture des plans automatiques et estimation tarifaire. Journal
+  final `/tmp/plaquisto-prices-layout-final-tests.log`. Build Lab réussi
+  `/tmp/plaquisto-prices-lab-build.log`. Admin : 32 tests, typecheck/lint/build OK.
+  Parcours Lab vérifié au simulateur : création d’un ouvrage Bandes à joint 10 m²,
+  sauvegarde, sélection et quantitatif projet. Bloc tarifs indisponibles affiché
+  sans montant zéro, quantités 17,3 ml et 3,3 kg consultables. Pas de test connecté
+  iPhone du parcours complet avec prix publiés ; API production et tableau Admin
+  vérifiés séparément. Le reste du devis/catalogue demeure à rapprocher et chiffrer.
+
+## Bandes à joint et ouvertures rattachées, 9 octobre 2026
+
+- Nouveau type/payload Codable `jointTreatment`, catégorie « Bandes à joint ».
+  Formulaire surface totale des faces, murs/plafonds, poudre/pâte, résultat.
+  Ratios chargés depuis les enregistrements Admin existants : doublage rails/
+  montants pour les murs, QTY-BANDE/ENDUIT pour les plafonds. Snapshot enregistré,
+  sans coefficients de production dupliqués ni nouvelle publication Admin.
+- Avertissement et liste des ouvrages dont le traitement des joints est activé :
+  surface déduite du nouvel ouvrage, murs/plafonds séparés, deux faces pour les
+  cloisons, minimum zéro. Quantitatifs des autres ouvrages inchangés. Le contexte
+  du projet entier est utilisé même pour consulter le seul ouvrage Bandes.
+  Rappel des bandes armées pour angles saillants dans le résultat et le partage.
+- Les points des appuis intermédiaires ne sont plus dessinés dans les doublages
+  sur fourrures ; leurs positions et quantités restent calculées.
+- Ouvertures retirées du choix de nouvelle catégorie. Action sous « Modifier la
+  configuration » dans les ouvrages compatibles, iOS et Lab. Stockage historique
+  des enregistrements liés conservé, masqué de la liste principale et inclus une
+  seule fois dans le quantitatif du parent. Anciens enregistrements sans parent
+  accessible toujours visibles. Copie d’un ouvrage copie ses ouvertures liées.
+- Vérifications : 249 tests réussis (99 ProjectStoreTests, 150 SheetLayoutEngineTests)
+  dans `/tmp/plaquisto-joints-tests.log`. Parcours création et formulaire vérifiés
+  dans le simulateur ; saisie UI complète non validée, session Simulator instable
+  lors de la saisie automatisée. Calculs et persistance vérifiés par tests.
+  Aucune installation sur iPhone ni publication Admin dans ce lot.
+- Demande suivante, au stade avis : création automatique des calepinages,
+  optimisation des coupes vers 30 × 30 cm, ossatures sur jonctions et ajustement
+  à la hausse des fournitures. Non implémentée dans ce lot ; ne pas inventer de
+  contour depuis une simple surface ni garantir 30 cm aux découpes contraintes.
+
+## Doublages : traverses, rives fixes et éclisses, 9 octobre 2026
+
+- Formulaire lisses/fourrures : snapshot optionnel des distances d’appuis Admin
+  dans la configuration. Le calepinage récupère aussi le choix avec/sans fourrure
+  horizontale. Sous rampant, les traverses restent horizontales ; une ligne
+  supplémentaire commence seulement où la hauteur locale la nécessite. Les
+  ouvertures coupent les traverses ; les appuis sont alignés sur leurs lignes.
+  Anciens ouvrages sans snapshot : répartition indicative depuis le nombre de
+  lignes, message invitant à réenregistrer le formulaire pour récupérer la règle.
+- Doublage fourrures : profil vertical fixe à 120 mm de chaque bord (axe),
+  fourrure à gauche et cornière à droite, tronqués au contour et aux ouvertures.
+  Ne suivent pas le décalage de trame ; superposition avec une fourrure mobile
+  soustraite pour ne pas dessiner deux fois le même segment.
+- Éclisses : `ceil(longueur / 3000) - 1` par ligne continue, tolérance numérique,
+  réunion des subdivisions jointives et exclusion des cornières. Affichage dans
+  les réglages d’ossature ; reprise des plafonds fourrures dans le quantitatif
+  approuvé au prorata des surfaces calepinées. Reliquat du formulaire conservé,
+  anciens quantitatifs approuvés sans comptage d’éclisses compatibles. Rails/
+  montants exclus du nouvel affichage et de cette reprise.
+- Commandes inversées en vue normale et plein écran : onglet Ossatures déplace
+  les plaques (« Caler les plaques sur l’ossature »), onglet Plaques déplace
+  la trame mobile (« Caler les ossatures sur les plaques »). Profils fixes exclus
+  du calage des plaques comme les renforts d’ouvertures.
+- Tests : cas limites 3/6/9 m, interruption par ouverture, rampant, traverses
+  désactivées, rives fixes lors du déplacement/calage, sérialisation et
+  remplacement partiel de l’estimation d’éclisses. Journaux :
+  **244 tests réussis** (150 SheetLayoutEngineTests + 94 ProjectStoreTests),
+  `/tmp/plaquisto-wall-furring-tests-verified.log`. Correction d’une régression
+  de métadonnée par défaut qui modifiait inutilement les plans manuels.
+  Build Lab : `/tmp/plaquisto-wall-furring-lab-verified.log`.
+  Aucune publication Admin ni installation iPhone demandée dans cette étape.
+
+## Rendu Élevé par défaut, 9 octobre 2026
+
+- Préférence persistante `maquette.rendering` dans les réglages iOS et Lab :
+  Élevé par défaut (y compris en l’absence de préférence), Standard disponible.
+- Élevé : murs bleu clair mats, sol gris clair uni, contours encre, sélection
+  orange et plafonds sélectionnés à 80 % d’opacité. Appliqué à la maquette,
+  aux éditeurs et aux miniatures ; cache des miniatures distinct par rendu.
+- Géométrie métier, scans, UUID, quantitatifs et exports inchangés. Changement
+  de rendu sans reconstruire le scan ni réinitialiser la caméra. Arêtes de
+  présentation regroupées par surface ; diagonales coplanaires exclues.
+  Traits fins géométriques pour éviter le scintillement des lignes coplanaires.
+- Pas de texture de sol, SSAO ni ombres portées en Élevé : éclairage diffus
+  simple. Budget thermique/batterie indépendant, FPS et anticrénelage inchangés.
+  RAM/FPS sur appareil réel non mesurés : ne pas prétendre à un gain chiffré.
+- Tests : 235 réussis (141 SurveyCaptureTests + 94 ProjectStoreTests), journal
+  `/tmp/plaquisto-elevated-tests-verified.log`. Images SceneKit produites et inspectées
+  dans `/tmp/plaquisto-elevated-verified-attachments/`. Choix Élevé par défaut et
+  bascule Standard puis Élevé vérifiés dans le simulateur Lab. Build Lab réussi
+  (`/tmp/plaquisto-elevated-build-final.log`). Pas d’installation iPhone.
+
+## Coupe de plafond par glissement, 9 octobre 2026
+
+- Sélecteur de plafonds : « Découper », « Fusionner » (voisins partageant un
+  bord, confirmation) et « Masquer / Afficher ». Fusion par raccord de segments,
+  sans enveloppe convexe : aucun remplissage de trou ni fusion de zones disjointes.
+  Les pans et leurs UUID restent identiques, ainsi que les calepinages associés.
+- `PlaquistoCeiling.isHidden` optionnel et persistant : affichage et sélection de
+  nouveaux ouvrages seulement. Géométrie canonique, ouvrages existants,
+  quantitatifs et export complet conservés. La création d’ouvrage revérifie que
+  les sources ne sont pas masquées. Le sélecteur conserve toutes les zones pour
+  pouvoir les réafficher. Une édition explicite montre temporairement sa cible.
+- Hauteurs minimale/maximale réglables par curseurs (pas 1 cm), aperçu fixé
+  au-dessus du formulaire ; saisie numérique dans « Saisie précise des hauteurs ».
+  Orientation/faîtage conservent leurs curseurs. La caméra et les maillages du
+  sol/des murs sont réutilisés pendant les changements de hauteur des plafonds.
+- Régression : **233 tests réussis** (139 SurveyCaptureTests + 94 ProjectStoreTests),
+  `/tmp/plaquisto-ceiling-contact-tests.log` (dernier passage, recognizer inclus),
+  build Lab simulateur réussi `/tmp/plaquisto-ceiling-contact-sim.log`.
+  Tests de conservation des pans,
+  identité des plans, quantités après fusion/masquage, sérialisation et caméra.
+- UI simulateur : ouverture du sélecteur, Masquer/Afficher et présence du curseur
+  avec aperçu fixe vérifiées. Le pilote `cua.drag` ne déplace pas non plus le
+  curseur natif dans cette session : glissement réel de coupe/hauteur non validé
+  par cette automatisation. Vérifier au doigt sur iPhone avant de prétendre à une
+  validation tactile. Relevé synthétique temporaire supprimé ; aucun projet réel
+  modifié. Le recognizer conserve le point physique de contact initial pour les
+  gestes dont la reconnaissance arrive après le premier déplacement.
+- Historique de la direction graphique (désormais implémentée ci-dessus) : propositions d’un sous-agent dans
+  `/Users/edouard/Documents/ChatGPT/Plaquisto/design-maquette/`. L’utilisateur veut
+  une nouvelle direction « Lecture précise », plus moderne et **contrastée**,
+  puis finalement **moins réaliste / plus flat**. Nouvelle planche
+  `plaquisto-trois-pistes-flat-2026-10-09.png` : Blanc & ardoise, Encre & minéral,
+  Graphite & crème. Choix utilisateur : **Encre & minéral avec sol gris clair
+  neutre et discret**, sans texture ni reflet. Visuel livré :
+  `plaquisto-encre-mineral-sol-gris-clair-2026-10-09.png` dans le même dossier ;
+  base du rendu Élevé implémenté ensuite.
+  Précision suivante : plafond sélectionné en orange franc à **80 % d’opacité**
+  (20 % transparent), contour orange soutenu ; pas seulement une teinte pâle.
+  Préférence Standard (rendu d’origine) / Élevé, uniquement visuelle.
+
+- `SurveyPlanEditor` : pose du doigt = départ, déplacement maintenu = arrivée
+  mobile ; trait orange pointillé, repères d’extrémité et petits ciseaux.
+  Le relâchement calcule un aperçu séparé du document de travail, avec les deux
+  moitiés orange/bleue et les actions persistantes « Valider » / « Refaire la coupe ».
+- `SurveyCeilingCut` isole le brouillon : seule la validation appelle
+  `commitDocument` et ajoute une étape d’annulation. Refaire/annuler ne change
+  ni le document ni les ouvrages. La sauvegarde habituelle du relevé reste requise.
+- Deux doigts annulent un trait en cours pour naviguer, mais conservent un aperçu
+  déjà calculé. Un appui sans glissement, une coupe trop courte ou extérieure est
+  refusée sans créer de plafond. Les commandes concurrentes d’édition/sauvegarde
+  sont désactivées pendant la découpe. Les pentes et la surface totale sont conservées.
+- Aucun changement du post-traitement LiDAR : la simplification des murs par
+  ajustement robuste de segments quasi alignés est seulement discutée, pas codée.
+  Ne pas confondre les deux extrémités d’un axe en plan avec le contour en hauteur
+  d’un mur sous rampant, qui peut légitimement avoir plusieurs sommets.
+- À la demande suivante : retrait du bouton « Modifier le contour » du
+  configurateur de plafond du relevé 3D. L’éditeur de contour du calepinage
+  et le bouton « Modifier le plan » du relevé ne sont pas retirés.
+- Logs de vérification : `/tmp/plaquisto-ceiling-cut-tests.log`,
+  `/tmp/plaquisto-ceiling-cut-sim.log`, `/tmp/plaquisto-ceiling-cut-device.log`.
+  Pas d’installation iPhone demandée pour cette modification.
+
+## Prototype d’observations visuelles du scan — Lab uniquement, 8 octobre 2026
+
+- `ScanVisualEvidence.swift` : échantillonnage local des images ARKit, pose de
+  caméra, calibration et profondeur/confiance **si la session native les fournit**.
+  Activé exclusivement pour `fr.plaquisto.lab`, indépendamment du thème graphique.
+  Aucun remplacement de délégué, redémarrage, changement de configuration ou de
+  repère de la session RoomPlan. Aucun serveur ni reconnaissance visuelle distante.
+- Une seule image en cours d’encodage, traitement CI et fichiers hors main thread,
+  JPEG 960 px maximum, profondeur réduite à 96 colonnes, confiance haute uniquement.
+  Au maximum 120 images / 24 Mo par relevé, 72 Mo de cache au total ; arrêt des
+  seules images si quota/erreur, pas du scan. Échantillons retenus lors d’un déplacement,
+  changement de direction ou après 8 secondes ; pas d’enregistrement vidéo.
+- **Demande utilisateur : aucun compteur, animation ou indication photo pendant
+  le scan.** L’interface de capture reste inchangée. Pas d’écriture dans Photos.
+  Les limites/erreurs sont diagnostiquées après capture, sans exposer les images.
+- Cache privé protégé, exclu des projets, DAE et diagnostics partagés. Expiration
+  de lecture à 24 h, purge au lancement Lab/démarrage/lecture, et suppression manuelle
+  depuis la réparation. Annuler la capture efface ses observations. Le scan durable
+  reste indépendant ; perdre le cache ne bloque ni édition ni sauvegarde.
+- Dans `Réparer le relevé`, comparaison de la zone choisie avec les photos et
+  projection orange, choix de photo et de zone. La calibration reste dans les axes
+  capteur ; une orientation JPEG séparée affiche correctement les photos portrait.
+- Analyse géométrique prudente des fermetures déjà proposées : profondeur au
+  niveau du mur, derrière la zone, contradictoire ou insuffisante. Au moins deux
+  positions espacées de 20 cm avec couverture suffisante ; les mesures devant
+  le mur (occlusion), manquantes ou peu fiables ne prouvent pas un mur.
+  Rien n’est sélectionné/appliqué automatiquement et `initialRoom` reste intact.
+- **Limite du prototype** : ce n’est pas une reconstruction photogrammétrique,
+  une segmentation RGB ni un recalage global des murs. Sans `sceneDepth`, seules
+  les photos sont disponibles pour le contrôle humain. La présence réelle de
+  profondeur avec RoomPlan, les performances/batterie et l’efficacité sur le cas
+  cuisine/salon nécessitent un NOUVEAU scan iPhone ; aucune amélioration terrain
+  du modèle n’est revendiquée sur la base des tests simulateur.
+- Vérification visuelle simulateur : état sans images et scénario synthétique
+  de passage avec deux points de vue, projection orange cohérente, aucune fermeture
+  appliquée. Tests de projection, rotation photo, confiance, occlusion, vues répétées,
+  cache/expiration/suppression et quota ajoutés à `SurveyCaptureTests`.
+  **132 tests réussis**, build iPhone Lab signé réussi, `git diff --check` propre.
+  Les données synthétiques de contrôle ont été retirées du simulateur après vérification.
+  Logs : `/tmp/plaquisto-evidence-tests.log`, `/tmp/plaquisto-evidence-device.log`,
+  `/tmp/plaquisto-evidence-sim.log`.
+- Installation demandée ensuite : build revérifié puis mise à jour sur l’iPhone
+  16 Pro d’Edouard le 8 octobre vers 23 h 59 (`fr.plaquisto.lab` uniquement,
+  sans désinstallation). Log build `/tmp/plaquisto-evidence-install-build.log`.
+  La suggestion ultérieure d’un message demandant de stabiliser la prise de vue
+  n’est pas encore implémentée dans cette version.
+
+## Correction des gestes 3D après retour iPhone, 8 octobre 2026
+
+- Le test utilisateur a révélé que `rotationSensitivity = 0` bloque l’orbite
+  à un doigt sans supprimer le roulis à deux doigts. Ce réglage a été retiré.
+- `UprightSurveySceneView` refuse l’ajout des `UIRotationGestureRecognizer`
+  natifs, dans le relevé et l’éditeur/réparation. Les pan/pinch natifs restent.
+  Désactiver le recognizer juste après son ajout ne suffisait pas : SceneKit
+  le réactivait ensuite (échec reproduit par test, puis correction vérifiée).
+- Tests vérifient un témoin SCNView avec geste de rotation présent, son absence
+  dans la vue corrigée, les pan/pinch actifs après réactivation des contrôles,
+  ainsi que l’orbite horizontale/verticale avec la sensibilité réelle de la vue.
+  122 tests réussis, compilation iPhone Lab signée réussie ; logs
+  `/tmp/plaquisto-gesture-roll-verified-tests.log` et
+  `/tmp/plaquisto-gesture-roll-verified-device.log`. Pas encore réinstallé.
+- Retour terrain sur beautifyObjects : pas d’amélioration visible du scan
+  signalée par l’utilisateur. Ne pas présenter cette option comme une réparation
+  démontrée des murs. Le prototype RGB/profondeur ajouté ensuite est décrit ci-dessus.
+
+## Finalisation native Apple, 8 octobre 2026
+
+- `RoomBuilder` utilise maintenant `[.beautifyObjects]`, au lieu de `[]`.
+  La capture continue unique, le repère ARKit et les contours `polygonCorners`
+  restent inchangés. Pas de nouvel alignement/fusion/bouchage maison des murs.
+- `StructureBuilder` n’est pas invoqué artificiellement pour cette capture
+  unique : son rôle documenté est l’assemblage de plusieurs CapturedRoom dans
+  des espaces compatibles. Coaching natif déjà actif, maintenu.
+- En cas d’échec de la finalisation améliorée, une tentative standard native
+  est effectuée ; repli signalé dans le relevé et le diagnostic. Annulation
+  propagée sans second traitement. Si les deux échouent, brouillon conservé.
+- Entrée Codable `CapturedRoomData` archivée hors thread UI avant traitement,
+  dans `<chunkID>.roomplan-capture`, séparée du résultat `<chunkID>.roomplan`.
+  L’échec d’archivage est journalisé sans perdre le scan. Aucun ancien relevé
+  ni ouvrage existant n’est retraité ou modifié par cette évolution.
+- Diagnostic `nativePostProcessing` : options, état, raison du repli, présence
+  d’archive brute, dernière géométrie live, résultat Apple complet avant
+  conversion et géométrie convertie avant création des plafonds. Noms saisis
+  masqués dans les instantanés portables ; pas de coordonnées GPS ajoutées.
+- Tests : 216 réussis sur SurveyCaptureTests et ProjectStoreTests. Compilation
+  iPhone Lab signée réussie. Logs `/tmp/plaquisto-native-processing-tests.log`
+  et `/tmp/plaquisto-native-processing-device.log`.
+- Limite : l’efficacité réelle sur les murs de la maison exige un nouveau scan
+  LiDAR sur iPhone. Apple décrit notamment l’embellissement du mobilier ; cette
+  option ne constitue pas une garantie de correction des murs ou des trous.
+  Le diagnostic reçu était daté du 26 septembre, sans CapturedRoomData brut.
+  Installation demandée puis réussie le 8 octobre à 23:15 sur l’iPhone
+  `6A65A405-C70C-5FEF-88B6-B110C4E648B8`, bundle `fr.plaquisto.lab`, sans
+  désinstallation ni remplacement des données des projets.
+
+## Réparation élargie et pivotement 3D, 8 octobre 2026, après installation
+
+- Confirmation utilisateur : bloquer seulement le pivotement à deux doigts,
+  conserver orbite à un doigt et pincement. `rotationSensitivity = 0` dans le
+  style SceneKit commun ; sensibilité du pan et du déplacement inchangée.
+- Réparation : toutes les catégories d’ouvertures attachées à un mur deviennent
+  proposées, y compris portes, fenêtres, passages au sol, créations manuelles et
+  dimensions validées. Type, largeur et numéro de mur affichés pour les repérer.
+- Raccords : extrémités libres à partir de 5 mm, suppression de la limite de 3 m
+  et de la restriction colinéaire ; côtés manquants proposés sans prolongement
+  en arrière dans les murs existants, ni croisement/chevauchement. Les ouvertures
+  non attachées entièrement comprises dans le raccord sont retirées avec lui.
+  Contours/rampants existants et original du scan conservés. Aperçu puis choix
+  et application explicites ; aucun bouchage automatique pendant le scan.
+- Limite : pas de remplissage universel d’un maillage brut ou de trous absents
+  des ouvertures/extrémités du modèle. Ces cas restent éditables via le contour.
+- Vérification : 212 tests réussis, zéro échec (SurveyCaptureTests et
+  ProjectStoreTests), compilation iPhone Lab signée réussie. Journaux :
+  `/tmp/plaquisto-repair-expanded-tests.log`,
+  `/tmp/plaquisto-repair-expanded-device.log`.
+  Pas de nouvelle installation ni de validation tactile sur iPhone à ce stade.
+
+## Lab — ergonomie et réparation assistée, 8 octobre 2026
+
+- Adresses : menu Plans/Google Maps/Waze, partage/copie, et suggestions MapKit
+  dans le formulaire projet (temporisation, annulation des requêtes obsolètes,
+  saisie libre toujours disponible). Pas de permission GPS supplémentaire.
+- Réglages via engrenage ; quantitatifs via une icône de liste. Cotes répétées
+  regroupées par longueur/direction visible pour plaques et ossatures, sans
+  changer les calculs ni masquer les distances au mur servant au réglage.
+- Ouvertures : grandes ossatures toujours à 5 cm du bord, petits renforts à
+  10 cm vers l’intérieur depuis leur axe ; verticales d’ouverture en pointillés.
+- Orbite SceneKit limitée à l’hémisphère supérieur, butée 89,5° pour éviter
+  la singularité du pôle ; vue de dessus dédiée en déplacement panoramique.
+- Contour de plafond éditable avec l’éditeur 2D partagé, hauteur/pente séparées.
+  Rejet des chevauchements avec un autre plafond ; murs scannés conservés.
+  Loupe déportée à gauche pendant le déplacement d’un sommet.
+- « Réparer le relevé » remplace l’entrée de contrôle manuel : surbrillance orange,
+  comparaison avant/après, choix explicite des fermetures et application atomique.
+  Propositions conservatrices : ouvertures non identifiées non validées,
+  ouvertures génériques entièrement surélevées/encadrées, interruptions de murs
+  colinéaires de 10 cm à 3 m. Portes/fenêtres identifiées, passages au niveau du
+  sol et coins manquants ne sont pas fermés automatiquement. Une zone sans
+  proposition reste corrigeable via Modifier le plan.
+- Les réparations ne modifient jamais `initialRoom`. Les nouveaux raccords
+  conservent les hauteurs aux extrémités (rampants), sont des murs existants
+  manuellement ajoutés, et ne sont pas arbitrairement attribués à un ouvrage.
+  Les modifications des surfaces déjà liées passent par `updateSurveyRoom`.
+- Recette simulateur : suggestions d’adresse/menu GPS, absence de suggestion
+  sur une pièce intacte, aperçu orange/avant-après d’un trou synthétique,
+  validation puis vérification de la sauvegarde (autre pièce intacte), ouverture
+  du contour 2D depuis le configurateur de plafond. Aucune donnée réelle copiée
+  ni modifiée pendant ces tests.
+- Installation demandée puis réussie le 8 octobre à 22:38 sur l’iPhone 16 Pro
+  `6A65A405-C70C-5FEF-88B6-B110C4E648B8`, bundle `fr.plaquisto.lab`, sans recopie
+  ni remplacement de l’archive des projets. Lancement automatique refusé car
+  l’iPhone était verrouillé ; ouverture manuelle possible après déverrouillage.
+- Validation finale : 353 tests réussis, zéro échec (ProjectStoreTests,
+  SheetLayoutEngineTests, SurveyCaptureTests). Compilation iPhone Lab signée
+  réussie. Journaux : `/tmp/plaquisto-repairs-verified-tests.log` et
+  `/tmp/plaquisto-repairs-final-device.log`. Les tests d’orbite simulent les gestes
+  SceneKit et vérifient les deux butées, pas seulement les valeurs des propriétés.
+
+## Lab Contraste — première tranche, 8 octobre 2026
+
+- Reprise du target `PlaquistoLab` (`fr.plaquisto.lab`) pour tester une présentation
+  épurée sans remplacer Plaquisto (`fr.plaquisto.app`). Même `ProjectStore`, mêmes
+  modèles, références et calculateurs, mais sandbox distinct : aucune synchronisation
+  implicite, aucun App Group, aucune modification des données de production.
+- Présentation activée explicitement par l’environnement `interfacePresentation`.
+  La valeur par défaut reste `.standard`. Première tranche : galerie des projets,
+  page projet, fiche ouvrage, présentation du relevé et quantitatif.
+- Vignettes réelles mises en cache via le moteur existant ; la vignette d’un ouvrage
+  sélectionne seulement ses surfaces liées. Les ouvrages sans scan sont présentés
+  honnêtement avec une icône, pas une fausse maquette.
+- Actions secondaires dans les menus ; informations complémentaires repliables.
+  Alertes de données, de géométrie et de quantitatif conservées. Formulaires et
+  éditeurs métier réutilisés sans nouveau moteur de calcul.
+- Réglages du Lab : accès à l’interface actuelle sur les données du Lab pour
+  comparer. Le faux onglet Stock n’est pas affiché dans la nouvelle navigation.
+- Parcours de recette : projet → relevé 3D/2D → sélection de surfaces → création
+  d’ouvrage → retour projet → fiche ouvrage → calepinage/configuration/quantitatif ;
+  puis quantitatif global, tout/aucun, sélection partielle et feuille de partage.
+  Vérifier aussi recherche par lieu/date, retour arrière et menus secondaires.
+- Validation : 201 tests ciblés réussis (ProjectStoreTests + SurveyCaptureTests),
+  incluant présentation opt-in et correspondance des surfaces des vignettes.
+  Résultat : `/tmp/PlaquistoContrastRegression/Logs/Test/Test-Plaquisto-2026.10.08_18-09-49-+0200.xcresult`.
+  Compilation simulateur réussie, installation et lancement `fr.plaquisto.lab`
+  sur `A734A080-B465-4BE5-B4E1-984AAD24696A`, avec copie du relevé synthétique de
+  test du second simulateur (pas de projets réels dans le simulateur).
+- Compilation iPhone signée et installation réussies le 8 octobre à 18:28,
+  bundle `fr.plaquisto.lab`, après rétablissement du tunnel. Le Lab ne contenait
+  aucune archive `projects-v2.json` (inventaire contrôlé) : copie des 7 projets,
+  15 ouvrages et 9 relevés de Plaquisto dans le sandbox Lab, relue et comparée
+  au fichier source avant lancement. Les anciens comparatifs photo du Lab sont
+  conservés ; aucun écrasement de données préexistantes ni de données de production.
+- Contrôle visuel interactif non réalisé : Mac verrouillé, l’outil UI demande un
+  déverrouillage manuel. Ne pas présenter cette tranche comme validée visuellement.
+  Lancement iPhone refusé par iOS car verrouillé (installation réussie) ; ouvrir
+  manuellement Plaquisto Lab après déverrouillage. Démarrage simulateur confirmé.
+  Pas de commit, push ni remplacement de l’app de production.
+
+## Parement collé et synchronisation du relevé — 8 octobre 2026
+
+- Crash iPhone confirmé dans `Plaquisto-2026-10-07-235906.ips` :
+  `AdhesiveFacingConfiguratorView.selectedFormat`, appelé par le message d’alerte
+  avant chargement du catalogue, accédait à `formats[1]` sur une liste vide.
+  Format désormais optionnel, aucun format fictif ni enregistrement sans catalogue ;
+  sélections normalisées à la réception des formats. Tests création/édition pendant
+  chargement et catalogue vide/à un format.
+- À la demande utilisateur, modifier un relevé ne réclame plus un contrôle manuel.
+  Géométrie valide utilisable directement ; l’éditeur enregistre et synchronise les
+  composants liés dans une seule transaction, avec leurs ouvertures. Les choix de
+  matériaux, identités et placements des plans sont conservés. Les suppressions de
+  surfaces retirent leurs composants liés ; les divisions explicites de plafonds
+  conservent le mécanisme d’héritage de grille existant.
+- Surfaces de formulaire et répartitions de parements actualisées. Estimations
+  enregistrées ajustées selon les surfaces nettes, longueurs périphériques et axes
+  d’ossature, en conservant les produits et coefficients existants (pas un nouveau
+  calcul mécanique complet depuis Admin). Quantitatif de plan déjà adopté recalculé
+  si exploitable, sinon retour à l’estimation du formulaire. Les autres ouvrages ne
+  sont pas modifiés. Contrôles de géométrie et d’éditeur périmé conservés.
+- Migration des anciens drapeaux de contrôle vers la géométrie liée actuelle lors
+  du chargement. Une source introuvable dans une ancienne sauvegarde n’entraîne
+  pas la suppression de son composant pendant cette migration.
+- 415 tests Swift réussis : `/tmp/plaquisto-survey-sync-verified-tests.log`, plus
+  un test additionnel réussi de recalcul automatique d’un quantitatif de plafond
+  déjà adopté (`/tmp/plaquisto-survey-sync-takeoff-tests.log`).
+  Compilation iPhone signée réussie :
+  `/tmp/plaquisto-oct8-adhesive-survey-device-build.log`.
+  Pas encore d’installation de cette correction, ni commit/push.
+- Book graphique demandé à l’agent existant `redesign_clair` : livrables PNG,
+  comparaison de l’existant et de propositions plus neutres/minimalistes, sans
+  modification de l’interface de production. Second simulateur et jeu de données
+  synthétiques, pas de scans privés.
+  Livrables dans `/Users/edouard/Downloads/Plaquisto-Book-Refonte-2026-10-08` :
+  couverture et 13 planches (8 parcours, familles couvrant les 11 outils),
+  planche-contact, captures réelles et reconstitutions explicitement distinguées.
+  Direction précisée par l’utilisateur : harmoniser légèrement l’existant, surtout
+  simplifier sa lecture. Contrôle visuel des planches ; corrections des contours,
+  chevauchements, dates, références de fournitures et actions essentielles.
+
+## Publication et installation — 7 octobre 2026, 23:47
+
+- Admin : commit `0b39959` poussé sur main, déploiement Vercel réussi. API publique
+  vérifiée : Appuis intermédiaires pour fourrures et deux composants distincts
+  Cheville crampon 8 mm / Piton de suspension 8 mm, coefficients inchangés.
+- Persistance des fiches en base encore en attente d’authentification Admin :
+  Safari était déconnecté ; lien envoyé à l’utilisateur, connexion demandée.
+  Ne pas confondre publication API effective et migration en base effective.
+- Dernier code iOS compilé signé (équipe U6X2KSN84X), installé sur l’iPhone 16 Pro
+  `6A65A405-C70C-5FEF-88B6-B110C4E648B8`, bundle `fr.plaquisto.app`, séquence 3856.
+  Installation réussie ; lancement automatique refusé car iPhone verrouillé.
+- 410 tests Swift et 15 tests Admin réussis avant publication ; build Admin
+  webpack et build iPhone réussis. Aucun projet utilisateur supprimé.
+
+## Cheville et piton séparés — 7 octobre 2026
+
+- Accord utilisateur : décomposer le lot « Cheville et piton » des plafonds
+  rails/montants en une Cheville crampon 8 mm + un Piton de suspension 8 mm,
+  chacun compté en unités et regroupé avec les fournitures des plafonds fourrures.
+- Nouveaux résultats et fournitures par suspente séparés ; compatibilité des
+  anciennes quantités conservée dans le regroupement et l’export. Les calculs
+  issus du calepinage conservent leur couverture sans double comptage du lot.
+- Admin : composants explicites ajoutés au support béton, avec migration ciblée
+  seulement si la liste n’existait pas (configurations personnalisées préservées).
+  iOS lit cette liste et possède la compatibilité de l’ancien libellé hors ligne.
+- 410 tests Swift et 15 tests Admin réussis ; lint Admin et diff-check réussis.
+  Non publié sur Admin et non installé sur l’iPhone.
+
+## Regroupement des isolants — 7 octobre 2026
+
+- Accord utilisateur : regrouper les m² d’un même isolant, épaisseur et lambda
+  identiques, indépendamment de la couche ou de l’ouvrage. Les configurations
+  et les coefficients de chaque ouvrage restent inchangés.
+- Normalisation conservatrice des formats de libellés connus (ordre épaisseur /
+  lambda, virgule décimale, première/deuxième couche, R dérivé). La désignation
+  complète du produit est conservée, dont les mentions kraft et les références
+  commerciales. Les anciennes lignes sans lambda exploitable restent distinctes.
+- Plafonds et cloisons génèrent désormais un libellé explicite avec lambda ; les
+  plafonds rails/montants conservent le titre catalogue complet plutôt que le seul
+  matériau. Aucun changement de bases de calcul Admin requis pour cette étape.
+- 408 tests Swift réussis, dont regroupement doublage double couche + plafond,
+  idempotence, différences de produit / épaisseur / lambda et conservation des
+  configurations. Non installé sur l’iPhone.
+
+## Appuis intermédiaires pour fourrures — 7 octobre 2026
+
+- Nom validé : Appuis intermédiaires pour fourrures. Les anciens libellés
+  « pour doublage sur fourrure », verticaux, horizontaux et embrasure sont
+  regroupés avec addition des quantités, sans modifier les calculs.
+- Canonicalisation des sauvegardes, résultat du calculateur d’ouvertures et
+  libellé du formulaire doublage mis à jour. Les appuis pour montants restent distincts.
+- Données initiales et migration ciblée préparées dans Plaquisto Admin.
+  110 tests Swift ciblés et 14 tests Admin réussis ; lint Admin et diff-check réussis.
+  Ces changements ne sont pas encore publiés sur Admin ni installés sur iPhone.
+
+## Montants d’embrasure, rails et vis — 7 octobre 2026
+
+- Précision utilisateur : chaque montant latéral d’embrasure prend la hauteur
+  sol-plafond ; chaque transversal prend la largeur de l’ouverture. Les règles
+  existantes de nombre de pièces sont conservées, mais les montants sont désormais
+  fournis uniquement en mètres linéaires, sous le profil exact de l’ouvrage.
+- Le profil est transmis et sauvegardé dans le contexte des ouvertures (champ
+  optionnel pour les anciennes sauvegardes). Les profils M48/35 et M48/50 restent
+  distincts. À défaut de profil connu, la référence est explicitement à préciser.
+- Rails Rxx au pluriel ; anciennes quantités génériques de doublage/cloison
+  résolues avec leur configuration. Les rails alvéolaires restent séparés.
+- Plafond rails/montants : libellés de vis parement/première peau remplacés par
+  Vis TTPC 25, deuxième peau par Vis TTPC 35, avec compatibilité des anciens noms.
+  Les autres références explicites, dont TTPC 45, ne sont pas fusionnées.
+- Vérification : 404 tests Swift réussis, dont conversion géométrique, conservation
+  des profils, anciennes sauvegardes et consolidation ouvrage + ouvertures.
+  git diff --check réussi. Changements iOS uniquement, non installés sur l’iPhone.
+
+## Fourrures d’ouverture regroupées — 7 octobre 2026, 22:54
+
+- Accord utilisateur : fourrures de renfort, latérales, transversales et
+  d’embrasure regroupées sous Fourrures F45/F47. Calculs géométriques inchangés ;
+  pièces et mètres linéaires conservés séparément. Les montants restent distincts.
+- Canonicalisation des anciennes sauvegardes et regroupement dès le résultat du
+  calculateur d’ouvertures. Tests des renforts de fenêtre et fenêtre de toit,
+  des totaux et des unités ; 104 tests Swift ciblés réussis.
+- Ces appellations proviennent du moteur iOS, pas de fiches Admin distinctes :
+  aucune nouvelle publication Admin nécessaire. Non installé sur l’iPhone.
+
+## Hourdis simples et cornières — 7 octobre 2026, 22:49
+
+- Nouvelle précision utilisateur, qui remplace la distinction précédente :
+  Suspente hourdis à griffe et Suspente hourdis regroupées sous Suspentes hourdis
+  simples. Suspente hourdis à serrer reste un produit distinct.
+- Cornière d’angle plafond et Cornière d’ouverture regroupées sous Cornière,
+  y compris les cornières périphériques issues du calepinage. Mètres linéaires
+  et unités conservés séparément ; cornières de rive du plafond modulaire non
+  assimilées. Coefficients et règles de fixation inchangés.
+- Admin commit `cb8bc57`, publication Vercel réussie et valeurs vérifiées sur
+  l’API publique. Code iOS mis à jour pour les anciens noms et les nouveaux
+  quantitatifs ; 102 tests Swift ciblés et 13 tests Admin réussis, lint et build
+  Admin réussis. Pas de nouvelle installation iPhone.
+
+## Suspentes hourdis distinctes — 7 octobre 2026, 22:42
+
+- L’utilisateur confirme deux produits différents : ancien libellé Suspente
+  hourdis à griffe à serrer renommé Suspente hourdis à serrer ; Suspente hourdis
+  à griffe conservée séparément, ainsi que Suspente hourdis simple.
+- Admin : composants et titres des deux systèmes fourrures concernés renommés,
+  identifiants et calculs conservés ; migration ciblée des anciens libellés.
+  Commit `d105c3d` poussé sur main, Vercel réussi et trois produits distincts
+  contrôlés sur l’API publique. Pas de fusion avec la fixation rails/montants.
+- iOS : ancien libellé reconnu à la consolidation ; 17 tests Swift ciblés et
+  11 tests Admin réussis, lint et build Admin réussis. Non réinstallé sur iPhone.
+
+## Regroupement Demi-collier validé — 7 octobre 2026, 22:37
+
+- Accord utilisateur : Demi collier / Demi-collier regroupés sous Demi-collier.
+  Quantités et règles de fixation inchangées ; anciens noms consolidés côté
+  iOS et présentation du formulaire rails/montants harmonisée, même en cache.
+- Admin commit `a506c38` poussé sur main, déploiement Vercel réussi ; fixation
+  bois des plafonds rails/montants et composant des plafonds fourrures vérifiés
+  dans le catalogue public. Migration ciblée des supports de la règle existante.
+- 16 tests Swift ciblés et 10 tests Admin réussis ; lint ciblé et build Admin
+  réussis. Pas de nouvelle installation iPhone.
+
+## Regroupement TRPF 13 validé — 7 octobre 2026, 22:34
+
+- Accord utilisateur : Vis TRPF 13, variante solidarisation des montants et
+  variante fixation des suspentes regroupées sous Vis TRPF 13. Calculs par
+  usage conservés et quantités additionnées ; TRPF 25 distinctes.
+- Admin commit `7aef862` sur main, déploiement Vercel réussi ; libellés des deux
+  composants vérifiés sur le catalogue public. Renommage ciblé des anciennes
+  fiches via le mécanisme de publication commun, sans changement de coefficient.
+- iOS : consolidation des anciennes sauvegardes et noms du formulaire plafond
+  rails/montants harmonisés. 15 tests Swift ciblés et 9 tests Admin réussis,
+  compilation Admin réussie. Pas de nouvelle installation iPhone.
+
+## Regroupements validés — 7 octobre 2026, 22:29
+
+- Accord utilisateur : Bande PP grand rouleau → Bande à joint ; Vis TTPC 35 mm
+  (2e parement) → Vis TTPC 35. Coefficients inchangés ; consolidation iOS des
+  anciennes et nouvelles appellations sans perte de quantité. Les vis 25/45/70
+  restent distinctes. Libellé de repli de la cloison alvéolaire harmonisé.
+- Admin : commits `930d76a` et `ee63020` poussés sur main, déploiements Vercel
+  réussis. Deux appellations contrôlées sur le catalogue public de production.
+- Vérification : 14 tests Swift ciblés et 8 tests Admin réussis, build Admin
+  réussi. Code iOS non réinstallé depuis ces regroupements ; aucune autre
+  famille fusionnée sans validation.
+
+## Publication Admin — 7 octobre 2026, après installation
+
+- Admin main : commit `8b59f5c`, déploiement Vercel réussi. Catalogue public
+  contrôlé : peinture révision `2026-10-07.2`, réserve 10 %, Airless 0 %,
+  épaisseurs rebouchage 10–50 mm, garnissant 1–5 mm, finition 0,5–1 mm.
+- Libellés F45/F47, TTPC 25 et enduits à joints vérifiés en production.
+  Transformation ciblée des anciennes fiches à la lecture publique, sans
+  écraser les coefficients personnalisés ; persistance prévue à l’ouverture
+  authentifiée d’Admin (non déclenchée pendant cette publication).
+- Six tests Admin réussis, lint ciblé et build webpack réussis.
+- Audit de doublons demandé : aucun nouveau regroupement sans validation.
+  Premier candidat : Bande PP grand rouleau (plafond fourrures et cloison
+  alvéolaire) / Bande à joint. Autres candidats à examiner : TTPC 35,
+  TRPF 13 selon usage, Demi collier / Demi-collier, suspentes hourdis à griffe,
+  cornières (dimensions et unités à vérifier avant tout regroupement).
+
+## Installation iPhone — 7 octobre 2026, 22:11
+
+- Dernière série peinture progressive, renforts d’ouvertures et quantitatif
+  compilée en Debug signé (équipe U6X2KSN84X) et installée sur l’iPhone 16 Pro
+  d’Edouard, bundle `fr.plaquisto.app`, séquence **3848**.
+- Journal : `/tmp/plaquisto-oct7-latest-install-build.log` (BUILD SUCCEEDED).
+- Lancement automatique refusé car l’iPhone est verrouillé ; installation
+  confirmée, ouverture manuelle possible après déverrouillage.
+- Installation uniquement : changements non poussés et nouvelles bases Admin
+  toujours non publiées. Les vérifications de la série sont détaillées ci-dessous.
+
+## Peinture progressive, ouvertures et quantitatif projet — 7 octobre 2026, soir
+
+- Formulaire peinture : choix indépendants ratissage / impression / finition en
+  première étape ; seules les étapes retenues sont présentées. Trois vignettes
+  rouge/verte/bleue pour les enduits ; ajout et suppression de passes dans une
+  même étape, chacune avec son pourcentage et sa présentation poudre/pâte.
+  Rebouchage 1–5 cm par cm, garnissant 1–5 mm par mm, finition 0,5 ou 1 mm.
+  Rendements peinture par pas de 1 m²/L. Airless retiré des nouvelles saisies ;
+  réserve générale 10 % conservée. Les snapshots historiques conservent leurs
+  calculs jusqu’à une édition explicite (nouvelle saisie sans Airless).
+- Depuis Ajouter un ouvrage, un projet contenant un relevé propose d’y choisir
+  les surfaces ou de saisir les dimensions. Le type et le nom choisis sont
+  conservés, avec choix du relevé si plusieurs sont disponibles.
+- Tapée non demandée dans les formulaires : estimation isolant + parements
+  (+15 mm pour lisses/fourrures), épaisseur de parement enregistrée depuis les
+  choix catalogue. Les anciennes profondeurs mesurées explicitement priment.
+  Estimation accessible à SurveyPlanFinishes et contrôles de menuiserie liés.
+- Calepinage des doublages liés à un ouvrage : renforts fixes à 50 mm à l’axe
+  autour des ouvertures, montants/rails ou fourrures/cornières selon système.
+  Fourrures courtes alignées aux bords des fenêtres en lisses/fourrures ; pas de
+  traverse ni de tronçon bas pour les portes. Profils découpés au contour réel.
+  Appuis représentés selon le nombre de lignes d’appuis du formulaire ; les
+  renforts ne suivent pas la translation de la trame. Aimantation de celle-ci
+  aux renforts latéraux, soustraction des profils superposés pour les fusionner.
+  Les plaques se calent sur la trame régulière la plus proche, pas les renforts.
+- Quantitatif projet : Tout sélectionner / Tout désélectionner et partage natif
+  d’un fichier texte consolidé, avec ouvrages inclus et avertissements source.
+  Aliases F45/F45-F47 et TTPC 25/25-ou-35 homogénéisés, sans fusion des vraies
+  vis TTPC 35. Enduit à joints en poudre/pâte renommé avec accord utilisateur.
+  Regroupement des plaques 260/270 abandonné à sa demande.
+- Autres doublons proposés, NON fusionnés : Bande PP grand rouleau / Bande à
+  joint ; Vis TTPC 35 mm (2e parement) / Vis TTPC 35 ; libellés TRPF 13 par usage.
+- Vérification : **391 tests Swift réussis**, **3 tests Admin réussis** ; build
+  iOS appareil non signé réussi et build Next.js webpack réussi. Simulateur :
+  choix du relevé/type plafond conservé, formulaire et ajout de passe contrôlés,
+  sélection des trois ouvrages en un clic, noms consolidés, feuille de partage
+  avec Enregistrer dans Fichiers. Aucune sauvegarde de formulaire test créée.
+- Journaux : `/tmp/plaquisto-oct7-changes-tests-final.log`,
+  `/tmp/plaquisto-oct7-changes-device-build.log`,
+  `/tmp/plaquisto-admin-oct7-changes-build.log`.
+- **Non installé sur l’iPhone, non commité/poussé, Admin non redéployé** pour
+  cette nouvelle série. Dernière installation physique ci-dessous inchangée.
+
+## Installation iPhone peinture + DAE — 7 octobre 2026, 08:10
+
+- Compilation Debug signée réussie, installation confirmée sur l’iPhone 16 Pro
+  d’Edouard, bundle `fr.plaquisto.app`, séquence d’installation **3840**.
+- Inclut Peinture et ratissages (bases Admin 5.1 publiées), réserve 10 % et
+  Airless 5 %, ainsi que le correctif DAE et son bouton visible sous la maquette.
+- Dernière suite : 383 tests Swift réussis. Journal de compilation :
+  `/tmp/plaquisto-painting-dae-install-build.log`.
+
+## Publication Admin peinture — 7 octobre 2026
+
+- À la demande de l’utilisateur, changements Admin commités et poussés sur
+  `Plaquisto-admin/main` : `d7ed23a`. Déploiement Vercel de production réussi.
+- Catalogue public `https://plaquisto-admin.vercel.app/api/ios/catalogue`
+  vérifié en version **5.1** : six enduits conformes, rendement 8–12 m²/L,
+  réserve 10 %, Airless 5 %. Les rubriques existantes restent présentes.
+- Les coefficients sont désormais disponibles à iOS. La présence des deux
+  nouvelles fiches physiques dans Supabase n’a pas été vérifiée : le catalogue
+  possède le repli publié prévu, et l’ouverture authentifiée d’Admin insère les
+  fiches manquantes selon son workflow existant. Aucun accès administrateur à
+  la base n’a été utilisé pour cette publication.
+- Application iPhone non installée pendant cette publication.
+
+## Peinture et ratissages + correctif DAE — 7 octobre 2026
+
+- Nouveau formulaire en trois étapes : ratissage, peinture, quantitatif. Jusqu’à
+  trois passes indépendantes : type d’enduit poudre/pâte, épaisseur au curseur,
+  traitement intégral ou pourcentage de surface propre à chaque passe.
+- Impression facultative, finition 1–3 couches, rendement en **m²/L** (8–12
+  dans les bases initiales), nom et teinte facultatifs. Ratissage sans peinture
+  possible. Catalogue personnel de noms/rendements conservé sur l’appareil.
+- Réserve générale **+10 %** pour tous les consommables ; Airless **+5 %**
+  uniquement sur les peintures, avant réserve : **×1,155** au total.
+- Moteur de calcul partagé formulaire/quantitatif projet. Chaque ouvrage garde
+  les règles Admin utilisées, ses choix par passe et ses teintes. Un recalcul
+  de surface issue d’un relevé conserve ces choix et déduit les ouvertures.
+- Identifiant historique `peinture-beta` maintenu pour les sauvegardes ; tous
+  les libellés d’ouvrage deviennent « Peinture et ratissages ». Une ancienne
+  sauvegarde de surface seule reste lisible, sans inventer de consommables.
+- Plaquisto Admin : nouvelle famille, fiche de coefficients éditable, contrat
+  `peintureRatissages.regles.data`, validation de PATCH/PUT, tests de contrat.
+  Aucun coefficient de production codé en secours dans iOS : téléchargement,
+  cache validé et copie dans l’ouvrage. Sans base disponible, message Réessayer.
+- Contrôle visuel au simulateur des trois étapes avec fixture Admin locale,
+  trois passes et Airless ; aucun ouvrage de test sauvegardé. Fixture temporaire
+  retirée après contrôle. Arrondi supérieur corrigé pour ne pas afficher 23,2 L
+  au lieu de 23,1 L à cause des erreurs binaires flottantes.
+- Export DAE : triangles d’aire nulle aux pointes des sols/plafonds retirés avant
+  génération des normales, sans retirer de surface. Les vraies erreurs restent
+  bloquantes avec identification de la surface ; pas d’export partiel silencieux.
+  Bouton « Exporter DAE » directement visible sous la maquette, partage iOS vérifié.
+  Sous-agent : 8/8 relevés iPhone raccordés exportés, ancien relevé non raccordé
+  toujours bloqué explicitement. Diagnostics privés non ajoutés au dépôt.
+- Vérifications : **383 tests Swift réussis**, **2 tests de contrat Admin réussis**, lint ciblé, compilation
+  iPhone non signée et compilation Admin Webpack (Turbopack échoue sur le lancement
+  du processus Node dans cet environnement). Logs `/tmp/plaquisto-painting-*.log`.
+- **Non publié / non installé** : les modifications Admin doivent être déployées
+  pour rendre la nouvelle rubrique disponible sur un iPhone sans cache. Pas de
+  déploiement, commit, push ou installation physique pendant cette tâche.
+
+## Accueil en vignettes, recherche et export DAE — 6 octobre 2026
+
+- Accueil Projets en cartes adaptatives : miniature 3D du dernier scan, sinon
+  résumé des surfaces par famille d’ouvrage (pas de double comptage des peaux).
+  Nom, adresse et date du scan/de création affichés ; duplication et suppression
+  confirmée accessibles dans le menu de chaque carte.
+- Recherche locale par nom, client, adresse, ville, code postal, nom du relevé et
+  dates françaises/ISO ; indépendante de la casse et des accents. Les adresses
+  issues des positions de capture sont résolues séquentiellement puis conservées
+  dans `captureAddress`, sans écraser l’adresse du projet. Hors réseau, les
+  adresses déjà enregistrées restent recherchables. Aucun GPS courant utilisé.
+- Date de capture conservée explicitement (`capturedAt`) pour les nouveaux
+  relevés. Anciens relevés : position GPS, métadonnées originales, puis date de
+  création en repli ; une date sentinelle Unix zéro n’est pas affichée comme scan.
+- Export depuis le menu du relevé : « Exporter le relevé en DAE », puis feuille
+  de partage iOS directe. COLLADA 1.4.1 autonome, mètres/Y vertical, matériaux
+  simples, normales, murs et ouvertures, sols et plafonds existants/édités.
+  Aucun plafond inventé ; aucune caméra, sélection ou texture externe exportée.
+  Épaisseur des murs exportée seulement si connue, contrairement à l’épaisseur
+  illustrative du visualiseur. Les zones non raccordées sont explicitement
+  refusées, sans appliquer la séparation artificielle de l’aperçu.
+- Sérialisation sur tâche de fond, instantané immuable, fichier temporaire unique
+  conservé pour la feuille de partage. Aucun envoi automatique ni modification du
+  relevé. SceneKit ne fournit pas l’écriture DAE sur iOS : exporteur XML portable.
+- Miniatures statiques 576 × 432, cache plafonné à 12 Mio, pas de scène animée par
+  carte. Compatibilité Codable conservée pour les anciennes sauvegardes.
+- Validation : **373 tests réussis**, compilation simulateur et compilation iOS
+  réussies. Logs `/tmp/plaquisto-gallery-dae-verified-tests.log` et
+  `/tmp/plaquisto-gallery-dae-device-build.log`. Exemple DAE validé contre le XSD
+  COLLADA officiel Khronos, puis réimporté par SceneKit macOS (5 maillages).
+  Pas de vérification dans SketchUp ni d’envoi Mail réel revendiqués.
+- Contrôles simulateur : cartes avec/sans scan, recherche nom/date, feuille de
+  partage présentant le fichier comme ressource 3D. Partage fermé sans envoi.
+  GPS/adresses couverts par les tests de recherche ; aucun nouveau scan réel ni
+  géocodage terrain effectué pendant cette vérification.
+- **Installé sur l’iPhone 16 Pro le 6 octobre 2026 à 23:17**, bundle
+  `fr.plaquisto.app`, séquence CoreDevice `3784`. Compilation signée réussie
+  (`/tmp/plaquisto-gallery-dae-install-build.log`). Lancement automatique refusé
+  parce que l’iPhone était verrouillé (`Locked`). Aucun commit/push pour ce lot.
+
+## Plan plein écran et aperçu permanent des spots — 6 octobre 2026
+
+- Éditeur de plan : rotation de la vue au mur suivant en haut à gauche en mode
+  Vue ; plein écran en haut à droite, recentrage dans son menu contextuel.
+  Zoom conservé, transformation inverse appliquée aux gestes d’édition ; aucun
+  changement de géométrie par la rotation. Cadrage initial différé jusqu’à une
+  taille de fenêtre valide pour éviter un plan minuscule à l’ouverture.
+- Électricité des plafonds : seule la répartition automatique reste dans les
+  commandes, retrait des organisateurs avancés et de l’ajout manuel. Les commandes
+  des équipements muraux restent inchangées.
+- Répartition automatique : aperçu fixe au-dessus du formulaire défilant,
+  déplacements du groupe sur cet aperçu, choix du nombre et des variantes,
+  deux curseurs et rotation 90° conservés. Pas de bouton « Centrer tous les spots ».
+- Vérification simulateur : rotation successive et plein écran, aperçu toujours
+  visible après défilement, 6/12 spots, variante 4 × 3 et rotation 90°. Les poses
+  hors support ne peuvent pas être appliquées. Changements de test non enregistrés.
+  Les glissements physiques via le pilotage du simulateur restent intermittents ;
+  le défilement a aussi été contrôlé via son action d’accessibilité.
+
+## Lisibilité et suppression dans l’éditeur de plan — 6 octobre 2026
+
+- Curseur de tracé/pose de porte déporté de 64 points vers la gauche et 18 vers
+  le haut (au lieu de 38 horizontalement), borné au cadre et indépendant du zoom.
+- Présentation rapprochée du calepinage : onglets en capsule, plan arrondi avec
+  marges, commandes rondes de 44 points sur fond translucide autour du dessin
+  (aimantation, recentrage, annulation, dimensions et suppression contextuelles).
+- Sélection d’une porte sur toute sa réservation, pas seulement son centre.
+  Corbeille directe avec confirmation ; suppression de cloison limitée aux
+  cloisons conçues dans l’app, avec retrait de leurs ouvertures et liens locaux.
+  Scan original et plafonds conservés ; aucune fusion implicite de plafonds.
+  L’annulation restaure le document complet avant suppression.
+- En mode Ouvertures, aucune suppression de cloison proposée à la place de la
+  porte après son retrait : la sélection est explicitement effacée.
+- Contrôle simulateur : tracé temporaire, curseur déporté, suppression/restauration
+  de cloison et de porte vérifiés, changements de test abandonnés sans sauvegarde.
+  Deux tests de régression ajoutés ; **365 tests réussis**, revalidation finale
+  et compilation simulateur réussies : `/tmp/plaquisto-editor-polish-final-tests.log`.
+- Ajustements **installés le 6 octobre 2026 à 22:25** sur l’iPhone 16 Pro,
+  séquence CoreDevice `3776`. Compilation signée réussie
+  (`/tmp/plaquisto-editor-polish-device.log`). Lancement automatique refusé
+  uniquement parce que l’iPhone est verrouillé (`Locked`). Aucun commit/push.
+
+## Éditeur de plan et spots simplifiés — 6 octobre 2026
+
+- Éditeur : modes Vue / Cotes / Cloisons / Ouvertures, navigation à un doigt en
+  Vue, déplacement à deux doigts et pincement dans les modes d’édition. Tracé de
+  cloison par points avec confirmation, continuation et annulation du tracé ;
+  épaisseur 72 mm par défaut, préréglages et saisie libre. Réservations de portes
+  73/83/93 cm ou saisie libre, cotes latérales tenant compte des épaisseurs.
+- Tapées de doublage jusqu’au parement fini renseignables dans les formulaires ;
+  représentation sur le plan et parcours vers la création/modification du doublage
+  avant reprise du tracé. Zones fermées avec surface ; proposition de division du
+  plafond existant conservant ses plans via la filiation des composants.
+- Correction ou redessin du contour d’une pièce via l’éditeur partagé, sans
+  décalage de bords de plaque ; confirmation des conséquences sur les ouvertures.
+  Données du scan original conservées, refus des cas de contours partagés ambigus.
+- Spots automatiques : 1/2/3/4/6/8/9/10/12, 2 et 3 sur une rangée ; 9 en 3×3,
+  10 en 5×2, 12 en 6×2 / 4×3 / 3×4. Deux écartements indépendants, rotation
+  de 90° par rapport aux fourrures, conservation des ajustements manuels et des
+  anciennes sauvegardes (y compris groupes manuels de 5/11 et diamètres existants).
+- Validation intégrée : **363 tests réussis, aucun échec**, compilation simulateur
+  réussie ; journal `/tmp/plaquisto-spots-integrated-tests.log`.
+- Pilotage du simulateur : l’erreur `noWindowsAvailable` sur les actions par
+  coordonnées a disparu après déplacement de sa fenêtre sur l’écran intégré du Mac.
+  Cinq glissements consécutifs du plan vérifiés visuellement. Ce contrôle ne remplace
+  pas une validation tactile sur iPhone des gestes à plusieurs doigts.
+- Lot complet **installé le 6 octobre 2026 à 22:04** sur l’iPhone 16 Pro,
+  bundle `fr.plaquisto.app`, séquence CoreDevice `3768`. Lancement confirmé à
+  22:05. Compilation iPhone signée réussie ; journal
+  `/tmp/plaquisto-install-oct6-complete.log`. Aucun commit ni push pour ce lot.
+
+## Calepinage rapide depuis un scan et division des plafonds — 2 octobre 2026
+
+- L’outil autonome s’appelle « Calepinage 2D rapide ». Les calepinages liés aux
+  ouvrages gardent leur titre. Les arcs et pointillés des icônes d’angle emploient
+  désormais la couleur d’accent commune aux outils.
+- Depuis l’accueil du calepinage autonome : « Scanner un mur ou un plafond »
+  réutilise la capture RoomPlan existante, puis la maquette et son éditeur de
+  plafonds. Sélection d’une seule surface et ouverture directe du calepinage,
+  sans création de projet ni d’ouvrage. Contour développé et ouvertures conservés ;
+  sauvegarde dans la bibliothèque autonome, rafraîchie au retour du scanner.
+  Le scan reste récupérable dans les relevés non classés.
+- Une division explicite de plafond dans le relevé met à jour les composants
+  d’ouvrage liés : chaque partie hérite des plans enregistrés, dans le repère local
+  du parent, avec orientation/décalage/quinconce des plaques et phase des fourrures
+  conservés. Les plans sont découpés, pas réinitialisés. Spots répartis sans doublon
+  sur la séparation. Le périmètre physique d’origine est gardé pour les fourrures
+  fixes à 10 cm, sans en inventer sur la séparation artificielle.
+- L’historique de filiation couvre plusieurs divisions avant un même enregistrement
+  ainsi que les divisions après réouverture. La transaction est refusée si le
+  calepinage a un contour modifié manuellement incompatible ou une révision périmée.
+  Ce mécanisme ne s’applique pas automatiquement aux rescans ni aux changements
+  de hauteur/inclinaison. Les liens plafond–mur du composant divisé sont invalidés
+  car ils ne désignent plus nécessairement un bord complet. Les quantités approuvées
+  ne sont pas remplacées sans la confirmation habituelle de l’utilisateur.
+- Validation : **350 tests réussis**, incluant plafonds plats/rampants, grille
+  décalée en quinconce, repère d’ossature indépendant, conservation du métrage,
+  divisions répétées et sauvegarde/rechargement. Compilation simulateur et iPhone
+  signée réussie. Journaux : `/tmp/plaquisto-split-quick-tests.log` et
+  `/tmp/plaquisto-split-quick-device.log`.
+- Contrôle visuel : lancement du simulateur en thème clair vérifié. Suite de
+  navigation interrompue par une erreur de contrôle du simulateur ; capture LiDAR
+  réelle non testable sur simulateur. À vérifier sur l’iPhone.
+- Installation : première tentative du 2 octobre bloquée par la déconnexion.
+  **Installé le 6 octobre 2026 à 21:02** sur l’iPhone 16 Pro, bundle
+  `fr.plaquisto.app`, séquence CoreDevice `3744`. Reconstruction signée réussie
+  après renouvellement automatique du profil (expiration : 13 octobre 2026).
+  Journal : `/tmp/plaquisto-install-oct6-build.log`. Signature vérifiée valide
+  sur disque. Lancement refusé par iOS (signature/entitlements/confiance du profil) ;
+  validation du développeur sur l’iPhone à vérifier. Aucun commit ni push.
+- Les quatre propositions de refonte claire ont été livrées séparément dans la
+  conversation. Elles ne sont pas intégrées dans ce lot iOS. Deux profils artisan
+  simulés ont parcouru l’app en lecture seule : recommandations principales,
+  miniatures de scans, recherche projet/ville, date explicite du scan et reprise
+  des relevés non classés. Aucune modification de l’accueil n’a été faite pour elles.
+
+## Orientation de la vue plafond et thème clair — 1er octobre 2026
+
+- Bouton circulaire en haut à gauche, uniquement en mode Vue d’un plafond
+  (plein écran compris) : parcourt les bords et les aligne successivement sur
+  l’horizontale. Rotation de caméra uniquement ; ni géométrie ni référence de
+  pose des plaques/fourrures modifiée. Zoom conservé, déplacement limité par le
+  cadre de visibilité existant. Aucun bord surligné en mode Vue.
+- À l’ouverture d’un plafond, orientation paysage du dessin : référence des
+  plaques privilégiée si elle donne un contour plus large que haut ; sinon
+  choix d’un bord offrant une présentation plus horizontale. Après cette
+  initialisation, orientation libre via le bouton, indépendante de la référence
+  de pose. Changer de mode ne réinitialise ni rotation ni zoom.
+- Thème clair imposé à la racine de l’app iOS, y compris les présentations.
+  Suppression de l’exception de thème sombre du mode photo ; son fond caméra
+  noir et ses commandes blanches restent intentionnels, indépendants du thème.
+- Vérifications de régression : cycle des bords, vues dessus/dessous, zoom et
+  précision des coordonnées, bord nul, référence courte et ouverture paysage.
+  **348 tests réussis**, compilation iPhone signée réussie. Journaux du lot : `/tmp/plaquisto-view-day-tests.log` et
+  `/tmp/plaquisto-view-day-device.log`.
+- Ce lot est inclus dans l’installation du 6 octobre 2026 décrite ci-dessus.
+  Aucun commit ni push.
+
+## Calepinage, implantation et correctifs rails/montants — 1er octobre 2026
+
+- Sélection des sous-parties par grille de vignettes : maquette du relevé avec
+  surface concernée sélectionnée, aperçu 2D de secours pour les composants manuels.
+- Interface iOS verrouillée en portrait, sans modifier les poses AR du scanner.
+- Plafonds sur fourrures sans cornière : supports fixes à 100 mm des bords
+  parallèles (tolérance angulaire 15°), découpés aux ouvertures et conservés lors
+  du déplacement de la trame. Métrage et suspentes inclus dans la reprise du
+  quantitatif, avec la même règle d’espacement que les autres fourrures.
+- Aimantation de la trame aux joints de plaques ; longueurs calculées pendant
+  le glissement. Distances mur/fourrure de jonction déportées hors contour et
+  éditables numériquement : déplacement de toute la trame, pas des supports fixes.
+  Affichage des cotes au maximum à une décimale, précision interne conservée.
+- Spots : dispositions 1/2/3/4/5/6/8, axes liés aux fourrures, bascule 90°,
+  sélection par rectangle et commandes d’alignement/distribution/centrage/entraxe.
+- Les ouvertures scannées étaient déjà conservées et déduites par union de leur
+  surface. Le formulaire des doublages affiche désormais leur nombre et la
+  surface déjà déduite, sans une seconde déduction ni changement de RoomPlan.
+- Correction isolants rails/montants : le catalogue publié fournit `conductivity`
+  (ex. « λ ≈ 0,035 »), pas systématiquement `lambda_w_mk`. Le décodeur partage
+  désormais la lecture du lambda du formulaire fourrures. Ajout/modification
+  de l’isolation accessible au récapitulatif même si aucun isolant n’était prévu.
+- Premier calepinage d’un ouvrage plafond dimensionné : longueur et largeur
+  du formulaire reprises en mm. Pas de rectangle inventé depuis la surface
+  seule ; pas de remplacement des composants scannés/plans enregistrés, ni de
+  duplication des dimensions globales dans chaque nouvelle sous-partie.
+- Validation : **346 tests réussis**, dont décodage du catalogue réel (lambda
+  textuel), reprise des dimensions, supports périphériques fixes, saisie des
+  distances, aimantation, dispositions des spots et déduction des ouvertures.
+  Compilation iPhone signée réussie avec équipe `U6X2KSN84X`.
+  Journaux : `/tmp/plaquisto-refinements-tests.log` et
+  `/tmp/plaquisto-refinements-device.log`. Vérification visuelle du sélecteur
+  de sous-parties, des cotes et du formulaire rails/montants dans le simulateur :
+  isolant laine de verre, lambda, épaisseur et résistance disponibles, passage
+  à l’étape suivante débloqué. Gestes réels, grandes scènes
+  scannées et performances à confirmer sur l’iPhone.
+- Lot installé sur l’iPhone d’Edouard le 1er octobre à 23 h 17 :
+  `fr.plaquisto.app`, séquence d’installation **3504**, confirmation `devicectl`.
+  Aucun commit ni push effectué.
+
+## Plafonds automatiques après scan — 1er octobre 2026
+
+- Après le traitement final RoomPlan, création directe d’un plafond par contour
+  fermé disponible, avec les mêmes réglages et géométries que le configurateur.
+  Aucun écran de proposition ni validation jaune/verte pendant l’acquisition.
+- Sélection horizontal / rampant / deux pans d’après les profils supérieurs
+  natifs des murs. Une pente automatique exige une couverture suffisante, une
+  variation d’au moins 20 cm, un bon accord avec les profils et une amélioration
+  significative par rapport à une forme plus simple. Deux pans nécessitent des
+  observations sur les deux pentes ; les hauteurs maximales des murs seules ne
+  permettent pas d’inventer un faîtage. Bruit ou ambiguïté : horizontal par défaut.
+- Réutilisation de `CeilingAutoFit` et `WallCeilingEstimate.applying` : réglages
+  sauvegardés, chaque plafond reste éditable séparément. Provenance estimée
+  conservée dans les données, sans le présenter comme une mesure LiDAR directe.
+- Murs, ouvertures, repère AR et `initialRoom` inchangés. Aucun plafond existant
+  n’est remplacé. Les contours ouverts/inexploitables restent à traiter dans
+  l’éditeur. Pas de régénération rétroactive des anciens relevés sauvegardés.
+- Ajustement hors du thread principal, après arrêt de l’acquisition. Annulation,
+  changement de capture et expiration du délai empêchent un résultat tardif de
+  remplacer le relevé courant. Les checkpoints natifs restent récupérables.
+- Vérification : **336 tests réussis**, dont 10 nouveaux tests (formes, rotation,
+  faîtage décentré, bruit/pic isolé, plusieurs pièces, préservation, édition,
+  sauvegarde/relecture et annulation). Compilation iPhone signée réussie.
+  Journaux : `/tmp/plaquisto-auto-ceilings-all-tests.log` et
+  `/tmp/plaquisto-auto-ceilings-device.log`.
+- Installation iPhone confirmée le 1er octobre à 21 h 27 : `fr.plaquisto.app`,
+  séquence **3496**. L’ouverture automatique a été refusée car l’iPhone s’est
+  reverrouillé ; lancer l’app manuellement. À tester sur un nouveau scan réel.
+  Aucun commit ni push effectué.
+
+## Installation iPhone — 28 septembre 2026, 22 h 46
+
+- Lot calepinage et quantitatif affiné installé sur l’iPhone d’Edouard après
+  déverrouillage : `fr.plaquisto.app`, séquence d’installation **3300**.
+- Compilation signée actualisée réussie (`/tmp/plaquisto-layout-install-build.log`).
+  Installation et lancement confirmés par `devicectl`. Aucun commit ni push effectué.
+- Les mentions « non installé » des sections antérieures décrivent leur état
+  avant cette installation ; les gestes restent à essayer sur l’iPhone réel.
+
+## Calepinage, commandes et quantitatif affiné — 28 septembre 2026
+
+- Miniatures des ouvrages issus d’un relevé : surfaces concernées mises en
+  évidence, cache distinct par sélection et thème. Acquisition du scan inchangée.
+- Parements du plan : sélection par famille, fonction et formats du référentiel,
+  avec 4BA déduit du produit ; plus de choix manuel des bords, de sens de pose ni
+  de coordination dans le formulaire « Plaques et pose ».
+- Commandes du plan : parallèle/perpendiculaire et changement de mur de référence
+  pour plaques et ossature indépendamment ; icône quinconce dessinée. Rotation
+  tactile du support retirée dans tous les modes. Vue plafond dessous/dessus par
+  miroir de caméra uniquement, dessous par défaut, géométrie conservée.
+- Glisser depuis l’extérieur du support déplace la vue en modes plaques/ossature ;
+  glisser depuis l’intérieur déplace la grille concernée. Plaques grises avec
+  contours renforcés. Fourrures de jonction en trait continu renforcé, distances
+  aux murs visibles avec les cotes d’ossature. Optimisation des fourrures sans
+  déplacement des plaques et sans perdre une phase déjà calée sur les joints.
+- Modifier le contour : sommets par défaut, bouton dédié au décalage des bords,
+  conservation des décalages en revenant aux sommets, cible supprimée.
+- Le formulaire plafond sur fourrures demande « Fixer une cornière en périphérie »
+  à l’étape de l’entraxe. Sans cornière, estimation des suspentes supplémentaires
+  aux extrémités dans le formulaire, remplacée par les segments réels du plan
+  lorsqu’un quantitatif affiné est accepté.
+- À l’enregistrement d’un plan lié à un plafond, proposition explicite de reprise
+  des quantités : plaques achetées après réemploi +10 % (arrondi par format),
+  profilés posés +10 %, périmètre cornières/rails +10 %. Suspentes tous les 1,20 m
+  pour fourrures ; distances sauvegardées du configurateur pour rails/montants.
+  Les extrémités sur une périphérie porteuse ne rajoutent pas de suspentes ; les
+  extrémités libres et celles des ouvertures en prévoient. Portée autoportante
+  contrôlée ; montants doubles comptés deux fois en longueur, pas en suspentes.
+- **Correction demandée : aucun besoin d’avoir tous les plans.** La fraction de
+  surface calepinée remplace sa part de l’estimation du formulaire ; la surface
+  restante conserve cette estimation. La surface totale de l’ouvrage ne diminue
+  pas. Prise en compte par peau pour fourrures ; pour rails/montants, les plaques
+  d’une sous-partie restent estimées si ses deux peaux ne sont pas calepinées,
+  mais son ossature peut être affinée. Les fournitures non concernées conservent
+  le calcul du formulaire. Les choix techniques du formulaire ne sont pas réécrits.
+- Les quantités approuvées sont sauvegardées séparément. Refuser leur actualisation
+  conserve le dernier quantitatif approuvé avec un avertissement si le plan a changé.
+  Modifier la configuration technique invalide cet instantané et rétablit le calcul
+  du formulaire. Recalcul déterministe, pas d’accumulation à chaque sauvegarde.
+- Limites : reprise automatique limitée aux deux familles de plafonds ; ne constitue
+  pas une validation de dimensionnement. Ancien formulaire rails/montants à réenregistrer
+  pour récupérer ses distances et composants de suspension. Pas d’installation,
+  de commit ou de push de ce lot pour l’instant.
+- Vérification : 326 tests réussis, compilation iPhone signée réussie.
+  Journaux `/tmp/plaquisto-layout-quantity-verified-tests.log` et
+  `/tmp/plaquisto-layout-quantity-verified-device.log`. Contrôle visuel simulateur :
+  miniature sélectionnée, commandes plaques grises/dessous, famille/fonction 4BA
+  et dimensions, cornière visible à l’étape 4 « Entraxe et plénum ».
+  Gestes tactiles réels (dont multipoint) restant à contrôler sur iPhone.
+
+## Correctifs parement d’ouvrage et plein écran — 28 septembre 2026
+
+- Le calepinage créé depuis un ouvrage conserve maintenant la référence exacte
+  du parement (produit + dimensions), et pas uniquement son format et un booléen
+  4BA. Identifiant partagé avec le parseur du catalogue ; libellé « Type de parement ».
+- Résolution lors de l’ouverture, de la création du support et du chargement du
+  catalogue. Reprise des anciens plans liés dont la référence manque, sans modifier
+  leur géométrie, leur grille ni leur ossature. Le choix explicite « Saisie manuelle »
+  est mémorisé et ne sera pas remplacé par celui de l’ouvrage. Un autre parement
+  choisi dans le calepinage reste prioritaire. La propriété 4BA est sauvegardée et
+  utilisable hors connexion une fois connue ; aucune déduction par la taille seule.
+- Plein écran : actions Optimiser/Caler visibles en modes Plaques et Ossatures ;
+  Répartition automatique/Ajouter à la main visibles en Électricité, même après
+  ajout de points. Les commandes d’organisation existantes restent accessibles.
+- Pincement rétabli en Électricité pour le zoom uniquement, sans rotation des
+  spots (demande utilisateur explicite). Rotation tactile des spots retirée du
+  plan principal ; moteur de rotation conservé pour un futur travail d’ergonomie.
+  Le calcul de la limite de déplacement après pincement conserve l’échelle de référence.
+- Vérifications : 317 tests réussis (5 régressions supplémentaires), compilation
+  iPhone signée réussie. Journaux `/tmp/plaquisto-facing-fullscreen-final-tests.log`
+  et `/tmp/plaquisto-facing-fullscreen-final-device.log`. Contrôle simulateur des
+  trois modes plein écran, actions après ajout d’un spot, et libellé Type de parement.
+  Le geste multipoint reste à essayer sur iPhone réel. Correctifs non installés,
+  non commités et non poussés ; dernière installation : lot précédent, séquence 3260.
+
+## Parcours relevé, bords 4BA et navigation du calepinage — 27 septembre 2026
+
+- Travail isolé sur `codex/survey-layout-refinements`, depuis `main` (`d789837`).
+  Acquisition RoomPlan, données des relevés et plafonds existants inchangés.
+- Entrée plafonds : sélecteur « Choisir un plafond » directement, sans afficher
+  l’éditeur de cloisons en arrière-plan. Création/modification de plusieurs zones,
+  séparation et enregistrement explicite conservés. Le bouton de configuration
+  est superposé dans la maquette ; suppression des deux bandeaux demandés.
+- Création depuis des plafonds sélectionnés : fourrures OU rails/montants,
+  surface nette exacte verrouillée, contours et ouvertures conservés. Les
+  métrés sur rails/montants restent estimatifs avec une surface seule ; le
+  formulaire l’explique. Vérifications de géométrie et non-double-attribution
+  conservées, case de confirmation manuelle retirée. Après création d’un ouvrage,
+  fermeture du parcours et navigation vers son projet via un événement transitoire.
+- Calepinage : Vue permet de toucher une plaque pour ouvrir ses cotes/découpes.
+  Bouton rond de quinconce en haut à gauche et changement de mur de référence
+  uniquement en mode Plaques. Rotation du sens/référence suivie d’une optimisation
+  asynchrone ; une modification rapide pendant le calcul relance sur le dernier état.
+- Réemploi automatique sans interrupteur ni texte sur les 20 cm. Règles
+  d’appui et seuil de 200 mm conservés dans le moteur. Règle utilisateur 4BA :
+  chaque jonction doit rester sur un bord d’usine de la plaque brute ; les
+  découpes restent possibles en périphérie et autour des ouvertures. Cette règle
+  supplémentaire n’est pas appliquée aux plaques 2BA. Placement des chutes dans
+  les quatre coins possibles des espaces libres, sans rotation, sans chevauchement.
+  Métadonnée 4BA conservée dans les configurations et plans ; reprise du catalogue
+  par identifiant produit pour les anciens ouvrages, choix explicite en format manuel.
+- Repères numérotés le long du grand côté, puis bande suivante. Les petites
+  pièces reçoivent un numéro déporté avec trait de rappel et évitement des autres
+  numéros quand l’espace le permet. Les coordonnées de découpe restent inchangées.
+- Navigation 2D du relevé : cache des tracés/étiquettes hors des mouvements.
+  Éditeur de cloisons : glissement direct, séparation du tap et du drag, absence
+  d’animation implicite ; validations métier toujours au relâchement.
+- Échelle d’affichage indépendante de la hauteur disponible : changer de mode
+  ne dézoome plus. Plein écran depuis le bouton remplaçant la cible : barres de
+  navigation/onglets et réglages inférieurs masqués, modes et visibilité conservés.
+  Sortie par le même bouton. Recentrage dans le menu et par appui long sur ce bouton.
+- Vérifications : 312 tests réussis (9 nouveaux), comprenant bords d’usine avec
+  quinconce/ouvertures/référence tournée, découpe réalisable et réemploi en périphérie,
+  choix rapides d’orientation, numéros déportés, zoom stable, rails/montants depuis
+  relevé et routage projet. Journaux `/tmp/plaquisto-survey-refinements-verified.log`
+  et `/tmp/plaquisto-survey-refinements-device.log` (compilation iPhone signée).
+  Contrôle simulateur : Vue ouvre une plaque, commandes limitées à Plaques,
+  quinconce/optimisation, plein écran et sélecteur direct cuisine/salon.
+  Preuve autonome : `/tmp/plaquisto-survey-refinements-proof.log`.
+  Fluidité tactile réelle et pincement à revalider sur iPhone ; aucun scan réel
+  ni essai terrain ajouté. Application installée et lancée sur l’iPhone d’Édouard
+  le 27 septembre à 23 h 56, sans effacement des données (séquence 3260).
+  Reçus : `/tmp/plaquisto-survey-refinements-install.json` et
+  `/tmp/plaquisto-survey-refinements-launch.json`. Ce lot reste non commité/non poussé.
+
 ## Réemploi des chutes et quinconce — 27 septembre 2026
 
 - Lot précédent poussé directement sur `origin/main` à la demande utilisateur :

@@ -5,7 +5,977 @@ import RoomPlan
 import SwiftUI
 @testable import Plaquisto
 
+final class CeilingMeshCleanupTests: XCTestCase {
+    private func rectangle(_ x:Double,_ z:Double,_ width:Double,_ depth:Double) -> [SIMD3<Double>] {
+        let a=SIMD3(x,2.5,z),b=SIMD3(x+width,2.5,z),c=SIMD3(x+width,2.5,z+depth),d=SIMD3(x,2.5,z+depth)
+        return [a,b,c,a,c,d]
+    }
+    func testTJunctionTrianglesBecomeOneBoundaryWithoutMovingVertices() {
+        let triangles=rectangle(0,0,1,2)+rectangle(1,0,1,1)+rectangle(1,1,1,1)
+        let loops=ScannerRoomBridge.boundaries(triangles,resolvingTJunctions:true)
+        XCTAssertEqual(loops.count,1)
+        XCTAssertEqual(abs(SurveyPlanFinishes.area(loops.first ?? [])),4,accuracy:1e-9)
+        for loop in loops { for p in loop {
+            XCTAssertEqual(p.y,2.5)
+            let outerEdge = p.x == 0 || p.x == 2 || p.z == 0 || p.z == 2
+            XCTAssertTrue(outerEdge,"No internal triangle edge survives as a roof boundary")
+        } }
+        XCTAssertEqual(ScannerRoomBridge.boundaries(triangles+triangles,resolvingTJunctions:true),loops,
+                       "Duplicate faces must not erase the outline")
+    }
+    func testOpeningInCeilingRemainsAHoleAndDisjointPartsStaySeparate() {
+        let triangles=rectangle(0,0,1,3)+rectangle(2,0,1,3)+rectangle(1,0,1,1)+rectangle(1,2,1,1)
+        let loops=ScannerRoomBridge.boundaries(triangles,resolvingTJunctions:true)
+        XCTAssertEqual(loops.count,2)
+        XCTAssertEqual(abs(loops.reduce(0) { $0+SurveyPlanFinishes.area($1) }),8,accuracy:1e-9)
+        let separate=ScannerRoomBridge.boundaries(rectangle(0,0,1,1)+rectangle(2,0,1,1),resolvingTJunctions:true)
+        XCTAssertEqual(separate.count,2)
+    }
+    func testDAEReusesVertexIndicesButRetainsRealGaps() throws {
+        let points=rectangle(0,0,2,3).map { RoomPoint(x:$0.x,y:$0.y,z:$0.z) }
+        let indexed=SurveyDAEExport.indexedPositions(points)
+        XCTAssertEqual(indexed.points.count,4)
+        XCTAssertEqual(indexed.indices.map { indexed.points[$0] },points)
+        let shifted=points.map { $0+RoomPoint(x:0,y:0.0001,z:0) }
+        XCTAssertEqual(SurveyDAEExport.indexedPositions(points+shifted).points.count,8)
+        let xml=try SurveyDAEExport.xml(meshes:[.init(name:"Plafond",kind:"ceiling",triangles:points)],title:"Test",date:Date())
+        XCTAssertTrue(XMLParser(data:Data(xml.utf8)).parse())
+        XCTAssertTrue(xml.contains("id=\"mesh-0-positions-array\" count=\"12\""))
+        XCTAssertTrue(xml.contains("<triangles count=\"2\""))
+        XCTAssertTrue(xml.contains("<p>0 0 1 1 2 2 0 3 2 4 3 5</p>"))
+    }
+}
+
+final class ScanWallSimplificationTests: XCTestCase {
+    private let source = GeometryProvenance(source: .roomPlan)
+    private func wall(_ x: Double, _ z: Double, _ endX: Double, _ endZ: Double, height: Double = 2.5) -> PlaquistoWall {
+        .init(start: .init(x:x,y:0,z:z), end: .init(x:endX,y:0,z:endZ),
+              length: .init(rawValue:hypot(endX-x,endZ-z),provenance:source),
+              height: .init(rawValue:height,provenance:source),provenance:source)
+    }
+    private func document(_ walls: [PlaquistoWall]) -> PlaquistoRoomDocument {
+        // The portable document uses ISO-8601 seconds, so use a stable date
+        // without fractional seconds for exact round-trip assertions.
+        .init(room:.init(walls:walls,metadata:.init(createdAt:Date(timeIntervalSince1970:1000),source:.roomPlan)))
+    }
+    func testStraightensFiveFragmentsPreservingOriginalAndRoundTrip() throws {
+        let z=[0.0,0.03,-0.01,0.02,-0.02,0]
+        let input=document((0..<5).map { wall(Double($0),z[$0],Double($0+1),z[$0+1]) })
+        let result=ScanWallSimplification.process(input)
+        XCTAssertEqual(result.mergedGroups,1)
+        XCTAssertEqual(result.removedFragments,4)
+        XCTAssertEqual(result.document.initialRoom,input.room)
+        let w=try XCTUnwrap(result.document.room.walls.first)
+        XCTAssertEqual(result.document.room.walls.count,1)
+        XCTAssertEqual(w.length.effectiveValue,5,accuracy:1e-8)
+        XCTAssertEqual(w.start.z,0,accuracy:1e-8)
+        XCTAssertEqual(w.effectiveEnd.z,0,accuracy:1e-8)
+        XCTAssertEqual(ScanWallSimplification.process(result.document).document,result.document)
+        XCTAssertEqual(try PlaquistoRoomDocument.decode(result.document.encoded()),result.document)
+    }
+    func testDoubledTolerancesAcceptFourDegreeKinkAndThreeCentimetreHeightMismatch() {
+        let offset=tan(2 * Double.pi/180)
+        let input=document([wall(0,0,1,offset),wall(1,offset,2,0,height:2.53)])
+        XCTAssertEqual(ScanWallSimplification.process(input).document.room.walls.count,1)
+    }
+    func testFourCentimetreEndpointGapAcceptedButSixRejected() {
+        XCTAssertEqual(ScanWallSimplification.process(document([wall(0,0,3,0),wall(3.04,0,6,0)])).mergedGroups,1)
+        XCTAssertEqual(ScanWallSimplification.process(document([wall(0,0,3,0),wall(3.06,0,6,0)])).mergedGroups,0)
+    }
+    func testRejectsRealCornerStepAndParallelFaces() {
+        for walls in [
+            [wall(0,0,1,0),wall(1,0,1,2)],
+            [wall(0,0,1,0),wall(1,0,2,0,height:2.55)],
+            [wall(0,0,3,0),wall(3,0.1,0,0.1)],
+            [wall(0,0,1,0.05),wall(1,0.05,2,0)]
+        ] {
+            let input=document(walls)
+            XCTAssertEqual(ScanWallSimplification.process(input).document,input)
+        }
+    }
+    func testRejectsTJunctionAndManualEdits() {
+        let walls=[wall(0,0,2,0.02),wall(2,0.02,4,0),wall(2,0.02,2,2)]
+        XCTAssertEqual(ScanWallSimplification.process(document(walls)).mergedGroups,0)
+        var edited=document(Array(walls.prefix(2)))
+        edited.room.walls[0].length.manualValue=2.1
+        XCTAssertEqual(ScanWallSimplification.process(edited).document,edited)
+        var manual=walls[0]; manual.provenance = .init(source:.manual)
+        XCTAssertEqual(ScanWallSimplification.process(document([manual,walls[1]])).mergedGroups,0)
+    }
+    func testPreservesRampantPeakAndReversedFragmentOpening() throws {
+        var a=wall(0,0,2,0.03,height:3), b=wall(4,0,2,0.03,height:3)
+        a.id=UUID(uuidString:"00000000-0000-0000-0000-000000000001")!
+        b.id=UUID(uuidString:"00000000-0000-0000-0000-000000000002")!
+        for w in [0,1] {
+            let length=w == 0 ? a.length.rawValue : b.length.rawValue
+            let profile=[RoomPoint(x:0,y:0,z:0),.init(x:length,y:0,z:0),.init(x:length,y:3,z:0),.init(x:0,y:2.5,z:0)]
+            if w == 0 { a.localOutline=profile } else { b.localOutline=profile }
+        }
+        let opening=PlaquistoOpening(wallID:b.id,kind:.door,center:.init(x:3.3,y:1,z:0),
+            width:.init(rawValue:0.8,provenance:source),height:.init(rawValue:2,provenance:source),
+            sillHeight:.init(rawValue:0,provenance:source),positionOnWall:.init(rawValue:0.3,provenance:source),provenance:source)
+        b.openingIDs=[opening.id]
+        var room=document([a,b]).room; room.openings=[opening]
+        let result=ScanWallSimplification.process(.init(room:room))
+        XCTAssertEqual(result.mergedGroups,1)
+        let merged=try XCTUnwrap(result.document.room.walls.first)
+        XCTAssertTrue(merged.effectiveOutline.contains { abs($0.x-2)<1e-8 && abs($0.y-3)<1e-8 })
+        let door=try XCTUnwrap(result.document.room.openings.first)
+        XCTAssertEqual(door.id,opening.id)
+        XCTAssertEqual(door.wallID,a.id)
+        XCTAssertEqual(door.width,opening.width)
+        XCTAssertEqual(door.height,opening.height)
+        XCTAssertEqual(door.positionOnWall.effectiveValue,4-(0.7/b.length.rawValue*2)-0.4,accuracy:1e-8)
+        XCTAssertEqual(PlaquistoWallGeometry.analyze(wall:merged,room:result.document.room).gross,11,accuracy:1e-8)
+        try result.document.validate()
+    }
+    func testFloorBoundaryFollowsWallWithoutChangingElevation() throws {
+        var room=document([wall(0,0,2,0.03),wall(2,0.03,4,0)]).room
+        room.floors=[.init(boundaries:[[.zero,.init(x:2,y:0,z:0.03),.init(x:4,y:0,z:0),.init(x:4,y:0,z:3),.init(x:0,y:0,z:3)]],provenance:source)]
+        let result=ScanWallSimplification.process(.init(room:room))
+        XCTAssertEqual(result.mergedGroups,1)
+        let point=result.document.room.floors[0].boundaries[0][1]
+        XCTAssertEqual(point.x,2,accuracy:1e-8)
+        XCTAssertEqual(point.y,0,accuracy:1e-8)
+        XCTAssertEqual(point.z,0,accuracy:1e-8)
+        XCTAssertEqual(result.document.initialRoom.floors,room.floors)
+    }
+    func testRejectsGradualCurveDespiteSmallPairwiseAngles() {
+        let z=[0.0,0.03,0.06,0.075,0.06,0.03,0]
+        let input=document((0..<6).map { wall(Double($0),z[$0],Double($0+1),z[$0+1]) })
+        XCTAssertEqual(ScanWallSimplification.process(input).document,input)
+    }
+    func testRejectsThicknessMismatchAndPreservesUnrelatedWalls() {
+        var a=wall(0,0,2,0.03),b=wall(2,0.03,4,0)
+        a.thickness = .init(rawValue:0.1,provenance:source)
+        b.thickness = .init(rawValue:0.2,provenance:source)
+        XCTAssertEqual(ScanWallSimplification.process(document([a,b])).mergedGroups,0)
+        b.thickness=a.thickness
+        let other=wall(0,3,4,3)
+        let result=ScanWallSimplification.process(document([a,b,other]))
+        XCTAssertEqual(result.mergedGroups,1)
+        XCTAssertEqual(result.document.room.walls.first { $0.id == other.id },other)
+    }
+}
+
 final class SurveyCaptureTests: XCTestCase {
+    private func evidenceFrame(depth: Float = 2, x: Float = 0, time: Double = 1) -> ScanEvidenceFrame {
+        .init(timestamp: time, cameraToWorld: [1,0,0,0, 0,1,0,0, 0,0,1,0, x,0,0,1],
+              imageWidth: 640, imageHeight: 480, fx: 320, fy: 320, cx: 320, cy: 240,
+              depthWidth: 32, depthHeight: 24, depths: Array(repeating: depth, count: 32*24))
+    }
+    private var evidenceOpening: [RoomPoint] {
+        let a = RoomPoint(x: -0.5, y: -0.5, z: -2), b = RoomPoint(x: 0.5, y: -0.5, z: -2)
+        let c = RoomPoint(x: 0.5, y: 0.5, z: -2), d = RoomPoint(x: -0.5, y: 0.5, z: -2)
+        return [a,b,c,a,c,d]
+    }
+    func testEvidenceIsLabOnlyRegardlessOfInterfaceTheme() {
+        XCTAssertTrue(ScanEvidencePolicy.isEnabled(bundleID: "fr.plaquisto.lab"))
+        XCTAssertFalse(ScanEvidencePolicy.isEnabled(bundleID: "fr.plaquisto.app"))
+        XCTAssertFalse(ScanEvidencePolicy.isEnabled(bundleID: nil))
+        XCTAssertFalse(ScanEvidencePolicy.isEnabled(bundleID: "com.someone.lab"))
+    }
+    func testEvidenceProjectionUsesCameraPoseIntrinsicsAndSensorAxes() throws {
+        let frame = evidenceFrame(x: 0.25)
+        let center = try XCTUnwrap(frame.project(.init(x: 0.25, y: 0, z: -2)))
+        XCTAssertEqual(center.x, 0.5, accuracy: 0.00001)
+        XCTAssertEqual(center.y, 0.5, accuracy: 0.00001)
+        XCTAssertEqual(center.z, 2, accuracy: 0.00001)
+        let above = try XCTUnwrap(frame.project(.init(x: 0.25, y: 0.5, z: -2)))
+        XCTAssertLessThan(above.y, center.y, "World Y up must project toward the top of the image")
+        XCTAssertNil(frame.project(.init(x: 0, y: 0, z: 2)), "Behind the camera")
+        var rotated = evidenceFrame()
+        rotated.cameraToWorld = [0,0,-1,0, 0,1,0,0, 1,0,0,0, 0,0,0,1]
+        XCTAssertEqual(try XCTUnwrap(rotated.project(.init(x: -2, y: 0, z: 0))).x, 0.5, accuracy: 0.00001)
+    }
+    func testEvidenceCannotConcludeFromRGBOrRepeatedStationaryFrames() {
+        let samePose = (0..<10).map { evidenceFrame(time: Double($0)) }
+        XCTAssertEqual(ScanEvidenceAnalysis.analyze(triangles: evidenceOpening, frames: samePose).finding, .unknown)
+        var rgbOnly = evidenceFrame()
+        rgbOnly.depths = []; rgbOnly.depthWidth = 0; rgbOnly.depthHeight = 0
+        let result = ScanEvidenceAnalysis.analyze(triangles: evidenceOpening, frames: [rgbOnly])
+        XCTAssertEqual(result.finding, .unknown)
+        XCTAssertEqual(result.observations.count, 1, "Photo remains available for human review")
+        XCTAssertEqual(result.independentViews, 0)
+    }
+    func testEvidencePortraitPhotoRotationDoesNotRotateDepthOrGeometry() throws {
+        var frame = evidenceFrame()
+        let point = RoomPoint(x: 0.5, y: 0.5, z: -2)
+        let sensor = try XCTUnwrap(frame.project(point))
+        frame.photoQuarterTurns = 1
+        let photo = frame.photoPoint(sensor)
+        XCTAssertEqual(photo.x, CGFloat(1 - sensor.y), accuracy: 0.00001)
+        XCTAssertEqual(photo.y, CGFloat(sensor.x), accuracy: 0.00001)
+        XCTAssertEqual(frame.project(point), sensor)
+        XCTAssertEqual(frame.measuredDepth(at: sensor), 2)
+    }
+    func testEvidenceDistinguishesSolidSupportFromARealPassage() {
+        let wall = [evidenceFrame(), evidenceFrame(x: 0.3)]
+        XCTAssertEqual(ScanEvidenceAnalysis.analyze(triangles: evidenceOpening, frames: wall).finding, .surface)
+        let passage = [evidenceFrame(depth: 4), evidenceFrame(depth: 4, x: 0.3)]
+        XCTAssertEqual(ScanEvidenceAnalysis.analyze(triangles: evidenceOpening, frames: passage).finding, .passage)
+        let inconsistent = [evidenceFrame(), evidenceFrame(depth: 4, x: 0.3)]
+        XCTAssertEqual(ScanEvidenceAnalysis.analyze(triangles: evidenceOpening, frames: inconsistent).finding, .mixed)
+    }
+    func testEvidenceOcclusionAndMissingDepthAreNotWallEvidence() {
+        for depth: Float in [0, 1, .nan, .infinity] {
+            let frames = [evidenceFrame(depth: depth), evidenceFrame(depth: depth, x: 0.3)]
+            XCTAssertEqual(ScanEvidenceAnalysis.analyze(triangles: evidenceOpening, frames: frames).finding, .unknown)
+        }
+        var broken = evidenceFrame()
+        broken.cameraToWorld = Array(repeating: 0, count: 16)
+        XCTAssertNil(broken.project(.zero))
+        broken = evidenceFrame(); broken.fx = .nan
+        XCTAssertNil(broken.project(.zero))
+        XCTAssertEqual(ScanEvidenceAnalysis.analyze(triangles: [], frames: [evidenceFrame()]).finding, .unknown)
+    }
+    func testEvidenceSamplesOpeningInteriorRatherThanItsJambs() {
+        let samples = ScanEvidenceAnalysis.samples(triangles: evidenceOpening)
+        XCTAssertEqual(samples.count, 8)
+        XCTAssertTrue(samples.allSatisfy { abs($0.x) < 0.5 && abs($0.y) < 0.5 })
+    }
+    private func evidenceBuffer(_ format: OSType, width: Int = 32, height: Int = 24) throws -> CVPixelBuffer {
+        var buffer: CVPixelBuffer?
+        XCTAssertEqual(CVPixelBufferCreate(kCFAllocatorDefault, width, height, format,
+            [kCVPixelBufferIOSurfacePropertiesKey: [:]] as CFDictionary, &buffer), kCVReturnSuccess)
+        return try XCTUnwrap(buffer)
+    }
+    func testEvidenceCacheRoundTripsPhotosCalibrationAndConfidenceThenExpires() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("EvidenceTests-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = ScanEvidenceStore(root: root), roomID = UUID()
+        let image = try evidenceBuffer(kCVPixelFormatType_32BGRA)
+        let depth = try evidenceBuffer(kCVPixelFormatType_DepthFloat32)
+        let confidence = try evidenceBuffer(kCVPixelFormatType_OneComponent8)
+        XCTAssertTrue([kCVPixelFormatType_DepthFloat32, kCVPixelFormatType_OneComponent32Float].contains(CVPixelBufferGetPixelFormatType(depth)), "Actual depth format: \(CVPixelBufferGetPixelFormatType(depth))")
+        XCTAssertEqual(CVPixelBufferGetPixelFormatType(confidence), kCVPixelFormatType_OneComponent8)
+        for buffer in [image, depth, confidence] {
+            CVPixelBufferLockBaseAddress(buffer, [])
+            let base = try XCTUnwrap(CVPixelBufferGetBaseAddress(buffer))
+            for y in 0..<24 {
+                let row = base.advanced(by: y * CVPixelBufferGetBytesPerRow(buffer))
+                if buffer === depth {
+                    for x in 0..<32 { row.assumingMemoryBound(to: Float.self)[x] = x == 0 ? .nan : 2 }
+                } else {
+                    memset(row, buffer === confidence ? 2 : 255, CVPixelBufferGetBytesPerRow(buffer))
+                }
+            }
+            CVPixelBufferUnlockBaseAddress(buffer, [])
+        }
+        CVPixelBufferLockBaseAddress(confidence, [])
+        CVPixelBufferGetBaseAddress(confidence)!.assumingMemoryBound(to: UInt8.self)[1] = 0
+        CVPixelBufferUnlockBaseAddress(confidence, [])
+        let source = evidenceFrame()
+        let snapshot = ScanEvidenceStore.Snapshot(image: image, depth: depth, confidence: confidence, record: source)
+        let write = try await store.write(snapshot, roomID: roomID)
+        guard case .saved(let hasDepth) = write else { return XCTFail("Expected an archived frame") }
+        XCTAssertTrue(hasDepth)
+        let frames = try await store.frames(roomID: roomID)
+        let restored = try XCTUnwrap(frames.first)
+        XCTAssertEqual(restored.cameraToWorld, source.cameraToWorld)
+        XCTAssertEqual(restored.id, source.id)
+        XCTAssertEqual(restored.depths[0], 0, "Nonfinite depth is missing, not JSON NaN")
+        XCTAssertEqual(restored.depths[1], 0, "Low confidence excluded")
+        XCTAssertEqual(restored.depths[2], 2)
+        let jpeg = await store.photo(roomID: roomID, frame: restored)
+        XCTAssertNotNil(jpeg.flatMap(UIImage.init(data:)))
+        let expired = try await store.frames(roomID: roomID, now: Date().addingTimeInterval(ScanEvidencePolicy.lifetime + 10))
+        XCTAssertTrue(expired.isEmpty)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent(roomID.uuidString).path))
+    }
+    func testEvidenceDeleteIsScopedAndMissingDepthStillKeepsThePhoto() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("EvidenceTests-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = ScanEvidenceStore(root: root), first = UUID(), second = UUID()
+        let image = try evidenceBuffer(kCVPixelFormatType_32BGRA)
+        CVPixelBufferLockBaseAddress(image, [])
+        memset(CVPixelBufferGetBaseAddress(image), 255, CVPixelBufferGetBytesPerRow(image) * 24)
+        CVPixelBufferUnlockBaseAddress(image, [])
+        var frame = evidenceFrame(); frame.depthWidth = 0; frame.depthHeight = 0; frame.depths = []
+        let snapshot = ScanEvidenceStore.Snapshot(image: image, depth: nil, confidence: nil, record: frame)
+        _ = try await store.write(snapshot, roomID: first)
+        _ = try await store.write(snapshot, roomID: second)
+        try await store.remove(roomID: first)
+        let deleted = try await store.frames(roomID: first), kept = try await store.frames(roomID: second)
+        XCTAssertTrue(deleted.isEmpty)
+        XCTAssertEqual(kept.count, 1)
+        XCTAssertFalse(kept[0].hasDepth)
+    }
+    func testEvidenceQuotaStopsImagesWithoutTouchingTheSurvey() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("EvidenceTests-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = ScanEvidenceStore(root: root), roomID = UUID()
+        let image = try evidenceBuffer(kCVPixelFormatType_32BGRA)
+        CVPixelBufferLockBaseAddress(image, [])
+        memset(CVPixelBufferGetBaseAddress(image), 255, CVPixelBufferGetBytesPerRow(image) * 24)
+        CVPixelBufferUnlockBaseAddress(image, [])
+        for _ in 0..<ScanEvidencePolicy.maximumFrames {
+            let snapshot = ScanEvidenceStore.Snapshot(image: image, depth: nil, confidence: nil, record: evidenceFrame())
+            guard case .saved = try await store.write(snapshot, roomID: roomID) else { return XCTFail("Premature quota") }
+        }
+        let snapshot = ScanEvidenceStore.Snapshot(image: image, depth: nil, confidence: nil, record: evidenceFrame())
+        guard case .full = try await store.write(snapshot, roomID: roomID) else { return XCTFail("Frame quota not enforced") }
+        let frames = try await store.frames(roomID: roomID)
+        XCTAssertEqual(frames.count, ScanEvidencePolicy.maximumFrames)
+        XCTAssertTrue(frames.allSatisfy { !$0.hasDepth })
+    }
+    func testNativePostProcessingUsesAppleBeautificationFirst() async throws {
+        var calls:[RoomBuilder.ConfigurationOptions]=[]
+        let outcome=try await NativeRoomPostProcessing.process { options in
+            calls.append(options)
+            return 42
+        }
+        XCTAssertEqual(calls,[.beautifyObjects])
+        XCTAssertEqual(outcome.value,42)
+        XCTAssertTrue(outcome.beautified)
+        XCTAssertNil(outcome.fallbackReason)
+    }
+    func testNativePostProcessingFallsBackExplicitlyWithoutInventingGeometry() async throws {
+        var calls:[RoomBuilder.ConfigurationOptions]=[]
+        let document=ceilingRoom()
+        let outcome=try await NativeRoomPostProcessing.process { options in
+            calls.append(options)
+            if options.contains(.beautifyObjects) { throw CocoaError(.coderInvalidValue) }
+            return document
+        }
+        XCTAssertEqual(calls,[.beautifyObjects,[]])
+        XCTAssertEqual(outcome.value,document)
+        XCTAssertFalse(outcome.beautified)
+        XCTAssertNotNil(outcome.fallbackReason)
+    }
+    func testNativePostProcessingPropagatesFailureAndNeverRetriesCancellation() async {
+        for cancelled in [false,true] {
+            var calls=0
+            do {
+                let _:NativeRoomPostProcessing.Outcome<Int>=try await NativeRoomPostProcessing.process { _ in
+                    calls += 1
+                    if cancelled { throw CancellationError() }
+                    throw CocoaError(.coderInvalidValue)
+                }
+                XCTFail("A failed build must not be presented as a completed reconstruction")
+            } catch {
+                XCTAssertEqual(calls,cancelled ? 1 : 2)
+                XCTAssertEqual(error is CancellationError,cancelled)
+            }
+        }
+    }
+    func testNativeCaptureArchiveIsSeparateFromFinalRoomAndRoundTrips() throws {
+        let directory=FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at:directory) }
+        let id=UUID(), input=["test":"opaque native input"]
+        try NativeRoomPostProcessing.archiveInput(input,directory:directory,chunkID:id)
+        let url=directory.appendingPathComponent(id.uuidString+".roomplan-capture")
+        XCTAssertEqual(try JSONDecoder().decode([String:String].self,from:Data(contentsOf:url)),input)
+        XCTAssertFalse(FileManager.default.fileExists(atPath:directory.appendingPathComponent(id.uuidString+".roomplan").path))
+    }
+    private func interruptedWallRoom() -> PlaquistoRoomDocument {
+        var document=ceilingRoom()
+        var left=document.room.walls.removeFirst()
+        var right=left; right.id=UUID()
+        left.end = .init(x:1,y:0,z:0); left.length.rawValue=1; left.height.rawValue=3
+        left.localOutline=[.zero,.init(x:1,y:0,z:0),.init(x:1,y:3,z:0),.init(x:0,y:2.5,z:0)]
+        right.start = .init(x:2,y:0,z:0); right.length.rawValue=2
+        document.room.walls += [left,right]
+        return document
+    }
+    func testRepairProposesOnlyGapAndPreservesRampedWallsAndOriginalScan() throws {
+        let document=interruptedWallRoom()
+        let proposals=SurveyRepair.proposals(in:document)
+        XCTAssertEqual(proposals.count,1)
+        XCTAssertEqual(try SurveyRepair.applying([],to:document),document)
+        let repaired=try SurveyRepair.applying(proposals,to:document)
+        XCTAssertEqual(repaired.initialRoom,document.initialRoom)
+        XCTAssertEqual(Array(repaired.room.walls.dropLast()),document.room.walls)
+        let bridge=try XCTUnwrap(repaired.room.walls.last)
+        XCTAssertEqual(bridge.length.effectiveValue,1,accuracy:1e-6)
+        XCTAssertEqual(bridge.effectiveOutline.map(\.y),[0,0,2.5,3])
+        XCTAssertEqual(repaired.wallWorkIntents?.last?.use,.existingWall)
+        XCTAssertTrue(SurveyRepair.proposals(in:repaired).isEmpty)
+        let decoded=try PlaquistoRoomDocument.decode(repaired.encoded())
+        XCTAssertEqual(decoded.room.walls.last?.effectiveOutline,bridge.effectiveOutline)
+        XCTAssertEqual(decoded.room.walls.map(\.id),repaired.room.walls.map(\.id))
+    }
+    func testRepairCanBridgeRecognizedUnattachedOpeningsAfterConfirmation() throws {
+        var document=interruptedWallRoom()
+        let source=GeometryProvenance(source:.roomPlan)
+        for kind in [RoomOpeningKind.door,.window,.passage,.glazedBay,.frenchDoor] {
+            document.room.openings=[.init(kind:kind,center:.init(x:1.5,y:1,z:0),
+                width:.init(rawValue:1,provenance:source),height:.init(rawValue:2,provenance:source),
+                sillHeight:.init(rawValue:0,provenance:source),positionOnWall:.init(rawValue:0,provenance:source),provenance:source)]
+            let proposals=SurveyRepair.proposals(in:document)
+            XCTAssertEqual(proposals.count,1,"\(kind)")
+            XCTAssertEqual(try SurveyRepair.applying([],to:document),document)
+            let repaired=try SurveyRepair.applying(proposals,to:document)
+            XCTAssertTrue(repaired.room.openings.isEmpty)
+            XCTAssertEqual(repaired.room.walls.count,document.room.walls.count+1)
+            XCTAssertEqual(repaired.initialRoom,document.initialRoom)
+        }
+    }
+    func testUnknownOpeningRepairRequiresExplicitSelection() throws {
+        var document=ceilingRoom()
+        let wall=document.room.walls[0], source=GeometryProvenance(source:.roomPlan)
+        let opening=PlaquistoOpening(wallID:wall.id,kind:.other,center:.init(x:2,y:1,z:0),
+            width:.init(rawValue:1,provenance:source),height:.init(rawValue:1,provenance:source),
+            sillHeight:.init(rawValue:0.5,provenance:source),positionOnWall:.init(rawValue:1.5,provenance:source),provenance:source)
+        document.room.openings=[opening]; document.room.walls[0].openingIDs=[opening.id]
+        let proposals=SurveyRepair.proposals(in:document)
+        XCTAssertEqual(proposals.count,1)
+        XCTAssertEqual(try SurveyRepair.applying([],to:document),document)
+        let repaired=try SurveyRepair.applying(proposals,to:document)
+        XCTAssertTrue(repaired.room.openings.isEmpty)
+        XCTAssertTrue(repaired.room.walls[0].openingIDs.isEmpty)
+        XCTAssertEqual(repaired.initialRoom,document.initialRoom)
+        document.room.openings[0].width.manuallyValidated=true
+        XCTAssertEqual(SurveyRepair.proposals(in:document).count,1)
+    }
+    func testGenericScanVoidAndFloorLevelPassageCanBothBeClosed() throws {
+        var document=ceilingRoom()
+        let source=GeometryProvenance(source:.roomPlan), wall=document.room.walls[0]
+        let opening=PlaquistoOpening(wallID:wall.id,kind:.passage,center:.init(x:2,y:1.2,z:0),
+            width:.init(rawValue:1,provenance:source),height:.init(rawValue:1,provenance:source),
+            sillHeight:.init(rawValue:0.7,provenance:source),positionOnWall:.init(rawValue:1.5,provenance:source),provenance:source)
+        document.room.openings=[opening]; document.room.walls[0].openingIDs=[opening.id]
+        let suggestions=SurveyRepair.proposals(in:document)
+        XCTAssertEqual(suggestions.count,1)
+        XCTAssertTrue(try SurveyRepair.applying(suggestions,to:document).room.openings.isEmpty)
+        document.room.openings[0].sillHeight.rawValue=0
+        XCTAssertEqual(SurveyRepair.proposals(in:document).count,1)
+        XCTAssertTrue(try SurveyRepair.applying(SurveyRepair.proposals(in:document),to:document).room.openings.isEmpty)
+    }
+    func testAllOpeningKindsIncludingManualValidatedOnesCanBeClosed() throws {
+        for kind in [RoomOpeningKind.door,.window,.glazedBay,.frenchDoor,.passage,.other] {
+            var document=ceilingRoom()
+            let source=GeometryProvenance(source:.manual)
+            let opening=PlaquistoOpening(wallID:document.room.walls[0].id,kind:kind,center:.init(x:2,y:1,z:0),
+                width:.init(rawValue:1,provenance:source,manuallyValidated:true),
+                height:.init(rawValue:2,provenance:source,manuallyValidated:true),
+                sillHeight:.init(rawValue:0,provenance:source),positionOnWall:.init(rawValue:1.5,provenance:source),provenance:source)
+            document.room.openings=[opening]; document.room.walls[0].openingIDs=[opening.id]
+            let proposals=SurveyRepair.proposals(in:document)
+            XCTAssertEqual(proposals.count,1)
+            XCTAssertTrue(proposals.first?.title.contains(kind.title) == true)
+            let repaired=try SurveyRepair.applying(proposals,to:document)
+            XCTAssertTrue(repaired.room.openings.isEmpty)
+            XCTAssertTrue(repaired.room.walls[0].openingIDs.isEmpty)
+            XCTAssertEqual(repaired.initialRoom,document.initialRoom)
+            XCTAssertEqual(repaired.room.walls[0].effectiveOutline,document.room.walls[0].effectiveOutline)
+        }
+    }
+    func testRepairProposesWholeMissingSideWithoutCollinearNeighbors() throws {
+        var document=ceilingRoom()
+        document.room.walls.removeFirst()
+        let proposals=SurveyRepair.proposals(in:document)
+        XCTAssertEqual(proposals.count,1)
+        let repaired=try SurveyRepair.applying(proposals,to:document)
+        XCTAssertEqual(repaired.room.walls.count,4)
+        XCTAssertEqual(repaired.room.walls.last?.length.effectiveValue,4)
+        XCTAssertTrue(SurveyRepair.proposals(in:repaired).isEmpty)
+    }
+    func testRepairHandlesTwoCentimetreGapAndRejectsConflictingRepairs() throws {
+        var document=interruptedWallRoom()
+        let i=document.room.walls.count-1
+        document.room.walls[i].start.x=1.02
+        document.room.walls[i].length.rawValue=2.98
+        let proposals=SurveyRepair.proposals(in:document)
+        XCTAssertEqual(proposals.count,1)
+        let repaired=try SurveyRepair.applying(proposals,to:document)
+        XCTAssertEqual(try XCTUnwrap(repaired.room.walls.last).length.effectiveValue,0.02,accuracy:1e-6)
+        XCTAssertThrowsError(try SurveyRepair.applying(proposals+proposals,to:document))
+        XCTAssertEqual(document.room.walls.count,5)
+    }
+    @MainActor func testModelDisablesNativeTwistRecognizerButKeepsOrbitAndPinch() {
+        let native=SCNView()
+        native.allowsCameraControl=true
+        XCTAssertTrue(native.gestureRecognizers?.contains { $0 is UIRotationGestureRecognizer } == true,
+            "Verify native SceneKit really installs a twist recognizer on this runtime")
+        let view=UprightSurveySceneView()
+        view.allowsCameraControl=true
+        let rotation=view.cameraControlConfiguration.rotationSensitivity
+        let pan=view.cameraControlConfiguration.panSensitivity
+        let truck=view.cameraControlConfiguration.truckSensitivity
+        let translation=view.cameraControlConfiguration.allowsTranslation
+        MaquetteStyle.configure(view,quality:.current)
+        XCTAssertEqual(view.cameraControlConfiguration.rotationSensitivity,rotation)
+        XCTAssertGreaterThan(rotation,0)
+        XCTAssertEqual(view.cameraControlConfiguration.panSensitivity,pan)
+        XCTAssertEqual(view.cameraControlConfiguration.truckSensitivity,truck)
+        XCTAssertEqual(view.cameraControlConfiguration.allowsTranslation,translation)
+        XCTAssertTrue(view.allowsCameraControl)
+        XCTAssertGreaterThan(pan,0)
+        for _ in 0..<2 {
+            let recognizers=view.gestureRecognizers ?? []
+            let twists=recognizers.compactMap { $0 as? UIRotationGestureRecognizer }
+            let pinches=recognizers.compactMap { $0 as? UIPinchGestureRecognizer }
+            let pans=recognizers.compactMap { $0 as? UIPanGestureRecognizer }
+            XCTAssertTrue(twists.isEmpty,"SceneKit roll must not receive touches")
+            XCTAssertFalse(pinches.isEmpty)
+            XCTAssertTrue(pinches.allSatisfy(\.isEnabled))
+            XCTAssertFalse(pans.isEmpty)
+            XCTAssertTrue(pans.allSatisfy(\.isEnabled))
+            view.allowsCameraControl=false
+            view.allowsCameraControl=true
+        }
+    }
+    @MainActor func testModelOrbitStaysInUpperHemisphere() {
+        let view=UprightSurveySceneView()
+        view.allowsCameraControl=true
+        MaquetteStyle.configure(view,quality:.current)
+        let controller=view.defaultCameraController
+        XCTAssertEqual(controller.interactionMode,.orbitTurntable)
+        let camera=SCNNode(); camera.camera=SCNCamera()
+        camera.position=SCNVector3(0,5,5); camera.look(at:SCNVector3Zero)
+        let scene=SCNScene(); scene.rootNode.addChildNode(camera)
+        view.scene=scene; view.pointOfView=camera
+        controller.pointOfView=camera; controller.target=SCNVector3Zero
+        // Test the actual orbit, not the angle getter (some SDK versions expose
+        // radians there even though their setters are documented in degrees).
+        let viewport=CGSize(width:400,height:600)
+        controller.beginInteraction(CGPoint(x:200,y:300),withViewport:viewport)
+        controller.continueInteraction(CGPoint(x:300,y:300),withViewport:viewport,
+            sensitivity:view.cameraControlConfiguration.rotationSensitivity)
+        controller.endInteraction(CGPoint(x:300,y:300),withViewport:viewport,velocity:.zero)
+        XCTAssertGreaterThan(abs(camera.position.x),0.1,"One-finger horizontal orbit must remain available")
+        var lowest=Float.infinity, highest = -Float.infinity
+        for sign:CGFloat in [1,-1] {
+            controller.beginInteraction(CGPoint(x:200,y:300),withViewport:viewport)
+            for step in 1...60 {
+                controller.continueInteraction(CGPoint(x:200,y:300+sign*CGFloat(step)*20),withViewport:viewport,
+                    sensitivity:view.cameraControlConfiguration.rotationSensitivity)
+                XCTAssertGreaterThanOrEqual(camera.position.y,-0.001)
+                lowest=min(lowest,camera.position.y); highest=max(highest,camera.position.y)
+            }
+            controller.endInteraction(CGPoint(x:200,y:300+sign*1200),withViewport:viewport,velocity:.zero)
+        }
+        XCTAssertLessThan(lowest,1)
+        XCTAssertGreaterThan(highest,6)
+    }
+    func testAddressLinksPreserveAccentsAndQueryCharacters() throws {
+        let address="27 avenue de la Chapelle, Saint-Étienne & quartier #2"
+        for destination in ProjectNavigationDestination.allCases {
+            let url=try XCTUnwrap(destination.url(address:address))
+            let parts=try XCTUnwrap(URLComponents(url:url,resolvingAgainstBaseURL:false))
+            XCTAssertTrue(parts.queryItems?.contains(where:{$0.value==address}) == true)
+            XCTAssertNil(parts.fragment)
+            XCTAssertNil(destination.url(address:"  "))
+        }
+    }
+    func testCeilingContourEditsKeepWallsAndRefuseNeighborOverlap() throws {
+        let original=try WallCeilingEstimate.addingIfMissing(to:ceilingRoom())
+        var proposal=try WallCeilingEstimate.propose(in:original.room)
+        proposal.boundary=proposal.boundary.map { .init(x:$0.x*0.8,y:$0.y,z:$0.z) }
+        let edited=try WallCeilingEstimate.applying(to:original,proposal:proposal,
+            settings:.init(shape:.flat,lowHeight:2.5,highHeight:2.5),manuallyEdited:true)
+        XCTAssertEqual(edited.room.walls,original.room.walls)
+        XCTAssertEqual(edited.initialRoom,original.initialRoom)
+        XCTAssertEqual(edited.room.ceilings[0].id,original.room.ceilings[0].id)
+        XCTAssertEqual(edited.room.slopes.reduce(0) { $0+PlaquistoSurfaceGeometry.area(of:$1) },9.6,accuracy:1e-6)
+        let shared=try WallCeilingEstimate.split(original,ceilingID:original.room.ceilings[0].id,
+            from:.init(x:2,y:0,z:-1),to:.init(x:2,y:0,z:4))
+        var half=try XCTUnwrap(WallCeilingEstimate.manualProposals(in:shared.room).first)
+        half.boundary=try WallCeilingEstimate.propose(in:original.room).boundary
+        XCTAssertThrowsError(try WallCeilingEstimate.applying(to:shared,proposal:half,
+            settings:.init(shape:.flat,lowHeight:2.5,highHeight:2.5),manuallyEdited:true))
+    }
+
+    func testDAEDiscardsOnlyCollapsedPrimitivesAndRejectsIncompleteSurfaces() throws {
+        let a=RoomPoint.zero,b=RoomPoint(x:1,y:0,z:0),c=RoomPoint(x:0,y:1,z:0)
+        let valid=SurveyDAEExport.Mesh(name:"Triangle",kind:"wall",triangles:[a,b,c,a,c,a])
+        let xml=try SurveyDAEExport.xml(meshes:[valid],title:"Test",date:Date())
+        XCTAssertTrue(xml.contains("<triangles count=\"1\""))
+        XCTAssertTrue(xml.contains("count=\"9\""))
+        let invalid=SurveyDAEExport.Mesh(name:"Donnée invalide",kind:"wall",triangles:[a,b,c,a,.init(x:.nan,y:0,z:0),c])
+        XCTAssertThrowsError(try SurveyDAEExport.xml(meshes:[invalid],title:"Test",date:Date()))
+        // A broken wall used to be silently skipped by the surface selection
+        // helper. Export must not succeed with only the three remaining walls.
+        var document=ceilingRoom()
+        document.room.walls[0].localOutline=[a,a,a]
+        let survey=ProjectSurveyRecord(projectID:UUID(),name:"Incomplet",checkpoints:[
+            .init(roomID:document.room.id,document:document,spatialLinkState:.sharedWorldSpace)])
+        XCTAssertThrowsError(try SurveyDAEExport.meshes(for:survey)) { error in
+            XCTAssertTrue(error.localizedDescription.contains("Mur 1"))
+        }
+    }
+    func testDAEExportsTriangularCeilingAndObliqueFloorWithoutLosingArea() throws {
+        var document=try WallCeilingEstimate.addingIfMissing(to:ceilingRoom([(0,0),(4,0),(2,3)]))
+        let provenance=GeometryProvenance(source:.roomPlan)
+        document.room.floors=[.init(boundaries:[[.init(x:0,y:0,z:0),.init(x:4,y:0,z:0),.init(x:2,y:0,z:3)]],
+            referenceElevation:0,provenance:provenance)]
+        let survey=ProjectSurveyRecord(projectID:UUID(),name:"Pièce triangulaire",checkpoints:[
+            .init(roomID:document.room.id,document:document,spatialLinkState:.sharedWorldSpace)])
+        let meshes=try SurveyDAEExport.meshes(for:survey)
+        XCTAssertEqual(meshes.filter { $0.kind == "wall" }.count,3)
+        XCTAssertEqual(meshes.filter { $0.kind == "ceiling" }.count,1)
+        XCTAssertEqual(meshes.filter { $0.kind == "floor" }.count,1)
+        for mesh in meshes.filter({ $0.kind != "wall" }) {
+            let area=stride(from:0,to:mesh.triangles.count,by:3).reduce(0.0) { area,i in
+                let a=mesh.triangles[i],b=mesh.triangles[i+1],c=mesh.triangles[i+2]
+                return area+abs((b.x-a.x)*(c.z-a.z)-(b.z-a.z)*(c.x-a.x))/2
+            }
+            XCTAssertEqual(area,6,accuracy:1e-8)
+        }
+        let xml=try SurveyDAEExport.xml(meshes:meshes,title:survey.name,date:survey.scanDate)
+        XCTAssertTrue(XMLParser(data:Data(xml.utf8)).parse())
+        XCTAssertEqual(xml.components(separatedBy:"<geometry id=").count-1,meshes.count)
+    }
+
+    func testDAEGeometryKeepsWorldPlacementAndDoesNotInventCeilings() throws {
+        let document=ceilingRoom()
+        var survey=ProjectSurveyRecord(projectID:UUID(),name:"Cuisine & salon",checkpoints:[
+            .init(roomID:document.room.id,document:document,spatialLinkState:.sharedWorldSpace)])
+        let meshes=try SurveyDAEExport.meshes(for:survey)
+        XCTAssertEqual(meshes.count,4)
+        XCTAssertTrue(meshes.allSatisfy { $0.kind == "wall" })
+        survey.checkpoints[0].transformToSurvey.values[12]=10
+        survey.checkpoints[0].transformToSurvey.values[14] = -7
+        let moved=try SurveyDAEExport.meshes(for:survey)
+        for (a,b) in zip(meshes.flatMap(\.triangles),moved.flatMap(\.triangles)) {
+            XCTAssertEqual(b.x,a.x+10,accuracy:1e-8)
+            XCTAssertEqual(b.z,a.z-7,accuracy:1e-8)
+            XCTAssertEqual(b.y,a.y,accuracy:1e-8)
+        }
+        XCTAssertEqual(survey.checkpoints[0].document,document)
+        survey.checkpoints[0].transformToSurvey.values[0]=2
+        XCTAssertThrowsError(try SurveyDAEExport.meshes(for:survey))
+    }
+
+    func testDAERejectsUnlinkedRoomsAndInvalidTriangles() throws {
+        let document=ceilingRoom()
+        let survey=ProjectSurveyRecord(projectID:UUID(),name:"Non raccordé",checkpoints:[
+            .init(roomID:document.room.id,document:document,spatialLinkState:.sharedWorldSpace),
+            .init(roomID:UUID(),document:document,spatialLinkState:.needsLink)])
+        XCTAssertThrowsError(try SurveyDAEExport.meshes(for:survey))
+        for points in [[RoomPoint.zero],Array(repeating:.zero,count:3),[.zero,.init(x:.infinity,y:0,z:0),.init(x:0,y:1,z:0)]] {
+            XCTAssertThrowsError(try SurveyDAEExport.xml(meshes:[.init(name:"Invalid",kind:"wall",triangles:points)],title:"Test",date:Date()))
+        }
+        XCTAssertThrowsError(try SurveyDAEExport.xml(meshes:[],title:"Vide",date:Date()))
+    }
+
+    func testDAEXMLAndFileAreSelfContainedAndPreserveEditedRoof() throws {
+        let document=try WallCeilingEstimate.addingIfMissing(to:ceilingRoom())
+        let survey=ProjectSurveyRecord(projectID:UUID(),name:"Cuisine & salon <test>",checkpoints:[
+            .init(roomID:document.room.id,document:document,spatialLinkState:.sharedWorldSpace)])
+        let meshes=try SurveyDAEExport.meshes(for:survey)
+        XCTAssertTrue(meshes.contains { $0.kind == "ceiling" })
+        let url=try SurveyDAEExport.write(survey)
+        let data=try Data(contentsOf:url), xml=try XCTUnwrap(String(data:data,encoding:.utf8))
+        XCTAssertEqual(url.pathExtension,"dae")
+        XCTAssertTrue(XMLParser(data:data).parse())
+        XCTAssertTrue(xml.contains("Cuisine &amp; salon &lt;test&gt;"))
+        XCTAssertTrue(xml.contains("meter=\"1\""))
+        XCTAssertTrue(xml.contains("<up_axis>Y_UP</up_axis>"))
+        XCTAssertTrue(xml.contains("semantic=\"NORMAL\""))
+        XCTAssertFalse(xml.contains("library_cameras"))
+        XCTAssertFalse(xml.contains("library_images"))
+        XCTAssertEqual(xml.components(separatedBy:"<geometry id=").count-1,meshes.count)
+        // Retained in the test container for independent COLLADA importer validation.
+        let attachment=XCTAttachment(data:data,uniformTypeIdentifier:"org.khronos.collada.digital-asset-exchange")
+        attachment.name="Plaquisto-DAE-validation.dae"; attachment.lifetime = .keepAlways; add(attachment)
+    }
+
+    func testDAEIncludesFloorAtRealElevationAndKeepsWindowHole() throws {
+        var document=ceilingRoom()
+        let p=GeometryProvenance(source:.roomPlan), wallID=document.room.walls[0].id
+        document.room.openings=[.init(wallID:wallID,kind:.window,center:.init(x:1.5,y:1.5,z:0),
+            width:.init(rawValue:1,provenance:p),height:.init(rawValue:1,provenance:p),
+            sillHeight:.init(rawValue:1,provenance:p),positionOnWall:.init(rawValue:1,provenance:p),provenance:p)]
+        document.room.walls[0].openingIDs=document.room.openings.map(\.id)
+        document.room.floors=[.init(boundaries:[[.init(x:0,y:0,z:0),.init(x:4,y:0,z:0),.init(x:4,y:0,z:3),.init(x:0,y:0,z:3)]],referenceElevation:0.2,provenance:p)]
+        let survey=ProjectSurveyRecord(projectID:UUID(),name:"Trou",checkpoints:[.init(roomID:document.room.id,document:document,spatialLinkState:.sharedWorldSpace)])
+        let meshes=try SurveyDAEExport.meshes(for:survey)
+        let wall=try XCTUnwrap(meshes.first { $0.kind == "wall" })
+        let triangles=wall.triangles
+        let area=stride(from:0,to:triangles.count,by:3).reduce(0.0) { area,i in
+            let a=triangles[i],b=triangles[i+1],c=triangles[i+2]
+            return area+abs((b.x-a.x)*(c.y-a.y)-(b.y-a.y)*(c.x-a.x))/2
+        }
+        XCTAssertEqual(area,9,accuracy:1e-8) // 4 × 2.5 minus the 1 m² window.
+        let floor=try XCTUnwrap(meshes.first { $0.kind == "floor" })
+        XCTAssertTrue(floor.triangles.allSatisfy { abs($0.y-0.2) < 1e-8 })
+    }
+
+    func testProjectGallerySearchIncludesCaptureAddressDatesAndAccents() throws {
+        let date=try XCTUnwrap(ISO8601DateFormatter().date(from:"2026-10-06T12:00:00Z"))
+        let project=ProjectItem(id:UUID(),name:"Rénovation",client:"Dupont",address:"12 rue Victor Hugo, Lyon 69002",notes:"",works:[],createdAt:date,updatedAt:date)
+        var survey=ProjectSurveyRecord(projectID:project.id,name:"Cuisine",createdAt:date)
+        survey.captureAddress="8 allée des Cèdres, Écully 69130"
+        for query in ["renovation","DUPONT", "lyon 69002", "ECULLY cedres", "69130", "06/10/2026", "6 octobre 2026", "2026-10-06", ""] {
+            XCTAssertTrue(ProjectGalleryIndex.matches(project,surveys:[survey],query:query),query)
+        }
+        XCTAssertFalse(ProjectGalleryIndex.matches(project,surveys:[survey],query:"Paris"))
+        XCTAssertFalse(ProjectGalleryIndex.matches(project,surveys:[survey],query:"lyon 75001"))
+        XCTAssertEqual(try JSONDecoder().decode(ProjectSurveyRecord.self,from:JSONEncoder().encode(survey)).captureAddress,survey.captureAddress)
+        survey.captureAddress=nil
+        XCTAssertNil(try JSONDecoder().decode(ProjectSurveyRecord.self,from:JSONEncoder().encode(survey)).captureAddress)
+    }
+
+    func testProjectGallerySummaryCountsWorkAreaNotFacingLayers() {
+        let date=Date(), id=UUID()
+        var ceiling=CeilingConfiguration(); ceiling.enteredArea=12; ceiling.layers=2
+        let work=WorkItem(id:UUID(),projectID:id,name:"Plafond",type:.ceilingOnFurring,payload:.ceiling(ceiling),createdAt:date,updatedAt:date)
+        let project=ProjectItem(id:id,name:"Test",client:"",address:"",notes:"",works:[work],createdAt:date,updatedAt:date)
+        let summary=ProjectGalleryIndex.summary(project)
+        XCTAssertEqual(summary.count,1)
+        XCTAssertEqual(summary.first?.title,"Plafond")
+        XCTAssertEqual(summary.first?.area,12)
+    }
+
+    func testPlanCameraRotationAlignsEachWallWithoutChangingGeometry() throws {
+        let document=ceilingRoom(), center=RoomPoint(x:2,y:0,z:1.5)
+        let before=document
+        var current:UUID?
+        for expected in document.room.walls {
+            let wall=try XCTUnwrap(SurveyPlanCamera.nextWall(document.room.walls,after:current))
+            XCTAssertEqual(wall.id,expected.id)
+            current=wall.id
+            let angle=SurveyPlanCamera.horizontalAngle(for:wall)
+            let a=SurveyPlanCamera.rotated(wall.start,around:center,angle:angle)
+            let b=SurveyPlanCamera.rotated(wall.effectiveEnd,around:center,angle:angle)
+            XCTAssertEqual(a.z,b.z,accuracy:1e-9)
+            XCTAssertGreaterThan(b.x,a.x)
+            XCTAssertEqual((b-a).length,wall.length.effectiveValue,accuracy:1e-9)
+        }
+        XCTAssertEqual(SurveyPlanCamera.nextWall(document.room.walls,after:current)?.id,document.room.walls.first?.id)
+        XCTAssertEqual(document,before)
+        XCTAssertNil(SurveyPlanCamera.nextWall([],after:nil))
+    }
+    func testPlanCameraInverseKeepsEditingCoordinatesAfterObliqueRotation() {
+        let center=RoomPoint(x:4,y:2,z:-3)
+        for angle in [0.0,0.43,Double.pi/2,Double.pi,-Double.pi/3] {
+            for point in [RoomPoint(x:-2,y:2,z:7),.init(x:6,y:2,z:1),center] {
+                let rotated=SurveyPlanCamera.rotated(point,around:center,angle:angle)
+                let restored=SurveyPlanCamera.rotated(rotated,around:center,angle:-angle)
+                XCTAssertEqual(restored.x,point.x,accuracy:1e-9)
+                XCTAssertEqual(restored.z,point.z,accuracy:1e-9)
+                XCTAssertEqual(restored.y,point.y)
+            }
+        }
+    }
+    func testRemovingDesignedPartitionRemovesOnlyItsOpeningsAndIntent() throws {
+        let original=try WallCeilingEstimate.addingIfMissing(to:ceilingRoom())
+        var before=try SurveyPlanEditing.addingPartition(original,start:.init(x:2,y:0,z:0),end:.init(x:2,y:0,z:3),height:2.5)
+        let id=try XCTUnwrap(before.room.walls.last?.id)
+        before=try SurveyPlanEditing.addingDoor(before,wallID:id,width:0.83,height:2.04,position:0.8)
+        before=try SurveyPlanEditing.addingDoor(before,wallID:before.room.walls[0].id,width:0.73,height:2.04,position:0.4)
+        let remainingOpening=try XCTUnwrap(before.room.openings.last)
+        let after=try SurveyPlanEditing.removingPartition(before,id:id)
+        XCTAssertEqual(after.room.walls.map(\.id),original.room.walls.map(\.id))
+        XCTAssertEqual(after.room.openings,[remainingOpening])
+        XCTAssertFalse(after.wallWorkIntents?.contains { $0.wallID == id } ?? false)
+        XCTAssertEqual(after.room.ceilings,before.room.ceilings)
+        XCTAssertEqual(after.room.slopes,before.room.slopes)
+        XCTAssertEqual(after.initialRoom,before.initialRoom)
+        XCTAssertEqual(try PlaquistoRoomDocument.decode(after.encoded()),after)
+        XCTAssertThrowsError(try SurveyPlanEditing.removingPartition(after,id:id))
+        XCTAssertThrowsError(try SurveyPlanEditing.removingPartition(after,id:after.room.walls[0].id))
+        // The editor's undo keeps this complete pre-deletion snapshot.
+        XCTAssertEqual(try PlaquistoRoomDocument.decode(before.encoded()),before)
+    }
+    func testRemovingDoorKeepsItsPartitionAndOtherOpenings() throws {
+        var before=try SurveyPlanEditing.addingPartition(ceilingRoom(),start:.init(x:2,y:0,z:0),end:.init(x:2,y:0,z:3),height:2.5)
+        let wallID=try XCTUnwrap(before.room.walls.last?.id)
+        before=try SurveyPlanEditing.addingDoor(before,wallID:wallID,width:0.73,height:2.04,position:0.1)
+        let removed=try XCTUnwrap(before.room.openings.last?.id)
+        before=try SurveyPlanEditing.addingDoor(before,wallID:wallID,width:0.83,height:2.04,position:1.5)
+        let after=try SurveyPlanEditing.removingOpening(before,id:removed)
+        XCTAssertEqual(after.room.walls.count,before.room.walls.count)
+        XCTAssertEqual(after.room.openings.count,1)
+        XCTAssertFalse(after.room.walls.flatMap(\.openingIDs).contains(removed))
+        XCTAssertEqual(after.initialRoom,before.initialRoom)
+        try after.validate()
+    }
+    func testFinishedLiningDepthIsExplicitAndPersists() throws {
+        var c=FurringLiningConfiguration(); c.finishedDepthMM=140
+        XCTAssertEqual(SurveyPlanFinishes.depth(.furringLining(c)),0.14)
+        let restored=try JSONDecoder().decode(FurringLiningConfiguration.self,from:JSONEncoder().encode(c))
+        XCTAssertEqual(restored.finishedDepthMM,140)
+        XCTAssertNil(SurveyPlanFinishes.depth(.furringLining(.init())))
+        c.finishedDepthMM = .infinity
+        XCTAssertNil(SurveyPlanFinishes.depth(.furringLining(c)))
+    }
+    func testFinishedPlanAreasAndClearancesIncludePartitionThickness() throws {
+        let original=ceilingRoom()
+        let depths=Dictionary(uniqueKeysWithValues:original.room.walls.map { ($0.id,0.1) })
+        let shell=SurveyPlanFinishes.finishedWalls(in:original,depths:depths)
+        XCTAssertEqual(SurveyPlanFinishes.area(shell.map(\.start)),3.8*2.8,accuracy:1e-6)
+        let designed=try SurveyPlanEditing.addingPartition(original,start:.init(x:2,y:0,z:0.1),end:.init(x:2,y:0,z:2.9),height:2.5,thickness:0.098)
+        let zones=SurveyPlanFinishes.zones(in:designed,depths:depths)
+        XCTAssertEqual(zones.count,2)
+        XCTAssertEqual(zones.reduce(0) { $0+SurveyPlanFinishes.area($1.map(\.start)) },3.8*2.8-0.098*2.8,accuracy:1e-6)
+        let (left,right)=SurveyPlanFinishes.clearances(on:original.room.walls[0],at:.init(x:2,y:0,z:0),direction:.init(x:0,y:0,z:1),thickness:0.072)
+        XCTAssertEqual(left,1.964,accuracy:1e-6); XCTAssertEqual(right,1.964,accuracy:1e-6)
+        XCTAssertEqual(designed.room.walls.last?.thickness?.effectiveValue,0.098)
+        XCTAssertEqual(try PlaquistoRoomDocument.decode(designed.encoded()),designed)
+    }
+    func testPartitionCanUseCustomReservationButRejectsBadDimensions() throws {
+        let original=ceilingRoom(), wall=original.room.walls[0]
+        let withDoor=try SurveyPlanEditing.addingDoor(original,wallID:wall.id,width:1.1,height:2.04,position:1)
+        XCTAssertEqual(withDoor.room.openings[0].width.effectiveValue,1.1)
+        XCTAssertThrowsError(try SurveyPlanEditing.addingDoor(original,wallID:wall.id,width:.nan,height:2,position:1))
+        XCTAssertThrowsError(try SurveyPlanEditing.addingPartition(original,start:.init(x:2,y:0,z:0),end:.init(x:2,y:0,z:3),height:2.5,thickness:0))
+    }
+    func testBentPartitionSplitsCeilingWithoutChangingRoofPlanes() throws {
+        let before=try WallCeilingEstimate.addingIfMissing(to:ceilingRoom())
+        var after=try SurveyPlanEditing.addingPartition(before,start:.init(x:2,y:0,z:0),end:.init(x:2,y:0,z:1.5),height:2.5)
+        after=try SurveyPlanEditing.addingPartition(after,start:.init(x:2,y:0,z:1.5),end:.init(x:4,y:0,z:1.5),height:2.5)
+        let split=try WallCeilingEstimate.splitForNewPartition(before:before,after:after,depths:[:])
+        XCTAssertEqual(split.room.ceilings.count,2)
+        XCTAssertEqual(split.room.slopes.reduce(0){$0+PlaquistoSurfaceGeometry.area(of:$1)},12,accuracy:1e-6)
+        XCTAssertTrue(split.room.slopes.allSatisfy { $0.splitOrigin != nil })
+        XCTAssertEqual(split.room.walls,after.room.walls)
+        XCTAssertEqual(split.initialRoom,before.initialRoom)
+    }
+    func testPartitionEndingOnFinishedFacesStillSplitsRawCeiling() throws {
+        let before=try WallCeilingEstimate.addingIfMissing(to:ceilingRoom())
+        let depths=Dictionary(uniqueKeysWithValues:before.room.walls.map { ($0.id,0.15) })
+        let after=try SurveyPlanEditing.addingPartition(before,start:.init(x:2,y:0,z:0.15),end:.init(x:2,y:0,z:2.85),height:2.5)
+        let split=try WallCeilingEstimate.splitForNewPartition(before:before,after:after,depths:depths)
+        XCTAssertEqual(split.room.ceilings.count,2)
+        XCTAssertEqual(split.room.slopes.reduce(0){$0+PlaquistoSurfaceGeometry.area(of:$1)},12,accuracy:1e-6)
+        XCTAssertEqual(split.room.walls.last?.start.z,0.15)
+    }
+    func testOpenPartitionDoesNotOfferCeilingSplit() throws {
+        let before=try WallCeilingEstimate.addingIfMissing(to:ceilingRoom())
+        let after=try SurveyPlanEditing.addingPartition(before,start:.init(x:2,y:0,z:0),end:.init(x:2,y:0,z:1),height:2.5)
+        XCTAssertThrowsError(try WallCeilingEstimate.splitForNewPartition(before:before,after:after,depths:[:]))
+    }
+    func testRedrawnContourPreservesOriginalAndMatchingOpening() throws {
+        let original=ceilingRoom()
+        let before=try SurveyPlanEditing.addingDoor(original,wallID:original.room.walls[0].id,width:0.83,height:2.04,position:1)
+        let ring=try XCTUnwrap(ScanEnclosedSpaces.wallsBySpace(in:before.room).first)
+        let next=try SurveyPlanEditing.replacingContour(before,walls:ring,contour:ring.map(\.start))
+        XCTAssertEqual(next.room.openings,before.room.openings)
+        XCTAssertEqual(next.initialRoom,before.initialRoom)
+        XCTAssertEqual(Set(next.room.walls.map(\.id)),Set(before.room.walls.map(\.id)))
+        XCTAssertThrowsError(try SurveyPlanEditing.replacingContour(before,walls:ring,contour:[.zero,.init(x:2,y:0,z:3),.init(x:2,y:0,z:0),.init(x:0,y:0,z:3)]))
+    }
+    func testAutomaticCeilingSelectsObservedShapeAndPreservesNativeGeometry() throws {
+        let cases: [(PlaquistoRoomDocument,CeilingEstimateSettings.Shape)] = [
+            (ceilingRoom(),.flat),
+            (profiledCeilingRoom(singleSlope:true,rotation:0.6),.singleSlope),
+            (profiledCeilingRoom(),.twoSlopes),
+            (profiledCeilingRoom(ridge:0.3,rotation:0.37),.twoSlopes),
+            (profiledCeilingRoom(ridge:0.7,rotation:-1.2),.twoSlopes)
+        ]
+        for (original,shape) in cases {
+            let created = WallCeilingEstimate.addingAutomaticCeilings(to:original)
+            let roof = try XCTUnwrap(created.room.ceilings.first)
+            XCTAssertEqual(created.room.ceilings.count,1)
+            XCTAssertEqual(roof.estimateSettings?.shape,shape)
+            XCTAssertEqual(roof.provenance.source,.estimated)
+            XCTAssertEqual(created.room.walls,original.room.walls)
+            XCTAssertEqual(created.room.openings,original.room.openings)
+            XCTAssertEqual(created.initialRoom,original.initialRoom)
+            XCTAssertTrue(created.room.slopes.allSatisfy { $0.accepted && !$0.manuallyValidated })
+            XCTAssertEqual(try PlaquistoRoomDocument.decode(created.encoded()),created)
+            XCTAssertEqual(WallCeilingEstimate.addingAutomaticCeilings(to:created),created)
+        }
+    }
+
+    func testAutomaticCeilingDoesNotTurnSmallHeightNoiseIntoRamp() throws {
+        let original = ceilingRoom(heights:[2.49,2.52,2.48,2.51])
+        let generated = WallCeilingEstimate.addingAutomaticCeilings(to:original)
+        XCTAssertEqual(generated.room.ceilings.first?.estimateSettings?.shape,.flat)
+        // Even a mathematically perfect but insignificant 12 cm rise stays flat.
+        var smallRise = profiledCeilingRoom(singleSlope:true)
+        for i in smallRise.room.walls.indices {
+            smallRise.room.walls[i].localOutline = smallRise.room.walls[i].localOutline?.map {
+                var p = $0; if p.y > 0 { p.y = 2.5+(p.y-2.5)*0.1 }; return p
+            }
+        }
+        XCTAssertEqual(WallCeilingEstimate.addingAutomaticCeilings(to:smallRise)
+            .room.ceilings.first?.estimateSettings?.shape,.flat)
+    }
+
+    func testAutomaticCeilingDoesNotInventGableFromRectangularWallHeights() throws {
+        // Different maximum heights without observed sloping profiles do not
+        // locate an interior ridge, even when two opposing walls are taller.
+        let original = ceilingRoom(heights:[2.5,3.7,2.5,3.7])
+        XCTAssertEqual(WallCeilingEstimate.addingAutomaticCeilings(to:original)
+            .room.ceilings.first?.estimateSettings?.shape,.flat)
+    }
+
+    func testAutomaticCeilingsFillBothRoomsAndRemainIndependentlyEditable() throws {
+        let original = dividedRoom()
+        let created = WallCeilingEstimate.addingAutomaticCeilings(to:original)
+        XCTAssertEqual(created.room.ceilings.count,2)
+        let reopened = try PlaquistoRoomDocument.decode(created.encoded())
+        let choices = try WallCeilingEstimate.manualProposals(in:reopened.room)
+        XCTAssertEqual(choices.count,2)
+        let first = try XCTUnwrap(choices.first)
+        let edited = try WallCeilingEstimate.applying(to:reopened,proposal:first,
+            settings:.init(shape:.singleSlope,lowHeight:2.4,highHeight:3.4),manuallyEdited:true)
+        XCTAssertEqual(edited.room.ceilings[1],created.room.ceilings[1])
+        XCTAssertEqual(edited.room.walls,original.room.walls)
+        XCTAssertEqual(WallCeilingEstimate.addingAutomaticCeilings(to:edited),edited)
+    }
+
+    func testAutomaticCeilingsPreserveExistingUserRoofWhileFillingVacantRoom() throws {
+        let original = dividedRoom()
+        let proposal = try XCTUnwrap(WallCeilingEstimate.manualProposals(in:original.room).first)
+        let manual = try WallCeilingEstimate.applying(to:original,proposal:proposal,
+            settings:.init(shape:.twoSlopes,lowHeight:2.5,highHeight:4),manuallyEdited:true)
+        let completed = WallCeilingEstimate.addingAutomaticCeilings(to:manual)
+        XCTAssertEqual(completed.room.ceilings.count,2)
+        XCTAssertEqual(completed.room.ceilings[0],manual.room.ceilings[0])
+        for slope in manual.room.slopes { XCTAssertTrue(completed.room.slopes.contains(slope)) }
+    }
+
+    func testAutomaticCeilingDoesNotCloseMissingWalls() {
+        var original = ceilingRoom()
+        original.room.walls.removeLast()
+        XCTAssertEqual(WallCeilingEstimate.addingAutomaticCeilings(to:original),original)
+    }
+
+    func testAutomaticCeilingIgnoresIsolatedPeakOnOtherwiseFlatRoom() {
+        var original = ceilingRoom()
+        let wall = original.room.walls[0]
+        original.room.walls[0].height.rawValue = 3.7
+        original.room.walls[0].localOutline = [
+            .zero,.init(x:wall.length.rawValue,y:0,z:0),
+            .init(x:wall.length.rawValue,y:2.5,z:0),
+            .init(x:2.2,y:2.5,z:0),.init(x:2,y:3.7,z:0),
+            .init(x:1.8,y:2.5,z:0),.init(x:0,y:2.5,z:0)
+        ]
+        XCTAssertEqual(WallCeilingEstimate.addingAutomaticCeilings(to:original)
+            .room.ceilings.first?.estimateSettings?.shape,.flat)
+    }
+
+    func testAutomaticCeilingDoesNotReplaceObservedCeiling() throws {
+        let original = ceilingRoom()
+        let proposal = try XCTUnwrap(WallCeilingEstimate.manualProposals(in:original.room).first)
+        var observed = try WallCeilingEstimate.applying(to:original,proposal:proposal,
+            settings:.init(lowHeight:2.6,highHeight:2.6),manuallyEdited:false)
+        observed.room.ceilings[0].provenance = .init(source:.roomPlan)
+        XCTAssertEqual(WallCeilingEstimate.addingAutomaticCeilings(to:observed),observed)
+    }
+
+    func testAutomaticCeilingsPersistWithCompletedScanAndOriginalCheckpoint() throws {
+        let original = dividedRoom()
+        let document = WallCeilingEstimate.addingAutomaticCeilings(to:original)
+        var draft = ScanCampaignDraft()
+        draft.append(.init(referenceGroupID:UUID(),name:"Salon / Cuisine",usages:[],
+            document:document,processingPending:false))
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at:folder) }
+        _ = try ScanCampaignStore.completing(draft,directory:folder)
+        let loaded = try XCTUnwrap(ScanCampaignStore.load(id:draft.id,directory:folder))
+        XCTAssertTrue(loaded.isComplete)
+        XCTAssertEqual(loaded.chunks[0].document.room.ceilings.count,2)
+        XCTAssertTrue(loaded.chunks[0].document.initialRoom.ceilings.isEmpty)
+        XCTAssertEqual(loaded.chunks[0].document.room.walls,original.room.walls)
+        XCTAssertEqual(try WallCeilingEstimate.manualProposals(in:loaded.chunks[0].document.room).count,2)
+    }
+
+    func testCancelledAutomaticCeilingCreationLeavesCaptureUntouched() async {
+        let original = profiledCeilingRoom()
+        let task = Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            return WallCeilingEstimate.addingAutomaticCeilings(to:original)
+        }
+        let result = await task.value
+        XCTAssertEqual(result,original)
+    }
+
     func testCeilingFitDefaultsFlatAndDoesNotInventMeasuredRidge() throws {
         let original = ceilingRoom()
         let proposal = try XCTUnwrap(WallCeilingEstimate.manualProposals(in:original.room).first)
@@ -253,6 +1223,140 @@ final class SurveyCaptureTests: XCTestCase {
         }
     }
 
+    func testCeilingDragCutOnlyCommitsAfterExplicitAcceptance() throws {
+        let base = ceilingRoom()
+        let proposal = try WallCeilingEstimate.propose(in: base.room)
+        let whole = try WallCeilingEstimate.applying(to: base, proposal: proposal,
+            settings: .init(shape: .twoSlopes, lowHeight: 2.5, highHeight: 3.5), manuallyEdited: true)
+        let id = try XCTUnwrap(whole.room.ceilings.first?.id)
+        var cut = SurveyCeilingCut()
+        cut.begin(at: .init(x:2,y:0,z:-1))
+        cut.move(to: .init(x:2,y:0,z:1))
+        XCTAssertNil(cut.preview, "Finger movement is only a dashed guide")
+        cut.move(to: .init(x:2,y:0,z:4))
+        let displayedStart = cut.start, displayedEnd = cut.end
+        try cut.finish(document: whole, ceilingID: id, minimumLength: 0.12)
+        XCTAssertEqual(cut.start, displayedStart)
+        XCTAssertEqual(cut.end, displayedEnd, "Touch-up must preserve the last displayed guide")
+        let preview = try XCTUnwrap(cut.preview)
+        XCTAssertEqual(preview.room.ceilings.count, 2)
+        XCTAssertEqual(whole.room.ceilings.count, 1, "Releasing does not mutate the original editor document")
+        XCTAssertEqual(preview.initialRoom, whole.initialRoom)
+        XCTAssertEqual(preview.room.walls, whole.room.walls)
+        XCTAssertEqual(preview.room.slopes.reduce(0) { $0+PlaquistoSurfaceGeometry.area(of:$1) },
+                       whole.room.slopes.reduce(0) { $0+PlaquistoSurfaceGeometry.area(of:$1) }, accuracy: 1e-6)
+        cut.cancelGesture()
+        XCTAssertEqual(cut.preview, preview, "Pinching/panning to inspect a preview must keep it")
+        XCTAssertEqual(cut.accept(), preview)
+        XCTAssertNil(cut.preview); XCTAssertNil(cut.start); XCTAssertNil(cut.end)
+        XCTAssertNil(cut.accept(), "Cannot apply the same cut twice")
+    }
+
+    @MainActor
+    func testCeilingCutConfirmationDoesNotResizeCanvasOnReleaseOrRedo() {
+        for width in [CGFloat(240),390,750] {
+            for dynamicType in [DynamicTypeSize.large,.accessibility3] {
+                let drawing=UIHostingController(rootView: SurveyCeilingCutConfirmation(ready:false,redo:{},accept:{})
+                    .environment(\.dynamicTypeSize,dynamicType))
+                let preview=UIHostingController(rootView: SurveyCeilingCutConfirmation(ready:true,redo:{},accept:{})
+                    .environment(\.dynamicTypeSize,dynamicType))
+                let available=CGSize(width:width,height:1000)
+                let before=drawing.sizeThatFits(in:available), after=preview.sizeThatFits(in:available)
+                XCTAssertGreaterThan(before.height,0)
+                XCTAssertEqual(before.height,after.height,accuracy:0.01)
+                XCTAssertEqual(before.width,after.width,accuracy:0.01)
+            }
+        }
+    }
+
+    func testCeilingDragCutRedoAndCancellationDiscardOnlyTheDraft() throws {
+        let whole = try WallCeilingEstimate.addingIfMissing(to: ceilingRoom())
+        let id = try XCTUnwrap(whole.room.ceilings.first?.id)
+        var cut = SurveyCeilingCut()
+        cut.begin(at: .init(x:2,y:0,z:-1)); cut.move(to: .init(x:2,y:0,z:4))
+        try cut.finish(document:whole,ceilingID:id,minimumLength:0.12)
+        XCTAssertNotNil(cut.preview)
+        cut.reset()
+        XCTAssertNil(cut.accept()); XCTAssertNil(cut.start)
+        cut.begin(at: .init(x:-1,y:0,z:1)); cut.move(to: .init(x:5,y:0,z:1))
+        cut.cancelGesture()
+        XCTAssertNil(cut.start); XCTAssertNil(cut.end); XCTAssertNil(cut.preview)
+        cut.begin(at: .init(x:-1,y:0,z:1)); cut.move(to: .init(x:5,y:0,z:1))
+        try cut.finish(document:whole,ceilingID:id,minimumLength:0.12)
+        XCTAssertEqual(cut.accept()?.room.ceilings.count, 2)
+        XCTAssertEqual(whole.room.ceilings.count, 1)
+    }
+
+    func testCeilingDragCutRejectsTapsShortDragsAndCutsOutsideTheCeiling() throws {
+        let whole = try WallCeilingEstimate.addingIfMissing(to: ceilingRoom())
+        let id = try XCTUnwrap(whole.room.ceilings.first?.id)
+        for endpoints: (RoomPoint,RoomPoint) in [
+            (.init(x:2,y:0,z:1), .init(x:2,y:0,z:1)),
+            (.init(x:2,y:0,z:1), .init(x:2.01,y:0,z:1)),
+            (.init(x:9,y:0,z:-1), .init(x:9,y:0,z:4))
+        ] {
+            var cut = SurveyCeilingCut()
+            cut.begin(at:endpoints.0); cut.move(to:endpoints.1)
+            XCTAssertThrowsError(try cut.finish(document:whole,ceilingID:id,minimumLength:0.12))
+            XCTAssertNil(cut.start); XCTAssertNil(cut.end); XCTAssertNil(cut.preview)
+            XCTAssertNil(cut.accept())
+        }
+    }
+
+    func testCeilingMergePreservesEveryPlaneSourceAndOriginalScan() throws {
+        for shape in CeilingEstimateSettings.Shape.allCases {
+            let base=ceilingRoom()
+            let proposal=try WallCeilingEstimate.propose(in:base.room)
+            let whole=try WallCeilingEstimate.applying(to:base,proposal:proposal,
+                settings:.init(shape:shape,lowHeight:2.5,highHeight:shape == .flat ? 2.5 : 3.5),manuallyEdited:true)
+            let id=try XCTUnwrap(whole.room.ceilings.first?.id)
+            let split=try WallCeilingEstimate.split(whole,ceilingID:id,from:.init(x:2,y:0,z:-1),to:.init(x:2,y:0,z:4))
+            let merged=try CeilingZoneEditing.merge(split,first:id,second:split.room.ceilings[1].id)
+            XCTAssertEqual(merged.room.ceilings.count,1)
+            XCTAssertEqual(merged.room.ceilings[0].id,id)
+            XCTAssertEqual(merged.room.slopes,split.room.slopes,"Keep every source ID and slope for existing calepinages")
+            XCTAssertEqual(Set(merged.room.ceilings[0].slopeIDs),Set(split.room.slopes.map(\.id)))
+            XCTAssertEqual(merged.room.walls,whole.room.walls)
+            XCTAssertEqual(merged.initialRoom,whole.initialRoom)
+            XCTAssertEqual(abs(SurveyPlanFinishes.area(try XCTUnwrap(merged.room.ceilings[0].footprint))),12,accuracy:1e-6)
+            XCTAssertEqual(try PlaquistoRoomDocument.decode(merged.encoded()),merged)
+        }
+    }
+
+    func testCeilingMergeRequiresSharedEdgeAndPreservesConcaveOutline() {
+        func ring(_ points:[(Double,Double)]) -> [RoomPoint] { points.map { .init(x:$0.0,y:0,z:$0.1) } }
+        let a=ring([(0,0),(4,0),(4,2),(0,2)])
+        let b=ring([(0,2),(1,2),(2,2),(2,4),(0,4)])
+        let joined=CeilingZoneEditing.joinedBoundary(a,b)
+        XCTAssertNotNil(joined,"Handles extra collinear points along the shared boundary")
+        XCTAssertEqual(abs(SurveyPlanFinishes.area(joined ?? [])),12,accuracy:1e-6)
+        XCTAssertFalse(PlaquistoWallGeometry.contains(.init(x:3,y:0,z:3),polygon:joined ?? []),"No invented convex hull")
+        XCTAssertNil(CeilingZoneEditing.joinedBoundary(a,ring([(4,2),(6,2),(6,4),(4,4)])),"Corner contact is not adjacency")
+        XCTAssertNil(CeilingZoneEditing.joinedBoundary(a,ring([(0,3),(4,3),(4,5),(0,5)])),"Separate ceilings")
+        XCTAssertNil(CeilingZoneEditing.joinedBoundary(a,a),"Overlapping ceilings")
+    }
+
+    func testHiddenCeilingPersistsButStillFeedsExistingWorks() throws {
+        let whole=try WallCeilingEstimate.addingIfMissing(to:ceilingRoom())
+        let id=try XCTUnwrap(whole.room.ceilings.first?.id)
+        let hidden=CeilingZoneEditing.togglingVisibility(whole,ceilingID:id)
+        XCTAssertEqual(hidden.room.slopes,whole.room.slopes)
+        XCTAssertEqual(hidden.initialRoom,whole.initialRoom)
+        XCTAssertEqual(try PlaquistoRoomDocument.decode(hidden.encoded()),hidden)
+        let survey=ProjectSurveyRecord(projectID:UUID(),name:"Masqué",checkpoints:[
+            .init(roomID:hidden.room.id,document:hidden,spatialLinkState:.sharedWorldSpace)])
+        let canonical=SurveyWorkGeometry.surfaces(in:survey)
+        XCTAssertFalse(canonical.filter { $0.source.kind == .ceiling }.isEmpty)
+        XCTAssertTrue(canonical.filter { $0.source.kind == .ceiling }.allSatisfy { SurveyWorkGeometry.isHidden($0,in:survey) })
+        XCTAssertTrue(canonical.filter { $0.source.kind == .wall }.allSatisfy { !SurveyWorkGeometry.isHidden($0,in:survey) })
+        let visible=CeilingZoneEditing.togglingVisibility(hidden,ceilingID:id)
+        XCTAssertEqual(visible.room.ceilings[0].isHidden,false)
+        XCTAssertEqual(visible.room.slopes,whole.room.slopes)
+        let proposal=try XCTUnwrap(WallCeilingEstimate.manualProposals(in:hidden.room).first)
+        let changed=try WallCeilingEstimate.applying(to:hidden,proposal:proposal,settings:.init(lowHeight:2.7,highHeight:2.7),manuallyEdited:true)
+        XCTAssertEqual(changed.room.ceilings[0].isHidden,true,"Editing must not accidentally reveal a ceiling")
+    }
+
     func testCaptureLocationIsFreshBoundedOptionalAndNotInDiagnostics() throws {
         let now=Date()
         let fix=ScanLocationFix(latitude:45.7,longitude:4.8,horizontalAccuracy:12,capturedAt:now)
@@ -333,7 +1437,7 @@ final class SurveyCaptureTests: XCTestCase {
         let original=survey
         let key=try XCTUnwrap(SurveyThumbnailRenderer.key(for:survey))
         let image=try XCTUnwrap(SurveyThumbnailRenderer.image(for:survey))
-        XCTAssertEqual(image.size,CGSize(width:288,height:216))
+        XCTAssertEqual(image.size,CGSize(width:576,height:432))
         XCTAssertTrue(image === SurveyThumbnailRenderer.image(for:survey))
         XCTAssertEqual(survey,original)
         survey.checkpoints[0].transformToSurvey.values[12]=2
@@ -343,6 +1447,63 @@ final class SurveyCaptureTests: XCTestCase {
         XCTAssertNotEqual(SurveyThumbnailRenderer.key(for:survey),key)
         let attachment=XCTAttachment(image:image); attachment.name="project-survey-thumbnail"
         attachment.lifetime = .keepAlways; add(attachment)
+    }
+
+    @MainActor func testElevatedRenderingDefaultsAndLightweightMaterials() throws {
+        XCTAssertEqual(MaquetteRendering.resolve(nil), .elevated)
+        XCTAssertEqual(MaquetteRendering.resolve("unknown"), .elevated)
+        XCTAssertEqual(MaquetteRendering.resolve("standard"), .standard)
+        let wall=MaquetteStyle.material(.wall,rendering:.elevated)
+        XCTAssertTrue(wall === MaquetteStyle.material(.wall,rendering:.elevated))
+        XCTAssertFalse(wall === MaquetteStyle.material(.wall,rendering:.standard))
+        XCTAssertEqual(wall.lightingModel, .lambert)
+        let blue=try XCTUnwrap(wall.diffuse.contents as? UIColor)
+        var r:CGFloat=0, g:CGFloat=0, b:CGFloat=0, a:CGFloat=0
+        blue.getRed(&r,green:&g,blue:&b,alpha:&a)
+        XCTAssertGreaterThan(b,r)
+        XCTAssertNotNil(MaquetteStyle.material(.floor,rendering:.elevated).diffuse.contents as? UIColor)
+        XCTAssertNotNil(MaquetteStyle.material(.floor,rendering:.standard).diffuse.contents as? UIImage)
+        let quad:[RoomPoint]=[.init(x:0,y:0,z:0),.init(x:2,y:0,z:0),.init(x:2,y:2,z:0),
+                              .init(x:0,y:0,z:0),.init(x:2,y:2,z:0),.init(x:0,y:2,z:0)]
+        XCTAssertEqual(MaquetteStyle.featureEdges(quad).count,8,"Four boundaries, no triangulation diagonal")
+    }
+
+    @MainActor func testRenderingSwitchPreservesGeometryCameraAndSelection() throws {
+        let defaults=UserDefaults.standard, key=MaquetteRendering.preferenceKey
+        let saved=defaults.object(forKey:key)
+        defer { if let saved { defaults.set(saved,forKey:key) } else { defaults.removeObject(forKey:key) } }
+        defaults.set("standard",forKey:key)
+        let document=try WallCeilingEstimate.addingIfMissing(to:dividedRoom())
+        let selected=try XCTUnwrap(document.room.ceilings.first?.id)
+        let parent=RoomDomainScene(room:document.room,selected:.constant(selected),ceilingMode:2,
+            showFloor:true,topView:false,cameraReset:UUID())
+        let coordinator=parent.makeCoordinator(), view=SCNView()
+        view.scene=SCNScene(); parent.update(view,coordinator:coordinator)
+        let camera=try XCTUnwrap(view.pointOfView), wall=try XCTUnwrap(coordinator.walls.first?.geometry)
+        let standardMaterial=wall.firstMaterial
+        defaults.set("elevated",forKey:key)
+        parent.update(view,coordinator:coordinator)
+        XCTAssertTrue(camera === view.pointOfView)
+        XCTAssertTrue(wall === coordinator.walls.first?.geometry)
+        XCTAssertFalse(standardMaterial === wall.firstMaterial)
+        XCTAssertEqual(coordinator.geometryBuildCount,1)
+        XCTAssertEqual(try XCTUnwrap(coordinator.roofs.first).opacity,0.8,accuracy:0.001)
+        XCTAssertFalse(try XCTUnwrap(coordinator.walls.first?.childNode(withName:"maquette.edges",recursively:false)).isHidden)
+        XCTAssertEqual(parent.room,document.room)
+        let checkpoint=ProjectRoomScanCheckpoint(roomID:document.room.id,document:document,
+            spatialLinkState:.sharedWorldSpace,workState:.validated)
+        let survey=ProjectSurveyRecord(projectID:UUID(),name:"Rendu",checkpoints:[checkpoint])
+        let surfaces=SurveyWorkGeometry.surfaces(in:survey)
+        let ids=Set(surfaces.filter { $0.source.kind == .ceiling }.map(\.id))
+        let high=try XCTUnwrap(SurveyThumbnailRenderer.image(for:survey,selected:ids))
+        let attachment=XCTAttachment(image:high); attachment.name="elevated-blue-orange"
+        attachment.lifetime = .keepAlways; add(attachment)
+        defaults.set("standard",forKey:key)
+        XCTAssertFalse(high === SurveyThumbnailRenderer.image(for:survey,selected:ids))
+        parent.update(view,coordinator:coordinator)
+        XCTAssertTrue(camera === view.pointOfView)
+        XCTAssertEqual(coordinator.geometryBuildCount,1)
+        XCTAssertTrue(try XCTUnwrap(coordinator.walls.first?.childNode(withName:"maquette.edges",recursively:false)).isHidden)
     }
 
     @MainActor func testMaquetteMaterialsHaveBoundedPixelsAndIndependentVariants() throws {
@@ -399,6 +1560,30 @@ final class SurveyCaptureTests: XCTestCase {
         parent.update(view,coordinator:coordinator)
         XCTAssertEqual(coordinator.geometryBuildCount,2)
         XCTAssertEqual(coordinator.walls.count,edited.walls.count)
+    }
+
+    @MainActor func testCeilingHeightPreviewReusesShellAndCamera() throws {
+        let whole=try WallCeilingEstimate.addingIfMissing(to:ceilingRoom())
+        let id=try XCTUnwrap(whole.room.ceilings.first?.id)
+        let token=UUID()
+        var parent=RoomDomainScene(room:whole.room,selected:.constant(id),ceilingMode:2,showFloor:true,topView:false,cameraReset:token)
+        let coordinator=parent.makeCoordinator(), view=SCNView()
+        view.scene=SCNScene(); parent.update(view,coordinator:coordinator)
+        let wall=try XCTUnwrap(coordinator.walls.first), camera=try XCTUnwrap(view.pointOfView)
+        let proposal=try XCTUnwrap(WallCeilingEstimate.manualProposals(in:whole.room).first)
+        for height in [2.6,2.7,2.8] {
+            let changed=try WallCeilingEstimate.applying(to:whole,proposal:proposal,settings:.init(lowHeight:height,highHeight:height),manuallyEdited:true)
+            parent=RoomDomainScene(room:changed.room,selected:.constant(id),ceilingMode:2,showFloor:true,topView:false,cameraReset:token)
+            parent.update(view,coordinator:coordinator)
+            XCTAssertTrue(coordinator.walls.first === wall)
+            XCTAssertTrue(view.pointOfView === camera)
+            XCTAssertFalse(coordinator.roofs.isEmpty)
+        }
+        let hidden=CeilingZoneEditing.togglingVisibility(whole,ceilingID:id)
+        parent=RoomDomainScene(room:hidden.room,selected:.constant(nil),ceilingMode:2,showFloor:true,topView:false,cameraReset:token)
+        parent.update(view,coordinator:coordinator)
+        XCTAssertTrue(coordinator.roofs.allSatisfy(\.isHidden))
+        XCTAssertTrue(coordinator.outlines.allSatisfy(\.isHidden))
     }
 
     @MainActor func testSurveyGeometryCacheIncludesTransformsButNotSelection() throws {
@@ -958,7 +2143,7 @@ final class SurveyCaptureTests: XCTestCase {
         let original = ceilingRoom()
         XCTAssertThrowsError(try SurveyPlanEditing.addingDoor(original, wallID: UUID(), width: 0.83, height: 2.04, position: 1))
         let wall = original.room.walls[0]
-        for values in [(0.8,2.04,1.0), (0.83,3.0,1.0), (0.83,2.04,-0.1), (0.83,2.04,3.5), (0.83,2.04,Double.nan)] {
+        for values in [(0.0,2.04,1.0), (0.83,3.0,1.0), (0.83,2.04,-0.1), (0.83,2.04,3.5), (0.83,2.04,Double.nan)] {
             XCTAssertThrowsError(try SurveyPlanEditing.addingDoor(original, wallID: wall.id,
                 width: values.0, height: values.1, position: values.2))
         }

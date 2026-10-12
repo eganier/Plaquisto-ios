@@ -1,18 +1,52 @@
 import SwiftUI
 
+enum ProjectGalleryIndex {
+    static func matches(_ project: ProjectItem, surveys: [ProjectSurveyRecord], query: String) -> Bool {
+        func normalized(_ text:String) -> String {
+            text.folding(options:[.diacriticInsensitive,.caseInsensitive],locale:Locale(identifier:"fr_FR"))
+                .components(separatedBy:CharacterSet.alphanumerics.inverted).filter { !$0.isEmpty }.joined(separator:" ")
+        }
+        let dates=[project.createdAt] + surveys.map(\.scanDate)
+        let formatter=DateFormatter(); formatter.locale=Locale(identifier:"fr_FR")
+        let dateWords=dates.flatMap { date in
+            ["dd/MM/yyyy","d MMMM yyyy","yyyy-MM-dd"].map { format in
+                formatter.dateFormat=format; return formatter.string(from:date)
+            }
+        }
+        let words=[project.name,project.client,project.address] + surveys.compactMap(\.captureAddress) + surveys.map(\.name) + dateWords
+        let haystack=normalized(words.joined(separator:" "))
+        return normalized(query).split(separator:" ").allSatisfy { haystack.contains($0) }
+    }
+
+    static func summary(_ project:ProjectItem) -> [(title:String, area:Double)] {
+        let categories:[(WorkCategory,String)]=[(.wallInsulation,"Doublage périphérique"),(.ceilings,"Plafond"),(.partitions,"Cloison"),(.painting,"Peinture")]
+        return categories.compactMap { category,title in
+            // Work.area is the ouvrage's area, not the sum of its skins or two partition faces.
+            let area=project.works.filter { $0.type.category == category }.map(\.area).filter { $0.isFinite && $0 > 0 }.reduce(0,+)
+            return area > 0 ? (title,area) : nil
+        }
+    }
+}
+
 struct ProjectsHomeView: View {
     @EnvironmentObject private var store: ProjectStore
     let onOpenAccount: () -> Void
     @State private var showingNewProject = false
     @State private var projectToDelete: ProjectItem?
     @State private var errorMessage = ""
+    @State private var navigationPath = NavigationPath()
+    @State private var search = ""
+
+    private var visibleProjects:[ProjectItem] {
+        store.projects.filter { ProjectGalleryIndex.matches($0,surveys:store.surveys(projectID:$0.id),query:search) }
+    }
 
     init(onOpenAccount: @escaping () -> Void = {}) {
         self.onOpenAccount = onOpenAccount
     }
 
     var body: some View {
-        NavigationStack {
+        NavigationStack(path:$navigationPath) {
             Group {
                 if store.projects.isEmpty {
                     ContentUnavailableView {
@@ -23,25 +57,48 @@ struct ProjectsHomeView: View {
                         Button("Créer un projet") { showingNewProject = true }.buttonStyle(.borderedProminent)
                     }
                 } else {
-                    List(store.projects) { project in
-                        NavigationLink(value: project.id) {
-                            VStack(alignment: .leading, spacing: 5) {
-                                Text(project.name).font(.headline)
-                                Text(project.client.isEmpty ? "\(project.works.count) ouvrage(s)" : "\(project.client) · \(project.works.count) ouvrage(s)")
-                                    .font(.subheadline).foregroundStyle(.secondary)
+                    ScrollView {
+                        if visibleProjects.isEmpty {
+                            ContentUnavailableView.search(text:search).padding(.top,40)
+                        } else {
+                            LazyVGrid(columns:[GridItem(.adaptive(minimum:300),spacing:16)],spacing:16) {
+                                ForEach(visibleProjects) { project in
+                                    VStack(spacing:0) {
+                                        NavigationLink(value:project.id) {
+                                            ProjectGalleryCard(project:project,survey:store.surveys(projectID:project.id).max { $0.scanDate < $1.scanDate })
+                                        }.buttonStyle(.plain)
+                                        HStack {
+                                            Text("\(project.visibleWorks.count) ouvrage(s)").font(.caption).foregroundStyle(.secondary)
+                                            Spacer()
+                                            Menu {
+                                                Button("Dupliquer",systemImage:"plus.square.on.square") { duplicateProject(project) }
+                                                Button("Supprimer",systemImage:"trash",role:.destructive) { projectToDelete=project }
+                                            } label: { Image(systemName:"ellipsis").frame(width:44,height:36) }
+                                            .accessibilityLabel("Options de \(project.name)")
+                                        }.padding(.horizontal,16)
+                                    }
+                                    .background(.background,in:RoundedRectangle(cornerRadius:24))
+                                    .overlay { RoundedRectangle(cornerRadius:24).strokeBorder(.primary.opacity(0.05)) }
+                                    .shadow(color:.black.opacity(0.04),radius:10,y:4)
+                                }
                             }
-                            .padding(.vertical, 4)
+                            .padding(16)
                         }
-                        .swipeActions {
-                            Button { projectToDelete = project } label: { Label("Supprimer", systemImage: "trash") }
-                                .tint(.red)
-                            Button { duplicateProject(project) } label: { Label("Dupliquer", systemImage: "plus.square.on.square") }
-                                .tint(.blue)
-                        }
-                    }
+                    }.background(Color(.systemGroupedBackground))
                 }
             }
             .navigationTitle("Mes projets")
+            .searchable(text:$search,placement:.navigationBarDrawer(displayMode:.always),prompt:"Projet, lieu, code postal ou date")
+            .task(id:store.surveys.map(\.id)) {
+                // Sequential, cached resolution of recorded locations only. Search stays fully
+                // local; typing never makes a geocoding request. Offline failures remain retryable.
+                for survey in store.surveys where survey.captureAddress == nil && survey.captureLocation != nil {
+                    guard !Task.isCancelled else { return }
+                    if let address=await ScanAddressSuggestion.address(for:survey.captureLocation) {
+                        try? store.cacheScanAddress(surveyID:survey.id,address:address)
+                    }
+                }
+            }
             .toolbar {
                 ToolbarItemGroup(placement: .topBarTrailing) {
                     Button { showingNewProject = true } label: { Label("Nouveau projet", systemImage: "plus") }
@@ -52,6 +109,10 @@ struct ProjectsHomeView: View {
                 }
             }
             .navigationDestination(for: UUID.self) { ProjectDetailView(projectID: $0) }
+            .onChange(of:store.projectNavigationRequest, initial:true) { _, request in
+                guard let request else { return }
+                navigationPath = NavigationPath([request.projectID])
+            }
             .sheet(isPresented: $showingNewProject) { ProjectFormView() }
             .confirmationDialog("Supprimer ce projet et tous ses ouvrages ?", isPresented: Binding(get: { projectToDelete != nil }, set: { if !$0 { projectToDelete = nil } }), titleVisibility: .visible) {
                 Button("Supprimer définitivement", role: .destructive) { if let projectToDelete { deleteProject(projectToDelete) } }
@@ -72,6 +133,47 @@ struct ProjectsHomeView: View {
     private func deleteProject(_ project: ProjectItem) {
         do { try store.deleteProject(id: project.id); projectToDelete = nil }
         catch { errorMessage = "Le projet n’a pas pu être supprimé." }
+    }
+}
+
+private struct ProjectGalleryCard:View {
+    let project:ProjectItem
+    let survey:ProjectSurveyRecord?
+    var body:some View {
+        VStack(alignment:.leading,spacing:12) {
+            if let survey, !survey.checkpoints.isEmpty {
+                SurveyThumbnailView(survey:survey).frame(height:180).clipped()
+                    .overlay(alignment:.topLeading) {
+                        Label("Relevé 3D",systemImage:"cube").font(.caption.weight(.medium))
+                            .padding(8).background(.ultraThinMaterial,in:Capsule()).padding(12)
+                    }
+            } else {
+                VStack(alignment:.leading,spacing:10) {
+                    let summary=ProjectGalleryIndex.summary(project)
+                    if summary.isEmpty {
+                        Label(project.visibleWorks.isEmpty ? "Votre projet commence ici" : "\(project.visibleWorks.count) ouvrage(s)",systemImage:"square.stack.3d.up")
+                            .foregroundStyle(.secondary)
+                    } else {
+                        ForEach(summary.indices,id:\.self) { index in
+                            HStack(alignment:.firstTextBaseline) {
+                                Text("\(summary[index].area.formatted(.number.precision(.fractionLength(0...1)))) m²")
+                                    .font(.title3.weight(.semibold)).foregroundStyle(.tint)
+                                Text(summary[index].title).font(.subheadline)
+                            }
+                        }
+                    }
+                }.frame(maxWidth:.infinity,minHeight:140,alignment:.leading).padding(20)
+                    .background(Color.accentColor.opacity(0.06))
+            }
+            VStack(alignment:.leading,spacing:6) {
+                Text(project.name).font(.title3.weight(.semibold)).foregroundStyle(.primary).lineLimit(2)
+                let address=project.address.isEmpty ? (survey?.captureAddress ?? "") : project.address
+                if !address.isEmpty { Label(address,systemImage:"mappin.and.ellipse").font(.caption).foregroundStyle(.secondary).lineLimit(2) }
+                Text(survey.map { "Scan du \($0.scanDate.formatted(date:.numeric,time:.omitted))" }
+                     ?? "Créé le \(project.createdAt.formatted(date:.numeric,time:.omitted))")
+                    .font(.caption).foregroundStyle(.secondary)
+            }.padding(.horizontal,16).padding(.bottom,4)
+        }.clipShape(UnevenRoundedRectangle(topLeadingRadius:24,topTrailingRadius:24))
     }
 }
 
@@ -107,7 +209,7 @@ private struct ProjectDetailView: View {
                     if !project.client.isEmpty || !project.address.isEmpty || !project.notes.isEmpty {
                     Section {
                         if !project.client.isEmpty { LabeledContent("Client", value: project.client) }
-                        if !project.address.isEmpty { LabeledContent("Adresse", value: project.address) }
+                        if !project.address.isEmpty { ProjectAddressMenu(address: project.address) }
                         if !project.notes.isEmpty { Text(project.notes).foregroundStyle(.secondary) }
                     }
                     }
@@ -138,11 +240,24 @@ private struct ProjectDetailView: View {
                         }
                     }
                     Section(roomID == nil ? "Ouvrages" : "Ouvrages de la pièce") {
-                        if (roomID.map { project.ownedWorks(in: $0) } ?? project.works).isEmpty {
+                        if (roomID.map { id in project.visibleWorks.filter { $0.roomID == id } } ?? project.visibleWorks).isEmpty {
                             Text("Aucun ouvrage enregistré.").foregroundStyle(.secondary)
                         } else {
-                            ForEach(roomID.map { project.ownedWorks(in: $0) } ?? project.works) { work in
+                            ForEach(roomID.map { id in project.visibleWorks.filter { $0.roomID == id } } ?? project.visibleWorks) { work in
                                 VStack(alignment: .leading, spacing: 7) {
+                                    if let source = work.components.compactMap(\.surveySource).first,
+                                       let survey = store.surveys.first(where: { $0.id == source.surveyID }) {
+                                        let sources = work.components.compactMap(\.surveySource)
+                                        let ids = Set(SurveyWorkGeometry.surfaces(in:survey).filter { surface in
+                                            sources.contains { source in
+                                                source.surveyID == surface.source.surveyID && source.checkpointID == surface.source.checkpointID &&
+                                                source.surfaceID == surface.source.surfaceID && source.kind == surface.source.kind &&
+                                                source.boundaryIndex == surface.source.boundaryIndex
+                                            }
+                                        }.map(\.id))
+                                        SurveyThumbnailView(survey:survey,selected:ids)
+                                            .frame(height:130).clipShape(RoundedRectangle(cornerRadius:12))
+                                    }
                                     Text(work.name).font(.headline)
                                     Text(WorkTechnicalSummary.text(for: work, catalogue: references.workSummaryCatalogue))
                                         .font(.subheadline).foregroundStyle(.secondary)
@@ -166,7 +281,7 @@ private struct ProjectDetailView: View {
                                         workAction("Quantitatif", icon: "sum")
                                     }.buttonStyle(.plain)
                                     .accessibilityIdentifier("work.\(work.id).quantities")
-                                    if work.type != .paintingBeta && (work.hasSavedLayout || !work.components.isEmpty || (work.type != .openings && !work.isPartition)) {
+                                    if work.type != .paintingBeta && work.type != .jointTreatment && (work.hasSavedLayout || !work.components.isEmpty || (work.type != .openings && !work.isPartition)) {
                                         Button { openWork(work.id, screen: .layout) } label: {
                                             workAction(work.hasSavedLayout ? "Calepinage 2D existant" : "Créer un calepinage 2D", icon: "square.grid.3x3")
                                         }.buttonStyle(.plain)
@@ -181,6 +296,11 @@ private struct ProjectDetailView: View {
                                         workAction("Modifier la configuration", icon: "slider.horizontal.3")
                                     }.buttonStyle(.plain)
                                     .accessibilityIdentifier("work.\(work.id).configuration")
+                                    if work.supportsAttachedOpenings {
+                                        NavigationLink { WorkOpeningsView(work: work) } label: {
+                                            workAction("Ajouter / gérer les ouvertures", icon: "door.left.hand.open")
+                                        }.buttonStyle(.plain)
+                                    }
                                     if let conflict = store.openingJoineryConflict(
                                         projectID: projectID,
                                         referenceWorkID: work.id
@@ -501,7 +621,7 @@ private struct WorkComponentsView: View {
 }
 
 /// One work-owned workbook, whose tabs reuse the existing stable component/side identities.
-private struct WorkLayoutWorkbookView: View {
+struct WorkLayoutWorkbookView: View {
     @EnvironmentObject private var store: ProjectStore
     let projectID: UUID
     let workID: UUID
@@ -527,7 +647,7 @@ private struct WorkLayoutWorkbookView: View {
         return components.flatMap { component in
             let stored = component.plans.compactMap(\.sideRoomID) + [component.referenceSideRoomID].compactMap { $0 }
             let ids = Array(Set(stored + [work.roomID].compactMap { $0 } + work.linkedRoomIDs)).sorted { $0.uuidString < $1.uuidString }
-            let sides: [UUID?] = work.isPartition && !ids.isEmpty ? ids.map(Optional.some) : [nil]
+            let sides: [UUID?] = component.localLayoutSideIDs.map { $0.map(Optional.some) } ?? (work.isPartition && !ids.isEmpty ? ids.map(Optional.some) : [nil])
             return sides.map { Selection(component: component, side: $0) }
         }
     }
@@ -538,9 +658,19 @@ private struct WorkLayoutWorkbookView: View {
                     side: selected.side, kind: work.type.category == .ceilings ? .ceiling : .wall,
                     sharedFraming: work.isPartition,
                     workbook: LayoutWorkbookNavigation(tabs: selections.map { item in
-                        let room = project?.rooms.first { $0.id == item.side }?.name
+                        let room = item.component.localLayoutSideIDs.flatMap { ids in item.side.flatMap { ids.firstIndex(of: $0) } }.map { $0 == 0 ? "A" : "B" } ?? project?.rooms.first { $0.id == item.side }?.name
                         let stale = item.component.plans.contains { $0.sideRoomID == item.side && $0.geometryRevision != item.component.geometryRevision }
-                        return .init(id: item.key, title: item.component.name + (room.map { " · Côté \($0)" } ?? "") + (stale ? " — à vérifier" : ""))
+                        var tab = LayoutWorkbookNavigation.Tab(id: item.key, title: item.component.name + (room.map { " · Côté \($0)" } ?? "") + (stale ? " — à vérifier" : ""))
+                        if let source=item.component.surveySource,
+                           let survey=store.surveys.first(where:{$0.id == source.surveyID}) {
+                            let selected=Set(SurveyWorkGeometry.surfaces(in:survey).filter {
+                                SurveyWorkGeometry.hasSameSource($0.source,source)
+                            }.map(\.id))
+                            tab.preview=AnyView(SurveyThumbnailView(survey:survey,selected:selected))
+                        } else if let surface=item.component.surface {
+                            tab.preview=AnyView(LayoutLivePreview(surface:surface,layer:item.component.plans.first?.layers.first ?? .init()))
+                        }
+                        return tab
                     }, selectedID: selected.key, select: { key in
                         self.selected = selections.first { $0.key == key }
                     }, add: {
@@ -559,7 +689,7 @@ private struct WorkLayoutWorkbookView: View {
         .task {
             guard selected == nil, let work else { return }
             if work.components.isEmpty {
-                drafts = [WorkComponentRecord(name: work.type.category == .ceilings ? "Plafond partie A" : "Mur A")]
+                drafts = [WorkLayoutDefaults.firstComponent(name: work.type.category == .ceilings ? "Plafond partie A" : "Mur A", configuration: work.payload)]
             }
             let saved = selections.filter { $0.component.surface != nil && $0.component.plans.contains { !$0.layers.isEmpty } }
             selected = saved.first { $0.side == initialSide } ?? saved.first
@@ -645,7 +775,13 @@ private struct ComponentPlanEditorView: View {
                 sideRoomID: side, document: document, expectedGeometryRevision: openedComponent.geometryRevision,
                 adjacencyDecision: decision, reviewedAdjacency: review, newComponent: openedComponent)
             refreshOpenedComponent()
-        }, workbook: workbook, newDocumentConfiguration: configuration)
+        }, workbook: workbook, newDocumentConfiguration: configuration,
+        quantityProposal: kind == .ceiling ? {
+            guard let work=store.project(id:projectID)?.works.first(where:{$0.id == workID}) else { throw LayoutQuantityCalculator.Unavailable(message:"L’ouvrage n’est plus disponible.") }
+            return try LayoutQuantityCalculator.make(work:work,formats:catalogue.layoutFormats)
+        } : nil, saveQuantityProposal: { proposal in
+            try store.saveLayoutQuantityTakeoff(projectID:projectID,workID:workID,takeoff:proposal)
+        })
         .environmentObject(catalogue)
         .task { await catalogue.load() }
     }
@@ -745,7 +881,7 @@ private struct CeilingWallLinksView: View {
     }
 }
 
-private struct RenameWorkView: View {
+struct RenameWorkView: View {
     @Environment(\.dismiss) private var dismiss
     let work: WorkItem
     let onSave: (String) -> Void
@@ -777,7 +913,7 @@ private struct RenameWorkView: View {
     }
 }
 
-private struct ProjectFormView: View {
+struct ProjectFormView: View {
     @EnvironmentObject private var store: ProjectStore
     @Environment(\.dismiss) private var dismiss
     let project: ProjectItem?
@@ -802,7 +938,7 @@ private struct ProjectFormView: View {
                 Section("Informations") {
                     TextField("Nom du projet", text: $name)
                     TextField("Client (facultatif)", text: $client)
-                    TextField("Adresse (facultative)", text: $address)
+                    ProjectAddressField(address: $address)
                     TextField("Notes (facultatives)", text: $notes, axis: .vertical).lineLimit(3...8)
                 }
             }
@@ -826,7 +962,7 @@ private struct ProjectFormView: View {
     }
 }
 
-private struct NewWorkView: View {
+struct NewWorkView: View {
     @EnvironmentObject private var store: ProjectStore
     @Environment(\.dismiss) private var dismiss
     let projectID: UUID
@@ -834,6 +970,8 @@ private struct NewWorkView: View {
     @State private var configurationDraft: Draft?
     @State private var duplicateName: String?
     @State private var category: WorkCategory?
+    @State private var surveyChoice: Draft?
+    @State private var surveySelection: Draft?
 
     private struct Draft: Identifiable {
         let id = UUID()
@@ -884,6 +1022,36 @@ private struct NewWorkView: View {
             .fullScreenCover(item: $configurationDraft) { draft in
                 WorkConfiguratorContainer(projectID: projectID, workName: draft.name, workType: draft.type, onFinished: { dismiss() })
             }
+            .confirmationDialog("Utiliser les surfaces du relevé 3D ?", isPresented: Binding(get: { surveyChoice != nil }, set: { if !$0 { surveyChoice = nil } }), titleVisibility: .visible) {
+                if let draft = surveyChoice {
+                    Button("Choisir les surfaces sur le relevé") { surveySelection = draft; surveyChoice = nil }
+                    Button("Renseigner les dimensions moi-même") { configurationDraft = draft; surveyChoice = nil }
+                }
+                Button("Annuler", role: .cancel) { surveyChoice = nil }
+            } message: {
+                Text("Récupérez les dimensions et les ouvertures en sélectionnant les surfaces de votre nouvel ouvrage sur le relevé du projet.")
+            }
+            .fullScreenCover(item: $surveySelection) { draft in
+                NavigationStack {
+                    let surveys = store.surveys(projectID: projectID)
+                    Group {
+                        if surveys.count == 1, let survey = surveys.first {
+                            SurveyWorkSelectionView(surveyID: survey.id, preferredType: draft.type, name: draft.name, onFinished: { dismiss() })
+                        } else {
+                            List(surveys) { survey in
+                                NavigationLink {
+                                    SurveyWorkSelectionView(surveyID: survey.id, preferredType: draft.type, name: draft.name, onFinished: { dismiss() })
+                                } label: {
+                                    HStack {
+                                        SurveyThumbnailView(survey: survey).frame(width: 90, height: 68)
+                                        Text(survey.name)
+                                    }
+                                }
+                            }.navigationTitle("Choisir un relevé")
+                        }
+                    }.toolbar { ToolbarItem(placement: .cancellationAction) { Button("Annuler") { surveySelection = nil } } }
+                }
+            }
             .alert("Nom déjà utilisé", isPresented: Binding(
                 get: { duplicateName != nil },
                 set: { if !$0 { duplicateName = nil } }
@@ -928,7 +1096,7 @@ private struct NewWorkView: View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Catégorie d’ouvrage").font(.headline)
             LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {
-                ForEach(WorkCategory.allCases) { item in
+                ForEach(WorkCategory.allCases.filter { $0 != .openings }) { item in
                     Button { category = item } label: {
                         Text(item.cardTitle)
                             .font(.headline)
@@ -958,7 +1126,10 @@ private struct NewWorkView: View {
             duplicateName = name
             return
         }
-        configurationDraft = Draft(name: name, type: type)
+        let draft = Draft(name: name, type: type)
+        let supported: Set<WorkType> = [.ceilingOnFurring, .ceilingOnRailsAndStuds, .peripheralLiningStuds, .peripheralLiningFurrings, .paintingBeta]
+        if supported.contains(type), !store.surveys(projectID: projectID).isEmpty { surveyChoice = draft }
+        else { configurationDraft = draft }
     }
 }
 
@@ -968,8 +1139,9 @@ private extension WorkCategory {
         case .ceilings: "Plafonds"
         case .partitions: "Cloisons"
         case .wallInsulation: "Isolation des murs"
+        case .joints: "Bandes à joint"
         case .openings: "Ouvertures"
-        case .painting: "Peinture (bêta)"
+        case .painting: "Peinture et ratissages"
         }
     }
 
@@ -978,6 +1150,7 @@ private extension WorkCategory {
         case .ceilings: Color(red: 0.20, green: 0.43, blue: 0.57)
         case .partitions: Color(red: 0.76, green: 0.43, blue: 0.24)
         case .wallInsulation: Color(red: 0.22, green: 0.49, blue: 0.38)
+        case .joints: Color(red: 0.45, green: 0.48, blue: 0.62)
         case .openings: Color(red: 0.45, green: 0.34, blue: 0.58)
         case .painting: Color(red: 0.57, green: 0.37, blue: 0.24)
         }
@@ -999,13 +1172,18 @@ struct SavedWorkView: View {
     var body: some View {
         Group {
             switch currentWork.type {
+            case .jointTreatment:
+                JointTreatmentConfiguratorView(projectID: currentWork.projectID, initial: currentWork.jointTreatmentConfiguration ?? .init()) { configuration in
+                    do { try store.updateWork(currentWork, jointTreatmentConfiguration: configuration); dismiss() }
+                    catch { errorMessage = error.localizedDescription }
+                }
             case .ceilingOnFurring:
                 CeilingConfiguratorView(initialConfiguration: LayoutWorkGeometry.ceiling(recalculationDocument,base:currentWork.ceilingConfiguration ?? .init()), startsAtResult: !startsAtBeginning && recalculationDocument == nil, preserveInitialSpacing:true, lockScannedGeometry: currentWork.components.contains { $0.surveySource != nil }) { configuration in
                     do { try store.updateWork(currentWork, configuration: configuration); dismiss() }
                     catch { errorMessage = "Les modifications n’ont pas pu être enregistrées." }
                 }
             case .ceilingOnRailsAndStuds:
-                RailStudCeilingConfiguratorView(initialConfiguration: LayoutWorkGeometry.railCeiling(recalculationDocument,base:currentWork.railStudCeilingConfiguration ?? .init()), startsAtResult: !startsAtBeginning && recalculationDocument == nil) { configuration in
+                RailStudCeilingConfiguratorView(initialConfiguration: LayoutWorkGeometry.railCeiling(recalculationDocument,base:currentWork.railStudCeilingConfiguration ?? .init()), startsAtResult: !startsAtBeginning && recalculationDocument == nil, lockScannedGeometry: currentWork.components.contains { $0.surveySource != nil }) { configuration in
                     do { try store.updateWork(currentWork, railStudCeilingConfiguration: configuration); dismiss() }
                     catch { errorMessage = "Les modifications n’ont pas pu être enregistrées." }
                 }
@@ -1153,6 +1331,8 @@ struct WorkConfiguratorContainer: View {
         NavigationStack {
             Group {
                 switch workType {
+                case .jointTreatment:
+                    JointTreatmentConfiguratorView(projectID: projectID) { savePayload(.jointTreatment($0)) }
                 case .ceilingOnFurring:
                     CeilingConfiguratorView(initialConfiguration:LayoutWorkGeometry.ceiling(layoutDocument), preserveInitialSpacing:layoutDocument != nil) { configuration in save(configuration: configuration) }
                 case .ceilingOnRailsAndStuds:

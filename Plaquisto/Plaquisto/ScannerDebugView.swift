@@ -2,6 +2,8 @@ import SceneKit
 import SwiftUI
 
 struct ScannerDebugView: View {
+    var quickLayout = false
+    @Environment(\.dismiss) private var dismiss
     @EnvironmentObject private var store: ProjectStore
     let onOpenAccount: () -> Void
     @StateObject private var model = ScannerDebugModel()
@@ -40,7 +42,7 @@ struct ScannerDebugView: View {
                 if !model.campaign.chunks.isEmpty {
                     Section("Dernier relevé") {
                         NavigationLink {
-                            ScannerCampaignWorkspaceView(draft: model.campaign)
+                            ScannerCampaignWorkspaceView(draft: model.campaign, quickLayout: quickLayout)
                         } label: {
                             Label("Ouvrir la maquette et choisir les surfaces", systemImage: "square.stack.3d.up")
                         }
@@ -53,7 +55,7 @@ struct ScannerDebugView: View {
                     Section("Relevés à enregistrer") {
                         ForEach(remainingDrafts) { draft in
                             NavigationLink {
-                                ScannerCampaignWorkspaceView(draft: draft)
+                                ScannerCampaignWorkspaceView(draft: draft, quickLayout: quickLayout)
                             } label: {
                                 VStack(alignment: .leading) {
                                     Text("\(draft.chunks.count) pièce(s) conservée(s)")
@@ -160,10 +162,14 @@ struct ScannerDebugView: View {
             .navigationTitle("Scanner")
             .onAppear { reloadDrafts() }
             .toolbar {
-                AccountToolbarButton(action: onOpenAccount)
+                if quickLayout {
+                    ToolbarItem(placement: .cancellationAction) { Button("Fermer") { dismiss() } }
+                } else {
+                    AccountToolbarButton(action: onOpenAccount)
+                }
             }
             .navigationDestination(isPresented: $showingWorkspace) {
-                ScannerCampaignWorkspaceView(draft: model.campaign)
+                ScannerCampaignWorkspaceView(draft: model.campaign, quickLayout: quickLayout)
             }
             .fullScreenCover(isPresented: $showingCapture, onDismiss: {
                 if model.didFinish && !model.campaign.chunks.isEmpty { showingWorkspace = true }

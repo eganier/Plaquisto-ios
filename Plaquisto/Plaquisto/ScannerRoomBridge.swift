@@ -213,6 +213,92 @@ enum ScanEnclosedSpaces {
 
 /// Fallback from observed wall lines, not a LiDAR ceiling observation.
 /// Domain output is portable; the existing contour solver supplies only X/Z.
+enum CeilingZoneEditing {
+    enum Failure: Error, LocalizedError {
+        case notAdjacent
+        var errorDescription: String? { "Ces plafonds doivent partager un bord et former une seule zone fermée, sans chevauchement ni trou. Aucun plafond n’a été modifié." }
+    }
+
+    /// Join boundary segments, not a convex hull: preserve recesses and never fill a void.
+    /// Split shared edges at every vertex first (a neighbour may have extra vertices).
+    static func joinedBoundary(_ a: [RoomPoint], _ b: [RoomPoint]) -> [RoomPoint]? {
+        let tolerance = 0.00001
+        func normalized(_ ring: [RoomPoint]) -> [RoomPoint] {
+            let flat = ring.map { RoomPoint(x:$0.x,y:0,z:$0.z) }
+            return SurveyPlanFinishes.area(flat) < 0 ? Array(flat.reversed()) : flat
+        }
+        let rings = [normalized(a), normalized(b)]
+        guard rings.allSatisfy({ $0.count >= 3 && $0.allSatisfy(\.finite) }) else { return nil }
+        let vertices = rings.flatMap { $0 }
+        var nodes: [RoomPoint] = []
+        func index(_ point: RoomPoint) -> Int {
+            if let i = nodes.firstIndex(where: { ($0-point).horizontalLength < tolerance }) { return i }
+            nodes.append(point); return nodes.count-1
+        }
+        struct Edge: Hashable { let start: Int; let end: Int }
+        var edges = Set<Edge>(), sharedLength = 0.0
+        for ring in rings {
+            for i in ring.indices {
+                let p=ring[i], q=ring[(i+1)%ring.count], d=q-p
+                let length=d.horizontalLength
+                guard length > tolerance else { continue }
+                let breaks=([0.0,1.0]+vertices.compactMap { v -> Double? in
+                    let t=((v.x-p.x)*d.x+(v.z-p.z)*d.z)/(length*length)
+                    return t > 0 && t < 1 && (v-(p+d*t)).horizontalLength < tolerance ? t : nil
+                }).sorted()
+                for j in 1..<breaks.count where (breaks[j]-breaks[j-1])*length > tolerance {
+                    let start=index(p+d*breaks[j-1]), end=index(p+d*breaks[j])
+                    let edge=Edge(start:start,end:end), reverse=Edge(start:end,end:start)
+                    if edges.remove(reverse) != nil { sharedLength += (nodes[end]-nodes[start]).horizontalLength }
+                    else if !edges.insert(edge).inserted { return nil }
+                }
+            }
+        }
+        guard sharedLength > 0.01, let first=edges.first else { return nil }
+        var outline:[RoomPoint]=[], current=first.start
+        repeat {
+            let next=edges.filter { $0.start == current }
+            guard next.count == 1, let edge=next.first else { return nil }
+            outline.append(nodes[current]); edges.remove(edge); current=edge.end
+        } while current != first.start
+        guard edges.isEmpty, outline.count >= 3 else { return nil }
+        let expected=rings.reduce(0) { $0+abs(SurveyPlanFinishes.area($1)) }
+        guard abs(abs(SurveyPlanFinishes.area(outline))-expected) < max(1e-6,expected*1e-6),
+              ScannerCeilingReconstruction.triangulate(outline.map { SIMD2($0.x,$0.z) }) != nil ||
+              ScannerCeilingReconstruction.triangulate(outline.reversed().map { SIMD2($0.x,$0.z) }) != nil else { return nil }
+        return outline
+    }
+
+    static func merge(_ document: PlaquistoRoomDocument, first: UUID, second: UUID) throws -> PlaquistoRoomDocument {
+        guard first != second,
+              let a=document.room.ceilings.first(where: { $0.id == first }),
+              let b=document.room.ceilings.first(where: { $0.id == second }),
+              let pa=WallCeilingEstimate.footprint(of:a,in:document.room),
+              let pb=WallCeilingEstimate.footprint(of:b,in:document.room),
+              let outline=joinedBoundary(pa,pb), Set(a.slopeIDs).isDisjoint(with:b.slopeIDs) else { throw Failure.notAdjacent }
+        var result=document
+        var merged=a
+        merged.footprint=outline
+        merged.slopeIDs += b.slopeIDs
+        // All actual planes, source IDs, openings and split ancestry remain byte-for-byte intact.
+        merged.isHidden = a.isHidden == true && b.isHidden == true
+        if a.estimateSettings != b.estimateSettings { merged.estimateSettings=nil }
+        result.room.ceilings=result.room.ceilings.compactMap { ceiling in
+            ceiling.id == second ? nil : ceiling.id == first ? merged : ceiling
+        }
+        try result.validate()
+        return result
+    }
+
+    static func togglingVisibility(_ document: PlaquistoRoomDocument, ceilingID: UUID) -> PlaquistoRoomDocument {
+        var result=document
+        if let i=result.room.ceilings.firstIndex(where: { $0.id == ceilingID }) {
+            result.room.ceilings[i].isHidden = result.room.ceilings[i].isHidden != true
+        }
+        return result
+    }
+}
+
 enum WallCeilingEstimate {
     enum Failure: Error, LocalizedError {
         case existingCeiling, openContour, differentLevels, invalidHeight, invalidSplit
@@ -229,7 +315,7 @@ enum WallCeilingEstimate {
     struct Proposal: Identifiable {
         let id = UUID()
         var ceilingID: UUID? = nil
-        let boundary: [RoomPoint]
+        var boundary: [RoomPoint]
         let floorElevation: Double
         let suggestedHeight: Double
         let wallTopSpread: Double
@@ -396,9 +482,8 @@ enum WallCeilingEstimate {
         return [try propose(in: room)]
     }
 
-    /// Manual editor only: recover closed footprints even when scanned wall
-    /// heights cannot determine a roof. Heights here are merely form defaults;
-    /// nothing is persisted until the user chooses a shape/heights and saves.
+    /// Recover editable closed footprints independently of the roof shape.
+    /// Heights here are only defaults; the fitter uses the original wall contours.
     static func manualProposals(in room: PlaquistoRoomModel) throws -> [Proposal] {
         var support = room
         let heights = room.walls.map { $0.height.effectiveValue }.filter { $0.isFinite && $0 > 0 }.sorted()
@@ -426,10 +511,30 @@ enum WallCeilingEstimate {
         return existing + vacant
     }
 
+    /// Called after native capture finishes, never during live acquisition.
+    /// Keep raw walls/initialRoom and existing roofs exactly as recorded. A zone
+    /// with missing/invalid boundaries is skipped, not filled with an invented box.
+    static func addingAutomaticCeilings(to document: PlaquistoRoomDocument) -> PlaquistoRoomDocument {
+        guard let proposals = try? manualProposals(in:document.room) else { return document }
+        var result = document
+        for proposal in proposals where proposal.ceilingID == nil {
+            guard !Task.isCancelled else { return document }
+            let settings = CeilingAutoFit(room:document.room,proposal:proposal).automaticSettings()
+            guard !Task.isCancelled else { return document }
+            if let generated = try? applying(to:result,proposal:proposal,settings:settings,manuallyEdited:false) {
+                result = generated
+            }
+        }
+        return result
+    }
+
     static func applying(to document: PlaquistoRoomDocument, proposal: Proposal,
                          settings: CeilingEstimateSettings, manuallyEdited: Bool) throws -> PlaquistoRoomDocument {
         if let ceilingID = proposal.ceilingID {
             guard let target = document.room.ceilings.first(where: { $0.id == ceilingID }) else { throw Failure.existingCeiling }
+            guard !document.room.slopes.contains(where: { slope in
+                !target.slopeIDs.contains(slope.id) && slope.boundaries.contains { overlaps(proposal.boundary,$0) }
+            }) else { throw Failure.existingCeiling }
             var part = document
             part.room.ceilings = []; part.room.slopes = []
             var local = proposal; local.ceilingID = nil
@@ -437,6 +542,7 @@ enum WallCeilingEstimate {
             var generated = try applying(to: part, proposal: local, settings: settings, manuallyEdited: manuallyEdited)
             generated.room.ceilings[0].id = target.id
             generated.room.ceilings[0].planNumber = target.planNumber
+            generated.room.ceilings[0].isHidden = target.isHidden
             let previous = document.room.slopes.filter { target.slopeIDs.contains($0.id) }
             for i in generated.room.slopes.indices where previous.indices.contains(i) {
                 generated.room.slopes[i].id = previous[i].id
@@ -471,7 +577,7 @@ enum WallCeilingEstimate {
                     triangles += [a,c,b].map { .init($0.x, plane.height(x: $0.x, z: $0.y), $0.y) }
                 }
             }
-            let loops = ScannerRoomBridge.boundaries(triangles).map(simplify)
+            let loops = ScannerRoomBridge.boundaries(triangles, resolvingTJunctions: true).map(simplify)
             guard !loops.isEmpty else { continue }
             pans.append(.init(plane: plane, boundaries: loops, provenance: source,
                               accepted: true, manuallyValidated: manuallyEdited))
@@ -553,6 +659,7 @@ enum WallCeilingEstimate {
         let original=document.room.slopes.filter { target.slopeIDs.contains($0.id) }
         guard original.allSatisfy({ $0.boundaries.count == 1 }) else { throw Failure.invalidSplit }
         var halves:[[PlaquistoSlope]]=[], footprints:[[RoomPoint]]=[]
+        let splitOperation = UUID()
         for sign in [1.0,-1.0] {
             var footprintTriangles:[SIMD3<Double>]=[]
             var pans:[PlaquistoSlope]=[]
@@ -573,14 +680,16 @@ enum WallCeilingEstimate {
                         footprintTriangles += vertices.map { .init($0.x,0,$0.y) }
                     }
                 }
-                let loops=ScannerRoomBridge.boundaries(triangles).map(simplify)
+                let loops=ScannerRoomBridge.boundaries(triangles, resolvingTJunctions: true).map(simplify)
                 if !loops.isEmpty {
                     var next=slope; next.boundaries=loops
+                    let ancestors=slope.splitOrigin.map { [$0.sourceSlopeID]+($0.ancestorSlopeIDs ?? []) }
+                    next.splitOrigin = .init(operationID:splitOperation,sourceSlopeID:slope.id,ancestorSlopeIDs:ancestors)
                     if sign < 0 { next.id=UUID() }
                     pans.append(next)
                 }
             }
-            let loops=ScannerRoomBridge.boundaries(footprintTriangles).map(simplify)
+            let loops=ScannerRoomBridge.boundaries(footprintTriangles, resolvingTJunctions: true).map(simplify)
             guard loops.count == 1, let boundary=loops.first,
                   pans.reduce(0, { $0+PlaquistoSurfaceGeometry.area(of:$1) }) > 0.05 else { throw Failure.invalidSplit }
             footprints.append(boundary); halves.append(pans)
@@ -588,6 +697,101 @@ enum WallCeilingEstimate {
         let before=original.reduce(0) { $0+PlaquistoSurfaceGeometry.area(of:$1) }
         let after=halves.flatMap { $0 }.reduce(0) { $0+PlaquistoSurfaceGeometry.area(of:$1) }
         guard abs(before-after) < max(1e-6,before*1e-6), !outline.isEmpty else { throw Failure.invalidSplit }
+        return try applyingSplit(document,target:target,original:original,halves:halves,footprints:footprints,outline:outline)
+    }
+
+    /// Close the new partition against the *raw* shell for ceiling topology.
+    /// Finished faces remain the saved physical endpoints; no scanned wall moves.
+    static func splitForNewPartition(before: PlaquistoRoomDocument, after: PlaquistoRoomDocument,
+                                     depths: [UUID: Double]) throws -> PlaquistoRoomDocument {
+        let oldIDs=Set(before.room.walls.map(\.id))
+        let added=after.room.walls.filter { !oldIDs.contains($0.id) }
+        guard !added.isEmpty else { throw Failure.invalidSplit }
+        let finished=SurveyPlanFinishes.finishedWalls(in:before,depths:depths)
+        var topology=after.room
+        func extended(_ point:RoomPoint, direction:RoomPoint) -> RoomPoint {
+            for face in finished {
+                let delta=point-face.start, along=delta.x*face.direction.x+delta.z*face.direction.z
+                guard along >= -0.01,along <= face.length.effectiveValue+0.01,
+                      (point-(face.start+face.direction*along)).horizontalLength < 0.02,
+                      let raw=before.room.walls.first(where:{$0.id==face.id}) else { continue }
+                let cross=direction.x*raw.direction.z-direction.z*raw.direction.x
+                guard abs(cross)>1e-6 else { continue }
+                let d=raw.start-point, t=(d.x*raw.direction.z-d.z*raw.direction.x)/cross
+                if abs(t)<2 { return point+direction*t }
+            }
+            return point
+        }
+        for i in topology.walls.indices where !oldIDs.contains(topology.walls[i].id) {
+            let wall=topology.walls[i]
+            topology.walls[i].start=extended(wall.start,direction:wall.direction)
+            topology.walls[i].end=extended(wall.effectiveEnd,direction:wall.direction)
+            topology.walls[i].length.manualValue=(topology.walls[i].end-topology.walls[i].start).horizontalLength
+        }
+        let zones=ScanEnclosedSpaces.wallsBySpace(in:topology).map { $0.map(\.start) }
+        var matches: [(PlaquistoCeiling,[[RoomPoint]])]=[]
+        for ceiling in before.room.ceilings {
+            guard let outline=footprint(of:ceiling,in:before.room) else { continue }
+            let contained=zones.filter { ring in
+                guard let center=ArchitecturalPlanInk.interiorPoint(ring) else { return false }
+                return PlaquistoWallGeometry.contains(center,polygon:outline)
+            }
+            let area=abs(SurveyPlanFinishes.area(outline)), sum=contained.reduce(0) { $0+abs(SurveyPlanFinishes.area($1)) }
+            if contained.count == 2, abs(area-sum)<max(0.001,area*1e-5) { matches.append((ceiling,contained)) }
+        }
+        guard matches.count == 1, let (target,regions)=matches.first,
+              let outline=footprint(of:target,in:before.room) else { throw Failure.invalidSplit }
+        let original=after.room.slopes.filter { target.slopeIDs.contains($0.id) }
+        guard !original.isEmpty, original.allSatisfy({$0.boundaries.count==1}) else { throw Failure.invalidSplit }
+        let operation=UUID()
+        var halves:[[PlaquistoSlope]]=[], usedIDs=Set<UUID>()
+        for region in regions {
+            var boundary=region.map { SIMD2($0.x,$0.z) }
+            if ScannerCeilingReconstruction.triangulate(boundary)==nil { boundary.reverse() }
+            guard let zoneIndices=ScannerCeilingReconstruction.triangulate(boundary) else { throw Failure.invalidSplit }
+            var pans:[PlaquistoSlope]=[]
+            for slope in original {
+                var ring=slope.boundaries[0].map { SIMD2($0.x,$0.z) }
+                if ScannerCeilingReconstruction.triangulate(ring)==nil { ring.reverse() }
+                guard let indices=ScannerCeilingReconstruction.triangulate(ring) else { throw Failure.invalidSplit }
+                var triangles:[SIMD3<Double>]=[]
+                for i in stride(from:0,to:indices.count,by:3) {
+                    for j in stride(from:0,to:zoneIndices.count,by:3) {
+                        let zone=(0..<3).map { boundary[zoneIndices[j+$0]] }
+                        let orient=(zone[1].x-zone[0].x)*(zone[2].y-zone[0].y)-(zone[1].y-zone[0].y)*(zone[2].x-zone[0].x)
+                        var poly=(0..<3).map { ring[indices[i+$0]] }
+                        for k in 0..<3 {
+                            let p=zone[k],q=zone[(k+1)%3], sign=orient>0 ? -1.0 : 1.0
+                            poly=clip(poly,a:sign*(p.y-q.y),b:sign*(q.x-p.x),c:sign*(p.x*q.y-q.x*p.y))
+                        }
+                        if poly.count >= 3 {
+                            for k in 1..<(poly.count-1) {
+                                let vertices=[poly[0],poly[k],poly[k+1]]
+                                let cross=(vertices[1].x-vertices[0].x)*(vertices[2].y-vertices[0].y)-(vertices[1].y-vertices[0].y)*(vertices[2].x-vertices[0].x)
+                                if abs(cross)>1e-9 { triangles += vertices.map { SIMD3($0.x,slope.plane.height(x:$0.x,z:$0.y),$0.y) } }
+                            }
+                        }
+                    }
+                }
+                let loops=ScannerRoomBridge.boundaries(triangles).map(simplify)
+                guard !loops.isEmpty else { continue }
+                var next=slope; next.boundaries=loops
+                next.splitOrigin = .init(operationID:operation,sourceSlopeID:slope.id,
+                    ancestorSlopeIDs:slope.splitOrigin.map { [$0.sourceSlopeID]+($0.ancestorSlopeIDs ?? []) })
+                if !usedIDs.insert(slope.id).inserted { next.id=UUID() }
+                pans.append(next)
+            }
+            guard !pans.isEmpty else { throw Failure.invalidSplit }
+            halves.append(pans)
+        }
+        let total=original.reduce(0) { $0+PlaquistoSurfaceGeometry.area(of:$1) }
+        guard abs(halves.flatMap{$0}.reduce(0) { $0+PlaquistoSurfaceGeometry.area(of:$1) }-total)<max(1e-6,total*1e-6) else { throw Failure.invalidSplit }
+        return try applyingSplit(after,target:target,original:original,halves:halves,footprints:regions,outline:outline)
+    }
+
+    private static func applyingSplit(_ document:PlaquistoRoomDocument,target:PlaquistoCeiling,
+                                      original:[PlaquistoSlope],halves:[[PlaquistoSlope]],
+                                      footprints:[[RoomPoint]],outline:[RoomPoint]) throws -> PlaquistoRoomDocument {
         var result=document
         result.room.slopes.removeAll { target.slopeIDs.contains($0.id) }
         result.room.slopes += halves.flatMap { $0 }
@@ -669,19 +873,51 @@ enum ScannerRoomBridge {
         room.slopes = slopes
         room.ceilings = slopes.isEmpty ? [] : [.init(slopeIDs:slopes.map(\.id),provenance:source)]
     }
-    static func boundaries(_ vertices: [SIMD3<Double>]) -> [[RoomPoint]] {
+    static func boundaries(_ vertices: [SIMD3<Double>], resolvingTJunctions: Bool = false) -> [[RoomPoint]] {
+        guard vertices.count >= 3, vertices.count.isMultiple(of:3),
+              vertices.allSatisfy({ $0.x.isFinite && $0.y.isFinite && $0.z.isFinite && simd_length($0)<1e8 }) else { return [] }
         func key(_ p: SIMD3<Double>) -> String { "\(Int64((p.x*100000).rounded()))/\(Int64((p.y*100000).rounded()))/\(Int64((p.z*100000).rounded()))" }
         var edges: [String:(String,String)] = [:], counts: [String:Int] = [:], points: [String:RoomPoint] = [:]
+        // Clipping adjacent triangles can leave A—C opposite A—B—C.
+        // Split both into the same elementary edges before cancelling seams.
+        // This changes topology only: no point, roof height or slope is averaged.
+        var unique:[String:SIMD3<Double>]=[:]
+        if resolvingTJunctions { for p in vertices { unique[key(p)] = p } }
+        let candidates=unique.keys.sorted().compactMap { unique[$0] }
+        var triangles=Set<String>()
         for i in stride(from:0,to:vertices.count-2,by:3) {
+            if resolvingTJunctions {
+                let tri=Array(vertices[i...i+2])
+                guard simd_length(simd_cross(tri[1]-tri[0],tri[2]-tri[0]))>1e-12,
+                      triangles.insert(tri.map(key).sorted().joined(separator:"|")).inserted else { continue }
+            }
             for j in 0..<3 {
-                let a = vertices[i+j], b = vertices[i+(j+1)%3], ka = key(a), kb = key(b)
-                guard ka != kb else { continue }
-                let edge = [ka,kb].sorted().joined(separator:"|")
-                counts[edge,default:0] += 1; edges[edge] = (ka,kb)
-                points[ka] = .init(x:a.x,y:a.y,z:a.z); points[kb] = .init(x:b.x,y:b.y,z:b.z)
+                let a = vertices[i+j], b = vertices[i+(j+1)%3], d=b-a, square=simd_length_squared(d)
+                guard key(a) != key(b), square>1e-16 else { continue }
+                var chain:[(Double,SIMD3<Double>)]=[(0,a),(1,b)]
+                if resolvingTJunctions {
+                    for p in candidates {
+                        let t=simd_dot(p-a,d)/square
+                        if t>1e-8, t<1-1e-8, simd_length(p-(a+d*t))<1e-6 { chain.append((t,p)) }
+                    }
+                    chain.sort { $0.0<$1.0 }
+                }
+                for k in 1..<chain.count {
+                    let p=chain[k-1].1,q=chain[k].1,ka=key(p),kb=key(q)
+                    guard ka != kb else { continue }
+                    let edge = [ka,kb].sorted().joined(separator:"|")
+                    counts[edge,default:0] += 1; edges[edge] = (ka,kb)
+                    points[ka] = .init(x:p.x,y:p.y,z:p.z); points[kb] = .init(x:q.x,y:q.y,z:q.z)
+                }
             }
         }
-        var remaining = edges.filter { counts[$0.key] == 1 }.map(\.value)
+        var remaining = edges.keys.sorted().filter { counts[$0] == 1 }.compactMap { edges[$0] }
+        if resolvingTJunctions {
+            // Never return a partial silhouette for ambiguous/non-manifold input.
+            guard !counts.values.contains(where: { $0>2 }),
+                  Set(remaining.map { $0.0 }).count == remaining.count,
+                  Set(remaining.map { $0.1 }).count == remaining.count else { return [] }
+        }
         var loops: [[RoomPoint]] = []
         while !remaining.isEmpty {
             let first = remaining.removeFirst(); var path = [first.0]; var end = first.1
@@ -689,6 +925,7 @@ enum ScannerRoomBridge {
                 path.append(end); end = remaining.remove(at:next).1
             }
             if end == first.0, path.count >= 3 { loops.append(path.compactMap { points[$0] }) }
+            else if resolvingTJunctions { return [] }
         }
         return loops
     }

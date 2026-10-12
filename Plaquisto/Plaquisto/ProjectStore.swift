@@ -9,6 +9,15 @@ struct OpeningJoineryConflict: Equatable {
 
 @MainActor
 final class ProjectStore: ObservableObject {
+    struct ProjectNavigationRequest: Equatable {
+        let id = UUID()
+        let projectID: UUID
+    }
+    @Published private(set) var projectNavigationRequest: ProjectNavigationRequest?
+    func showProject(_ id: UUID) {
+        guard projects.contains(where: { $0.id == id }) else { return }
+        projectNavigationRequest = .init(projectID:id)
+    }
     @Published private(set) var projects: [ProjectItem] = []
     @Published private(set) var surveys: [ProjectSurveyRecord] = []
     @Published private(set) var lastError: String?
@@ -55,6 +64,15 @@ final class ProjectStore: ObservableObject {
         surveys.filter { $0.projectID == projectID }.sorted { $0.updatedAt > $1.updatedAt }
     }
 
+    func cacheScanAddress(surveyID: UUID, address: String) throws {
+        guard !address.trimmed.isEmpty, let index=surveys.firstIndex(where: { $0.id == surveyID }),
+              surveys[index].captureAddress != address else { return }
+        var next=surveys
+        next[index].captureAddress=address
+        // Metadata enrichment does not reorder or modify the geometry of a survey.
+        try commit(projects,surveys:next)
+    }
+
     /// Delete only the project survey. Derived works retain their independent
     /// geometry, layouts and quantities; remove references atomically with it.
     func deleteSurvey(projectID: UUID, surveyID: UUID) throws {
@@ -99,11 +117,12 @@ final class ProjectStore: ObservableObject {
         next[s].checkpoints[c].updatedAt = now
         next[s].updatedAt = now
         if hasEffectiveSurveyGeometryChange(before: previousSurvey, after: next[s], checkpointID: checkpointID) {
-            next[s].checkpoints[c].needsReview = true
-            next[s].checkpoints[c].workState = .awaitingValidation
-            next[s].state = .readyForReview
-            markWorksAffectedBySurveyGeometryChange(&nextProjects, before: previousSurvey,
-                after: next[s], checkpointID: checkpointID, now: now)
+            next[s].checkpoints[c].needsReview = false
+            next[s].checkpoints[c].workState = .validated
+            next[s].state = .validated
+            try inheritExplicitCeilingSplits(&nextProjects,before:previousSurvey,after:next[s],checkpointID:checkpointID)
+            synchronizeSurveyWorks(&nextProjects, before: previousSurvey, after: next[s],
+                                   checkpointID: checkpointID, now: now)
         }
         try commit(nextProjects, surveys: next)
     }
@@ -160,6 +179,7 @@ final class ProjectStore: ObservableObject {
                                          state: .readyForReview, createdAt: now, updatedAt: now)
         survey.captureDiagnostic = draft.captureDiagnostic
         survey.captureLocation = draft.captureLocation
+        survey.capturedAt = draft.createdAt
         survey.ceilingPlanNumbers = draft.ceilingPlanNumbers
         for chunk in draft.includedChunks {
             // A matching label alone never means it is the same business room.
@@ -281,6 +301,8 @@ final class ProjectStore: ObservableObject {
     @discardableResult
     func createConfiguredWork(projectID: UUID, name: String, type: WorkType, payload: WorkConfiguration,
                               roomID: UUID?, newRoomName: String?, document: LayoutDocument? = nil, level: String? = nil, zone: String? = nil) throws -> UUID {
+        if case .paintingBeta(let configuration) = payload { _ = try PaintingCalculator.calculate(configuration) }
+        if case .jointTreatment(let configuration) = payload, !configuration.isValid { throw StoreError.invalidStructure }
         var next = projects
         guard let i = next.firstIndex(where: { $0.id == projectID }) else { throw StoreError.projectNotFound }
         try validateWorkName(name, in: next[i])
@@ -560,8 +582,29 @@ final class ProjectStore: ObservableObject {
         if !work.isPartition && (work.components.count == 1 || work.components.contains(where: { $0.surveySource != nil })) {
             next[i].works[j].layoutNeedsRecalculation = true
         }
+        let resized = SurveyWorkGeometry.workForRecalculation(next[i].works[j])
+        if resized.payload != next[i].works[j].payload {
+            next[i].works[j] = SurveyWorkGeometry.updatingStoredQuantities(resized, from: work)
+        }
+        if work.type == .ceilingOnFurring || work.type == .ceilingOnRailsAndStuds {
+            // Saving the plan also saves its quantities, in the same transaction.
+            // The automatic initial estimate must not act as a stale floor after
+            // an explicit edit. Invalid/incomplete plans fall back to the form.
+            next[i].works[j].layoutQuantityTakeoff = try? LayoutQuantityCalculator.make(work: next[i].works[j], formats: [])
+            next[i].works[j].automaticLayout = nil
+        }
         next[i].works[j].updatedAt = Date()
         next[i].updatedAt = Date()
+        try commit(next)
+    }
+
+    func saveLayoutQuantityTakeoff(projectID:UUID,workID:UUID,takeoff:LayoutQuantityTakeoff) throws {
+        var next=projects
+        guard let i=next.firstIndex(where:{$0.id == projectID}), let j=next[i].works.firstIndex(where:{$0.id == workID}) else { throw StoreError.workNotFound }
+        guard takeoff.fingerprint == LayoutQuantityCalculator.fingerprint(next[i].works[j]) else { throw StoreError.staleGeometry }
+        next[i].works[j].layoutQuantityTakeoff=takeoff
+        next[i].works[j].layoutNeedsRecalculation=false
+        next[i].works[j].updatedAt=Date(); next[i].updatedAt=Date()
         try commit(next)
     }
 
@@ -667,7 +710,7 @@ final class ProjectStore: ObservableObject {
                 work.furringLiningConfiguration?.height
             case .peripheralLiningAdhesiveFacing:
                 work.adhesiveFacingConfiguration?.height
-            case .ceilingOnFurring, .ceilingOnRailsAndStuds, .modularCeiling, .openings, .paintingBeta:
+            case .ceilingOnFurring, .ceilingOnRailsAndStuds, .modularCeiling, .openings, .paintingBeta, .jointTreatment:
                 nil
             }
         }
@@ -689,7 +732,7 @@ final class ProjectStore: ObservableObject {
                 case .peripheralLiningFurrings:
                     work.furringLiningConfiguration.map { configuration in
                         let insulation = configuration.insulationEnabled ? configuration.firstInsulation.thicknessMM : 0
-                        let facing = facingThicknessMM(
+                        let facing = configuration.facingDepthMM ?? facingThicknessMM(
                             layers: [configuration.firstSkin, configuration.secondSkin, configuration.thirdSkin],
                             activeLayerCount: configuration.layers,
                             quantityNames: configuration.quantities.map(\.name)
@@ -701,7 +744,7 @@ final class ProjectStore: ObservableObject {
                         let insulation = configuration.insulationEnabled
                             ? configuration.firstInsulation.thicknessMM + (configuration.insulationLayers == 2 ? configuration.secondInsulation.thicknessMM : 0)
                             : 0
-                        let facing = facingThicknessMM(
+                        let facing = configuration.facingDepthMM ?? facingThicknessMM(
                             layers: [configuration.firstSkin, configuration.secondSkin],
                             activeLayerCount: configuration.layers,
                             quantityNames: configuration.quantities.map(\.name)
@@ -717,7 +760,8 @@ final class ProjectStore: ObservableObject {
                     sourceWorkName: work.name,
                     spacing: framing.spacing,
                     doubledStuds: framing.doubled,
-                    minimumJoineryLiningDepth: minimumJoineryLiningDepth
+                    minimumJoineryLiningDepth: minimumJoineryLiningDepth,
+                    frame: work.doublageConfiguration?.frame ?? work.cloisonDistributionConfiguration?.frame
                 )
             }
         }
@@ -799,6 +843,7 @@ final class ProjectStore: ObservableObject {
             }
             var copy = WorkItem(id: copiedIDs[work.id]!, projectID: projectID, name: work.name, type: work.type, payload: payload, createdAt: now, updatedAt: now)
             copy.layoutDocument = work.layoutDocument; copy.layoutNeedsRecalculation = work.layoutNeedsRecalculation
+            copy.automaticLayout = work.automaticLayout
             copy.surveySourceNeedsReview = work.surveySourceNeedsReview
             copy.roomID = work.roomID.flatMap { roomIDs[$0] }
             copy.level = work.level; copy.zone = work.zone
@@ -1043,7 +1088,19 @@ final class ProjectStore: ObservableObject {
         try commit(next)
     }
 
+    func updateWork(_ work: WorkItem, jointTreatmentConfiguration: JointTreatmentConfiguration) throws {
+        guard jointTreatmentConfiguration.isValid else { throw StoreError.invalidStructure }
+        var next = projects
+        guard let p = next.firstIndex(where: { $0.id == work.projectID }),
+              let w = next[p].works.firstIndex(where: { $0.id == work.id }) else { throw StoreError.workNotFound }
+        next[p].works[w].payload = .jointTreatment(jointTreatmentConfiguration)
+        next[p].works[w].updatedAt = Date()
+        next[p].updatedAt = Date()
+        try commit(next)
+    }
+
     func updateWork(_ work: WorkItem, paintingBetaConfiguration: PaintingBetaConfiguration) throws {
+        _ = try PaintingCalculator.calculate(paintingBetaConfiguration)
         var next = projects
         guard let projectIndex = next.firstIndex(where: { $0.id == work.projectID }),
               let workIndex = next[projectIndex].works.firstIndex(where: { $0.id == work.id }),
@@ -1213,11 +1270,24 @@ final class ProjectStore: ObservableObject {
         let now = Date()
         var copy = WorkItem(id: UUID(), projectID: projectID, name: copyName, type: source.type, payload: source.payload, createdAt: now, updatedAt: now)
         copy.layoutDocument = source.layoutDocument; copy.layoutNeedsRecalculation = source.layoutNeedsRecalculation
+        copy.automaticLayout = source.automaticLayout
         copy.roomID = source.roomID
         copy.level = source.level; copy.zone = source.zone
         copy.linkedRoomIDs = source.linkedRoomIDs
         copy.components = copiedComponents(source.components, roomIDs: Dictionary(uniqueKeysWithValues: next[projectIndex].rooms.map { ($0.id, $0.id) }))
+        let attached = next[projectIndex].works.filter { $0.openingConfiguration?.sourceWorkID == source.id }
         next[projectIndex].works.insert(copy, at: workIndex + 1)
+        for (index, child) in attached.enumerated() {
+            guard var configuration = child.openingConfiguration else { continue }
+            configuration.sourceWorkID = copy.id
+            configuration.openings = configuration.openings.map { input in
+                var input = input; input.id = UUID(); return input
+            }
+            var childCopy = WorkItem(id: UUID(), projectID: projectID, name: "\(copyName) · Ouvertures \(index + 1)",
+                type: .openings, payload: .openings(configuration), createdAt: now, updatedAt: now)
+            childCopy.roomID = copy.roomID
+            next[projectIndex].works.append(childCopy)
+        }
         next[projectIndex].updatedAt = now
         try commit(next)
         return copy.id
@@ -1243,7 +1313,7 @@ final class ProjectStore: ObservableObject {
     /// archive write. Selection is revalidated against the latest scan and claims.
     @discardableResult
     func createSurveyWork(surveyID: UUID, selections: [SurveyWorkSurface], name: String,
-                          type: WorkType, payload: WorkConfiguration, roomID: UUID?) throws -> UUID {
+                          type: WorkType, payload: WorkConfiguration, roomID: UUID?, automatic: AutomaticSurveyLayout.Prepared? = nil) throws -> UUID {
         guard let survey = surveys.first(where: { $0.id == surveyID }),
               !selections.isEmpty, Set(selections.map(\.id)).count == selections.count,
               selections.allSatisfy({ $0.source.surveyID == surveyID }) else { throw SurveyWorkError.invalidSelection }
@@ -1255,7 +1325,7 @@ final class ProjectStore: ObservableObject {
         guard let index = next.firstIndex(where: { $0.id == survey.projectID }) else { throw StoreError.projectNotFound }
         try validateWorkName(name, in: next[index])
         if let roomID, !next[index].rooms.contains(where: { $0.id == roomID }) { throw StoreError.invalidStructure }
-        let available = SurveyWorkGeometry.surfaces(in: survey)
+        let available = SurveyWorkGeometry.surfaces(in: survey).filter { !SurveyWorkGeometry.isHidden($0,in:survey) }
         // A future different treatment (e.g. paint on one existing side) may
         // reuse geometry. Exclusivity applies to this work family, not the scan.
         let claimed = next[index].works.filter { $0.type.category == type.category }
@@ -1279,10 +1349,14 @@ final class ProjectStore: ObservableObject {
             }
             submittedArea = configuration.area
         case (.paintingBeta, .paintingBeta(let configuration)):
+            _ = try PaintingCalculator.calculate(configuration)
             submittedArea = configuration.area
         case (.ceilingOnFurring, .ceiling(let configuration)):
             guard current.allSatisfy({ $0.source.kind == .ceiling }) else { throw SurveyWorkError.invalidSelection }
             submittedArea = configuration.enteredArea ?? configuration.length * configuration.width
+        case (.ceilingOnRailsAndStuds, .railStudCeiling(let configuration)):
+            guard current.allSatisfy({ $0.source.kind == .ceiling }) else { throw SurveyWorkError.invalidSelection }
+            submittedArea = configuration.effectiveArea
         case (.peripheralLiningStuds, .peripheralLining(let configuration)):
             guard current.allSatisfy({ $0.source.kind == .wall }) else { throw SurveyWorkError.invalidSelection }
             guard configuration.measuredWallRuns == SurveyWorkGeometry.lining(current).measuredWallRuns,
@@ -1310,6 +1384,15 @@ final class ProjectStore: ObservableObject {
             // Geometry is available immediately, without pretending a default
             // board grid is a user-validated calepinage.
             return component
+        }
+        if type != .paintingBeta {
+            let prepared = try automatic ?? AutomaticSurveyLayout.prepare(work, formats: [], catalogue: nil)
+            guard prepared.sourceSurfaces == work.components.compactMap(\.surface),
+                  prepared.configurationFingerprint == LayoutQuantityCalculator.configurationFingerprint(work) else {
+                throw SurveyWorkError.changedDimensions
+            }
+            work.components = prepared.components
+            work.automaticLayout = prepared.record
         }
         next[index].works.insert(work, at: 0)
         next[index].updatedAt = now
@@ -1343,6 +1426,22 @@ final class ProjectStore: ObservableObject {
             try validateStructure(archive.projects, surveys: archive.surveys)
             projects = archive.projects
             surveys = archive.surveys
+            // Migrate the former "review this modified survey" state once.
+            // Valid saved geometry is now applied without a second approval.
+            if projects.contains(where: { $0.works.contains(where: \.surveySourceNeedsReview) }) {
+                var synchronized = projects
+                let legacyIDs = Set(projects.flatMap(\.works).filter(\.surveySourceNeedsReview).map(\.id))
+                let now = Date()
+                for survey in surveys {
+                    for checkpoint in survey.checkpoints {
+                        synchronizeSurveyWorks(&synchronized, before: survey, after: survey,
+                            checkpointID: checkpoint.id, now: now, forceWorkIDs: legacyIDs)
+                    }
+                }
+                try commit(synchronized)
+            }
+            let refreshed = refreshingLayoutQuantities(projects)
+            if refreshed != projects { try commit(refreshed) }
             lastError = nil
         } catch {
             storageIsReadable = false
@@ -1353,6 +1452,7 @@ final class ProjectStore: ObservableObject {
     private func commit(_ next: [ProjectItem], surveys nextSurveys: [ProjectSurveyRecord]? = nil) throws {
         guard storageIsReadable else { throw StoreError.invalidStructure }
         do {
+            let next = refreshingLayoutQuantities(next)
             var committedSurveys = nextSurveys ?? surveys
             for i in committedSurveys.indices {
                 committedSurveys[i].ceilingPlanNumbers=CeilingPlanNaming.numbers(in:committedSurveys[i])
@@ -1369,6 +1469,23 @@ final class ProjectStore: ObservableObject {
         }
     }
 
+    /// Refresh legacy pending snapshots and any other geometry-changing path.
+    /// A failed detailed calculation never authorizes stale material quantities:
+    /// keep the saved plan and use the configurator's estimate instead.
+    private func refreshingLayoutQuantities(_ input: [ProjectItem]) -> [ProjectItem] {
+        var result = input
+        for p in result.indices {
+            for w in result[p].works.indices {
+                let work = result[p].works[w]
+                guard work.layoutQuantityTakeoff != nil,
+                      LayoutQuantityCalculator.validated(work) == nil else { continue }
+                result[p].works[w].layoutQuantityTakeoff = try? LayoutQuantityCalculator.make(work: work, formats: [])
+                result[p].works[w].automaticLayout = nil
+            }
+        }
+        return result
+    }
+
     private func copiedComponents(_ components: [WorkComponentRecord], roomIDs: [UUID: UUID], componentIDs: [UUID: UUID] = [:]) -> [WorkComponentRecord] {
         components.map { source in
             var copy = source
@@ -1376,7 +1493,9 @@ final class ProjectStore: ObservableObject {
             // A standalone duplicate is a new independent work, not a second
             // claim on the scan. Project duplication reconnects mapped sources.
             copy.surveySource = nil
-            copy.referenceSideRoomID = source.referenceSideRoomID.flatMap { roomIDs[$0] }
+            let localSides = Dictionary(uniqueKeysWithValues: (source.localLayoutSideIDs ?? []).map { ($0, UUID()) })
+            copy.localLayoutSideIDs = source.localLayoutSideIDs?.compactMap { localSides[$0] }
+            copy.referenceSideRoomID = source.referenceSideRoomID.flatMap { localSides[$0] ?? roomIDs[$0] }
             copy.surface?.id = UUID()
             copy.surface?.openings = source.surface?.openings.map { opening in
                 var result = opening; result.id = UUID(); return result
@@ -1384,7 +1503,7 @@ final class ProjectStore: ObservableObject {
             copy.plans = source.plans.map { original in
                 var plan = original
                 plan.id = UUID()
-                plan.sideRoomID = original.sideRoomID.flatMap { roomIDs[$0] }
+                plan.sideRoomID = original.sideRoomID.flatMap { localSides[$0] ?? roomIDs[$0] }
                 plan.layers = original.layers.map { layer in var result = layer; result.id = UUID(); return result }
                 return plan
             }
@@ -1423,6 +1542,125 @@ final class ProjectStore: ObservableObject {
             projectChanged = true
         }
         if projectChanged { projects[projectIndex].updatedAt = now }
+    }
+
+    /// Editing a survey is the user's decision to change its linked ouvrages.
+    /// Keep identities, material choices and placed grids; update the support in
+    /// the same transaction. A deleted source removes its linked component only.
+    private func synchronizeSurveyWorks(_ projects: inout [ProjectItem], before: ProjectSurveyRecord,
+                                        after: ProjectSurveyRecord, checkpointID: UUID, now: Date,
+                                        forceWorkIDs: Set<UUID> = []) {
+        guard let p = projects.firstIndex(where: { $0.id == after.projectID }) else { return }
+        let fresh = SurveyWorkGeometry.surfaces(in: after)
+        let old = SurveyWorkGeometry.surfaces(in: before)
+        for w in projects[p].works.indices {
+            let original = projects[p].works[w]
+            let force = forceWorkIDs.contains(original.id)
+            guard original.components.contains(where: {
+                $0.surveySource?.surveyID == after.id && $0.surveySource?.checkpointID == checkpointID
+            }) else { continue }
+            var work = original
+            work.components = original.components.compactMap { component in
+                guard let source = component.surveySource, source.surveyID == after.id,
+                      source.checkpointID == checkpointID else { return component }
+                guard let selected = fresh.first(where: { SurveyWorkGeometry.hasSameSource($0.source, source) }) else {
+                    // An old replaced scan has no deletion history. Never erase
+                    // a saved component merely because migration cannot match it.
+                    return force ? component : nil
+                }
+                // Explicit ceiling splits already transferred grids to the new
+                // local frames. Do not replace these carefully preserved frames.
+                if source == selected.source && !force && !original.surveySourceNeedsReview { return component }
+                let previous = old.first { SurveyWorkGeometry.hasSameSource($0.source, source) }
+                if !force, !original.surveySourceNeedsReview, let previous,
+                   sameEffectiveSurfaceGeometry(previous.surface, selected.surface) { return component }
+                var result = component
+                var surface = selected.surface
+                surface.id = component.surface?.id ?? surface.id
+                if let existing = component.surface, existing.contour.count == surface.contour.count {
+                    surface.edgeIDs = existing.edgeIDs
+                    surface.layingOffset = existing.layingOffset
+                }
+                result.surface = surface
+                result.surveySource = selected.source
+                result.geometryRevision += 1
+                // Layer offsets and manual placements survive; the layout engine
+                // clips them against the new contour/openings when next rendered.
+                for i in result.plans.indices { result.plans[i].geometryRevision = result.geometryRevision }
+                return result
+            }
+            guard work.components != original.components || original.surveySourceNeedsReview else { continue }
+            work.layoutNeedsRecalculation = true
+            work = SurveyWorkGeometry.workForRecalculation(work, includingEmptySurveyWork: true)
+            work = SurveyWorkGeometry.updatingStoredQuantities(work, from: original)
+            // Recompute a previously adopted plan takeoff against the new support.
+            // If no plan is usable, the updated form estimate remains available.
+            work.layoutQuantityTakeoff = nil
+            if var updated = try? LayoutQuantityCalculator.make(work: work, formats: []) {
+                if let stored = original.layoutQuantityTakeoff,
+                   let previous = try? LayoutQuantityCalculator.make(work: original, formats: []),
+                   previous.boards.count == stored.boards.count {
+                    let names = Dictionary(zip(previous.boards.map(\.name), stored.boards.map(\.name)),
+                                           uniquingKeysWith: { first, _ in first })
+                    for i in updated.boards.indices {
+                        updated.boards[i].name = names[updated.boards[i].name] ?? updated.boards[i].name
+                    }
+                }
+                work.layoutQuantityTakeoff = updated
+            }
+            if work.type == .ceilingOnFurring || work.type == .ceilingOnRailsAndStuds {
+                work.automaticLayout = nil
+            }
+            work.layoutNeedsRecalculation = false
+            work.surveySourceNeedsReview = false
+            work.updatedAt = now
+            projects[p].works[w] = work
+            let surviving = Set(work.components.map(\.id))
+            let removed = Set(original.components.map(\.id)).subtracting(surviving)
+            projects[p].ceilingWallLinks?.removeAll {
+                removed.contains($0.ceilingComponentID) || removed.contains($0.wallComponentID)
+            }
+            projects[p].updatedAt = now
+        }
+    }
+
+    private func inheritExplicitCeilingSplits(_ projects:inout [ProjectItem], before:ProjectSurveyRecord,
+                                             after:ProjectSurveyRecord,checkpointID:UUID) throws {
+        guard let p=projects.firstIndex(where:{$0.id == before.projectID}),
+              let previous=before.checkpoints.first(where:{$0.id == checkpointID})?.document.room,
+              let current=after.checkpoints.first(where:{$0.id == checkpointID})?.document.room else { return }
+        let oldOperations=Set(previous.slopes.compactMap { $0.splitOrigin?.operationID })
+        let oldSlopeIDs=Set(previous.slopes.map(\.id))
+        let newSlopes=current.slopes.filter { $0.splitOrigin.map { !oldOperations.contains($0.operationID) } ?? false }
+        let oldSurfaces=SurveyWorkGeometry.surfaces(in:before)
+        let freshSurfaces=SurveyWorkGeometry.surfaces(in:after)
+        for w in projects[p].works.indices {
+            var replacements:[WorkComponentRecord]=[]
+            for component in projects[p].works[w].components {
+                guard let source=component.surveySource, source.surveyID == before.id,
+                      source.checkpointID == checkpointID, source.kind == .ceiling,
+                      let old=oldSurfaces.first(where:{SurveyWorkGeometry.hasSameSource($0.source,source)}) else {
+                    replacements.append(component); continue
+                }
+                let ids=Set(newSlopes.filter { slope in
+                    guard let origin=slope.splitOrigin else { return false }
+                    // Several cuts can be made before saving the editor. Resolve
+                    // the nearest ancestor present at the previous save.
+                    return ([origin.sourceSlopeID]+(origin.ancestorSlopeIDs ?? [])).first(where:oldSlopeIDs.contains) == source.surfaceID
+                }.map(\.id))
+                guard !ids.isEmpty else { replacements.append(component); continue }
+                let children=freshSurfaces.filter { $0.source.checkpointID == checkpointID && ids.contains($0.source.surfaceID) }
+                    .sorted { lhs,rhs in
+                        if (lhs.source.surfaceID == source.surfaceID) != (rhs.source.surfaceID == source.surfaceID) { return lhs.source.surfaceID == source.surfaceID }
+                        return lhs.name < rhs.name
+                    }
+                // Do not silently lose a hand-edited or stale component. Failing
+                // here leaves both the survey and the saved layouts unchanged.
+                replacements += try SurveyWorkGeometry.splitComponents(component,old:old,children:children)
+                projects[p].ceilingWallLinks?.removeAll { $0.ceilingComponentID == component.id }
+            }
+            projects[p].works[w].components=replacements
+        }
     }
 
     private func hasEffectiveSurveyGeometryChange(before: ProjectSurveyRecord,
@@ -1469,11 +1707,17 @@ final class ProjectStore: ObservableObject {
                       Set(work.linkedRoomIDs).isSubset(of: rooms) else { throw StoreError.invalidStructure }
                 for component in work.components {
                     try claim(component.id)
+                    if let localSides = component.localLayoutSideIDs {
+                        guard work.isPartition, localSides.count == 2,
+                              Set(localSides).count == 2,
+                              component.referenceSideRoomID.map(localSides.contains) == true else { throw StoreError.invalidStructure }
+                        for side in localSides { try claim(side) }
+                    }
                     var sides = Set<UUID?>()
                     for plan in component.plans {
                         try claim(plan.id)
                         guard sides.insert(plan.sideRoomID).inserted,
-                              plan.sideRoomID.map({ rooms.contains($0) }) ?? true,
+                              plan.sideRoomID.map({ rooms.contains($0) || (component.localLayoutSideIDs ?? []).contains($0) }) ?? true,
                               plan.geometryRevision <= component.geometryRevision else { throw StoreError.invalidStructure }
                     }
                 }
@@ -1528,7 +1772,7 @@ final class ProjectStore: ObservableObject {
         case projectNotFound, workNotFound, invalidWorkName, duplicateWorkName, invalidStructure, staleGeometry, adjacencyConfirmationRequired, staleAdjacency, scanReplacementRequiresConfirmation, scanCheckpointRequiresValidation
         var errorDescription: String? {
             switch self {
-            case .scanCheckpointRequiresValidation: "Contrôlez puis validez les surfaces du relevé avant de les utiliser dans un ouvrage."
+            case .scanCheckpointRequiresValidation: "La géométrie du relevé doit être corrigée avant de créer cet ouvrage."
             case .scanReplacementRequiresConfirmation: "Cette pièce possède déjà un scan dans ce relevé. Confirmez son remplacement pour continuer."
             case .adjacencyConfirmationRequired: "Des murs sont reliés à ce plafond. Confirmez leurs nouvelles longueurs depuis le plan du composant, ou choisissez de conserver les murs."
             case .staleAdjacency: "Un mur ou un lien a changé depuis votre confirmation. Vérifiez à nouveau les longueurs proposées."

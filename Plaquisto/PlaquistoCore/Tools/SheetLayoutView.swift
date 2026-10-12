@@ -7,23 +7,28 @@ struct LayoutViewport {
     let pan: CGSize
     var rotation: Double = 0
     var pivot: LayoutPoint? = nil
-    var scale: Double { min(max(1, size.width - 70) / max(100, bounds.width), max(1, size.height - 70) / max(100, bounds.height)) * zoom }
+    var fittingSize: CGSize? = nil
+    var mirrored = false
+    var scale: Double {
+        let fit = fittingSize ?? size
+        return min(max(1, fit.width - 70) / max(100, bounds.width), max(1, fit.height - 70) / max(100, bounds.height)) * zoom
+    }
     var rotationPivot: LayoutPoint { pivot ?? bounds.center }
     static func rotated(_ p: LayoutPoint, by angle: Double) -> LayoutPoint {
         .init(x: p.x * cos(angle) - p.y * sin(angle), y: p.x * sin(angle) + p.y * cos(angle))
     }
     func screen(_ p: LayoutPoint) -> CGPoint {
         let r = rotationPivot + Self.rotated(p - rotationPivot, by: rotation)
-        return .init(x: size.width / 2 + pan.width + (r.x - bounds.center.x) * scale,
+        return .init(x: size.width / 2 + pan.width + (r.x - bounds.center.x) * scale * (mirrored ? -1 : 1),
                      y: size.height / 2 + pan.height - (r.y - bounds.center.y) * scale)
     }
     func world(_ p: CGPoint) -> LayoutPoint {
-        let rotatedPoint = LayoutPoint(x: bounds.center.x + (p.x - size.width / 2 - pan.width) / scale,
+        let rotatedPoint = LayoutPoint(x: bounds.center.x + (p.x - size.width / 2 - pan.width) / scale * (mirrored ? -1 : 1),
                                        y: bounds.center.y - (p.y - size.height / 2 - pan.height) / scale)
         return rotationPivot + Self.rotated(rotatedPoint - rotationPivot, by: -rotation)
     }
     func worldDelta(_ translation: CGSize) -> LayoutPoint {
-        Self.rotated(.init(x: translation.width / scale, y: -translation.height / scale), by: -rotation)
+        Self.rotated(.init(x: translation.width / scale * (mirrored ? -1 : 1), y: -translation.height / scale), by: -rotation)
     }
     /// Keeps a visible part of the transformed contour inside the canvas while
     /// leaving the camera free to pan in every direction. This only constrains
@@ -32,7 +37,7 @@ struct LayoutViewport {
         guard !contour.isEmpty, size.width > 2, size.height > 2 else { return .zero }
         let points = contour.map { point -> CGPoint in
             let rotated = rotationPivot + Self.rotated(point - rotationPivot, by: rotation)
-            return .init(x: size.width / 2 + (rotated.x - bounds.center.x) * scale,
+            return .init(x: size.width / 2 + (rotated.x - bounds.center.x) * scale * (mirrored ? -1 : 1),
                          y: size.height / 2 - (rotated.y - bounds.center.y) * scale)
         }
         let visibleX = min(minimumVisible, max(1, size.width / 2 - 1))
@@ -70,6 +75,32 @@ struct LayoutViewport {
         guard let edge = LayoutStrokeBeautifier.groundEdge(contour) else { return 0 }
         let vector = edge.b-edge.a
         return -atan2(vector.y,vector.x)
+    }
+    /// Camera-only cycling: do not change the boards' or framing's reference wall.
+    static func nextHorizontalEdge(_ contour:[LayoutPoint], after current:Int?) -> (index:Int, angle:Double)? {
+        guard contour.count >= 3 else { return nil }
+        let start = current.flatMap { contour.indices.contains($0) ? ($0+1)%contour.count : nil } ?? 0
+        for offset in contour.indices {
+            let index = (start+offset)%contour.count
+            let vector = contour[(index+1)%contour.count]-contour[index]
+            guard vector.x.isFinite, vector.y.isFinite, vector.length>0.001 else { continue }
+            return (index,-atan2(vector.y,vector.x))
+        }
+        return nil
+    }
+    static func initialCeilingAlignment(_ contour:[LayoutPoint], referenceEdge:Int?) -> (index:Int, angle:Double)? {
+        let candidates = contour.indices.compactMap { index -> (index:Int,angle:Double,ratio:Double)? in
+            guard let edge=nextHorizontalEdge(contour,after:(index+contour.count-1)%contour.count), edge.index == index else { return nil }
+            let bounds=LayoutBounds(points:contour.map { rotated($0,by:edge.angle) })
+            return (index,edge.angle,bounds.width/max(0.001,bounds.height))
+        }
+        // Prefer the board reference when it already gives a landscape view.
+        // Otherwise choose the edge that makes the ceiling widest on screen.
+        if let preferred=candidates.first(where:{$0.index == referenceEdge && $0.ratio >= 1-0.000001}) {
+            return (preferred.index,preferred.angle)
+        }
+        guard let best=candidates.max(by:{$0.ratio < $1.ratio}) else { return nil }
+        return (best.index,best.angle)
     }
     /// Camera-only detent: acquire within 2.5°, release after 5° to avoid flicker.
     static func snappedRotation(_ candidate: Double, contour: [LayoutPoint], latched: Double?) -> (angle: Double, latch: Double?) {
@@ -148,6 +179,40 @@ struct LayoutVisibilityIcon: View {
     }
 }
 
+struct LayoutStaggerIcon: View {
+    let staggered:Bool
+    var body:some View {
+        Canvas { c,s in
+            let outer=CGRect(x:5,y:9,width:s.width-10,height:s.height-18)
+            c.stroke(Path(outer),with:.foreground,lineWidth:1.5)
+            var p=Path(); p.move(to:.init(x:outer.minX,y:outer.midY)); p.addLine(to:.init(x:outer.maxX,y:outer.midY))
+            let a=outer.minX+outer.width*(staggered ? 0.35 : 0.5), b=outer.minX+outer.width*(staggered ? 0.65 : 0.5)
+            p.move(to:.init(x:a,y:outer.minY)); p.addLine(to:.init(x:a,y:outer.midY))
+            p.move(to:.init(x:b,y:outer.midY)); p.addLine(to:.init(x:b,y:outer.maxY))
+            c.stroke(p,with:.foreground,lineWidth:1.5)
+        }.frame(width:32,height:32).accessibilityHidden(true)
+    }
+}
+struct LayoutObservationIcon: View {
+    let fromBelow:Bool
+    var body:some View {
+        ZStack {
+            Rectangle().frame(width:30,height:2)
+            Image(systemName:"eye").font(.system(size:14)).offset(y:fromBelow ? 10 : -10)
+        }.accessibilityHidden(true)
+    }
+}
+struct LayoutOrientationIcon: View {
+    let parallel:Bool
+    var body:some View {
+        Canvas { c,s in
+            var p=Path(); p.move(to:.init(x:6,y:26)); p.addLine(to:.init(x:26,y:26))
+            p.move(to:.init(x:parallel ? 6 : 16,y:8)); p.addLine(to:.init(x:parallel ? 26 : 16,y:parallel ? 8 : 26))
+            c.stroke(p,with:.foreground,style:.init(lineWidth:2.5,lineCap:.round))
+        }.frame(width:32,height:32).accessibilityHidden(true)
+    }
+}
+
 private enum LayoutInteraction: String, CaseIterable {
     case openings = "Ouvertures", contour = "Contour", framing = "Ossatures", grid = "Plaques", lighting = "Électricité", move = "Vue"
     static var allCases: [Self] { [.move,.grid,.framing,.openings,.lighting] }
@@ -155,15 +220,15 @@ private enum LayoutInteraction: String, CaseIterable {
         switch self {
         case .openings: return "Touchez une ouverture pour la modifier, glissez-la pour la déplacer."
         case .contour: return "Glissez un sommet, ou touchez-le pour modifier ses cotes."
-        case .grid: return "Touchez une plaque pour ses cotes. Glissez pour déplacer le calepinage."
-        case .framing: return "Glissez pour décaler les fourrures. Le métrage est recalculé au relâchement."
+        case .grid: return "Glissez pour déplacer les plaques. Choisissez leur sens et la pose en quinconce sur le plan."
+        case .framing: return "Glissez pour décaler les fourrures et suivre leurs cotes. Touchez une distance au mur pour la saisir."
         case .lighting: return "Touchez les spots à sélectionner, puis glissez-en un pour déplacer la sélection. Touchez le vide pour désélectionner."
-        case .move: return "Glissez pour déplacer la vue. Pincez pour zoomer."
+        case .move: return "Touchez une plaque pour ses cotes et découpes. Glissez pour déplacer la vue ; pincez pour zoomer."
         }
     }
 }
 private enum LayoutEditorSheet: Identifiable {
-    case newSurface, settings, furring, lighting, lightingSpacing(Set<Int>), export, opening(UUID?), vertex(Int), correction(Int), cut(LayoutCutSelection), pieces, furringDimensions
+    case newSurface, settings, furring, lighting, lightingSpacing(Set<Int>), export, opening(UUID?), vertex(Int), correction(Int), cut(LayoutCutSelection), pieces, furringDimensions, parts, framingDistance(LayoutWallDimension)
     var id: String {
         switch self {
         case .newSurface: return "new"
@@ -178,6 +243,8 @@ private enum LayoutEditorSheet: Identifiable {
         case .cut(let selection): return "cut-\(selection.id)"
         case .pieces: return "pieces"
         case .furringDimensions: return "furringDimensions"
+        case .parts: return "parts"
+        case .framingDistance: return "framingDistance"
         }
     }
 }
@@ -246,6 +313,7 @@ struct LayoutWorkbookNavigation {
     struct Tab: Identifiable {
         let id: String
         let title: String
+        var preview: AnyView? = nil
     }
     let tabs: [Tab]
     let selectedID: String
@@ -263,6 +331,9 @@ struct SheetLayoutView: View {
     var initialDocument: LayoutDocument? = nil
     var newDocumentConfiguration: WorkConfiguration? = nil
     var onSaveDocument: ((LayoutDocument) throws -> Void)? = nil
+    var quantityProposal: (() throws -> LayoutQuantityTakeoff)? = nil
+    var saveQuantityProposal: ((LayoutQuantityTakeoff) throws -> Void)? = nil
+    @State private var quantityMessage: String?
     var requiredSupportKind: LayoutSupportKind? = nil
     var sharedPartitionFraming = false
     var reviewLinkedDocument: ((LayoutDocument) throws -> ComponentAdjacencyReview)? = nil
@@ -273,7 +344,10 @@ struct SheetLayoutView: View {
     init(initialDocument: LayoutDocument? = nil, onSaveDocument: ((LayoutDocument) throws -> Void)? = nil, requiredSupportKind: LayoutSupportKind? = nil, sharedPartitionFraming: Bool = false,
          reviewLinkedDocument: ((LayoutDocument) throws -> ComponentAdjacencyReview)? = nil,
          saveReviewedDocument: ((LayoutDocument, ComponentAdjacencyReview, ComponentAdjacencyDecision) throws -> Void)? = nil,
-         workbook: LayoutWorkbookNavigation? = nil, newDocumentConfiguration: WorkConfiguration? = nil) {
+         workbook: LayoutWorkbookNavigation? = nil, newDocumentConfiguration: WorkConfiguration? = nil,
+         quantityProposal: (() throws -> LayoutQuantityTakeoff)? = nil,
+         saveQuantityProposal: ((LayoutQuantityTakeoff) throws -> Void)? = nil) {
+        self.quantityProposal=quantityProposal; self.saveQuantityProposal=saveQuantityProposal
         self.newDocumentConfiguration = newDocumentConfiguration
         self.workbook = workbook
         self.initialDocument = initialDocument
@@ -298,11 +372,14 @@ struct SheetLayoutView: View {
     @State private var zoom = 1.0
     @State private var pan = CGSize.zero
     @State private var rotation = 0.0
+    @State private var viewAlignedEdge: Int?
     @State private var rotationStart: Double?
     @State private var rotationLatch: Double?
     @State private var fittedBounds: LayoutBounds?
-    @State private var lightingRotationOriginal: LayoutDocument?
-    @State private var rotatingSpots: Set<Int> = []
+    @State private var canvasFitSize: CGSize?
+    @State private var fullscreen = false
+    @State private var ceilingFromBelow = true
+    @State private var recenterToken = 0
     @State private var addingSpot = false
     @State private var addingKind = LayoutElectricalKind.light
     @GestureState private var magnification = 1.0
@@ -317,26 +394,19 @@ struct SheetLayoutView: View {
     @State private var referenceSpot: Int?
     @State private var spotGuides: [LayoutPoint] = []
     @State private var spotEditError: String?
+    @State private var selectSpotsByBox = false
+    @State private var spotSelectionBox: CGRect?
     @State private var renamingSaved: SavedLayoutDocument?
     @State private var savedName = ""
     @State private var deletingSaved: SavedLayoutDocument?
+    @State private var showingQuickScan = false
     @AppStorage("layout.snapSpots") private var snapSpots = true
 
-    var body: some View {
+    private var navigationContent: some View {
         Group {
             VStack(spacing: 0) {
-                if let workbook {
-                    Menu {
-                        ForEach(workbook.tabs) { tab in
-                            Button { if tab.id != workbook.selectedID { performAfterSaving { workbook.select(tab.id) } } } label: {
-                                Label(tab.title, systemImage: tab.id == workbook.selectedID ? "checkmark" : "square")
-                            }
-                        }
-                        Divider()
-                        Button("Ajouter une sous-partie", systemImage: "plus") { performAfterSaving(workbook.add) }
-                        Button("Renommer cette sous-partie", systemImage: "pencil") { performAfterSaving(workbook.rename) }
-                        Button("Relations et pièces", systemImage: "link") { performAfterSaving(workbook.relations) }
-                    } label: {
+                if let workbook, !fullscreen {
+                    Button { sheet = .parts } label: {
                         HStack {
                             Image(systemName: "square.stack")
                             Text(workbook.tabs.first { $0.id == workbook.selectedID }?.title ?? "Sous-parties")
@@ -350,7 +420,7 @@ struct SheetLayoutView: View {
                 else { entry }
             }
         }
-        .navigationTitle("Calepinage 2D").navigationBarTitleDisplayMode(.inline)
+        .navigationTitle(onSaveDocument == nil ? "Calepinage 2D rapide" : "Calepinage 2D").navigationBarTitleDisplayMode(.inline)
         .navigationBarBackButtonHidden(workbook != nil || (model.document != nil && onSaveDocument == nil))
         .background(Color(.systemGroupedBackground))
         .toolbar {
@@ -384,12 +454,19 @@ struct SheetLayoutView: View {
                         Button("Liste des découpes", systemImage: "list.number") { sheet = .pieces }.disabled(model.result == nil)
                         Button("Exporter vers un ouvrage",systemImage:"square.and.arrow.up") { sheet = .export }
                         Button("Modifier le contour et l’échelle",systemImage:"pencil.and.outline") { editingShape = true }
+                        Button("Recentrer le plan",systemImage:"scope") { recenterToken += 1 }
                         Divider()
                         Button { model.undo(); selectedVertex = nil } label: { Label("Annuler la modification", systemImage: "arrow.uturn.backward") }.disabled(!model.canUndo)
                         Button { model.redo(); selectedVertex = nil } label: { Label("Rétablir la modification", systemImage: "arrow.uturn.forward") }.disabled(!model.canRedo)
                     } label: { Image(systemName: "ellipsis.circle") }.accessibilityLabel("Options du calepinage")
                 }
             }
+        }
+    }
+    private var dialogContent: some View {
+        navigationContent
+        .fullScreenCover(isPresented: $showingQuickScan, onDismiss: { model.reloadSavedLibrary() }) {
+            ScannerDebugView(quickLayout: true, onOpenAccount: {})
         }
         .sheet(item: $sheet) { destination in sheetContent(destination) }
         .confirmationDialog("Enregistrer les modifications de cette sous-partie ?", isPresented: Binding(
@@ -464,14 +541,26 @@ struct SheetLayoutView: View {
                 deletingSaved = nil
             }
         } message: { Text("« \(deletingSaved?.title ?? "") » sera supprimé de vos calepinages sauvegardés. Cette action ne peut pas être annulée.") }
+    }
+    var body: some View {
+        dialogContent
+        .alert("Calepinage enregistré",isPresented:Binding(get:{quantityMessage != nil},set:{if !$0 { quantityMessage=nil }})) {
+            Button("OK") { quantityMessage=nil; finishLinkedNavigation() }
+        } message: { Text(quantityMessage ?? "") }
+        .toolbar(fullscreen ? .hidden : .visible, for:.navigationBar)
+        .toolbar(fullscreen ? .hidden : .visible, for:.tabBar)
+        .statusBarHidden(fullscreen)
         .onChange(of:model.document?.lighting?.count) { _,_ in selectedSpots = []; referenceSpot = nil }
         .onChange(of:model.document?.surface.id) { _,_ in
             selectedSpots = []; referenceSpot = nil
             mode = .move; visibility = LayoutVisibilitySettings()
-            rotation = 0; rotationStart = nil; rotationLatch = nil; fittedBounds = nil; zoom = 1; pan = .zero
+            rotation = 0; viewAlignedEdge = nil; rotationStart = nil; rotationLatch = nil; fittedBounds = nil; canvasFitSize = nil; zoom = 1; pan = .zero; fullscreen = false
+            resolveBoardEdges()
+            initializeCeilingView()
         }
         .onChange(of:mode) { _,_ in spotGuides = []; spotEditError = nil; addingSpot = false }
-        .onAppear { if !loadedInitial { if let initialDocument { model.apply(initialDocument) }; cleanDocument = model.document; loadedInitial = true } }
+        .onAppear { if !loadedInitial { if let initialDocument { model.apply(initialDocument) }; resolveBoardEdges(); initializeCeilingView(); cleanDocument = model.document; loadedInitial = true } }
+        .onChange(of: catalogue.layoutFormats) { _,_ in resolveBoardEdges() }
         .fullScreenCover(isPresented:$editingShape) {
             if let document = model.document {
                 LayoutManualContourEditor(surface:document.surface,kind:document.surface.kind,title:"Modifier le contour et l’échelle") { surface in
@@ -521,7 +610,7 @@ struct SheetLayoutView: View {
                 pendingAdjacency = .init(document: document, review: review)
                 return
             }
-            try onSaveDocument?(document); finishLinkedNavigation()
+            try onSaveDocument?(document); updateQuantitiesAfterSaving()
         }
         catch { linkedSaveError = "Le plan n’a pas pu être enregistré dans l’ouvrage. \(error.localizedDescription)" }
     }
@@ -531,8 +620,19 @@ struct SheetLayoutView: View {
         do {
             guard let saveReviewedDocument else { return }
             try saveReviewedDocument(pending.document, pending.review, decision)
-            finishLinkedNavigation()
+            updateQuantitiesAfterSaving()
         } catch { linkedSaveError = "Aucune modification enregistrée. \(error.localizedDescription)" }
+    }
+
+    private func updateQuantitiesAfterSaving() {
+        cleanDocument=model.document
+        guard let quantityProposal else { finishLinkedNavigation(); return }
+        do {
+            let updated=try quantityProposal()
+            try saveQuantityProposal?(updated)
+            finishLinkedNavigation()
+        }
+        catch { quantityMessage="Le plan est enregistré, mais son quantitatif détaillé n’a pas pu être recalculé. L’estimation du formulaire reste disponible. \(error.localizedDescription)" }
     }
 
     private var entry: some View {
@@ -567,7 +667,9 @@ struct SheetLayoutView: View {
             Section {
                 Button { sheet = .newSurface } label: { Label("Nouveau calepinage", systemImage: "plus") }
                 if onSaveDocument == nil {
-                    Button {} label: { Label("Importer un ouvrage depuis Projets (à venir)", systemImage: "square.and.arrow.down") }.disabled(true)
+                    Button { showingQuickScan=true } label: { Label("Scanner un mur ou un plafond", systemImage: "viewfinder") }
+                    Text("Choisissez une surface sur la maquette, puis calepinez-la sans créer de projet.")
+                        .font(.caption).foregroundStyle(.secondary)
                 }
             }
             if let error = model.saveError { Section { Text(error).font(.footnote).foregroundStyle(.orange) } }
@@ -630,91 +732,114 @@ struct SheetLayoutView: View {
             GeometryReader { proxy in
                 let contour = drag?.document.surface.contour ?? document.surface.contour
                 let pivot = LayoutViewport.geometricCenter(contour)
-                let viewport = LayoutViewport(bounds:fittedBounds ?? LayoutViewport.fittedBounds(contour, rotation:0, pivot:pivot), size: proxy.size, zoom: zoom * magnification, pan: pan, rotation:rotation, pivot:pivot)
+                let viewport = LayoutViewport(bounds:fittedBounds ?? LayoutViewport.fittedBounds(contour, rotation:0, pivot:pivot), size: proxy.size, zoom: zoom * magnification, pan: pan, rotation:rotation, pivot:pivot, fittingSize:canvasFitSize,mirrored:document.surface.kind == .ceiling && ceilingFromBelow)
                 Canvas { context, size in draw(context: &context, size: size, document: document, viewport: viewport) }
                     .background(Color(.secondarySystemGroupedBackground))
                     .contentShape(Rectangle())
                     .gesture(DragGesture(minimumDistance: 7).onChanged { value in dragChanged(value, document: document, viewport: viewport) }.onEnded { _ in
                         if let drag { model.finishGesture(from: drag.document) }; drag = nil; spotGuides = []
+                        if spotSelectionBox != nil { spotSelectionBox=nil; selectSpotsByBox=false }
                     })
                     .simultaneousGesture(SpatialTapGesture().onEnded { value in tapped(value.location, document: document, viewport: viewport) })
-                    .simultaneousGesture(MagnifyGesture().updating($magnification) { value, state, _ in if mode != .lighting { state = value.magnification } }
+                    .simultaneousGesture(MagnifyGesture().updating($magnification) { value, state, _ in state = value.magnification }
                         .onChanged { _ in
                             if !pinching {
                                 pinching = true
                                 if let original = drag { model.cancelGesture(restoring:original.document); pan = original.initialPan; drag = nil; spotGuides = [] }
                             }
                         }.onEnded { value in
-                            if mode != .lighting {
                                 let nextZoom = min(8, max(0.4, zoom * value.magnification))
-                                let finalViewport = LayoutViewport(bounds:viewport.bounds,size:proxy.size,zoom:nextZoom,pan:.zero,rotation:rotation,pivot:pivot)
+                                let finalViewport = LayoutViewport(bounds:viewport.bounds,size:proxy.size,zoom:nextZoom,pan:.zero,rotation:rotation,pivot:pivot,fittingSize:canvasFitSize,mirrored:viewport.mirrored)
                                 zoom = nextZoom
                                 pan = finalViewport.constrainedPan(pan,contour:document.surface.contour)
-                            }
                             pinching = false
                         })
-                    .simultaneousGesture(RotationGesture().onChanged { angle in
-                        if mode == .lighting {
-                            guard visibility.electrical.isVisible else { return }
-                            if lightingRotationOriginal == nil {
-                                if let original = drag { model.cancelGesture(restoring:original.document); pan = original.initialPan; drag = nil }
-                                lightingRotationOriginal = model.document
-                                rotatingSpots = selectedSpots.isEmpty ? Set(model.document?.lighting?.positions.indices.map { $0 } ?? []) : selectedSpots
-                            }
-                            guard var copy = lightingRotationOriginal, let light = copy.lighting else { return }
-                            let snap = snapSpots ? LayoutPlanning.snappedLightingRotation(-angle.radians,lighting:light,selected:rotatingSpots,contour:copy.surface.contour,latched:rotationLatch) : (angle:-angle.radians,latch:nil)
-                            if snap.latch != nil && rotationLatch == nil { UISelectionFeedbackGenerator().selectionChanged() }
-                            rotationLatch = snap.latch
-                            copy.lighting = LayoutPlanning.rotatedLighting(light,selected:rotatingSpots,angle:snap.angle)
-                            model.preview(copy)
-                            return
-                        }
-                        guard document.surface.kind == .ceiling else { return }
-                        if rotationStart == nil {
-                            rotationStart = rotation
-                            // Keep a camera centered on the surface itself throughout
-                            // the rotation. Geometry and construction axes stay intact.
-                            fittedBounds = viewport.bounds
-                            if let original = drag { model.cancelGesture(restoring:original.document); drag = nil; spotGuides = [] }
-                            pan = .zero
-                        }
-                        let snap = LayoutViewport.snappedRotation((rotationStart ?? rotation) - angle.radians, contour:document.surface.contour, latched:rotationLatch)
-                        if snap.latch != nil && rotationLatch == nil { UISelectionFeedbackGenerator().selectionChanged() }
-                        rotation = snap.angle; rotationLatch = snap.latch
-                    }.onEnded { _ in
-                        if let original = lightingRotationOriginal { model.finishGesture(from:original) }
-                        lightingRotationOriginal = nil; rotatingSpots = []; rotationStart = nil; rotationLatch = nil
-                    })
                     .overlay { LayoutPolygonAnnotations(surface:document.surface, viewport:viewport, showAngles:visibility.angles, showDimensions:false) { polygonSelection = $0 }.allowsHitTesting(false) }
+                    .overlay {
+                        if let box=spotSelectionBox {
+                            Rectangle().fill(Color.accentColor.opacity(0.12))
+                                .overlay(Rectangle().stroke(Color.accentColor,style:.init(lineWidth:1,dash:[5,3])))
+                                .frame(width:box.width,height:box.height).position(x:box.midX,y:box.midY).allowsHitTesting(false)
+                        }
+                    }
                     .overlay(alignment: .topTrailing) {
-                        Button { fittedBounds = LayoutViewport.fittedBounds(document.surface.contour, rotation:rotation); zoom = 1; pan = .zero } label: { Image(systemName: "scope").padding(12).background(.regularMaterial, in: Circle()) }
-                            .padding(8).accessibilityLabel("Recentrer le plan")
+                        Button { fullscreen.toggle() } label: {
+                            Image(systemName:fullscreen ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right")
+                                .frame(width:44,height:44).background(.regularMaterial,in:Circle())
+                        }.padding(8).accessibilityLabel(fullscreen ? "Quitter le plein écran" : "Afficher le plan en plein écran")
+                            .contextMenu { Button("Recentrer le plan",systemImage:"scope") { recenterToken += 1 } }
+                    }
+                    .overlay(alignment: .topLeading) {
+                        if mode == .move, document.surface.kind == .ceiling {
+                            Button {
+                                guard let alignment = LayoutViewport.nextHorizontalEdge(contour,after:viewAlignedEdge) else { return }
+                                var aligned = viewport
+                                aligned.rotation = alignment.angle
+                                rotation = alignment.angle
+                                viewAlignedEdge = alignment.index
+                                pan = aligned.constrainedPan(pan,contour:contour)
+                            } label: {
+                                Image(systemName:"arrow.clockwise")
+                                    .frame(width:44,height:44).background(.regularMaterial,in:Circle())
+                            }.padding(8)
+                                .accessibilityLabel("Orienter la vue sur le bord suivant")
+                                .accessibilityHint("Aligne successivement chaque bord du plafond à l’horizontale, sans changer le zoom ni la pose.")
+                                .disabled(drag != nil || pinching || LayoutViewport.nextHorizontalEdge(contour,after:viewAlignedEdge) == nil)
+                        }
+                        if mode == .grid, document.surface.kind == .ceiling, let layer = document.layers.first {
+                            Button {
+                                var copy = document
+                                copy.layers[0].staggered = layer.staggered != true
+                                copy.layers[0].staggerOffset = nil
+                                copy.layers[0] = LayoutPlanning.alignBoards(to:copy.layers[0],support:.ceiling)
+                                model.apply(copy); model.optimize(furring:false)
+                            } label: {
+                                LayoutStaggerIcon(staggered:layer.staggered == true)
+                                    .foregroundStyle(layer.staggered == true ? Color.accentColor : .primary)
+                                    .frame(width:44,height:44).background(.regularMaterial,in:Circle())
+                            }.padding(8)
+                                .accessibilityLabel(layer.staggered == true ? "Désactiver la pose en quinconce" : "Activer la pose en quinconce")
+                                .accessibilityValue(layer.staggered == true ? "Activée" : "Désactivée")
+                                .disabled(drag != nil || pinching || model.isOptimizing || LayoutBoardGrid.staggerChoices(layer).isEmpty)
+                        }
                     }
                     .overlay(alignment: .bottomLeading) {
-                        Button {
-                            let alignedRotation = LayoutViewport.horizontalBaseRotation(document.surface.contour)
-                            let alignedViewport = LayoutViewport(bounds:viewport.bounds,size:proxy.size,zoom:zoom,pan:.zero,rotation:alignedRotation,pivot:pivot)
-                            rotation = alignedRotation
-                            rotationStart = nil; rotationLatch = nil
-                            pan = alignedViewport.constrainedPan(pan,contour:document.surface.contour)
-                        } label: { Image(systemName:"arrow.down.to.line").padding(12).background(.regularMaterial,in:Circle()) }
-                            .padding(8).accessibilityLabel("Aligner le bas sur l’axe horizontal")
-                            .disabled(drag != nil || pinching || lightingRotationOriginal != nil)
-                    }
-                    .overlay(alignment: .bottomTrailing) {
                         if document.surface.kind == .ceiling {
-                            HStack(spacing: 8) {
-                                referenceWallButton(document, clockwise: false)
-                                referenceWallButton(document, clockwise: true)
-                            }.padding(8)
-                            .disabled(drag != nil || pinching || lightingRotationOriginal != nil || model.isOptimizing)
+                            Button {
+                                ceilingFromBelow.toggle()
+                                var flipped = viewport; flipped.mirrored = ceilingFromBelow
+                                pan = flipped.constrainedPan(pan,contour:document.surface.contour)
+                            } label: { LayoutObservationIcon(fromBelow:ceilingFromBelow).frame(width:44,height:44).background(.regularMaterial,in:Circle()) }
+                                .padding(8).accessibilityLabel(ceilingFromBelow ? "Vue du dessous — passer au-dessus" : "Vue du dessus — passer en dessous")
+                                .disabled(drag != nil || pinching)
                         }
                     }
-                    .onChange(of: proxy.size) { _, _ in
-                        pan = viewport.constrainedPan(pan, contour: document.surface.contour)
+                    .overlay(alignment: .bottomTrailing) {
+                        if mode == .grid || (mode == .framing && document.surface.kind == .ceiling) {
+                            VStack(spacing:8) {
+                                orientationButton(document)
+                                if document.surface.kind == .ceiling { HStack(spacing: 8) {
+                                    referenceWallButton(document, clockwise: false)
+                                    referenceWallButton(document, clockwise: true)
+                                } }
+                            }.padding(8)
+                            .disabled(drag != nil || pinching || model.isOptimizing)
+                        }
+                    }
+                    .onAppear { if canvasFitSize == nil { canvasFitSize = proxy.size } }
+                    .onChange(of:recenterToken) { _,_ in
+                        fittedBounds = LayoutViewport.fittedBounds(document.surface.contour,rotation:rotation)
+                        canvasFitSize = proxy.size; zoom = 1; pan = .zero
+                    }
+                    .onChange(of:proxy.size) { oldSize,newSize in
+                        if canvasFitSize == nil { canvasFitSize = newSize }
+                        let candidate = CGSize(width:pan.width+(oldSize.width-newSize.width)/2,
+                                               height:pan.height+(oldSize.height-newSize.height)/2)
+                        pan = viewport.constrainedPan(candidate,contour:document.surface.contour)
                     }
                     .clipShape(RoundedRectangle(cornerRadius: 18))
-            }.padding(.horizontal)
+            }.padding(.horizontal,fullscreen ? 4 : 16)
+            if !fullscreen {
             if let error = model.error {
                 Text(error).font(.footnote).foregroundStyle(.red).padding(.horizontal)
             } else {
@@ -725,7 +850,6 @@ struct SheetLayoutView: View {
                 Label("Ossature commune : tout décalage sera appliqué en miroir sur l’autre côté à l’enregistrement.", systemImage: "arrow.left.arrow.right")
                     .font(.caption).foregroundStyle(.orange).padding(.horizontal)
             }
-            if mode == .lighting { lightingControls(document) }
             if let warning = model.lightingWarning {
                 Button { sheet = .lighting } label: { Label(warning,systemImage:"exclamationmark.triangle") }
                     .font(.caption).foregroundStyle(.orange).padding(.horizontal)
@@ -733,17 +857,20 @@ struct SheetLayoutView: View {
             if let warning = document.surface.layingWarning {
                 Label(warning,systemImage:"exclamationmark.triangle").font(.caption).foregroundStyle(.orange).padding(.horizontal)
             }
+            }
+            // Keep the active mode's editing actions available in full screen.
+            if mode == .lighting { lightingControls(document) }
             if mode == .grid || mode == .framing {
                 HStack {
                     Button { model.optimize(furring:mode == .framing) } label: {
                         Label(model.isOptimizing ? "Optimisation…" : "Optimiser",systemImage:"sparkles")
                     }.disabled(model.isOptimizing || model.isCalculating || drag != nil || (mode == .framing && document.layers.first?.furring == nil))
                     if let layer = document.layers.first, layer.furring != nil {
-                        Button(mode == .framing ? "Caler sur les plaques" : "Caler sur les fourrures") {
+                        Button(mode == .framing ? "Caler les plaques sur l’ossature" : "Caler les ossatures sur les plaques") {
                             var copy = document
-                            copy.layers[0] = mode == .framing ? LayoutPlanning.alignFurring(to:layer) : LayoutPlanning.alignBoards(to:layer,support:document.surface.kind)
+                            copy.layers[0] = LayoutPlanning.alignOtherLayer(layer,surface:document.surface,framingMode:mode == .framing)
                             model.apply(copy)
-                        }.disabled(!LayoutPlanning.compatibleSpacings(layer).contains(layer.furring?.spacing ?? 0))
+                        }.disabled(model.isOptimizing || drag != nil || pinching || !LayoutPlanning.compatibleSpacings(layer).contains(layer.furring?.spacing ?? 0))
                     }
                 }.font(.caption).buttonStyle(.bordered).padding(.horizontal)
                 if let message = model.optimizationMessage { Text(message).font(.caption2).foregroundStyle(.secondary).padding(.horizontal) }
@@ -751,6 +878,7 @@ struct SheetLayoutView: View {
                     Label("Joints et fourrures décalés : utilisez « Caler ».",systemImage:"exclamationmark.triangle").font(.caption).foregroundStyle(.orange)
                 }
             }
+            if !fullscreen {
             if mode == .contour, let index = selectedVertex, document.surface.contour.indices.contains(index) {
                 Button("Modifier le sommet \(index + 1) · ajouter / supprimer") { sheet = .vertex(index) }.font(.subheadline)
             }
@@ -763,6 +891,7 @@ struct SheetLayoutView: View {
                 bottomButton("Ouvertures",symbol:"plus.rectangle",destination:.opening(nil))
                 bottomButton(document.surface.kind == .wall ? "Électricité" : "Éclairage",symbol:"lightbulb",destination:.lighting)
             }.tint(.teal).padding(.horizontal).padding(.bottom, 8)
+            }
         }.padding(.top, 8)
     }
 
@@ -777,7 +906,51 @@ struct SheetLayoutView: View {
     }
 
     @ViewBuilder private func lightingControls(_ document:LayoutDocument) -> some View {
+        if document.surface.kind == .ceiling {
+            Button("Répartition automatique") {
+                addingSpot=false; selectSpotsByBox=false; selectedSpots=[]; referenceSpot=nil
+                sheet = .lighting
+            }.buttonStyle(.bordered).font(.caption).padding(.horizontal)
+            if let spotEditError { Text(spotEditError).font(.caption).foregroundStyle(.orange).padding(.horizontal) }
+        } else { wallLightingControls(document) }
+    }
+
+    @ViewBuilder private func wallLightingControls(_ document:LayoutDocument) -> some View {
+        HStack {
+            Button(document.surface.kind == .wall ? "Ajouter des rangées" : "Répartition automatique") { sheet = .lighting }
+            if document.surface.kind == .wall {
+                if addingSpot { Button("Terminer l’ajout") { addingSpot = false } }
+                else {
+                    Menu("Ajouter à la main") {
+                        Button("Prise") { addingKind = .socket; addingSpot = true }
+                        Button("Lumière") { addingKind = .light; addingSpot = true }
+                    }
+                }
+            } else { Button(addingSpot ? "Terminer l’ajout" : "Ajouter à la main") { addingKind = .light; addingSpot.toggle() } }
+        }.buttonStyle(.bordered).font(.caption).padding(.horizontal)
         if let lighting = document.lighting {
+            ScrollView(.horizontal,showsIndicators:false) {
+                HStack(spacing:8) {
+                    Button { selectSpotsByBox.toggle() } label: {
+                        Label(selectSpotsByBox ? "Tracez un cadre" : "Sélection par cadre",systemImage:"selection.pin.in.out")
+                    }.tint(selectSpotsByBox ? .orange : .accentColor)
+                    ForEach(LayoutSpotArrangement.allCases,id:\.self) { action in
+                        Button(spotActionTitle(action,wall:document.surface.kind == .wall)) {
+                            do {
+                                var copy=document
+                                let frame=document.layers.first.map { LayoutPlanning.framingFrame(surface:document.surface,layer:$0) }
+                                copy.lighting=try LayoutPlanning.arrangedLighting(lighting,selected:selectedSpots,reference:referenceSpot,action:action,surface:document.surface,frame:document.surface.kind == .ceiling ? frame : nil)
+                                model.apply(copy); spotEditError=nil
+                            } catch { spotEditError=error.localizedDescription }
+                        }.disabled(selectedSpots.count<action.minimumCount)
+                    }
+                    Button("Centrer") { centerSpots(document,selected:selectedSpots) }.disabled(selectedSpots.isEmpty)
+                    Button("Écartement") { sheet = .lightingSpacing(selectedSpots) }.disabled(selectedSpots.count<2)
+                }.buttonStyle(.bordered).font(.caption).padding(.horizontal)
+            }
+            if !selectedSpots.isEmpty {
+                Text("\(selectedSpots.count) sélectionné(s) · alignement sur le dernier spot touché").font(.caption).foregroundStyle(.secondary).padding(.horizontal)
+            }
             HStack {
                 Button(selectedSpots.count == lighting.count ? "Désélectionner" : "Tout sélectionner") {
                     selectedSpots = selectedSpots.count == lighting.count ? [] : Set(lighting.positions.indices)
@@ -809,7 +982,8 @@ struct SheetLayoutView: View {
                         Button(action.rawValue) {
                             do {
                                 var copy = document
-                                copy.lighting = try LayoutPlanning.arrangedLighting(lighting,selected:selectedSpots,reference:referenceSpot,action:action,surface:document.surface)
+                                let frame=document.layers.first.map { LayoutPlanning.framingFrame(surface:document.surface,layer:$0) }
+                                copy.lighting = try LayoutPlanning.arrangedLighting(lighting,selected:selectedSpots,reference:referenceSpot,action:action,surface:document.surface,frame:document.surface.kind == .ceiling ? frame : nil)
                                 model.apply(copy); spotEditError = nil
                             } catch { spotEditError = error.localizedDescription }
                         }.disabled(selectedSpots.count < action.minimumCount)
@@ -817,20 +991,8 @@ struct SheetLayoutView: View {
                 } label: { Label("Organiser",systemImage:"slider.horizontal.3") }
                 Toggle(isOn:$snapSpots) { Image(systemName:"scope") }.toggleStyle(.button).accessibilityLabel("Repères et aimantation des spots")
             }.font(.caption).buttonStyle(.bordered).padding(.horizontal)
-            if addingSpot { Button("Terminer l’ajout") { addingSpot = false }.font(.caption) }
-            if let spotEditError { Text(spotEditError).font(.caption).foregroundStyle(.orange).padding(.horizontal) }
-        } else {
-            HStack {
-                Button(document.surface.kind == .wall ? "Ajouter des rangées" : "Répartition automatique") { sheet = .lighting }
-                if document.surface.kind == .wall {
-                    Menu("À la main") {
-                        Button("Prise") { addingKind = .socket; addingSpot = true }
-                        Button("Lumière") { addingKind = .light; addingSpot = true }
-                    }
-                } else { Button(addingSpot ? "Terminer" : "Ajouter à la main") { addingKind = .light; addingSpot.toggle() } }
-            }.buttonStyle(.bordered).font(.caption)
-            if let spotEditError { Text(spotEditError).font(.caption).foregroundStyle(.orange) }
         }
+        if let spotEditError { Text(spotEditError).font(.caption).foregroundStyle(.orange).padding(.horizontal) }
     }
     private func centerSpots(_ document:LayoutDocument,selected:Set<Int>) {
         guard let lighting = document.lighting else { return }
@@ -840,12 +1002,43 @@ struct SheetLayoutView: View {
             model.apply(copy); spotEditError = nil
         } catch { spotEditError = error.localizedDescription }
     }
+    private func spotActionTitle(_ action:LayoutSpotArrangement,wall:Bool) -> String {
+        if wall { return action.rawValue }
+        switch action {
+        case .horizontal: return "Aligner ∥ fourrures"
+        case .vertical: return "Aligner ⊥ fourrures"
+        case .distributeX: return "Espacer ∥ fourrures"
+        case .distributeY: return "Espacer ⊥ fourrures"
+        }
+    }
+    private func initializeCeilingView() {
+        guard let document=model.document, document.surface.kind == .ceiling,
+              let alignment=LayoutViewport.initialCeilingAlignment(document.surface.contour,referenceEdge:document.layers.first?.referenceEdge) else { return }
+        rotation=alignment.angle; viewAlignedEdge=alignment.index
+        fittedBounds=LayoutViewport.fittedBounds(document.surface.contour,rotation:rotation)
+    }
+
     private func referenceWallButton(_ document: LayoutDocument, clockwise: Bool) -> some View {
         Button {
             guard !document.layers.isEmpty else { return }
             var copy = document
-            copy.layers[0].referenceEdge = LayoutPlanning.nextReferenceEdge(document.surface,
-                current: document.layers[0].referenceEdge, clockwise: clockwise)
+            let current = mode == .framing && copy.layers[0].furring?.usesOwnReference == true ? copy.layers[0].furring?.referenceEdge : copy.layers[0].referenceEdge
+            let next = LayoutPlanning.nextReferenceEdge(document.surface,current:current,clockwise:ceilingFromBelow ? !clockwise : clockwise)
+            if mode == .framing {
+                copy.layers[0].materializeFurringOrientation()
+                copy.layers[0].furring?.usesOwnReference = true
+                copy.layers[0].furring?.referenceEdge = next
+                copy.layers[0].furring?.inheritedGridFrame = nil
+            } else {
+                if copy.layers[0].furring?.usesOwnReference != true {
+                    let inheritedFrame = copy.layers[0].inheritedGridFrame
+                    copy.layers[0].furring?.referenceEdge = current
+                    copy.layers[0].furring?.usesOwnReference = true
+                    copy.layers[0].furring?.inheritedGridFrame = inheritedFrame
+                }
+                copy.layers[0].referenceEdge = next
+                copy.layers[0].inheritedGridFrame = nil
+            }
             model.apply(copy)
             UISelectionFeedbackGenerator().selectionChanged()
         } label: {
@@ -853,48 +1046,125 @@ struct SheetLayoutView: View {
                 .frame(width: 44, height: 44).background(.regularMaterial, in: Circle())
         }.accessibilityLabel(clockwise ? "Mur de référence suivant, sens horaire" : "Mur de référence précédent, sens antihoraire")
     }
+    @ViewBuilder private func orientationButton(_ document:LayoutDocument) -> some View {
+        if let layer = document.layers.first {
+            let parallel = (mode == .framing ? layer.resolvedFurringOrientation : layer.orientation) == .horizontal
+            Button {
+                var copy = document
+                if mode == .framing { copy.layers[0].setFurringOrientation(parallel ? .vertical : .horizontal) }
+                else { copy.layers[0].materializeFurringOrientation(); copy.layers[0].orientation = parallel ? .vertical : .horizontal }
+                model.apply(copy)
+            } label: {
+                LayoutOrientationIcon(parallel:parallel).frame(width:44,height:44).background(.regularMaterial,in:Circle())
+            }.accessibilityLabel(parallel ? "Parallèle au mur — passer perpendiculaire" : "Perpendiculaire au mur — passer parallèle")
+        }
+    }
+    private func resolveBoardEdges() {
+        guard var document = model.document, let layer = document.layers.first else { return }
+        let resolved = WorkLayoutDefaults.resolvingFacing(layer,configuration:newDocumentConfiguration,formats:catalogue.layoutFormats)
+        guard resolved != layer else { return }
+        let wasClean = document == cleanDocument
+        document.layers[0] = resolved
+        model.apply(document)
+        if wasClean { cleanDocument = document }
+    }
 
     private func draw(context: inout GraphicsContext, size: CGSize, document: LayoutDocument, viewport: LayoutViewport) {
         let surface = document.surface
+        var numbers: [(label:String, anchor:CGPoint, size:CGSize, fits:Bool)] = []
         // The construction axes remain part of the coordinate system used by
         // snapping and alignment; only their visual overlay is intentionally hidden.
         if let result = model.result {
             if drag != nil && mode != .lighting {
                 drawLiveGrids(context:&context,document:document,viewport:viewport)
             } else {
+            let boardEdges = visibility.sheets.showsDimensions ? result.sheets.flatMap { placement in
+                placement.pieces.flatMap { piece in
+                    LayoutGeometry.edges(piece.contour).map {
+                        LayoutJoint(start:result.frame.world($0.a),end:result.frame.world($0.b))
+                    }
+                }
+            } : []
+            let visibleBoardEdges = Set(boardEdges.indices.filter { i in
+                CGRect(origin:.zero,size:size).insetBy(dx:16,dy:16)
+                    .contains(viewport.screen((boardEdges[i].start+boardEdges[i].end)*0.5))
+            })
+            let boardLabels = LayoutDimensionLabels.representatives(boardEdges,preferred:visibleBoardEdges)
+            var boardEdgeIndex = 0
             for placement in result.sheets where visibility.sheets.isVisible {
                 for piece in placement.pieces {
                     var path = layoutPath(piece.contour.map(result.frame.world), transform: viewport)
                     for hole in piece.holes { path.addPath(layoutPath(hole.map(result.frame.world), transform: viewport)) }
-                    let color = placement.isFull ? Color.teal : Color.blue
-                    context.fill(path, with: .color(color.opacity((piece.stock?.number ?? placement.number) % 2 == 0 ? 0.22 : 0.12)), style: FillStyle(eoFill: true))
-                    context.stroke(path, with: .color(color.opacity(0.75)), lineWidth: 1)
+                    let color = Color.gray
+                    context.fill(path, with: .linearGradient(Gradient(colors:[Color.gray.opacity(0.13),Color.gray.opacity(0.27)]),startPoint:.zero,endPoint:.init(x:size.width,y:size.height)), style: FillStyle(eoFill: true))
+                    context.stroke(path, with: .color(.primary.opacity(0.16)), lineWidth: 3)
+                    context.stroke(path, with: .color(.primary.opacity(0.5)), lineWidth: 1)
                     if visibility.sheets.showsDimensions {
                         for edge in LayoutGeometry.edges(piece.contour) {
-                            drawAlongDimension(context:&context,a:result.frame.world(edge.a),b:result.frame.world(edge.b),viewport:viewport,color:color,offset:9)
+                            if boardLabels.contains(boardEdgeIndex) {
+                                drawAlongDimension(context:&context,a:result.frame.world(edge.a),b:result.frame.world(edge.b),viewport:viewport,color:color,offset:9)
+                            }
+                            boardEdgeIndex += 1
                         }
                     }
-                    if piece.bounds.width * viewport.scale > 20 && piece.bounds.height * viewport.scale > 20 {
-                        let label = placement.label(for:piece)
-                        context.draw(Text(label).font(.system(size: 12, weight: .semibold)).foregroundStyle(.primary), at: viewport.screen(result.frame.world(piece.labelPoint)))
+                    let label = placement.label(for:piece)
+                    let anchor = viewport.screen(result.frame.world(piece.labelPoint))
+                    if CGRect(origin:.zero,size:size).contains(anchor) {
+                        let measured = context.resolve(Text(label).font(.system(size:12,weight:.semibold)))
+                            .measure(in:CGSize(width:200,height:30))
+                        let labelSize = CGSize(width:measured.width+8,height:measured.height+4)
+                        let corners = [CGPoint(x:anchor.x-labelSize.width/2,y:anchor.y-labelSize.height/2),
+                            CGPoint(x:anchor.x+labelSize.width/2,y:anchor.y-labelSize.height/2),
+                            CGPoint(x:anchor.x+labelSize.width/2,y:anchor.y+labelSize.height/2),
+                            CGPoint(x:anchor.x-labelSize.width/2,y:anchor.y+labelSize.height/2)]
+                        let fits = corners.allSatisfy { piece.contains(result.frame.local(viewport.world($0))) }
+                        numbers.append((label,anchor,labelSize,fits))
                     }
                 }
             }
             }
-            if visibility.framing.isVisible && (drag == nil || mode == .lighting) {
-                for line in result.furring.lines {
+            if visibility.framing.isVisible, let layer=document.layers.first {
+                let current=LayoutPlanning.worldFurring(surface:surface,layer:layer)
+                let joints=result.joints.map { LayoutJoint(start:result.frame.world($0.start),end:result.frame.world($0.end)) }
+                let visibleLengths = Set(current.lines.indices.filter { i in
+                    let line = current.lines[i]
+                    return CGRect(origin: .zero, size: size).insetBy(dx: 16, dy: 16)
+                        .contains(viewport.screen((line.start + line.end) * 0.5))
+                })
+                let labels = LayoutDimensionLabels.representatives(current.lines, preferred: visibleLengths)
+                for (index, line) in current.lines.enumerated() {
+                    let junction = current.fixedLines.contains(line) || LayoutPlanning.isJunction(line,joints:joints)
+                    let openingVertical = current.openingProfiles.contains {
+                        $0.role != .horizontal && LayoutOpeningFraming.same($0.line, line)
+                    }
                     var path = Path()
-                    path.move(to:viewport.screen(result.frame.world(line.start)))
-                    path.addLine(to:viewport.screen(result.frame.world(line.end)))
-                    context.stroke(path,with:.color(.purple),style:StrokeStyle(lineWidth:1.5,dash:[6,3]))
-                    if visibility.framing.showsDimensions {
-                        drawAlongDimension(context:&context,a:result.frame.world(line.start),b:result.frame.world(line.end),viewport:viewport,color:.purple,offset:7)
+                    path.move(to:viewport.screen(line.start))
+                    path.addLine(to:viewport.screen(line.end))
+                    context.stroke(path,with:.color(.purple),style:StrokeStyle(lineWidth:junction ? 2.5 : 1.5,dash:openingVertical || !junction ? [6,3] : []))
+                    if visibility.framing.showsDimensions && labels.contains(index) {
+                        drawAlongDimension(context:&context,a:line.start,b:line.end,viewport:viewport,color:.purple,offset:7)
+                    }
+                }
+                // Intermediate supports remain in the takeoff, but their dots
+                // are hidden to keep the lining framing drawing legible.
+                if visibility.framing.showsDimensions {
+                    for callout in framingCallouts(document:document,viewport:viewport) {
+                        var p=Path(); p.move(to:callout.a); p.addLine(to:callout.b)
+                        context.stroke(p,with:.color(.purple),lineWidth:0.8)
+                        var leaders=Path()
+                        leaders.move(to:viewport.screen(callout.dimension.start)); leaders.addLine(to:callout.a)
+                        leaders.move(to:viewport.screen(callout.dimension.end)); leaders.addLine(to:callout.b)
+                        context.stroke(leaders,with:.color(.purple.opacity(0.4)),style:.init(lineWidth:0.6,dash:[2,3]))
+                        context.fill(Path(roundedRect:callout.rect,cornerRadius:5),with:.color(Color(.secondarySystemGroupedBackground)))
+                        context.draw(Text(layoutCM(callout.dimension.distance)).font(.system(size:11,weight:.semibold)).foregroundStyle(.purple),at:callout.center)
                     }
                 }
             }
         }
         context.stroke(layoutPath(surface.contour, transform: viewport), with: .color(.primary), lineWidth: 2)
-        if surface.kind == .ceiling, let edge = document.layers.first?.referenceEdge,
+        let layer = document.layers.first
+        let referenceEdge = mode == .framing && layer?.furring?.usesOwnReference == true ? layer?.furring?.referenceEdge : layer?.referenceEdge
+        if surface.kind == .ceiling, (mode == .grid || mode == .framing), let edge = referenceEdge,
            surface.contour.indices.contains(edge) {
             var reference = Path()
             reference.move(to: viewport.screen(surface.contour[edge]))
@@ -939,6 +1209,21 @@ struct SheetLayoutView: View {
                 context.draw(Text(vertexName(i)).font(.caption.bold()), at: .init(x: p.x + 12, y: p.y - 12))
             }
         }
+        var occupied:[CGRect] = []
+        // Reserve in-place numbers first, then route the small-piece callouts.
+        for number in numbers.filter(\.fits) + numbers.filter({ !$0.fits }) {
+            let rect = LayoutNumberCallout.rect(anchor:number.anchor,size:number.size,
+                viewport:CGRect(origin:.zero,size:size),occupied:occupied,displaced:!number.fits)
+            occupied.append(rect)
+            let center = CGPoint(x:rect.midX,y:rect.midY)
+            if !number.fits {
+                var leader=Path(); leader.move(to:number.anchor); leader.addLine(to:center)
+                context.stroke(leader,with:.color(.primary.opacity(0.65)),lineWidth:1)
+                context.fill(Path(ellipseIn:CGRect(x:number.anchor.x-2,y:number.anchor.y-2,width:4,height:4)),with:.color(.primary))
+                context.fill(Path(roundedRect:rect,cornerRadius:4),with:.color(Color(.systemBackground).opacity(0.92)))
+            }
+            context.draw(Text(number.label).font(.system(size:12,weight:.semibold)).foregroundStyle(.primary),at:center)
+        }
     }
 
     private func drawLiveGrids(context:inout GraphicsContext,document:LayoutDocument,viewport:LayoutViewport) {
@@ -955,7 +1240,7 @@ struct SheetLayoutView: View {
             return path
         }
         let boardClip = clippingPath(laying), framingClip = clippingPath(measured)
-        if visibility.sheets.isVisible { context.fill(boardClip,with:.color(.teal.opacity(0.12)),style:.init(eoFill:true)) }
+        if visibility.sheets.isVisible { context.fill(boardClip,with:.color(.gray.opacity(0.18)),style:.init(eoFill:true)) }
         func grid(step:Double,offset:Double,vertical:Bool,color:Color) {
             guard step >= 1 else { return }
             var clipped = context
@@ -976,16 +1261,57 @@ struct SheetLayoutView: View {
                 var clipped=context; clipped.clip(to:boardClip,style:.init(eoFill:true))
                 for cell in (try? LayoutBoardGrid.cells(bounds:bounds,layer:layer)) ?? [] {
                     let rectangle=LayoutBounds(min:cell.origin,max:cell.origin + .init(x:layer.cellWidth,y:layer.cellHeight))
-                    clipped.stroke(layoutPath(rectangle.polygon.map(frame.world),transform:viewport),with:.color(.teal),lineWidth:0.8)
+                    clipped.stroke(layoutPath(rectangle.polygon.map(frame.world),transform:viewport),with:.color(.gray),lineWidth:0.8)
                 }
             } else {
-                grid(step:layer.cellWidth,offset:layer.offset.x,vertical:true,color:.teal)
-                grid(step:layer.cellHeight,offset:layer.offset.y,vertical:false,color:.teal)
+                grid(step:layer.cellWidth,offset:layer.offset.x,vertical:true,color:.gray)
+                grid(step:layer.cellHeight,offset:layer.offset.y,vertical:false,color:.gray)
             }
         }
-        if let f = layer.furring, visibility.framing.isVisible {
-            grid(step:f.spacing,offset:f.offset,vertical:!LayoutPlanning.alongX(layer),color:.purple)
+    }
+
+    private struct FramingCallout {
+        var dimension:LayoutWallDimension
+        var a:CGPoint; var b:CGPoint
+        var center:CGPoint { .init(x:(a.x+b.x)/2,y:(a.y+b.y)/2) }
+        var rect:CGRect { .init(x:center.x-36,y:center.y-11,width:72,height:22) }
+    }
+    private func framingCallouts(document:LayoutDocument,viewport:LayoutViewport) -> [FramingCallout] {
+        guard document.surface.kind == .ceiling, let layer=document.layers.first,
+              let settings=layer.furring, let result=model.result else { return [] }
+        let geometry=LayoutPlanning.worldFurring(surface:document.surface,layer:layer)
+        let joints=result.joints.map { LayoutJoint(start:result.frame.world($0.start),end:result.frame.world($0.end)) }
+        var supports=LayoutPlanning.junctionSupports(lines:geometry.lines,fixed:geometry.peripheralLines,joints:joints,spacing:settings.spacing)
+        if let original=drag?.document, mode == .framing, let before=original.layers.first,
+           let f=before.furring {
+            let previous=LayoutPlanning.worldFurring(surface:original.surface,layer:before)
+            let tracking=LayoutPlanning.junctionSupports(lines:previous.lines,fixed:previous.peripheralLines,joints:joints,spacing:f.spacing)
+            let frame=LayoutPlanning.framingFrame(surface:document.surface,layer:layer)
+            let local=LayoutPoint(x:0,y:(settings.offset-f.offset)*(LayoutPlanning.alongX(layer) ? 1 : -1))
+            let delta=frame.world(local)-frame.origin
+            supports=tracking.compactMap { old in
+                let target=(old.start+old.end)*0.5+delta
+                return geometry.lines.filter { !geometry.peripheralLines.contains($0) }
+                    .min(by:{LayoutGeometry.distance(target,to:$0.start,$0.end)<LayoutGeometry.distance(target,to:$1.start,$1.end)})
+            }
         }
+        var annotations:[FramingCallout]=[]
+        let contour=document.surface.contour.map(viewport.screen)
+        for (index,line) in supports.enumerated() {
+            let start=viewport.screen(line.start), end=viewport.screen(line.end)
+            let length=hypot(end.x-start.x,end.y-start.y)
+            guard length>1 else { continue }
+            let n=CGPoint(x:(start.x-end.x)/length,y:(start.y-end.y)/length)
+            let outside=(contour.map{$0.x*n.x+$0.y*n.y}.max() ?? 0)+28+Double(index%3)*25
+            func project(_ p:LayoutPoint)->CGPoint {
+                let s=viewport.screen(p), shift=outside-s.x*n.x-s.y*n.y
+                return .init(x:s.x+n.x*shift,y:s.y+n.y*shift)
+            }
+            for dimension in LayoutPlanning.framingWallDimensions(line,surface:document.surface) {
+                annotations.append(.init(dimension:dimension,a:project(dimension.start),b:project(dimension.end)))
+            }
+        }
+        return annotations
     }
 
     private func drawAlongDimension(context:inout GraphicsContext,a:LayoutPoint,b:LayoutPoint,viewport:LayoutViewport,color:Color,offset:Double) {
@@ -1048,6 +1374,10 @@ struct SheetLayoutView: View {
         }
     }
     private func tapped(_ p: CGPoint, document: LayoutDocument, viewport: LayoutViewport) {
+        if visibility.framing.showsDimensions, mode == .framing || mode == .move,
+           let callout=framingCallouts(document:document,viewport:viewport).first(where:{$0.rect.insetBy(dx:-8,dy:-10).contains(p)}) {
+            sheet = .framingDistance(callout.dimension); return
+        }
         if mode == .lighting && addingSpot && visibility.electrical.isVisible {
             do {
                 var copy = document
@@ -1070,13 +1400,13 @@ struct SheetLayoutView: View {
             if let selectedVertex { sheet = .vertex(selectedVertex) }
             return
         }
-        guard mode == .grid || mode == .openings else { return }
+        guard mode == .move || mode == .openings else { return }
         let point = viewport.world(p)
         if mode == .openings, visibility.openings.isVisible {
             if let opening = document.surface.openings.last(where: { LayoutGeometry.contains(point, in:$0.contour) }) { sheet = .opening(opening.id) }
             return
         }
-        guard mode == .grid, visibility.sheets.isVisible else { return }
+        guard mode == .move, visibility.sheets.isVisible else { return }
         guard !model.isCalculating, let result = model.result else { return }
         for placement in result.sheets {
             if let piece = placement.pieces.first(where: { $0.contains(result.frame.local(point)) }) {
@@ -1085,7 +1415,15 @@ struct SheetLayoutView: View {
         }
     }
     private func dragChanged(_ value: DragGesture.Value, document: LayoutDocument, viewport: LayoutViewport) {
-        guard !pinching, rotationStart == nil, lightingRotationOriginal == nil, !model.isOptimizing else { return }
+        guard !pinching, rotationStart == nil, !model.isOptimizing else { return }
+        if mode == .lighting, selectSpotsByBox, let lighting=document.lighting {
+            let box=CGRect(x:min(value.startLocation.x,value.location.x),y:min(value.startLocation.y,value.location.y),
+                width:abs(value.location.x-value.startLocation.x),height:abs(value.location.y-value.startLocation.y))
+            spotSelectionBox=box
+            selectedSpots=Set(lighting.positions.indices.filter { box.contains(viewport.screen(lighting.positions[$0])) })
+            referenceSpot=selectedSpots.sorted().last
+            return
+        }
         if drag == nil {
             let vertex = mode == .contour ? nearestVertex(value.startLocation, document: document, viewport: viewport) : nil
             let p = viewport.world(value.startLocation)
@@ -1104,16 +1442,32 @@ struct SheetLayoutView: View {
             let snapped = snapSpots ? LayoutPlanning.snappedLightingDelta(lighting,selected:drag.spots,anchor:i,delta:delta,tolerance:8/drag.viewport.scale) : (delta:delta,guides:[])
             spotGuides = snapped.guides
             updated.lighting = LayoutPlanning.translatedLighting(lighting,indices:drag.spots,delta:snapped.delta)
-        } else if mode == .grid && visibility.sheets.isVisible {
+        } else if mode == .grid && visibility.sheets.isVisible && LayoutPlanning.hitSupport(drag.viewport.world(value.startLocation),surface:drag.document.surface) {
             let frame = LayoutGridFrame.make(surface:drag.document.surface,layer:drag.document.layers[0])
             updated.layers[0].offset = drag.document.layers[0].offset + frame.vector(delta)
             updated.layers[0] = updated.layers[0].forSurface(updated.surface)
-        } else if mode == .framing && visibility.framing.isVisible {
+            if updated.surface.kind == .wall {
+                updated.layers[0] = LayoutPlanning.snappedWallBoards(updated.layers[0],surface:updated.surface,tolerance:min(25,8/drag.viewport.scale))
+            }
+        } else if mode == .framing && visibility.framing.isVisible && LayoutPlanning.hitSupport(drag.viewport.world(value.startLocation),surface:drag.document.surface) {
             guard let f = updated.layers[0].furring else { return }
-            let frame = LayoutGridFrame.make(surface:drag.document.surface,layer:drag.document.layers[0])
+            var framingLayer=drag.document.layers[0]
+            if f.usesOwnReference == true {
+                framingLayer.referenceEdge=f.referenceEdge
+                framingLayer.inheritedGridFrame=f.inheritedGridFrame
+            }
+            let frame = LayoutGridFrame.make(surface:drag.document.surface,layer:framingLayer)
             let local = frame.vector(delta)
             let acrossDelta = LayoutPlanning.alongX(updated.layers[0]) ? local.y : local.x
             updated.layers[0].furring?.offset = f.offset + acrossDelta
+            if let fixed=LayoutPlanning.snappedOpeningSupport(updated.layers[0],surface:updated.surface,tolerance:min(25,8/drag.viewport.scale)) {
+                updated.layers[0].furring?.offset=fixed
+            } else if let result=model.result {
+                let joints=result.joints.map { LayoutJoint(start:result.frame.world($0.start),end:result.frame.world($0.end)) }
+                if let snapped=LayoutPlanning.snappedFurringOffset(updated.layers[0],surface:updated.surface,joints:joints,tolerance:min(25,8/drag.viewport.scale)) {
+                    updated.layers[0].furring?.offset=snapped
+                }
+            }
         } else if mode == .contour, let i = drag.vertex {
             let p = drag.document.surface.contour[i] + delta
             updated.surface.contour[i] = .init(x: p.x.rounded(), y: p.y.rounded())
@@ -1141,6 +1495,44 @@ struct SheetLayoutView: View {
 
     @ViewBuilder private func sheetContent(_ destination: LayoutEditorSheet) -> some View {
         switch destination {
+        case .framingDistance(let dimension):
+            if let document=model.document, let layer=document.layers.first {
+                LayoutFurringDistanceForm(value:dimension.distance) { value in
+                    var copy=document
+                    copy.layers[0]=try LayoutPlanning.settingFurringDistance(layer,surface:document.surface,dimension:dimension,distance:value)
+                    model.apply(copy)
+                }
+            }
+        case .parts:
+            if let workbook {
+                NavigationStack {
+                    ScrollView {
+                        LazyVGrid(columns:[GridItem(.adaptive(minimum:155))],spacing:16) {
+                            ForEach(workbook.tabs) { tab in
+                                Button {
+                                    sheet=nil
+                                    if tab.id != workbook.selectedID { performAfterSaving { workbook.select(tab.id) } }
+                                } label: {
+                                    VStack(alignment:.leading,spacing:8) {
+                                        if let preview=tab.preview { preview.frame(height:135) }
+                                        else { Image(systemName:"square.dashed").font(.largeTitle).frame(maxWidth:.infinity).frame(height:135) }
+                                        HStack {
+                                            Text(tab.title).font(.subheadline.weight(.semibold))
+                                            if tab.id == workbook.selectedID { Image(systemName:"checkmark.circle.fill").foregroundStyle(.tint) }
+                                        }.padding([.horizontal,.bottom],10)
+                                    }.background(Color(.secondarySystemGroupedBackground),in:RoundedRectangle(cornerRadius:16))
+                                        .overlay(RoundedRectangle(cornerRadius:16).stroke(tab.id == workbook.selectedID ? Color.accentColor : .clear,lineWidth:2))
+                                }.buttonStyle(.plain)
+                            }
+                        }.padding()
+                        Button("Ajouter une sous-partie",systemImage:"plus") { sheet=nil; performAfterSaving(workbook.add) }
+                        Button("Renommer cette sous-partie",systemImage:"pencil") { sheet=nil; performAfterSaving(workbook.rename) }
+                        Button("Relations et pièces",systemImage:"link") { sheet=nil; performAfterSaving(workbook.relations) }
+                    }.background(Color(.systemGroupedBackground))
+                        .navigationTitle("Choisir une sous-partie").navigationBarTitleDisplayMode(.inline)
+                        .toolbar { ToolbarItem(placement:.cancellationAction) { Button("Fermer") { sheet=nil } } }
+                }
+            }
         case .newSurface:
             LayoutSurfaceForm(requiredKind: requiredSupportKind) { document in
                 model.startNew()
@@ -1232,7 +1624,7 @@ struct SheetLayoutView: View {
                             LabeledContent("Surface nette", value: layoutArea(result.netArea))
                             LabeledContent("Isolant · surface de pose", value: layoutArea(result.netArea))
                             LabeledContent("Restes après découpe", value: layoutArea(result.wasteArea))
-                            Text("2-1 et 2-2 sont deux morceaux d’une même plaque. Réemploi conservateur : au moins 20 cm dans les deux directions et appuis vérifiés géométriquement. Les ouvertures ne sont pas considérées comme des appuis.").font(.footnote).foregroundStyle(.secondary)
+                            Text("2-1 et 2-2 sont deux morceaux d’une même plaque.").font(.footnote).foregroundStyle(.secondary)
                         }
                         ForEach(Array(1..<(result.purchasedSheetCount+1)),id:\.self) { number in
                             Section("Plaque \(number)") {

@@ -1,6 +1,18 @@
 import SwiftUI
 import CoreLocation
 
+private struct SurveyExportFile:Identifiable {
+    let id=UUID()
+    let url:URL
+}
+private struct SurveyExportShareSheet:UIViewControllerRepresentable {
+    let url:URL
+    func makeUIViewController(context:Context) -> UIActivityViewController {
+        UIActivityViewController(activityItems:[url],applicationActivities:nil)
+    }
+    func updateUIViewController(_ controller:UIActivityViewController,context:Context) {}
+}
+
 @MainActor enum ScanAddressSuggestion {
     static func address(for fix:ScanLocationFix?) async -> String? {
         guard let fix, fix.isUsable(at:fix.capturedAt) else { return nil }
@@ -15,10 +27,103 @@ import CoreLocation
     }
 }
 
+private struct SurveyRepairView: View {
+    @Environment(\.dismiss) private var dismiss
+    let document: PlaquistoRoomDocument
+    let onSave: (PlaquistoRoomDocument) throws -> Void
+    private let proposals: [SurveyRepair.Proposal]
+    @State private var selected = Set<String>()
+    @State private var focused: String?
+    @State private var preview: PlaquistoRoomDocument
+    @State private var original = false
+    @State private var previewError: String?
+    @State private var saveError: String?
+    @State private var cameraReset = UUID()
+    init(document:PlaquistoRoomDocument,onSave:@escaping (PlaquistoRoomDocument) throws -> Void) {
+        self.document=document; self.onSave=onSave
+        proposals=SurveyRepair.proposals(in:document)
+        _preview=State(initialValue:document)
+        _focused=State(initialValue:proposals.first?.id)
+    }
+    private var chosen: [SurveyRepair.Proposal] { proposals.filter { selected.contains($0.id) } }
+    var body: some View {
+        NavigationStack {
+            GeometryReader { proxy in
+                VStack(spacing:0) {
+                    RoomDomainScene(room:original ? document.room : preview.room,selected:.constant(nil),
+                        ceilingMode:0,showFloor:true,topView:false,cameraReset:cameraReset,
+                        repairTriangles:original ? [] : proposals.first(where:{$0.id==focused})?.highlight ?? [])
+                        .frame(height:proxy.size.height*(ScanEvidencePolicy.enabled ? 0.38 : 0.48))
+                        .overlay(alignment:.topTrailing) {
+                            Toggle("Avant",isOn:$original).toggleStyle(.button)
+                                .padding(10).background(.regularMaterial,in:Capsule()).padding(12)
+                        }
+                    List {
+                        if ScanEvidencePolicy.enabled {
+                            if !proposals.isEmpty {
+                                Picker("Zone à examiner", selection: $focused) {
+                                    ForEach(proposals) { Text($0.title).tag(Optional($0.id)) }
+                                }.pickerStyle(.menu)
+                            }
+                            ScanEvidenceReview(roomID: document.initialRoom.id,
+                                proposal: proposals.first(where: { $0.id == focused }))
+                        }
+                        if proposals.isEmpty {
+                            Text("Aucune ouverture ni interruption de mur détectée. Pour un trou absent du modèle, corrigez le contour dans Modifier le plan.")
+                        } else {
+                            Section {
+                                ForEach(proposals) { proposal in
+                                    HStack {
+                                        Button { focused=proposal.id; original=false } label: {
+                                            Label(proposal.title,systemImage:"viewfinder")
+                                                .foregroundStyle(focused==proposal.id ? Color.orange : Color.primary)
+                                                .frame(maxWidth:.infinity,alignment:.leading)
+                                        }.buttonStyle(.borderless)
+                                        Toggle("Fermer cette zone",isOn:Binding(get:{ selected.contains(proposal.id) },set:{ enabled in
+                                            if enabled { selected.insert(proposal.id) } else { selected.remove(proposal.id) }
+                                            focused=proposal.id; original=false; refresh()
+                                        })).labelsHidden().tint(.orange)
+                                    }
+                                }
+                            } header: { Text("Fermetures possibles") } footer: {
+                                Text("Portes, fenêtres, passages ou murs manquants : choisissez les zones à boucher. Vérifiez l’aperçu orange avant d’appliquer. Rien n’est enregistré sans votre validation.")
+                            }
+                            if let previewError { Text(previewError).foregroundStyle(.red) }
+                        }
+                    }
+                    if !proposals.isEmpty {
+                        Button("Appliquer les réparations (\(selected.count))") {
+                            do {
+                                let updated=try SurveyRepair.applying(chosen,to:document)
+                                try onSave(updated); dismiss()
+                            } catch { saveError=error.localizedDescription }
+                        }.buttonStyle(.borderedProminent).disabled(selected.isEmpty || previewError != nil)
+                            .padding().frame(maxWidth:.infinity).background(.regularMaterial)
+                    }
+                }
+            }
+            .navigationTitle("Réparer le relevé").navigationBarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem(placement:.cancellationAction) { Button("Annuler") { dismiss() } } }
+            .alert("Réparation non enregistrée",isPresented:Binding(get:{saveError != nil},set:{if !$0 {saveError=nil}})) {
+                Button("OK",role:.cancel) { saveError=nil }
+            } message: { Text(saveError ?? "") }
+        }
+    }
+    private func refresh() {
+        do { preview=try SurveyRepair.applying(chosen,to:document); previewError=nil }
+        catch { preview=document; previewError=error.localizedDescription }
+    }
+}
+
 /// The scan opens here immediately: selection precedes project/work creation.
 struct ScannerCampaignWorkspaceView: View {
     @EnvironmentObject private var store: ProjectStore
+    @Environment(\.interfacePresentation) private var presentation
+    private var isLab: Bool { presentation == .contrastLab }
     @State var draft: ScanCampaignDraft
+    var quickLayout = false
+    @State private var quickDocument: LayoutDocument?
+    @State private var showingQuickLayout = false
     @State private var selectedKeys: Set<String> = []
     @State private var kind = SurveySurfaceSource.Kind.wall
     @State private var plan = false
@@ -27,52 +132,73 @@ struct ScannerCampaignWorkspaceView: View {
     @State private var savingSurvey = false
     @State private var choosingRoom = false
     @State private var configuringCeilings = false
-    @State private var editing: ProjectRoomScanCheckpoint?
+    @State private var liningCheckpoint: UUID?
+    @State private var choosingLining = false
+    @State private var liningRequestPending = false
+    @State private var editingLining: WorkItem?
+    private struct EditorRoute: Identifiable {
+        let checkpoint: ProjectRoomScanCheckpoint
+        let ceilings: Bool
+        var resumePartitions = false
+        var id: UUID { checkpoint.id }
+    }
+    @State private var editing: EditorRoute?
+    @State private var repairing: ProjectRoomScanCheckpoint?
+    @State private var choosingRepairRoom = false
+    @State private var destinationProject: UUID?
     @State private var revision = Date()
     @State private var showsCeilings = false
     @State private var cameraReset = 0
     @State private var diagnosticExport: ScanDiagnosticExport?
     @State private var diagnosticError: String?
+    @State private var daeExport:SurveyExportFile?
+    @State private var exportingDAE=false
     private var survey: ProjectSurveyRecord {
         if let saved = store.surveys.first(where: { $0.id == draft.id }) { return saved }
         return ProjectSurveyRecord(id: draft.id, projectID: draft.id, name: "Mon relevé", checkpoints: draft.includedChunks.map {
             .init(id: $0.id, roomID: $0.document.room.id, document: $0.document,
                 spatialLinkState: draft.sharesWorldSpace ? .sharedWorldSpace : .needsLink,
                 workState: .awaitingValidation, updatedAt: revision)
-        },ceilingPlanNumbers:draft.ceilingPlanNumbers)
+        },captureLocation:draft.captureLocation,capturedAt:draft.createdAt,ceilingPlanNumbers:draft.ceilingPlanNumbers)
     }
-    private var surfaces: [SurveyWorkSurface] { SurveyWorkGeometry.surfaces(in: survey) }
+    private var surfaces: [SurveyWorkSurface] {
+        SurveyWorkGeometry.surfaces(in: survey).filter { !SurveyWorkGeometry.isHidden($0, in: survey) }
+    }
+    private var liningWorks: [WorkItem] {
+        store.project(id:survey.projectID)?.works.filter { $0.type.category == .wallInsulation } ?? []
+    }
+    private var liningClaims: Set<UUID> { Set(liningWorks.flatMap(\.components).compactMap(\.surveySource).filter { $0.surveyID==survey.id }.map(\.surfaceID)) }
     static func key(_ value: SurveyWorkSurface) -> String {
         "\(value.source.surfaceID)/\(value.source.kind.rawValue)/\(value.source.boundaryIndex)"
     }
     private var chosen: [SurveyWorkSurface] { surfaces.filter { $0.source.kind == kind && selectedKeys.contains(Self.key($0)) } }
     private var chosenIDs: Set<String> { Set(chosen.map(\.id)) }
+    private var surfacePicker: some View {
+        Picker("Surfaces", selection: $kind) {
+            Text("Murs").tag(SurveySurfaceSource.Kind.wall)
+            Text("Plafonds").tag(SurveySurfaceSource.Kind.ceiling)
+        }.pickerStyle(.segmented).disabled(choosingLining)
+    }
     private func toggle(_ id: String) {
         guard let value = surfaces.first(where: { $0.id == id && $0.source.kind == kind }) else { return }
+        if choosingLining {
+            guard value.source.kind == .wall, value.source.checkpointID == liningCheckpoint else { return }
+            if liningClaims.contains(value.source.surfaceID) {
+                editingLining=liningWorks.first { $0.components.contains { $0.surveySource?.surfaceID == value.source.surfaceID } }
+                return
+            }
+        }
         let key = Self.key(value)
-        if selectedKeys.contains(key) { selectedKeys.remove(key) } else { selectedKeys.insert(key) }
+        if selectedKeys.contains(key) { selectedKeys.remove(key) }
+        else if quickLayout && !choosingLining { selectedKeys = [key] }
+        else { selectedKeys.insert(key) }
     }
     var body: some View {
         VStack(spacing: 0) {
             HStack {
                 Picker("Vue", selection: $plan) { Text("3D").tag(false); Text("Plan 2D").tag(true) }.pickerStyle(.segmented)
-                Picker("Surfaces", selection: $kind) {
-                    Text("Murs").tag(SurveySurfaceSource.Kind.wall)
-                    Text("Plafonds").tag(SurveySurfaceSource.Kind.ceiling)
-                }.pickerStyle(.segmented)
+                if !isLab { surfacePicker }
             }.padding()
-            if kind == .ceiling {
-                HStack {
-                    if !surfaces.contains(where: { $0.source.kind == .ceiling }) {
-                        Text("Les plafonds ne sont pas encore configurés.")
-                            .font(.caption).foregroundStyle(.secondary)
-                    }
-                    Spacer()
-                    Button("Configurer les plafonds", systemImage: "square.3.layers.3d") {
-                        openEditor(ceilings: true)
-                    }.buttonStyle(.bordered)
-                }.padding(.horizontal).padding(.bottom, 8)
-            }
             if survey.checkpoints.count > 1 && survey.checkpoints.contains(where: { $0.spatialLinkState == .needsLink }) {
                 Label("Raccord non confirmé : zones présentées séparément", systemImage: "exclamationmark.triangle")
                     .font(.caption).foregroundStyle(.orange).padding(.horizontal)
@@ -86,11 +212,27 @@ struct ScannerCampaignWorkspaceView: View {
                         claimed: [], onTap: toggle, showsCeilings: showsCeilings, resetToken: cameraReset)
                 }
             }.overlay(alignment: .bottomLeading) {
-                if chosen.isEmpty && (kind == .wall || surfaces.contains(where: { $0.source.kind == .ceiling })) {
-                    Text(kind == .wall ? "Touchez les murs à inclure dans un ouvrage" : "Touchez les plafonds à inclure dans un ouvrage")
+                VStack(alignment: .leading, spacing: 8) {
+                if kind == .ceiling {
+                    VStack(alignment: .leading, spacing: 6) {
+                        if !surfaces.contains(where: { $0.source.kind == .ceiling }) {
+                            Text("Les plafonds ne sont pas encore configurés.").font(.caption)
+                        }
+                        Button("Configurer les plafonds", systemImage: "square.3.layers.3d") {
+                            openEditor(ceilings: true)
+                        }.buttonStyle(.borderedProminent)
+                    }.padding(10).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16)).padding()
+                } else if chosen.isEmpty && (!isLab || choosingLining || quickLayout) {
+                    Text(choosingLining ? "Sélectionnez les murs à doubler. Touchez un doublage existant pour renseigner sa tapée." : quickLayout ? "Touchez le mur à calepiner" : "Touchez les murs à inclure dans un ouvrage")
                         .font(.caption).padding(10).background(.regularMaterial, in: Capsule()).padding()
                 }
+                if isLab {
+                    surfacePicker.padding(8).background(.regularMaterial, in: Capsule()).padding(12)
+                }
+                }
             }
+            .clipShape(RoundedRectangle(cornerRadius: isLab ? 24 : 0))
+            .padding(.horizontal, isLab ? 12 : 0)
             .overlay(alignment: .topTrailing) {
                 if !plan {
                     VStack(spacing: 12) {
@@ -102,27 +244,30 @@ struct ScannerCampaignWorkspaceView: View {
                     }.buttonStyle(.borderless).background(.regularMaterial, in: Capsule()).padding()
                 }
             }
-            if survey.checkpoints.contains(where: { $0.document.room.ceilings.contains { $0.provenance.source == .estimated } }) {
-                Label("Plafonds estimés à partir des murs · hauteurs à vérifier", systemImage: "info.circle")
-                    .font(.caption).foregroundStyle(.secondary).padding(.horizontal)
-            }
             HStack {
                 Button("Modifier le plan", systemImage: "pencil.and.outline") {
                     openEditor(ceilings: false)
-                }
+                }.disabled(choosingLining)
                 Spacer()
                 if plan { Toggle("Cotes", isOn: $dimensions).fixedSize() }
+                Button(action:exportDAE) {
+                    if exportingDAE { ProgressView().accessibilityLabel("Préparation du DAE") }
+                    else { Label(plan ? "DAE" : "Exporter DAE",systemImage:"square.and.arrow.up").lineLimit(1) }
+                }.disabled(exportingDAE)
+                    .accessibilityLabel(exportingDAE ? "Préparation du DAE" : "Exporter le relevé en DAE")
+                    .accessibilityIdentifier("survey.exportDAE")
             }.padding().background(.regularMaterial)
         }
+        .background(isLab ? ContrastPalette.paper : Color(uiColor: .systemBackground))
         .navigationTitle(survey.name).navigationBarTitleDisplayMode(.inline)
         .safeAreaInset(edge: .bottom) {
             VStack(spacing:8) {
-            if !store.surveys.contains(where:{ $0.id == draft.id }) {
+            if choosingLining {
+                Button("Revenir au tracé des cloisons",systemImage:"arrow.uturn.backward") { returnToPlan() }
+            }
+            if !quickLayout && !store.surveys.contains(where:{ $0.id == draft.id }) {
                 Button("Enregistrer le relevé dans un projet",systemImage:"folder.badge.plus") { savingSurvey=true }
                     .buttonStyle(.bordered).frame(maxWidth:.infinity)
-            } else {
-                Label("Relevé enregistré dans le projet",systemImage:"checkmark.circle")
-                    .font(.caption).foregroundStyle(.secondary)
             }
             HStack {
                 VStack(alignment: .leading) {
@@ -131,7 +276,17 @@ struct ScannerCampaignWorkspaceView: View {
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 Spacer()
-                Button("Créer un ouvrage") { creating = true }.buttonStyle(.borderedProminent).disabled(chosen.isEmpty)
+                if quickLayout && !choosingLining {
+                    Button("Calepiner cette surface") {
+                        if let surface=chosen.first {
+                            quickDocument=SurveyWorkGeometry.quickLayoutDocument(surface)
+                            showingQuickLayout=true
+                        }
+                    }.buttonStyle(.borderedProminent).disabled(chosen.count != 1)
+                } else {
+                    Button(choosingLining ? "Créer le doublage" : "Créer un ouvrage") { creating = true }.buttonStyle(.borderedProminent).disabled(chosen.isEmpty)
+                        .tint(isLab ? ContrastPalette.ink : Color.accentColor)
+                }
             }.padding().background(.regularMaterial)
             }.background(.regularMaterial)
         }
@@ -146,19 +301,20 @@ struct ScannerCampaignWorkspaceView: View {
                 Button("Créer ou modifier un plafond", systemImage: "square.3.layers.3d.top.filled") {
                     openEditor(ceilings: true)
                 }
-                NavigationLink("Contrôler le relevé et les raccords") {
-                    if store.surveys.contains(where: { $0.id == draft.id }) {
-                        ProjectSurveyDetailsListView(surveyID: draft.id)
-                    } else {
-                        ScannerCampaignReviewView(draft: draft)
-                    }
+                Button("Réparer le relevé", systemImage: "wand.and.stars") {
+                    if survey.checkpoints.count == 1 { repairing=survey.checkpoints.first }
+                    else { choosingRepairRoom=true }
                 }
             } label: { Image(systemName: "ellipsis.circle") }
         }
-        .onChange(of: kind) { _, value in showsCeilings = value == .ceiling }
-        .alert("Diagnostic", isPresented: Binding(get: { diagnosticError != nil }, set: { if !$0 { diagnosticError = nil } })) {
+        .onChange(of: kind) { _, value in showsCeilings = value == .ceiling; if quickLayout { selectedKeys=[] } }
+        .navigationDestination(isPresented: $showingQuickLayout) {
+            if let quickDocument { SheetLayoutView(initialDocument: quickDocument) }
+        }
+        .alert("Partage impossible", isPresented: Binding(get: { diagnosticError != nil }, set: { if !$0 { diagnosticError = nil } })) {
             Button("OK", role: .cancel) { diagnosticError = nil }
         } message: { Text(diagnosticError ?? "") }
+        .sheet(item:$daeExport) { file in SurveyExportShareSheet(url:file.url) }
         .sheet(item: $diagnosticExport) { export in
             NavigationStack {
                 Form {
@@ -183,41 +339,84 @@ struct ScannerCampaignWorkspaceView: View {
         }
         .confirmationDialog("Zone à modifier", isPresented: $choosingRoom, titleVisibility: .visible) {
             ForEach(survey.checkpoints) { checkpoint in
-                Button(checkpoint.document.room.name ?? "Pièce") { editing = checkpoint }
+                Button(checkpoint.document.room.name ?? "Pièce") { editing = .init(checkpoint: checkpoint, ceilings: configuringCeilings) }
             }
         }
-        .sheet(item: $editing) { checkpoint in
+        .confirmationDialog("Zone à réparer", isPresented:$choosingRepairRoom, titleVisibility:.visible) {
+            ForEach(Array(survey.checkpoints.enumerated()), id:\.element.id) { index, checkpoint in
+                Button(checkpoint.document.room.name ?? "Zone \(index+1)") { repairing=checkpoint }
+            }
+        }
+        .sheet(item:$repairing) { checkpoint in
+            SurveyRepairView(document:checkpoint.document) { document in
+                try saveEditedDocument(document,checkpoint:checkpoint)
+            }
+        }
+        .sheet(item: $editing,onDismiss: {
+            if liningRequestPending { liningRequestPending=false; choosingLining=true; kind = .wall; selectedKeys=[] }
+        }) { route in
+            let checkpoint = route.checkpoint
             SurveyPlanEditor(document: checkpoint.document,ceilingNumbers:CeilingPlanNaming.numbers(in:survey),
-                             initiallyConfigureCeilings: configuringCeilings) { document in
-                if store.surveys.contains(where: { $0.id == draft.id }) {
-                    try store.updateSurveyRoom(surveyID: draft.id, checkpointID: checkpoint.id,
-                        expectedDocument: checkpoint.document, document: document)
-                } else {
-                    guard let i = draft.chunks.firstIndex(where: { $0.id == checkpoint.id }) else { throw RoomModelError.invalidGeometry }
-                    var updated = draft
-                    updated.ceilingPlanNumbers=CeilingPlanNaming.numbers(in:survey)
-                    updated.chunks[i].document = document
-                    updated.ceilingPlanNumbers=CeilingPlanNaming.numbering(updated.includedChunks.flatMap { $0.document.room.ceilings },existing:updated.ceilingPlanNumbers)
-                    try ScanCampaignStore.save(updated)
-                    draft = updated; revision = Date()
-                }
-                selectedKeys = []
+                             initiallyConfigureCeilings: route.ceilings,
+                             liningDepths:SurveyPlanFinishes.depths(works:liningWorks,surveyID:survey.id,checkpointID:checkpoint.id),
+                             resumePartitions:route.resumePartitions,
+                             onRequestLining:{ liningCheckpoint=checkpoint.id; liningRequestPending=true; editing=nil }) { document in
+                try saveEditedDocument(document,checkpoint:checkpoint)
             }
         }
-        .sheet(isPresented: $creating) {
-            SurveyWorkspaceCreationFlow(draft: draft, selectedKeys: Set(chosen.map(Self.key))) {
-                selectedKeys = []; creating = false
-            }
+        .sheet(isPresented: $creating, onDismiss: {
+            if choosingLining { returnToPlan() }
+            else if let destinationProject { store.showProject(destinationProject); self.destinationProject = nil }
+        }) {
+            SurveyWorkspaceCreationFlow(draft: draft, selectedKeys: Set(chosen.map(Self.key)), onSaved:{ projectID in
+                selectedKeys = []; if !choosingLining { destinationProject = projectID }; creating = false
+            },restrictToLining:choosingLining)
+        }
+        .sheet(item:$editingLining,onDismiss:{ returnToPlan() }) { work in
+            SavedWorkView(work:work,startsAtBeginning:true)
         }
         .sheet(isPresented:$savingSurvey) {
-            SurveyWorkspaceCreationFlow(draft:draft,selectedKeys:[],onSaved:{ savingSurvey=false },saveOnly:true)
+            SurveyWorkspaceCreationFlow(draft:draft,selectedKeys:[],onSaved:{ _ in savingSurvey=false },saveOnly:true)
+        }
+    }
+    private func saveEditedDocument(_ document:PlaquistoRoomDocument, checkpoint:ProjectRoomScanCheckpoint) throws {
+        if store.surveys.contains(where: { $0.id == draft.id }) {
+            try store.updateSurveyRoom(surveyID:draft.id,checkpointID:checkpoint.id,
+                expectedDocument:checkpoint.document,document:document)
+        } else {
+            guard let i=draft.chunks.firstIndex(where:{$0.id==checkpoint.id}),
+                  draft.chunks[i].document==checkpoint.document else { throw RoomModelError.invalidGeometry }
+            var updated=draft
+            updated.ceilingPlanNumbers=CeilingPlanNaming.numbers(in:survey)
+            updated.chunks[i].document=document
+            updated.ceilingPlanNumbers=CeilingPlanNaming.numbering(updated.includedChunks.flatMap { $0.document.room.ceilings },existing:updated.ceilingPlanNumbers)
+            try ScanCampaignStore.save(updated)
+            draft=updated; revision=Date()
+        }
+        selectedKeys=[]
+    }
+    private func exportDAE() {
+        guard !exportingDAE else { return }
+        let snapshot=survey
+        exportingDAE=true
+        Task {
+            defer { exportingDAE=false }
+            do {
+                let url=try await Task.detached(priority:.userInitiated) { try SurveyDAEExport.write(snapshot) }.value
+                daeExport = .init(url:url)
+            } catch { diagnosticError=error.localizedDescription }
         }
     }
 
     private func openEditor(ceilings: Bool) {
         configuringCeilings = ceilings
-        if survey.checkpoints.count == 1 { editing = survey.checkpoints.first }
+        if survey.checkpoints.count == 1, let checkpoint = survey.checkpoints.first { editing = .init(checkpoint: checkpoint, ceilings: ceilings) }
         else { choosingRoom = true }
+    }
+    private func returnToPlan() {
+        let checkpoint=survey.checkpoints.first { $0.id==liningCheckpoint }
+        choosingLining=false; selectedKeys=[]; destinationProject=nil
+        if let checkpoint { editing = .init(checkpoint:checkpoint,ceilings:false,resumePartitions:true) }
     }
 }
 
@@ -226,8 +425,9 @@ private struct SurveyWorkspaceCreationFlow: View {
     @Environment(\.dismiss) private var dismiss
     let draft: ScanCampaignDraft
     let selectedKeys: Set<String>
-    let onSaved: () -> Void
+    let onSaved: (UUID) -> Void
     var saveOnly=false
+    var restrictToLining=false
     @State private var projectID: UUID?
     @State private var projectName = ""
     @State private var client = ""
@@ -237,20 +437,17 @@ private struct SurveyWorkspaceCreationFlow: View {
     @State private var notes = ""
     @State private var name = ""
     @State private var category: WorkCategory?
-    @State private var checked = false
     @State private var configuration: SurveyWorkFormDraft?
     @State private var error: String?
     private var survey: ProjectSurveyRecord? { store.surveys.first { $0.id == draft.id } }
     private var chosen: [SurveyWorkSurface] {
         guard let survey else { return [] }
-        return SurveyWorkGeometry.surfaces(in: survey).filter { selectedKeys.contains(ScannerCampaignWorkspaceView.key($0)) }
+        return SurveyWorkGeometry.surfaces(in: survey).filter {
+            selectedKeys.contains(ScannerCampaignWorkspaceView.key($0)) && !SurveyWorkGeometry.isHidden($0,in:survey)
+        }
     }
     private var types: [WorkType] {
-        guard !chosen.isEmpty else { return [] }
-        if chosen.allSatisfy({ $0.source.kind == .ceiling }) { return [.ceilingOnFurring, .paintingBeta] }
-        if chosen.allSatisfy(SurveyWorkGeometry.isDesignedPartition) { return [.distributionPartition, .paintingBeta] }
-        if chosen.contains(where: SurveyWorkGeometry.isDesignedPartition) { return [.paintingBeta] }
-        return [.peripheralLiningStuds, .peripheralLiningFurrings, .paintingBeta]
+        SurveyWorkGeometry.availableWorkTypes(for: chosen).filter { !restrictToLining || $0.category == .wallInsulation }
     }
     var body: some View {
         NavigationStack {
@@ -296,12 +493,11 @@ private struct SurveyWorkspaceCreationFlow: View {
                     }
                     Section {
                         LabeledContent("Surfaces", value: "\(chosen.count) · \(SurveyWorkGeometry.totalArea(chosen).formatted(.number.precision(.fractionLength(2)))) m² nets")
-                        Toggle("J’ai vérifié les dimensions et les ouvertures du relevé", isOn: $checked)
                     }
                     if let category {
                         Section("Type d’ouvrage") {
                             ForEach(types.filter { $0.category == category }) { type in
-                                Button(type.title) { configure(type) }.disabled(!checked)
+                                Button(type.title) { configure(type) }
                             }
                         }
                     }
@@ -310,12 +506,15 @@ private struct SurveyWorkspaceCreationFlow: View {
             }
             .navigationTitle(saveOnly ? "Enregistrer le relevé" : (survey == nil ? "Choisir le projet" : "Ajouter un ouvrage"))
             .task {
+                if restrictToLining { category = .wallInsulation }
                 if let suggested=await ScanAddressSuggestion.address(for:draft.captureLocation), !addressEdited, address.isEmpty {
                     address=suggested
                 }
             }
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Fermer") { dismiss() } } }
-            .sheet(item: $configuration) { draft in SurveyWorkForm(draft: draft, onSaved: onSaved) }
+            .sheet(item: $configuration) { draft in
+                SurveyWorkForm(draft: draft) { if let survey { onSaved(survey.projectID) } }
+            }
         }
     }
     private func icon(_ category: WorkCategory) -> String {
@@ -324,6 +523,7 @@ private struct SurveyWorkspaceCreationFlow: View {
         case .partitions: "rectangle.split.2x1"
         case .wallInsulation: "rectangle.leadinghalf.inset.filled"
         case .painting: "paintbrush"
+        case .joints: "rectangle.and.pencil.and.ellipsis"
         case .openings: "door.left.hand.open"
         }
     }
@@ -332,12 +532,12 @@ private struct SurveyWorkspaceCreationFlow: View {
             try ScanCampaignStore.save(draft)
             try store.saveScanCampaign(draft, projectID: projectID, newProjectName: projectName, surveyName: surveyName,
                 newProjectClient: client, newProjectAddress: address, newProjectNotes: notes)
-            if saveOnly { onSaved(); dismiss() }
+            if saveOnly, let survey { onSaved(survey.projectID); dismiss() }
         } catch { self.error = error.localizedDescription }
     }
     private func configure(_ type: WorkType) {
         do {
-            guard let survey, !chosen.isEmpty, checked else { return }
+            guard let survey, !chosen.isEmpty else { return }
             for checkpoint in survey.checkpoints where chosen.contains(where: { $0.source.checkpointID == checkpoint.id }) {
                 try store.validateSurveyCheckpoint(surveyID: survey.id, checkpointID: checkpoint.id, expectedDocument: checkpoint.document)
             }
@@ -401,7 +601,7 @@ struct ScannerCampaignReviewView: View {
                             Text("\(chunk.document.room.walls.count) murs · \(chunk.document.room.openings.count) ouvertures")
                                 .font(.caption).foregroundStyle(.secondary)
                             if chunk.processingPending == true {
-                                Label("Géométrie sauvegardée pendant le scan · à contrôler", systemImage: "exclamationmark.triangle")
+                                Label("Géométrie sauvegardée pendant le scan", systemImage: "square.and.arrow.down")
                                     .font(.caption).foregroundStyle(.orange)
                             }
                             if chunk.possibleDuplicateOf != nil {
@@ -430,7 +630,7 @@ struct ScannerCampaignReviewView: View {
                                     Text("Écarter").tag(Optional(false))
                                 }
                             }
-                            NavigationLink("Contrôler la pièce") {
+                            NavigationLink("Ouvrir la pièce") {
                                 PlaquistoRoomEditor(document: chunk.document, allowsImport: false) { edited in
                                     var next = draft
                                     guard let i = next.chunks.firstIndex(where: { $0.id == chunk.id }) else { return }
@@ -442,7 +642,7 @@ struct ScannerCampaignReviewView: View {
                         }.padding(.vertical, 4)
                     }
                 } header: { Text("Pièces détectées · noms modifiables") } footer: {
-                    Text("Les noms sont des propositions. Une zone ouverte peut réunir salon et cuisine. Contrôlez les contours et les plafonds avant de créer vos ouvrages.")
+                    Text("Les noms sont des propositions. Une zone ouverte peut réunir salon et cuisine. Les contours et les plafonds restent modifiables dans l’éditeur.")
                 }
                 if let message = draft.assemblyMessage {
                     Section { Text(message).font(.footnote).foregroundStyle(.secondary) }
@@ -465,7 +665,7 @@ struct ScannerCampaignReviewView: View {
                 if let error { Section { Text(error).foregroundStyle(.red) } }
             }
         }
-        .navigationTitle("Contrôler le relevé")
+        .navigationTitle("Détails du relevé")
         .navigationBarTitleDisplayMode(.inline)
         .onDisappear {
             // Names are local until project commit; don't lose them on Back.

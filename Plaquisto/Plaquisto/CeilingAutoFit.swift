@@ -1,9 +1,9 @@
 import Foundation
 import simd
 
-/// Post-scan suggestions only. Samples come from the upper wall outlines on this
+/// Post-scan fitting only. Samples come from the upper wall outlines on this
 /// footprint, never from another ceiling or from an adjacent room's far walls.
-/// The caller owns preview, undo and explicit persistence.
+/// The caller owns creation, preview, undo and persistence.
 struct CeilingAutoFit {
     struct Sample {
         let point: RoomPoint
@@ -120,6 +120,7 @@ struct CeilingAutoFit {
         let totalWeight = samples.reduce(0) { $0+$1.weight }
         let ys = samples.map { $0.point.y-floor }
         func evaluate(angle: Double, ridge: Double) {
+            guard !Task.isCancelled else { return }
             var s = fallback
             s.azimuth = atan2(sin(angle),cos(angle))
             s.ridgePosition = min(0.85,max(0.15,ridge))
@@ -171,6 +172,60 @@ struct CeilingAutoFit {
         let flatCost = samples.reduce(0.0) { $0+$1.weight*loss(height-($1.point.y-floor)) }/totalWeight
         guard let best, best.cost < flatCost*0.7 else { return .init(settings:fallback,estimatedRise:true) }
         return .init(settings:best.settings,estimatedRise:false)
+    }
+
+    /// Prefer the simplest supported roof. Manual suggestions may invent an
+    /// initial ridge for editing; automatic creation must never use that fallback.
+    func automaticSettings() -> CeilingEstimateSettings {
+        let flat = suggest(shape:.flat).settings
+        let weight = samples.reduce(0) { $0+$1.weight }
+        guard coverage >= 0.65, samples.count >= 4, weight > 0 else { return flat }
+        func score(_ settings: CeilingEstimateSettings) -> (cost: Double, supported: Bool) {
+            guard let planes = try? WallCeilingEstimate.planes(boundary:boundary,
+                floorElevation:floor,settings:settings) else { return (.infinity,false) }
+            var cost = 0.0, absolute = 0.0, inliers = 0.0
+            var sideWeights = Array(repeating:0.0,count:planes.count)
+            var sideHeights = Array(repeating:[Double](),count:planes.count)
+            for sample in samples {
+                let heights = planes.map { $0.height(x:sample.point.x,z:sample.point.z) }
+                guard let side = heights.indices.min(by:{ heights[$0] < heights[$1] }) else { continue }
+                let error = abs(heights[side]-sample.point.y)
+                cost += sample.weight*loss(error)
+                absolute += sample.weight*error
+                if error <= 0.12 {
+                    inliers += sample.weight
+                    sideWeights[side] += sample.weight
+                    sideHeights[side].append(sample.point.y)
+                }
+            }
+            // A two-pan model requires observed heights on BOTH pitches, not
+            // just a better fit to one isolated peak or one side of the room.
+            let bothPitches = settings.shape != .twoSlopes || sideWeights.indices.allSatisfy {
+                sideWeights[$0] >= weight*0.18 &&
+                (sideHeights[$0].max() ?? 0)-(sideHeights[$0].min() ?? 0) >= 0.15
+            }
+            return (cost/weight, inliers/weight >= 0.9 && absolute/weight <= 0.06 && bothPitches)
+        }
+        let flatScore = score(flat)
+        // Avoid expensive shape searches for already level/noisy wall tops.
+        guard flatScore.cost > 0.0025, !Task.isCancelled else { return flat }
+        var chosen = flat, bestCost = flatScore.cost
+        for shape in [CeilingEstimateSettings.Shape.singleSlope,.twoSlopes] {
+            guard !Task.isCancelled else { return flat }
+            let candidate = suggest(shape:shape)
+            guard !candidate.estimatedRise else { continue }
+            let settings = candidate.settings
+            let axis = SIMD2(cos(settings.azimuth),sin(settings.azimuth))
+            let positions = boundary.map { simd_dot(SIMD2($0.x,$0.z),axis) }
+            let span = (positions.max() ?? 0)-(positions.min() ?? 0)
+            let rise = settings.highHeight-settings.lowHeight
+            guard rise >= 0.20, span > 0, rise/span >= 0.025 else { continue }
+            let evaluation = score(settings)
+            // Added complexity must yield a substantial, not marginal improvement.
+            guard evaluation.supported, evaluation.cost < bestCost*0.6 else { continue }
+            chosen = settings; bestCost = evaluation.cost
+        }
+        return chosen
     }
 
     /// A few largest visible mismatches, recomputed cheaply as sliders move.

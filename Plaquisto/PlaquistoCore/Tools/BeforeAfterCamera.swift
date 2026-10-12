@@ -369,7 +369,7 @@ struct BeforeAfterCameraView: View {
             shutterBar
         }
         .foregroundStyle(.white).background { Color.black.ignoresSafeArea() }
-        .preferredColorScheme(.dark)
+        .preferredColorScheme(.light)
         .alert("Prise de vue",isPresented:Binding(get:{ captureError != nil },set:{ if !$0 { captureError = nil } })) {
             Button("OK") { captureError = nil }
         } message: { Text(captureError ?? "") }

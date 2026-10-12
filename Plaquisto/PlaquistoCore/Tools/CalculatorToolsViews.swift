@@ -244,12 +244,12 @@ struct WallAngleIcon: View {
                 extensions.move(to:.init(x:origin.x+unit*0.22,y:origin.y+unit*0.26))
                 extensions.addLine(to:origin)
                 extensions.addLine(to:.init(x:origin.x-unit*0.22,y:origin.y+unit*0.26))
-                context.stroke(extensions,with:.color(.blue),style:.init(lineWidth:1.5,lineCap:.round,dash:[3,2]))
+                context.stroke(extensions,with:.color(.accentColor),style:.init(lineWidth:1.5,lineCap:.round,dash:[3,2]))
             }
             let start = kind == .interior ? -.pi*0.75 : -.pi*0.25
             let sweep = kind == .interior ? .pi*0.5 : .pi*1.5
             let arc = WallAngleArc.path(center:origin,radius:unit*0.22,startAngle:start,sweep:sweep)
-            context.stroke(arc,with:.color(.teal),style:.init(lineWidth:2.5,lineCap:.round))
+            context.stroke(arc,with:.color(.accentColor),style:.init(lineWidth:2.5,lineCap:.round))
         }
         .accessibilityHidden(true)
     }

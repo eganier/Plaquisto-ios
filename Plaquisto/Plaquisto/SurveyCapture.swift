@@ -1,12 +1,520 @@
 import Foundation
 
+/// One-shot final-scan cleanup, before ceilings or ouvrages exist. It operates
+/// in X/Z only; native wall profiles and the complete initialRoom are retained.
+enum ScanWallSimplification {
+    private static let joinTolerance = 0.05 // metres, not a doorway repair
+    private static let deviationTolerance = 0.04
+    private static let heightTolerance = 0.04
+    private static let angleCosine = cos(6 * Double.pi / 180)
+    private struct Join {
+        let a: Int; let b: Int
+        let aEnd: Bool; let bEnd: Bool
+    }
+    struct Result {
+        let document: PlaquistoRoomDocument
+        let mergedGroups: Int
+        let removedFragments: Int
+    }
+
+    static func process(_ document: PlaquistoRoomDocument) -> Result {
+        func unchanged() -> Result { .init(document: document, mergedGroups: 0, removedFragments: 0) }
+        // Never silently migrate an edited or furnished project document.
+        guard document.room == document.initialRoom, document.room.ceilings.isEmpty,
+              document.room.slopes.isEmpty, document.wallWorkIntents?.isEmpty != false,
+              (try? document.validate()) != nil else { return unchanged() }
+        let walls = document.room.walls
+        func eligible(_ w: PlaquistoWall) -> Bool {
+            w.provenance.source == .roomPlan && w.length.effectiveValue >= 0.15
+                && w.length.manualValue == nil && w.height.manualValue == nil && w.thickness?.manualValue == nil
+                && abs((w.end-w.start).horizontalLength-w.length.effectiveValue) < 0.01
+                && !document.room.openings.contains { o in o.wallID == w.id &&
+                    [o.width,o.height,o.sillHeight,o.positionOnWall].contains { $0.manualValue != nil } }
+        }
+        let active = walls.indices.filter { eligible(walls[$0]) }
+        var joins: [Join] = []
+        for (offset,i) in active.enumerated() {
+            for j in active.dropFirst(offset+1) {
+                let a=walls[i], b=walls[j]
+                if let ta=a.thickness?.effectiveValue, let tb=b.thickness?.effectiveValue, abs(ta-tb)>0.005 { continue }
+                for ae in [false,true] { for be in [false,true] {
+                    let p=ae ? a.effectiveEnd : a.start, q=be ? b.effectiveEnd : b.start
+                    let u=a.direction*(ae ? -1 : 1), v=b.direction*(be ? -1 : 1)
+                    // Opposed rays at the shared end, not duplicate parallel wall faces.
+                    guard (p-q).horizontalLength <= joinTolerance, abs(p.y-q.y) <= joinTolerance,
+                          u.x*v.x+u.z*v.z < -angleCosine else { continue }
+                    joins.append(.init(a:i,b:j,aEnd:ae,bEnd:be))
+                } }
+            }
+        }
+        var visited=Set<Int>(), result=document, groups=0, removed=0
+        for root in active where !visited.contains(root) {
+            var group=Set([root]), queue=[root]
+            while let current=queue.popLast() {
+                for edge in joins where edge.a == current || edge.b == current {
+                    let other=edge.a == current ? edge.b : edge.a
+                    if group.insert(other).inserted { queue.append(other) }
+                }
+            }
+            visited.formUnion(group)
+            guard group.count > 1 else { continue }
+            let edges=joins.filter { group.contains($0.a) && group.contains($0.b) }
+            guard edges.count == group.count-1 else { continue }
+            // Each end can have one neighbour only. Branches and loops are not flattened.
+            guard group.allSatisfy({ i in
+                [false,true].allSatisfy { end in
+                    edges.filter { ($0.a == i && $0.aEnd == end) || ($0.b == i && $0.bEnd == end) }.count <= 1
+                }
+            }) else { continue }
+            let ends=group.filter { i in edges.filter { $0.a == i || $0.b == i }.count == 1 }.sorted {
+                walls[$0].id.uuidString < walls[$1].id.uuidString
+            }
+            guard ends.count == 2, let first=ends.first else { continue }
+            var order: [(Int,Bool)] = [], current=first, previous: Int? = nil
+            while order.count < group.count {
+                let next=edges.first { ($0.a == current && $0.b != previous) || ($0.b == current && $0.a != previous) }
+                let forward: Bool
+                if let next { forward = next.a == current ? next.aEnd : next.bEnd }
+                else if let previous, let incoming=edges.first(where: { ($0.a == current && $0.b == previous) || ($0.b == current && $0.a == previous) }) {
+                    forward = !(incoming.a == current ? incoming.aEnd : incoming.bEnd)
+                } else { break }
+                order.append((current,forward))
+                guard let next else { break }
+                previous=current; current=next.a == current ? next.b : next.a
+            }
+            guard order.count == group.count,
+                  let updated = merge(result, originals: walls, order: order) else { continue }
+            result=updated; groups += 1; removed += group.count-1
+        }
+        return .init(document:result,mergedGroups:groups,removedFragments:removed)
+    }
+
+    private static func merge(_ document: PlaquistoRoomDocument, originals: [PlaquistoWall], order: [(Int,Bool)]) -> PlaquistoRoomDocument? {
+        let ordered=order.map { originals[$0.0] }
+        let sourceIDs=Set(ordered.map(\.id))
+        let first=ordered[0], last=ordered[ordered.count-1]
+        let start=order[0].1 ? first.start : first.effectiveEnd
+        let end=order[order.count-1].1 ? last.effectiveEnd : last.start
+        let length=(end-start).horizontalLength
+        guard length > 0.3 else { return nil }
+        let axis=RoomPoint(x:(end.x-start.x)/length,y:0,z:(end.z-start.z)/length)
+        func along(_ p:RoomPoint) -> Double { let d=p-start; return d.x*axis.x+d.z*axis.z }
+        func perpendicular(_ p:RoomPoint) -> Double { let d=p-start; return abs(d.x*axis.z-d.z*axis.x) }
+        // Fit to the outer endpoints: real corners stay put and adjacent walls stay connected.
+        // Test ALL original fragments against this common line, avoiding chained drift.
+        guard ordered.allSatisfy({ w in
+            perpendicular(w.start) <= deviationTolerance && perpendicular(w.effectiveEnd) <= deviationTolerance
+                && abs(w.direction.x*axis.x+w.direction.z*axis.z) >= angleCosine
+        }) else { return nil }
+        var breaks=[0.0]
+        for i in 1..<ordered.count {
+            let a=order[i-1].1 ? ordered[i-1].effectiveEnd : ordered[i-1].start
+            let b=order[i].1 ? ordered[i].start : ordered[i].effectiveEnd
+            let joint=(a+b)*0.5
+            // Do not move a T junction, a return, or a neighbouring parallel wall face.
+            guard !document.room.walls.contains(where: { !sourceIDs.contains($0.id) && segmentDistance(joint,$0.start,$0.effectiveEnd) < 0.04 }) else { return nil }
+            breaks.append((along(a)+along(b))/2)
+        }
+        breaks.append(length)
+        guard zip(breaks,breaks.dropFirst()).allSatisfy({ $0.1-$0.0 >= 0.15 }) else { return nil }
+        var polygons: [[RoomPoint]] = []
+        // Express all profiles in one wall-local frame. Only X is straightened.
+        for i in ordered.indices {
+            let w=ordered[i], forward=order[i].1, span=breaks[i+1]-breaks[i]
+            let polygon=w.effectiveOutline
+            guard polygon.allSatisfy({ $0.x >= -0.001 && $0.x <= w.length.effectiveValue+0.001 }) else { return nil }
+            polygons.append(polygon.map { p in
+                let fraction=forward ? p.x/w.length.effectiveValue : 1-p.x/w.length.effectiveValue
+                return .init(x:breaks[i]+fraction*span,y:w.start.y+p.y,z:0)
+            })
+        }
+        for i in 1..<polygons.count {
+            let x=breaks[i]
+            let left=polygons[i-1].indices.filter { abs(polygons[i-1][$0].x-x)<0.001 }.sorted { polygons[i-1][$0].y < polygons[i-1][$1].y }
+            let right=polygons[i].indices.filter { abs(polygons[i][$0].x-x)<0.001 }.sorted { polygons[i][$0].y < polygons[i][$1].y }
+            // Whole shared vertical edge only; never fill a real missing panel or height step.
+            guard left.count == 2, right.count == 2,
+                  abs(left[0]-left[1]) == 1 || abs(left[0]-left[1]) == polygons[i-1].count-1,
+                  abs(right[0]-right[1]) == 1 || abs(right[0]-right[1]) == polygons[i].count-1 else { return nil }
+            for k in 0..<2 {
+                let a=polygons[i-1][left[k]].y, b=polygons[i][right[k]].y
+                guard abs(a-b) <= heightTolerance else { return nil }
+                polygons[i-1][left[k]].x=x; polygons[i][right[k]].x=x
+                polygons[i-1][left[k]].y=(a+b)/2; polygons[i][right[k]].y=(a+b)/2
+            }
+        }
+        var result=document
+        let provenance=GeometryProvenance(source:.estimated,sourceIdentifier:"wall-straightening-v1")
+        for i in ordered.indices {
+            let old=ordered[i], span=breaks[i+1]-breaks[i]
+            var w=old
+            w.start=start+axis*breaks[i]; w.start.y=old.start.y
+            w.end=start+axis*breaks[i+1]; w.end.y=old.start.y
+            w.length = .init(rawValue:span,provenance:provenance)
+            w.localOutline=polygons[i].map { .init(x:$0.x-breaks[i],y:$0.y-old.start.y,z:0) }
+            guard let index=result.room.walls.firstIndex(where: { $0.id == old.id }) else { return nil }
+            result.room.walls[index]=w
+            for j in result.room.openings.indices where result.room.openings[j].wallID == old.id {
+                var opening=result.room.openings[j]
+                let oldCenter=opening.positionOnWall.effectiveValue+opening.width.effectiveValue/2
+                let fraction=order[i].1 ? oldCenter/old.length.effectiveValue : 1-oldCenter/old.length.effectiveValue
+                let position=fraction*span-opening.width.effectiveValue/2
+                guard position >= -0.001, position+opening.width.effectiveValue <= span+0.001 else { return nil }
+                opening.positionOnWall = .init(rawValue:max(0,position),provenance:provenance)
+                opening.center=w.start+axis*(position+opening.width.effectiveValue/2)
+                    + RoomPoint(x:0,y:opening.sillHeight.effectiveValue+opening.height.effectiveValue/2,z:0)
+                result.room.openings[j]=opening
+            }
+        }
+        for w in ordered.dropFirst() {
+            guard let next=try? SurveyPlanEditing.mergingWalls(result,first:first.id,second:w.id) else { return nil }
+            result=next
+        }
+        guard let index=result.room.walls.firstIndex(where: { $0.id == first.id }) else { return nil }
+        result.room.walls[index].provenance=provenance
+        result.room.walls[index].length.provenance=provenance
+        result.room.walls[index].height.provenance=provenance
+        result.room.walls[index].length.manuallyValidated=false
+        result.room.walls[index].height.manuallyValidated=false
+        for i in result.room.openings.indices where result.room.openings[i].wallID == first.id {
+            for key in [\PlaquistoOpening.positionOnWall, \PlaquistoOpening.sillHeight] {
+                let value=result.room.openings[i][keyPath:key].effectiveValue
+                result.room.openings[i][keyPath:key] = .init(rawValue:value,provenance:provenance)
+            }
+        }
+        let before=ordered.reduce(0.0) { $0+PlaquistoWallGeometry.analyze(wall:$1,room:document.room).gross }
+        let after=PlaquistoWallGeometry.analyze(wall:result.room.walls[index],room:result.room).gross
+        guard before > 0, abs(after-before) <= max(0.01,before*0.01) else { return nil }
+        // Floor boundary points on the same fragments follow their new axis;
+        // other walls, the reference frame and elevations remain untouched.
+        for i in result.room.floors.indices {
+            for j in result.room.floors[i].boundaries.indices {
+                let old=result.room.floors[i].boundaries[j]
+                let ring=old.map { p -> RoomPoint in
+                    let t=along(p)
+                    guard t > 0.001, t < length-0.001, perpendicular(p)<=deviationTolerance,
+                          ordered.contains(where: { segmentDistance(p,$0.start,$0.effectiveEnd)<joinTolerance }) else { return p }
+                    var projected=start+axis*t; projected.y=p.y; return projected
+                }
+                guard abs(abs(SurveyPlanFinishes.area(ring))-abs(SurveyPlanFinishes.area(old))) <= max(0.01,abs(SurveyPlanFinishes.area(old))*0.01),
+                      (try? LayoutGeometry.validate(ring.map { .init(x:$0.x*1000,y:$0.z*1000) })) != nil else { return nil }
+                result.room.floors[i].boundaries[j]=ring
+            }
+        }
+        guard (try? result.validate()) != nil else { return nil }
+        return result
+    }
+
+    private static func segmentDistance(_ p:RoomPoint,_ a:RoomPoint,_ b:RoomPoint) -> Double {
+        let d=b-a, v=p-a, square=d.x*d.x+d.z*d.z
+        guard square > 1e-12 else { return v.horizontalLength }
+        let t=max(0,min(1,(v.x*d.x+v.z*d.z)/square))
+        return (p-(a+d*t)).horizontalLength
+    }
+}
+
+/// Camera-only rotation in the scan's X/Z plane. Editing always uses the inverse
+/// transform so neither wall geometry nor the saved scan is rotated.
+enum SurveyPlanCamera {
+    static func rotated(_ point:RoomPoint,around center:RoomPoint,angle:Double) -> RoomPoint {
+        let x=point.x-center.x, z=point.z-center.z, c=cos(angle), s=sin(angle)
+        return .init(x:center.x+x*c-z*s,y:point.y,z:center.z+x*s+z*c)
+    }
+    static func nextWall(_ walls:[PlaquistoWall],after id:UUID?) -> PlaquistoWall? {
+        let valid=walls.filter { ($0.effectiveEnd-$0.start).horizontalLength > 0.001 }
+        guard !valid.isEmpty else { return nil }
+        let next=id.flatMap { id in valid.firstIndex { $0.id == id } }.map { ($0+1)%valid.count } ?? 0
+        return valid[next]
+    }
+    static func horizontalAngle(for wall:PlaquistoWall) -> Double {
+        let d=wall.effectiveEnd-wall.start
+        return -atan2(d.z,d.x)
+    }
+}
+
+/// An explicit measured depth wins; otherwise use the ouvrage composition.
+enum SurveyPlanFinishes {
+    static func depth(_ payload: WorkConfiguration) -> Double? {
+        let mm: Double?
+        switch payload {
+        case .peripheralLining(let c): mm = c.finishedDepthMM ?? LiningDepthEstimate.millimetres(payload)
+        case .furringLining(let c): mm = c.finishedDepthMM ?? LiningDepthEstimate.millimetres(payload)
+        case .bondedLining(let c): mm = c.hasReveal ? Double(c.revealMM) : nil
+        default: mm = nil
+        }
+        guard let mm, mm.isFinite, mm > 0, mm <= 1000 else { return nil }
+        return mm / 1000
+    }
+    static func depths(works: [WorkItem], surveyID: UUID, checkpointID: UUID) -> [UUID: Double] {
+        var result: [UUID: Double] = [:]
+        for work in works where work.type.category == .wallInsulation {
+            guard let depth = depth(work.payload) else { continue }
+            for component in work.components {
+                guard let source = component.surveySource, source.surveyID == surveyID,
+                      source.checkpointID == checkpointID, source.kind == .wall else { continue }
+                result[source.surfaceID] = depth
+            }
+        }
+        return result
+    }
+    /// Edges of a counter-clockwise room, offset toward its usable space. Miter
+    /// intersections keep clear dimensions coherent at non-square corners too.
+    static func inset(_ walls: [PlaquistoWall], amounts: [Double]) -> [PlaquistoWall]? {
+        guard walls.count >= 3, walls.count == amounts.count,
+              amounts.allSatisfy({ $0.isFinite && $0 >= 0 && $0 <= 1 }) else { return nil }
+        let lines = zip(walls, amounts).map { wall, amount -> (RoomPoint, RoomPoint) in
+            let normal = RoomPoint(x: -wall.direction.z, y: 0, z: wall.direction.x)
+            return (wall.start + normal * amount, wall.direction)
+        }
+        var corners: [RoomPoint] = []
+        for i in walls.indices {
+            let (a,u) = lines[(i+walls.count-1)%walls.count], (b,v) = lines[i]
+            let cross = u.x*v.z-u.z*v.x
+            if abs(cross) < 1e-8 { corners.append(b); continue }
+            let delta = b-a, t = (delta.x*v.z-delta.z*v.x)/cross
+            let corner = a+u*t
+            guard corner.finite, (corner-walls[i].start).horizontalLength < 10 else { return nil }
+            corners.append(corner)
+        }
+        guard area(corners) > 0.01,
+              (try? LayoutGeometry.validate(corners.map { .init(x:$0.x*1000,y:$0.z*1000) })) != nil else { return nil }
+        return walls.indices.map { i in
+            var wall = walls[i]; wall.start = corners[i]; wall.end = corners[(i+1)%walls.count]
+            wall.length.manualValue = (wall.end-wall.start).horizontalLength
+            return wall
+        }
+    }
+    static func area(_ ring: [RoomPoint]) -> Double {
+        guard ring.count >= 3 else { return 0 }
+        return ring.indices.reduce(0.0) { sum,i in
+            let a=ring[i], b=ring[(i+1)%ring.count]; return sum+a.x*b.z-b.x*a.z
+        } / 2
+    }
+    static func finishedWalls(in document: PlaquistoRoomDocument, depths: [UUID: Double]) -> [PlaquistoWall] {
+        var shell = document.room
+        shell.walls.removeAll { SurveyPlanEditing.isDesignedPartition($0, in: document) }
+        return ScanEnclosedSpaces.wallsBySpace(in: shell).flatMap { ring in
+            inset(ring, amounts: ring.map { depths[$0.id] ?? 0 }) ?? ring
+        }
+    }
+    static func zones(in document: PlaquistoRoomDocument, depths: [UUID: Double]) -> [[PlaquistoWall]] {
+        var room = document.room
+        let shell = finishedWalls(in: document, depths: depths)
+        // Without a closed shell keep the observed walls; do not invent a room.
+        room.walls = shell.isEmpty ? room.walls : shell + room.walls.filter { SurveyPlanEditing.isDesignedPartition($0, in: document) }
+        room.floors = []
+        return ScanEnclosedSpaces.wallsBySpace(in: room).compactMap { ring in
+            inset(ring, amounts: ring.map { SurveyPlanEditing.isDesignedPartition($0, in: document) ? ($0.thickness?.effectiveValue ?? 0.072)/2 : 0 })
+        }
+    }
+    /// Dimensions to either side of an axis anchored on a support. The footprint
+    /// of an oblique partition occupies more than just its nominal thickness.
+    static func clearances(on wall: PlaquistoWall, at point: RoomPoint,
+                           direction: RoomPoint?, thickness: Double) -> (Double, Double) {
+        let d=point-wall.start
+        let along=max(0,min(wall.length.effectiveValue,d.x*wall.direction.x+d.z*wall.direction.z))
+        let sine=direction.map { abs($0.x*wall.direction.z-$0.z*wall.direction.x) } ?? 1
+        let half=thickness/(2*max(0.05,sine))
+        return (max(0,along-half),max(0,wall.length.effectiveValue-along-half))
+    }
+}
+
 /// Metres, acquisition-neutral. All edits return a validated copy and preserve
 /// the original scan. The caller owns Save/Cancel and downstream review warnings.
+/// Suggestions only: the capture is never repaired automatically. The initial
+/// RoomPlan document remains intact, including non-rectangular wall outlines.
+enum SurveyRepair {
+    struct Proposal: Identifiable {
+        enum Operation { case bridge(PlaquistoWall, closingOpenings: [UUID]), closeOpening(UUID) }
+        let id: String
+        let title: String
+        let operation: Operation
+        let highlight: [RoomPoint]
+    }
+    private struct Endpoint {
+        let wall: PlaquistoWall
+        let point: RoomPoint
+        let outward: RoomPoint
+        let top: Double
+    }
+    private static func canSuggestClosing(_ opening:PlaquistoOpening, in room:PlaquistoRoomModel) -> Bool {
+        // Classification and previous manual validation must not prevent an
+        // explicit closure. Only geometry/attachment determines eligibility.
+        guard room.walls.contains(where:{$0.id==opening.wallID}) else { return false }
+        let values=[opening.positionOnWall.effectiveValue,opening.sillHeight.effectiveValue,
+                    opening.width.effectiveValue,opening.height.effectiveValue]
+        return values.allSatisfy(\.isFinite) && values[2]>0 && values[3]>0
+    }
+    static func proposals(in document: PlaquistoRoomDocument) -> [Proposal] {
+        let walls = document.room.walls
+        var result: [Proposal] = []
+        for opening in document.room.openings where canSuggestClosing(opening,in:document.room) {
+            guard let wall = walls.first(where: { $0.id == opening.wallID }) else { continue }
+            let x = opening.positionOnWall.effectiveValue, y = opening.sillHeight.effectiveValue
+            let w = opening.width.effectiveValue, h = opening.height.effectiveValue
+            let local = [RoomPoint(x:x,y:y,z:0), .init(x:x+w,y:y,z:0), .init(x:x+w,y:y+h,z:0), .init(x:x,y:y+h,z:0)]
+            let ring = local.map { wall.start + wall.direction * $0.x + RoomPoint(x:0,y:$0.y,z:0) }
+            let wallNumber=(walls.firstIndex(where:{$0.id==wall.id}) ?? 0)+1
+            result.append(.init(id:"opening/\(opening.id)", title:"\(opening.kind.title) · \(Int((w*100).rounded())) cm · Mur \(wallNumber)",
+                operation:.closeOpening(opening.id), highlight:triangles(ring)))
+        }
+        var endpoints: [Endpoint] = []
+        for wall in walls {
+            for end in [false,true] {
+                let point = end ? wall.effectiveEnd : wall.start
+                // A point already meeting another wall is not a missing segment.
+                guard !walls.contains(where: { other in
+                    guard other.id != wall.id else { return false }
+                    let v = point-other.start
+                    let t = min(other.length.effectiveValue,max(0,v.x*other.direction.x+v.z*other.direction.z))
+                    let nearest = other.start+other.direction*t
+                    return (nearest-point).length < 0.005
+                }) else { continue }
+                let x = end ? wall.length.effectiveValue : 0
+                guard let top = wall.effectiveOutline.filter({ abs($0.x-x)<0.02 }).map(\.y).max(), top > 0 else { continue }
+                endpoints.append(.init(wall:wall,point:point,outward:wall.direction*(end ? 1 : -1),top:top))
+            }
+        }
+        for i in endpoints.indices {
+            for j in endpoints.indices where j > i {
+                let a=endpoints[i], b=endpoints[j], span=b.point-a.point, length=span.horizontalLength
+                guard a.wall.id != b.wall.id, length >= 0.005, length <= 100,
+                      abs(span.y)<0.02 else { continue }
+                let d=span*(1/length)
+                // Allow missing sides/corners too, but never extend backwards
+                // into the existing walls. Crossing/overlap is checked below.
+                guard a.outward.x*d.x+a.outward.z*d.z >= -0.01,
+                      b.outward.x*d.x+b.outward.z*d.z <= 0.01 else { continue }
+                let source=GeometryProvenance(source:.manual)
+                let height=max(a.top,b.top+span.y)
+                var wall=PlaquistoWall(start:a.point,end:.init(x:b.point.x,y:a.point.y,z:b.point.z),
+                    length:.init(rawValue:length,provenance:source,manuallyValidated:true),
+                    height:.init(rawValue:height,provenance:source,manuallyValidated:true),
+                    thickness:a.wall.thickness,provenance:source)
+                wall.localOutline=[.zero,.init(x:length,y:0,z:0),.init(x:length,y:b.top+span.y,z:0),.init(x:0,y:a.top,z:0)]
+                guard (try? SurveyPlanEditing.addingRepairWall(document,wall:wall)) != nil else { continue }
+                // An unattached opening sitting in this missing wall is closed
+                // by the same explicit operation, not left as a phantom quantity.
+                let closing=document.room.openings.filter { opening in
+                    guard opening.wallID == nil else { return false }
+                    let v=opening.center-a.point
+                    let t=v.x*d.x+v.z*d.z, half=opening.width.effectiveValue/2
+                    return t-half >= -0.02 && t+half <= length+0.02 && v.y >= 0 && v.y <= height
+                        && (opening.center-(a.point+d*t)).horizontalLength < 0.05
+                }.map(\.id)
+                let ring=wall.localOutline!.map { wall.start+wall.direction*$0.x+RoomPoint(x:0,y:$0.y,z:0) }
+                result.append(.init(id:"gap/\(i)/\(j)",title:"Mur interrompu · \(Int((length*100).rounded())) cm",
+                    operation:.bridge(wall,closingOpenings:closing),highlight:triangles(ring)))
+            }
+        }
+        return result
+    }
+    private static func triangles(_ ring: [RoomPoint]) -> [RoomPoint] {
+        [ring[0],ring[1],ring[2],ring[0],ring[2],ring[3]]
+    }
+    static func applying(_ proposals: [Proposal], to document: PlaquistoRoomDocument) throws -> PlaquistoRoomDocument {
+        var result=document
+        for proposal in proposals {
+            switch proposal.operation {
+            case .closeOpening(let id):
+                guard let opening=result.room.openings.first(where:{$0.id==id}), canSuggestClosing(opening,in:result.room) else { throw RoomModelError.invalidGeometry }
+                result=try SurveyPlanEditing.removingOpening(result,id:id)
+            case .bridge(let wall,let closing):
+                // Recheck conflicts against the other selected repairs too.
+                result=try SurveyPlanEditing.addingRepairWall(result,wall:wall)
+                for id in closing { result=try SurveyPlanEditing.removingOpening(result,id:id) }
+            }
+        }
+        try result.validate()
+        return result
+    }
+}
+
 enum SurveyPlanEditing {
+    /// A validated user-approved repair, not a new partition. Unlike partition
+    /// drawing this accepts millimetric gaps and preserves the supplied outline.
+    static func addingRepairWall(_ document:PlaquistoRoomDocument,wall:PlaquistoWall) throws -> PlaquistoRoomDocument {
+        guard wall.start.finite, wall.effectiveEnd.finite,
+              wall.length.effectiveValue >= 0.005, wall.length.effectiveValue <= 100,
+              wall.height.effectiveValue > 0, wall.height.effectiveValue <= 100 else { throw Failure.invalidSize }
+        guard !document.room.walls.contains(where:{ conflicts(wall,$0) }) else { throw Failure.crossingWalls }
+        try LayoutGeometry.validate(wall.effectiveOutline.map { .init(x:$0.x*1000,y:$0.y*1000) })
+        var result=document
+        result.room.walls.append(wall)
+        result.wallWorkIntents=(result.wallWorkIntents ?? []) + [.init(wallID:wall.id,use:.existingWall)]
+        try result.validate()
+        return result
+    }
+    /// Explicit contour replacement, never an automatic cleanup of RoomPlan.
+    /// The caller previews the returned copy and confirms any removed openings.
+    static func replacingContour(_ document:PlaquistoRoomDocument, walls:[PlaquistoWall],
+                                 contour:[RoomPoint]) throws -> PlaquistoRoomDocument {
+        try LayoutGeometry.validate(contour.map { .init(x:$0.x*1000,y:$0.z*1000) })
+        let ids=Set(walls.map(\.id))
+        guard !ids.isEmpty else { throw Failure.invalidSize }
+        // A graph edge can be only a fragment of a shared scanned wall. Replacing
+        // that entire wall would damage the neighboring room: refuse that case.
+        for edge in walls {
+            if let source=document.room.walls.first(where:{$0.id==edge.id}),
+               abs(source.length.effectiveValue-edge.length.effectiveValue)>0.02 { throw Failure.sharedContour }
+        }
+        let source=GeometryProvenance(source:.manual)
+        var result=document, used=Set<UUID>(), replacement:[PlaquistoWall]=[]
+        for i in contour.indices {
+            let a=contour[i], b=contour[(i+1)%contour.count], length=(b-a).horizontalLength
+            guard length >= 0.1 else { throw Failure.invalidSize }
+            let direction=(b-a)*(1/length)
+            // Reuse only truly corresponding edges; topology changes must not
+            // silently attach a saved layout/window to a different wall.
+            let old=walls.filter { !used.contains($0.id) }.min {
+                (($0.start-a).horizontalLength+($0.effectiveEnd-b).horizontalLength) < (($1.start-a).horizontalLength+($1.effectiveEnd-b).horizontalLength)
+            }.flatMap { wall -> PlaquistoWall? in
+                let aligned=abs(wall.direction.x*direction.z-wall.direction.z*direction.x)<0.05
+                let near=min((wall.start-a).horizontalLength+(wall.effectiveEnd-b).horizontalLength,
+                             (wall.start-b).horizontalLength+(wall.effectiveEnd-a).horizontalLength)<0.4
+                return aligned && near ? document.room.walls.first(where:{$0.id==wall.id}) : nil
+            }
+            if var old {
+                used.insert(old.id)
+                if old.direction.x*direction.x+old.direction.z*direction.z < 0 {
+                    old.start=b; old.end=a
+                } else { old.start=a; old.end=b }
+                old.length.manualValue=length; old.length.manuallyValidated=true
+                replacement.append(old)
+            } else {
+                replacement.append(.init(start:a,end:b,length:.init(rawValue:length,provenance:source),
+                    height:.init(rawValue:suggestedHeight(in:document.room,at:a),provenance:source),provenance:source))
+            }
+        }
+        let untouched=document.room.walls.filter { !ids.contains($0.id) }
+        guard !replacement.contains(where:{ edited in untouched.contains { conflicts(edited,$0) } }) else { throw Failure.crossingWalls }
+        result.room.walls.removeAll { ids.contains($0.id) }; result.room.walls += replacement
+        result.room.openings=result.room.openings.compactMap { opening in
+            guard let wallID=opening.wallID, ids.contains(wallID) else { return opening }
+            guard let wall=replacement.first(where:{$0.id==opening.wallID}),
+                  (try? validateOpening(opening,wall:wall)) != nil else { return nil }
+            var next=opening; next.center=openingCenter(opening,wall:wall); return next
+        }
+        let openingIDs=Set(result.room.openings.map(\.id))
+        for i in result.room.walls.indices { result.room.walls[i].openingIDs.removeAll { !openingIDs.contains($0) } }
+        result.wallWorkIntents?.removeAll { ids.contains($0.wallID) && !used.contains($0.wallID) }
+        // Replace matching floor footprints only; unrelated levels/rooms survive.
+        let oldRing=walls.map(\.start)
+        for i in result.room.floors.indices {
+            let floor=result.room.floors[i]
+            if floor.boundaries.count == 1, let ring=floor.boundaries.first,
+               ring.allSatisfy({ point in oldRing.contains { ($0-point).horizontalLength<0.03 } }) {
+                result.room.floors[i].boundaries=[contour]
+            }
+        }
+        try result.validate(); return result
+    }
     enum Failure: Error, LocalizedError {
-        case missingWall, invalidSize, openingOutside, overlappingOpening, crossingWalls, incompatibleMerge
+        case missingWall, invalidSize, openingOutside, overlappingOpening, crossingWalls, incompatibleMerge, sharedContour, scannedWallRemoval
         var errorDescription: String? {
             switch self {
+            case .scannedWallRemoval: "Seules les cloisons ajoutées peuvent être supprimées ici. Pour corriger un mur scanné, modifiez le contour de la pièce."
+            case .sharedContour: "Ce contour utilise une partie d’un mur partagé avec une autre pièce. Corrigez ce mur avec ses poignées pour conserver la pièce voisine."
             case .missingWall: "Sélectionnez un mur ou une cloison."
             case .invalidSize: "Renseignez des dimensions positives et un segment d’au moins 10 cm."
             case .openingOutside: "Une ouverture dépasserait du mur. Corrigez sa position ou ses dimensions."
@@ -104,14 +612,16 @@ enum SurveyPlanEditing {
     }
 
     static func addingPartition(_ document: PlaquistoRoomDocument, start: RoomPoint,
-                                end: RoomPoint, height: Double) throws -> PlaquistoRoomDocument {
+                                end: RoomPoint, height: Double, thickness: Double = 0.072) throws -> PlaquistoRoomDocument {
         guard start.finite, end.finite, height.isFinite, height > 0, height <= 100,
+              thickness.isFinite, thickness > 0, thickness <= 1,
               hypot(end.x-start.x, end.z-start.z) >= 0.1 else { throw Failure.invalidSize }
         var result = document
         let source = GeometryProvenance(source: .manual)
         let wall = PlaquistoWall(start: start, end: .init(x: end.x, y: start.y, z: end.z),
             length: .init(rawValue: hypot(end.x-start.x, end.z-start.z), provenance: source, manuallyValidated: true),
-            height: .init(rawValue: height, provenance: source, manuallyValidated: true), provenance: source)
+            height: .init(rawValue: height, provenance: source, manuallyValidated: true),
+            thickness: .init(rawValue: thickness, provenance: source, manuallyValidated: true), provenance: source)
         guard !document.room.walls.contains(where: { conflicts(wall,$0) }) else { throw Failure.crossingWalls }
         result.room.walls.append(wall)
         result.wallWorkIntents = (result.wallWorkIntents ?? []) + [.init(wallID: wall.id, use: .partition)]
@@ -120,7 +630,7 @@ enum SurveyPlanEditing {
 
     static func addingDoor(_ document: PlaquistoRoomDocument, wallID: UUID,
                            width: Double, height: Double, position: Double) throws -> PlaquistoRoomDocument {
-        guard doorWidths.contains(where: { abs($0-width) < 1e-6 }) else { throw Failure.invalidSize }
+        guard width.isFinite, width > 0, height.isFinite, height > 0 else { throw Failure.invalidSize }
         guard let wall = document.room.walls.first(where: { $0.id == wallID }) else { throw Failure.missingWall }
         let source = GeometryProvenance(source: .manual)
         var opening = PlaquistoOpening(wallID: wallID, kind: .door, center: .zero,
@@ -171,6 +681,20 @@ enum SurveyPlanEditing {
         var result=document
         result.room.openings.removeAll { $0.id==id }
         for i in result.room.walls.indices { result.room.walls[i].openingIDs.removeAll { $0==id } }
+        try result.validate(); return result
+    }
+
+    /// Remove only a designed partition and its openings. Roof geometry and the
+    /// original scan are deliberately retained; deleting a divider is not a roof merge.
+    static func removingPartition(_ document: PlaquistoRoomDocument, id: UUID) throws -> PlaquistoRoomDocument {
+        guard let wall=document.room.walls.first(where: { $0.id == id }) else { throw Failure.missingWall }
+        guard isDesignedPartition(wall,in:document) else { throw Failure.scannedWallRemoval }
+        var result=document
+        let openings=Set(result.room.openings.filter { $0.wallID == id }.map(\.id))
+        result.room.walls.removeAll { $0.id == id }
+        result.room.openings.removeAll { openings.contains($0.id) }
+        for i in result.room.walls.indices { result.room.walls[i].openingIDs.removeAll { openings.contains($0) } }
+        result.wallWorkIntents?.removeAll { $0.wallID == id }
         try result.validate(); return result
     }
 

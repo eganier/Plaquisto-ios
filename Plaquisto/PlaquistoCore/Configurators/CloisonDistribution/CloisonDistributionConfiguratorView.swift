@@ -21,8 +21,8 @@ struct CloisonDistributionConfiguratorView: View {
     }
 
     enum Compound: String, CaseIterable, Identifiable {
-        case powder = "Enduit en poudre"
-        case paste = "Enduit en pâte"
+        case powder = "Enduit à joints en poudre"
+        case paste = "Enduit à joints en pâte"
         var id: Self { self }
     }
 
@@ -689,8 +689,8 @@ struct CloisonDistributionConfiguratorView: View {
         }
         rows.append(("Vis TRPF 13", format(mixedSpacingQuantity(table.frameScrews, standardKey: detailKey, layerKey: layerKey, mountingKey: mountingKey), "unités", rounded: true)))
 
-        if insulationEnabled {
-            rows.append(("Isolation · \(insulationSummary)", format(actualArea * coveringAreaRatio * (table.coefficients["insulation_m2_m2"] ?? 1.10), "m²")))
+        if insulationEnabled, let selectedInsulation {
+            rows.append((SupplyListingConsolidator.insulationName(reference: selectedInsulation.title, thicknessMM: Double(insulationThicknessMM), lambda: selectedInsulation.lambda), format(actualArea * coveringAreaRatio * (table.coefficients["insulation_m2_m2"] ?? 1.10), "m²")))
         }
         if jointTreatment {
             let bandKey = skinCount == .single ? "band_simple_skin_ml_m2" : "band_double_skin_ml_m2"

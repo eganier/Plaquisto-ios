@@ -11,6 +11,7 @@ struct RailStudCeilingFacingConfiguration: Identifiable, Codable, Equatable {
     var productID = ""
     var dimensionID = ""
     var area = 0.0
+    var fourTaperedEdges: Bool? = nil
 }
 
 struct RailStudCeilingQuantity: Identifiable, Codable, Equatable {
@@ -43,6 +44,9 @@ struct RailStudCeilingConfiguration: Codable, Equatable {
     var jointTreatment = true
     var compound = "powder"
     var quantities: [RailStudCeilingQuantity] = []
+    var suspensionSpacingMeters: Double? = nil
+    var maximumSpanMeters: Double? = nil
+    var suppliesPerSuspension: [RailStudCeilingQuantity]? = nil
     var effectiveArea: Double { dimensionsSpecified ? length * width : area }
 }
 
@@ -75,9 +79,9 @@ private enum LabCeilingSupport: String, CaseIterable, Identifiable {
     }
     var suspensionFixing: String {
         switch self {
-        case .wood: "Demi collier"
+        case .wood: "Demi-collier"
         case .concrete: "Cheville et piton"
-        case .concreteHollowBlock: "Suspente hourdis à griffe"
+        case .concreteHollowBlock: "Suspentes hourdis simples"
         case .lightHollowBlock: "Système compatible pour hourdis léger"
         case .metal: "Suspente bord de tôle"
         case .hollowCeiling: "Cheville à bascule"
@@ -125,14 +129,33 @@ private enum LabMechanicalFacing: Hashable {
     }
 }
 
-private struct LabInsulationSeries: Identifiable, Hashable {
+struct LabInsulationSeries: Identifiable, Hashable {
     let id: String
+    let referenceTitle: String
     let material: String
     let lambda: Double
     let density: Double
     let thicknesses: [Int]
     func weight(for thickness: Int) -> Double { Double(thickness) / 1_000 * density }
     func resistance(for thickness: Int) -> Double { Double(thickness) / 1_000 / lambda }
+
+    static func decode(_ record: CeilingReferenceRecord) -> Self? {
+        guard let lambda = ThermalCalculator.catalogueLambda(
+            conductivity: record.data["conductivity"]?.string,
+            lambda: record.data["lambda_w_mk"]?.number), lambda.isFinite, lambda > 0,
+            let values = record.data["values"]?.array else { return nil }
+        let points = values.compactMap { value -> (Int, Double)? in
+            guard let object = value.object, let thickness = object["thickness_mm"]?.number,
+                  thickness.isFinite, thickness > 0, thickness <= 10_000,
+                  let weight = object["max_weight_kg_m2"]?.number,
+                  weight.isFinite, weight >= 0 else { return nil }
+            return (Int(thickness), weight)
+        }.filter { $0.0 > 0 }
+        guard !points.isEmpty else { return nil }
+        let density = points.map { $0.1 / (Double($0.0) / 1_000) }.max() ?? 0
+        return .init(id: record.id, referenceTitle: record.title, material: record.data["material"]?.string ?? record.title,
+                     lambda: lambda, density: density, thicknesses: Array(Set(points.map(\.0))).sorted())
+    }
 }
 
 private struct LabInsulationSelection: Hashable {
@@ -214,18 +237,7 @@ private final class RailStudCeilingReferenceStore: ObservableObject {
     }
 
     var insulation: [LabInsulationSeries] {
-        section?.isolation.compactMap { record in
-            guard let lambda = record.data["lambda_w_mk"]?.number,
-                  let values = record.data["values"]?.array else { return nil }
-            let points = values.compactMap { value -> (Int, Double)? in
-                guard let object = value.object, let thickness = object["thickness_mm"]?.number,
-                      let weight = object["max_weight_kg_m2"]?.number else { return nil }
-                return (Int(thickness), weight)
-            }
-            guard !points.isEmpty else { return nil }
-            let density = points.map { $0.1 / (Double($0.0) / 1_000) }.max() ?? 0
-            return .init(id: record.id, material: record.data["material"]?.string ?? record.title, lambda: lambda, density: density, thicknesses: points.map(\.0))
-        } ?? []
+        section?.isolation.compactMap(LabInsulationSeries.decode) ?? []
     }
 
     var facings: [LabFacingProduct] {
@@ -283,7 +295,20 @@ private final class RailStudCeilingReferenceStore: ObservableObject {
         supportData(support)?["title"]?.string ?? support.title
     }
     func supportFixing(_ support: LabCeilingSupport) -> String {
-        supportData(support)?["fixing"]?.string ?? support.suspensionFixing
+        SupplyListingConsolidator.canonicalName(supportData(support)?["fixing"]?.string ?? support.suspensionFixing)
+    }
+    func supportFixingComponents(_ support: LabCeilingSupport) -> [RailStudCeilingQuantity] {
+        if let values = supportData(support)?["fixing_components"]?.array, !values.isEmpty {
+            let components = values.compactMap { value -> RailStudCeilingQuantity? in
+                guard let object = value.object, let name = object["name"]?.string, !name.isEmpty,
+                      let quantity = object["quantity"]?.number, quantity.isFinite, quantity > 0,
+                      let unit = object["unit"]?.string, ["unité", "unités", "unité(s)"].contains(unit) else { return nil }
+                return .init(name: name, quantity: quantity, unit: unit)
+            }
+            if components.count == values.count { return components }
+        }
+        return SupplyListingConsolidator.components(.init(name: supportFixing(support), quantity: 1, unit: "unité"))
+            .map { .init(name: $0.name, quantity: $0.quantity, unit: $0.unit) }
     }
     func supportIsAvailable(_ support: LabCeilingSupport, for shape: LabCeilingShape) -> Bool {
         supportData(support)?[shape == .horizontal ? "horizontal" : "sloped"]?.bool ?? support.isAvailable(for: shape)
@@ -322,10 +347,12 @@ struct RailStudCeilingConfiguratorView: View {
     @State private var configurationExpanded = false
     private let onSave: ((RailStudCeilingConfiguration) -> Void)?
     private let isEditing: Bool
+    private let lockScannedGeometry: Bool
 
     private let steps = ["Dimensions","Isolation","Parements","Ossature","Support","Plénum","Suspension","Bandes à joint","Résultat"]
 
-    init(initialConfiguration: RailStudCeilingConfiguration? = nil, startsAtResult: Bool = false, onSave: ((RailStudCeilingConfiguration) -> Void)? = nil) {
+    init(initialConfiguration: RailStudCeilingConfiguration? = nil, startsAtResult: Bool = false, lockScannedGeometry: Bool = false, onSave: ((RailStudCeilingConfiguration) -> Void)? = nil) {
+        self.lockScannedGeometry = lockScannedGeometry
         let value = initialConfiguration ?? RailStudCeilingConfiguration()
         _step = State(initialValue: startsAtResult ? 8 : 0)
         _shape = State(initialValue: LabCeilingShape(rawValue: value.shape) ?? .horizontal)
@@ -449,7 +476,11 @@ struct RailStudCeilingConfiguratorView: View {
             }
         }
         .alert("Dimensions non renseignées", isPresented: $showDimensionsAlert) {
-            Button("Renseigner les dimensions", role: .cancel) { dimensionsSpecified = true }
+            if !lockScannedGeometry {
+                Button("Renseigner les dimensions", role: .cancel) { dimensionsSpecified = true }
+            } else {
+                Button("Annuler", role: .cancel) { }
+            }
             Button("Continuer avec une estimation") {
                 let side = (sqrt(area) * 100).rounded() / 100
                 length = side; width = side; direction = "width"; completeAdvance()
@@ -509,10 +540,12 @@ struct RailStudCeilingConfiguratorView: View {
         Group {
             Section {
                 Picker("Type de plafond", selection: $shape) { ForEach(LabCeilingShape.allCases) { Text($0.title).tag($0) } }.pickerStyle(.segmented)
+                    .disabled(lockScannedGeometry)
                     .onChange(of: shape) { _, _ in normalizeSelections() }
             } header: { Text("Type de plafond") }
             Section {
                 Toggle("Préciser la longueur et la largeur", isOn: $dimensionsSpecified)
+                    .disabled(lockScannedGeometry)
                 if dimensionsSpecified {
                     LabMeasureField(label: "Longueur", value: $length, unit: "m").onChange(of: length) { _, _ in updateArea() }
                     LabMeasureField(label: "Largeur", value: $width, unit: "m").onChange(of: width) { _, _ in updateArea() }
@@ -525,10 +558,10 @@ struct RailStudCeilingConfiguratorView: View {
             } header: {
                 Text("Dimensions de l’ouvrage")
             } footer: {
-                Text("Les dimensions calculent précisément les montants et le périmètre des rails.")
+                Text(lockScannedGeometry ? "La surface et les contours proviennent du relevé. Corrigez-les dans le plan ; les longueurs utilisées pour le quantitatif restent une estimation." : "Les dimensions calculent précisément les montants et le périmètre des rails.")
             }
             Section("Surface de l’ouvrage") {
-                if dimensionsSpecified {
+                if dimensionsSpecified || lockScannedGeometry {
                     LabeledContent("Surface calculée", value: "\(format(area)) m²")
                 } else {
                     LabMeasureField(label: "Surface", value: $area, unit: "m²")
@@ -563,6 +596,7 @@ struct RailStudCeilingConfiguratorView: View {
         Group {
             Section {
                 Toggle("Prévoir une isolation", isOn: $insulationEnabled)
+                    .onChange(of: insulationEnabled) { _, enabled in if enabled { normalizeSelections() } }
                 if insulationEnabled {
                     Picker("Nombre de couches", selection: $insulationLayers) { Text("Une couche").tag(1); Text("Deux couches").tag(2) }
                         .pickerStyle(.segmented).onChange(of: insulationLayers) { _, value in if value == 2 { secondInsulation = firstInsulation } }
@@ -709,7 +743,7 @@ struct RailStudCeilingConfiguratorView: View {
         Group {
             Section("Traitement des bandes à joint") {
                 Toggle("Prévoir le traitement des bandes", isOn: $jointTreatment)
-                if jointTreatment { Picker("Type d’enduit", selection: $compound) { Text("Enduit en poudre").tag("powder"); Text("Enduit en pâte").tag("paste") } }
+                if jointTreatment { Picker("Type d’enduit", selection: $compound) { Text("Enduit à joints en poudre").tag("powder"); Text("Enduit à joints en pâte").tag("paste") } }
             }
             Section { Text(jointTreatment ? "Les bandes et l’enduit seront ajoutés au quantitatif." : "Aucune bande ni aucun enduit ne sera ajouté.").foregroundStyle(.secondary) }
         }
@@ -727,8 +761,8 @@ struct RailStudCeilingConfiguratorView: View {
                     editableConfigurationRow("Ossature", value: "\(stud.railTitle) + \(stud.title)", targetStep: 3)
                     editableConfigurationRow("Montage", value: frameMode.title, targetStep: 3)
                     if frameMode == .suspended { editableConfigurationRow("Plénum", value: "\(format(plenumCM)) cm", targetStep: 5) }
+                    editableConfigurationRow("Isolation", value: insulationEnabled ? (insulationLayers == 1 ? "Une couche" : "Deux couches") : "Sans isolant", targetStep: 1)
                     if insulationEnabled {
-                        editableConfigurationRow("Isolation", value: insulationLayers == 1 ? "Une couche" : "Deux couches", targetStep: 1)
                         editableConfigurationRow("R total", value: "\(format(thermalResistance)) m²·K/W", targetStep: 1)
                     }
                     editableConfigurationRow("Pare-vapeur", value: vaporBarrier ? "Oui" : "Non", targetStep: 1)
@@ -905,7 +939,7 @@ struct RailStudCeilingConfiguratorView: View {
             guard let facing = product(allocation.productID), let dimension = facing.dimensions.first(where: { $0.id == allocation.dimensionID }) else { continue }
             result.append(.init(name: "\(facing.family) \(facing.functionTitle) · \(dimension.title)", quantity: ceil(allocation.area * coveringAreaRatio * references.quantity("plate_m2_m2", fallback: 1.05) / dimension.area), unit: "plaque(s)"))
         }
-        result += [.init(name: "Montant \(stud.title)", quantity: studLength, unit: "ml"), .init(name: "Rail \(stud.railTitle)", quantity: railLength, unit: "ml")]
+        result += [.init(name: "Montant \(stud.title)", quantity: studLength, unit: "ml"), .init(name: "Rails \(stud.railTitle)", quantity: railLength, unit: "ml")]
         let railFixingSpacing = references.quantity("rail_fixing_spacing_m", fallback: 0.60)
         let railFixingMultiplier = references.studValue(stud, "rail_fixing_multiplier", fallback: Double(stud.railFixingMultiplier))
         result.append(.init(name: "Fixations des rails au gros œuvre", quantity: ceil(2 * (length + width) / railFixingSpacing) * railFixingMultiplier, unit: "unité"))
@@ -914,21 +948,24 @@ struct RailStudCeilingConfiguratorView: View {
             let screwSpacing = references.quantity("double_stud_screw_spacing_m", fallback: 0.40)
             let multiplier = Int(references.studValue(stud, "double_stud_screw_multiplier", fallback: Double(stud.doubleStudScrewMultiplier)))
             let screws = Double(max(0, studBays - 1) * Int(ceil(span / screwSpacing)) * multiplier)
-            result.append(.init(name: "Vis TRPF 13 · solidarisation des montants", quantity: screws, unit: "unité"))
+            result.append(.init(name: "Vis TRPF 13", quantity: screws, unit: "unité"))
         }
         if frameMode == .suspended {
             let fixingScrews = Int(references.suspensionValue(assembly, "fixing_screws", fallback: assembly == .single ? 2 : 1))
-            result += [.init(name: suspensionName, quantity: Double(suspensionCount), unit: "unité"), .init(name: references.supportFixing(support), quantity: Double(suspensionCount), unit: "unité"), .init(name: "Tige filetée Ø 6 mm", quantity: (plenumCM / 100 + references.number("rod_extra_length_m", fallback: 0.05)) * Double(suspensionCount), unit: "ml"), .init(name: "Vis TRPF 13 · fixation des suspentes", quantity: Double(suspensionCount * fixingScrews), unit: "unité")]
+            result += [.init(name: suspensionName, quantity: Double(suspensionCount), unit: "unité"), .init(name: "Tige filetée Ø 6 mm", quantity: (plenumCM / 100 + references.number("rod_extra_length_m", fallback: 0.05)) * Double(suspensionCount), unit: "ml"), .init(name: "Vis TRPF 13", quantity: Double(suspensionCount * fixingScrews), unit: "unité")]
+            result += references.supportFixingComponents(support).map {
+                .init(name: $0.name, quantity: $0.quantity * Double(suspensionCount), unit: $0.unit)
+            }
         }
         if insulationEnabled {
             let insulationFactor = references.quantity("insulation_m2_m2", fallback: 1.05)
-            if let firstSeries { result.append(.init(name: "\(firstSeries.material) · λ \(lambda(firstSeries.lambda)) · \(firstInsulation.thickness) mm", quantity: effectiveArea * coveringAreaRatio * insulationFactor, unit: "m²")) }
-            if insulationLayers == 2, let secondSeries { result.append(.init(name: "\(secondSeries.material) · λ \(lambda(secondSeries.lambda)) · \(secondInsulation.thickness) mm", quantity: effectiveArea * coveringAreaRatio * insulationFactor, unit: "m²")) }
+            if let firstSeries { result.append(.init(name: SupplyListingConsolidator.insulationName(reference: firstSeries.referenceTitle, thicknessMM: Double(firstInsulation.thickness), lambda: firstSeries.lambda), quantity: effectiveArea * coveringAreaRatio * insulationFactor, unit: "m²")) }
+            if insulationLayers == 2, let secondSeries { result.append(.init(name: SupplyListingConsolidator.insulationName(reference: secondSeries.referenceTitle, thicknessMM: Double(secondInsulation.thickness), lambda: secondSeries.lambda), quantity: effectiveArea * coveringAreaRatio * insulationFactor, unit: "m²")) }
         }
         if vaporBarrier { result += [.init(name: "Pare-vapeur", quantity: effectiveArea * references.quantity("vapor_barrier_m2_m2", fallback: 1.2), unit: "m²"), .init(name: "Scotch double-face", quantity: (assembly == .single ? studLength : studLength / 2) * references.quantity("double_sided_tape_factor", fallback: 1.1), unit: "ml")] }
-        if facingLayers == 1 { result.append(.init(name: "Vis TTPC · parement", quantity: effectiveArea * references.quantity("ttpc_single_unit_m2", fallback: 15), unit: "unité")) }
-        else { result += [.init(name: "Vis TTPC · première peau", quantity: effectiveArea * references.quantity("ttpc_first_double_unit_m2", fallback: 3), unit: "unité"), .init(name: "Vis TTPC · deuxième peau", quantity: effectiveArea * references.quantity("ttpc_second_double_unit_m2", fallback: 15), unit: "unité")] }
-        if jointTreatment { result += [.init(name: "Bande à joint", quantity: effectiveArea * references.quantity("band_ml_m2", fallback: 1.58), unit: "ml"), .init(name: compound == "powder" ? "Enduit en poudre" : "Enduit en pâte", quantity: effectiveArea * references.quantity(compound == "powder" ? "powder_kg_m2" : "paste_kg_m2", fallback: compound == "powder" ? 0.37 : 0.53), unit: "kg")] }
+        if facingLayers == 1 { result.append(.init(name: "Vis TTPC 25", quantity: effectiveArea * references.quantity("ttpc_single_unit_m2", fallback: 15), unit: "unité")) }
+        else { result += [.init(name: "Vis TTPC 25", quantity: effectiveArea * references.quantity("ttpc_first_double_unit_m2", fallback: 3), unit: "unité"), .init(name: "Vis TTPC 35", quantity: effectiveArea * references.quantity("ttpc_second_double_unit_m2", fallback: 15), unit: "unité")] }
+        if jointTreatment { result += [.init(name: "Bande à joint", quantity: effectiveArea * references.quantity("band_ml_m2", fallback: 1.58), unit: "ml"), .init(name: compound == "powder" ? "Enduit à joints en poudre" : "Enduit à joints en pâte", quantity: effectiveArea * references.quantity(compound == "powder" ? "powder_kg_m2" : "paste_kg_m2", fallback: compound == "powder" ? 0.37 : 0.53), unit: "kg")] }
         return merge(result)
     }
     private func merge(_ values: [LabSupply]) -> [LabSupply] {
@@ -965,14 +1002,27 @@ struct RailStudCeilingConfiguratorView: View {
             vaporBarrier: vaporBarrier,
             extraPlenumCM: extraPlenumCM,
             facingLayers: facingLayers,
-            firstSkin: firstSkin.map { .init(id: $0.id, productID: $0.productID, dimensionID: $0.dimensionID, area: $0.area) },
-            secondSkin: secondSkin.map { .init(id: $0.id, productID: $0.productID, dimensionID: $0.dimensionID, area: $0.area) },
+            firstSkin: firstSkin.map { allocation in
+                .init(id: allocation.id, productID: allocation.productID, dimensionID: allocation.dimensionID, area: allocation.area,
+                    fourTaperedEdges: references.facings.first(where: { $0.id == allocation.productID }).map { $0.function == "quatre_bords_amincis" })
+            },
+            secondSkin: secondSkin.map { allocation in
+                .init(id: allocation.id, productID: allocation.productID, dimensionID: allocation.dimensionID, area: allocation.area,
+                    fourTaperedEdges: references.facings.first(where: { $0.id == allocation.productID }).map { $0.function == "quatre_bords_amincis" })
+            },
             studWidth: stud.rawValue,
             assembly: assembly.rawValue,
             frameMode: frameMode.rawValue,
             jointTreatment: jointTreatment,
             compound: compound,
-            quantities: quantities.map { .init(name: $0.name, quantity: $0.quantity, unit: $0.unit) }
+            quantities: quantities.map { .init(name: $0.name, quantity: $0.quantity, unit: $0.unit) },
+            suspensionSpacingMeters: suspensionSpacing,
+            maximumSpanMeters: maximumSpan,
+            suppliesPerSuspension: [
+                .init(name:suspensionName,quantity:1,unit:"unité"),
+                .init(name:"Tige filetée Ø 6 mm",quantity:plenumCM/100+references.number("rod_extra_length_m",fallback:0.05),unit:"ml"),
+                .init(name:"Vis TRPF 13",quantity:references.suspensionValue(assembly,"fixing_screws",fallback:assembly == .single ? 2 : 1),unit:"unité")
+            ] + references.supportFixingComponents(support)
         )
     }
     private func format(_ value: Double) -> String { value.formatted(.number.precision(.fractionLength(0...2))) }

@@ -75,13 +75,19 @@ struct AdhesiveFacingConfiguratorView: View {
     private var actualArea: Double { geometryMode == .surface ? enteredSurface : enteredLength * height }
     private var functions: [AdhesiveFacingOption] { references.functions(for: selectedFamily) }
     private var selectedFunction: AdhesiveFacingOption? { functions.first { $0.id == selectedFunctionID } ?? functions.first }
-    private var selectedFormat: AdhesiveFacingFormat { references.formats.first { $0.id == selectedFormatID } ?? references.formats[1] }
-    private var panelIsShort: Bool { Double(selectedFormat.heightMM) / 1000 < height }
+    // SwiftUI also evaluates the alert while the catalogue is loading or unavailable.
+    private var selectedFormat: AdhesiveFacingFormat? {
+        AdhesiveFacingFormat.selected(id: selectedFormatID, in: references.formats)
+    }
+    private var panelIsShort: Bool {
+        guard let selectedFormat else { return false }
+        return Double(selectedFormat.heightMM) / 1000 < height
+    }
     private var canContinue: Bool {
         switch step {
         case 1: height > 0 && (geometryMode == .length ? enteredLength > 0 : enteredSurface > 0)
         case 2: references.families.contains(selectedFamily) && selectedFunction != nil
-        case 3: references.formats.contains(selectedFormat)
+        case 3: selectedFormat != nil
         default: true
         }
     }
@@ -104,12 +110,16 @@ struct AdhesiveFacingConfiguratorView: View {
         }
         .tint(green)
         .onChange(of: references.options) { _, _ in normalizeSelections() }
+        .onChange(of: references.formats) { _, _ in normalizeSelections() }
         .onChange(of: selectedFamily) { _, _ in normalizeFunction() }
         .onChange(of: height) { _, _ in normalizeFormatForHeight() }
         .toolbar {
             if isEditing, let onSave {
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Enregistrer") { onSave(configuration) }
+                    Button("Enregistrer") {
+                        if let configuration { onSave(configuration) }
+                    }
+                    .disabled(configuration == nil)
                 }
             }
         }
@@ -117,7 +127,9 @@ struct AdhesiveFacingConfiguratorView: View {
             Button("Modifier le format", role: .cancel) {}
             Button("Continuer malgré tout") { step += 1 }
         } message: {
-            Text("La plaque sélectionnée mesure \(format(Double(selectedFormat.heightMM) / 1000, "m")) de haut, pour une hauteur sous plafond de \(format(height, "m")). Des raccords seront nécessaires. Confirmez-vous ce choix ?")
+            if let selectedFormat {
+                Text("La plaque sélectionnée mesure \(format(Double(selectedFormat.heightMM) / 1000, "m")) de haut, pour une hauteur sous plafond de \(format(height, "m")). Des raccords seront nécessaires. Confirmez-vous ce choix ?")
+            }
         }
     }
 
@@ -168,8 +180,10 @@ struct AdhesiveFacingConfiguratorView: View {
                 Button("Continuer") { continueForm() }.buttonStyle(.borderedProminent).disabled(!canContinue)
             } else {
                 Button(onSave == nil ? "Terminer" : "Enregistrer") {
-                    if let onSave { onSave(configuration) } else { step = 1 }
-                }.buttonStyle(.borderedProminent)
+                    if let onSave {
+                        if let configuration { onSave(configuration) }
+                    } else { step = 1 }
+                }.buttonStyle(.borderedProminent).disabled(configuration == nil)
             }
         }
         .padding(20).background(.background)
@@ -244,7 +258,7 @@ struct AdhesiveFacingConfiguratorView: View {
             sectionTitle("Bandes à joint")
             card {
                 Toggle("Prévoir le traitement des bandes à joint", isOn: $jointTreatment)
-                if jointTreatment { Divider(); LabeledContent("Enduit", value: "Enduit en poudre") }
+                if jointTreatment { Divider(); LabeledContent("Enduit", value: "Enduit à joints en poudre") }
             }
         }
     }
@@ -263,7 +277,7 @@ struct AdhesiveFacingConfiguratorView: View {
                     editableConfigurationRow("Dimensions", value: "\(format(actualLength, "m")) × \(format(height, "m"))", targetStep: 1)
                     Divider(); editableConfigurationRow("Surface", value: format(actualArea, "m²"), targetStep: 1)
                     Divider(); editableConfigurationRow("Parement", value: "\(selectedFamily) · \(selectedFunction?.functionTitle ?? "Standard")", targetStep: 2)
-                    Divider(); editableConfigurationRow("Format", value: selectedFormat.title, targetStep: 3)
+                    Divider(); editableConfigurationRow("Format", value: selectedFormat?.title ?? "À sélectionner", targetStep: 3)
                 }.padding(.top, 8)
             } label: { sectionTitle("Configuration retenue") }
         }
@@ -289,19 +303,21 @@ struct AdhesiveFacingConfiguratorView: View {
                       (references.quantities.names["adhesive"] ?? "Mortier adhésif", actualArea * references.quantities.adhesive, "kg")]
         if jointTreatment {
             result.append((references.quantities.names["band"] ?? "Bande à joint", actualArea * references.quantities.band, "ml"))
-            result.append((references.quantities.names["powder"] ?? "Enduit en poudre", actualArea * references.quantities.powder, "kg"))
+            result.append((references.quantities.names["powder"] ?? "Enduit à joints en poudre", actualArea * references.quantities.powder, "kg"))
         }
         return result
     }
 
-    private var configuration: AdhesiveFacingConfiguration {
-        AdhesiveFacingConfiguration(
+    private var configuration: AdhesiveFacingConfiguration? {
+        guard !references.isLoading, references.error == nil,
+              let selectedFormat, let selectedFunction else { return nil }
+        return AdhesiveFacingConfiguration(
             geometryMode: geometryMode == .surface ? "surface" : "length",
             height: height,
             enteredLength: enteredLength,
             enteredSurface: enteredSurface,
             facingFamily: selectedFamily,
-            facingFunctionID: selectedFunction?.id ?? "",
+            facingFunctionID: selectedFunction.id,
             formatID: selectedFormat.id,
             jointTreatment: jointTreatment,
             quantities: quantityRows.map { AdhesiveFacingQuantity(name: $0.name, quantity: $0.quantity, unit: $0.unit) }
@@ -311,6 +327,7 @@ struct AdhesiveFacingConfiguratorView: View {
     private func normalizeSelections() {
         if !references.families.contains(selectedFamily) { selectedFamily = references.families.first ?? "BA13" }
         normalizeFunction()
+        if let selectedFormat { selectedFormatID = selectedFormat.id }
         normalizeFormatForHeight()
     }
 

@@ -65,20 +65,16 @@ enum OpeningQuantityCalculator {
         case .interiorDoor:
             guard context.hsp > 0 else { return invalidContext(opening, "La HSP doit être renseignée.") }
             let multiplier = context.doubledStuds ? 2 : 1
-            add("Montants latéraux", Double(4 * multiplier), .unit)
-            add("Montants latéraux — longueur", Double(4 * multiplier) * context.hsp, .linearMeter)
-            add("Rail de linteau", opening.width, .linearMeter)
-            add("Montants au-dessus", Double(4 * multiplier), .unit)
-            add("Montants au-dessus — longueur", Double(4 * multiplier) * max(0, context.hsp - 2.00), .linearMeter)
+            add(context.studName, Double(4 * multiplier) * context.hsp, .linearMeter)
+            add(context.railName, opening.width, .linearMeter)
+            add(context.studName, Double(4 * multiplier) * max(0, context.hsp - 2.00), .linearMeter)
             notes.append("Les montants au-dessus suivent la règle métier HSP − 2,00 m.")
 
         case .pocketDoor:
             guard context.hsp > 0 else { return invalidContext(opening, "La HSP doit être renseignée.") }
-            add("Montants R70/M70 au-dessus", 4, .unit)
-            add("Montants R70/M70 au-dessus — longueur", 4 * max(0, context.hsp - opening.height), .linearMeter)
-            add("Montants latéraux R70/M70", 2, .unit)
-            add("Montants latéraux R70/M70 — longueur", 2 * context.hsp, .linearMeter)
-            add("Rail R70 supplémentaire", opening.width + 0.60, .linearMeter)
+            add("Montants M70", 4 * max(0, context.hsp - opening.height), .linearMeter)
+            add("Montants M70", 2 * context.hsp, .linearMeter)
+            add("Rails R70", opening.width + 0.60, .linearMeter)
             notes.append("Configuration d’ossature imposée : R70 / M70.")
 
         case .roofWindow:
@@ -95,10 +91,9 @@ enum OpeningQuantityCalculator {
                 guard let length = context.ceilingLengthInStudDirection, length > 0 else {
                     return invalidContext(opening, "La longueur du plafond dans le sens des montants doit être renseignée.")
                 }
-                add("Montants supplémentaires", 2, .unit)
-                add("Montants supplémentaires — longueur", 2 * length, .linearMeter)
-                add("Rails supplémentaires", 2, .unit)
-                add("Rails supplémentaires — longueur", 2 * (opening.width + 0.30), .linearMeter)
+                add(context.studName, 2 * length, .linearMeter)
+                add(context.railName, 2, .unit)
+                add(context.railName, 2 * (opening.width + 0.30), .linearMeter)
             }
 
         case .niche:
@@ -131,8 +126,7 @@ enum OpeningQuantityCalculator {
             add("Fourrures de renfort — longueur", Double(positions) * context.hsp, .linearMeter)
         } else {
             let multiplier = context.doubledStuds ? 2 : 1
-            add("Montants de renfort", Double(positions * multiplier), .unit)
-            add("Montants de renfort — longueur", Double(positions * multiplier) * context.hsp, .linearMeter)
+            add(context.studName, Double(positions * multiplier) * context.hsp, .linearMeter)
         }
     }
 
@@ -142,15 +136,17 @@ enum OpeningQuantityCalculator {
         includesBottom: Bool,
         add: (String, Double, OpeningQuantity.Unit) -> Void
     ) {
-        let lateralProfile = context.system == .furringLining ? "Fourrures latérales" : "Montants latéraux"
-        let transverseProfile = context.system == .furringLining ? "Fourrures transversales" : "Montants transversaux"
-        add("\(lateralProfile) d’embrasure", 2, .unit)
         let exceeded = exceededSteps(value: opening.width, step: 0.60)
         let zones = includesBottom ? 2 : 1
-        add("\(transverseProfile) d’embrasure", Double((1 + exceeded) * zones), .unit)
-
         if context.system == .furringLining {
+            add("Fourrures latérales d’embrasure", 2, .unit)
+            add("Fourrures transversales d’embrasure", Double((1 + exceeded) * zones), .unit)
             add("Appuis intermédiaires pour doublage sur fourrure — embrasure", Double(4 + exceeded), .unit)
+        } else {
+            // Confirmed by the user: side studs run floor-to-ceiling; each
+            // transverse stud spans the opening width, not the reveal depth.
+            add(context.studName, 2 * context.hsp, .linearMeter)
+            add(context.studName, Double((1 + exceeded) * zones) * opening.width, .linearMeter)
         }
     }
 
@@ -166,7 +162,13 @@ enum OpeningQuantityCalculator {
 
     private static func merged(_ quantities: [OpeningQuantity]) -> [OpeningQuantity] {
         var values: [String: OpeningQuantity] = [:]
-        for quantity in quantities where quantity.quantity > 0 {
+        for var quantity in quantities where quantity.quantity > 0 {
+            // Approved product identity: keep installation roles in the calculation,
+            // but purchase one F45/F47 reference, with pieces and metres separate.
+            let productName = SupplyListingConsolidator.canonicalName(quantity.name)
+            if productName == "Fourrures F45/F47" || productName == "Appuis intermédiaires pour fourrures" {
+                quantity.name = productName
+            }
             let key = quantity.id
             if var existing = values[key] {
                 existing.quantity += quantity.quantity
