@@ -9,18 +9,22 @@ struct LayoutLivePreview: View {
         Canvas { context,size in
             let viewport = LayoutViewport(bounds:surface.bounds,size:size,zoom:1,pan:.zero)
             if let result {
+                let geometry=LayoutPlanning.worldFurring(surface:surface,layer:layer)
+                var mask=layoutPath(surface.contour,transform:viewport)
+                for opening in surface.openings { mask.addPath(layoutPath(opening.contour,transform:viewport)) }
+                context.drawLayer { steel in
+                    steel.clip(to:mask,style:.init(eoFill:true))
+                    LayoutPreciseStyle.drawProfiles(context:&steel,geometry:geometry,viewport:viewport)
+                }
                 for sheet in result.sheets { for piece in sheet.pieces {
                     var p = layoutPath(piece.contour.map(result.frame.world),transform:viewport)
                     for hole in piece.holes { p.addPath(layoutPath(hole.map(result.frame.world),transform:viewport)) }
-                    context.fill(p,with:.color(.teal.opacity(sheet.number%2 == 0 ? 0.25 : 0.1)),style:.init(eoFill:true))
-                    context.stroke(p,with:.color(.teal),lineWidth:0.8)
+                    let tint=sheet.number.isMultiple(of:2) ? Color(red:0.86,green:0.89,blue:0.91) : Color(red:0.98,green:0.985,blue:0.99)
+                    context.fill(p,with:.color(tint.opacity(LayoutPreciseStyle.plateOpacity(focus:1))),style:.init(eoFill:true))
+                    context.stroke(p,with:.color(LayoutPreciseStyle.ink),lineWidth:LayoutPreciseStyle.edgeWidth)
                 } }
-                for line in result.furring.lines {
-                    var p = Path(); p.move(to:viewport.screen(result.frame.world(line.start))); p.addLine(to:viewport.screen(result.frame.world(line.end)))
-                    context.stroke(p,with:.color(.purple),style:.init(lineWidth:1,dash:[4,3]))
-                }
             }
-            context.stroke(layoutPath(surface.contour,transform:viewport),with:.color(.primary),lineWidth:1.5)
+            context.stroke(layoutPath(surface.contour,transform:viewport),with:.color(LayoutPreciseStyle.ink),lineWidth:LayoutPreciseStyle.edgeWidth)
             for (i,p) in surface.contour.enumerated() {
                 let s = viewport.screen(p)
                 context.draw(Text(vertexName(i)).font(.caption.bold()),at:.init(x:s.x-10,y:s.y-10))

@@ -1,5 +1,16 @@
 # Plaquisto — état du développement
 
+## Calepinage « Lecture précise » — 12 octobre 2026
+
+- Avant modification : état existant sauvegardé au commit `cecdcab` et poussé sur `origin/codex/survey-layout-refinements`. Nouvelle branche `codex/calepinage-lecture-precise` créée ensuite ; aucun merge sur main.
+- Rendu partagé du calepinage mur/plafond (donc cloisons et doublages inclus) : profils rectangulaires de 50 mm à l’échelle, traverses horizontales de fixation derrière les verticales, teintes grises alternées, même couleur/épaisseur de trait pour joints et contour. Repères, cotes et ouvertures restent nets. Géométrie et quantitatifs non modifiés.
+- Transition explicite Canvas via un scalaire animatable : flou léger vers netteté en mode Ossatures sur 0,5 s, sans animation des données ou du zoom ; respect de Réduire les animations. Même style pendant le déplacement et dans les aperçus des réglages d’ossature.
+- Icônes : menu Vue (angles/recentrage conservés), ossature III sans cadre, ouverture carré dans carré, électricité inchangée.
+- Les quatre raccourcis inférieurs sont remplacés par un résumé du mode actif, touchable pour ouvrir les réglages existants : parement/format/bords/pose, entraxe/longueur, ouvertures/dimensions et menu d’édition, éclairage/prises/diamètre/orientation. Pas de carte supplémentaire en mode Vue ; actions d’optimisation toujours présentes en plein écran.
+- Contrôle natif dans le simulateur : rendu plafond, changement des quatre modes, affichage des résumés et accès aux réglages d’ossature vérifiés, sans enregistrer de modification sur le plan de test.
+- Régression : deux passes de 156 tests SheetLayoutEngineTests réussies, dont 3 nouveaux tests largeur physique, ordre des profils et interpolation. Build simulateur et build iPhone signé réussis. Journaux `/tmp/plaquisto-lecture-precise-{build,device,tests}.log` et `/tmp/plaquisto-lecture-precise-tests-final.log`. Contrôle des quatre résumés et ouverture des réglages réalisé dans le simulateur.
+- Non installé sur iPhone à ce stade ; seuls les simulateurs ont été utilisés pour la vérification.
+
 ## Coupe stable, nettoyage maillage plafond/DAE et propositions graphiques — 12 octobre 2026
 
 - Coupe plafond : panneau de confirmation réservé dès l’entrée dans le mode découpe, transparent/inactif avant l’aperçu. Instructions stables. Cela évite la réduction du canvas et le recentrage à la levée du doigt ; validation de la dernière ligne affichée, sans recalcul depuis la position de relâchement.

@@ -129,7 +129,7 @@ struct LayoutVisibilityIcon: View {
     let state:LayoutVisibilityState
     var body:some View {
         Canvas { context,size in
-            let drawingWidth = state == .dimensioned ? 56.0 : kind == .framing ? 43.0 : 40.0
+            let drawingWidth = state == .dimensioned ? 56.0 : 40.0
             context.translateBy(x:(size.width-drawingWidth)/2,y:(size.height-40)/2)
             let hidden = state == .hidden
             let color = Color.primary.opacity(hidden ? 0.32 : 0.9)
@@ -153,19 +153,12 @@ struct LayoutVisibilityIcon: View {
                     context.draw(Text("α").font(.system(size:15,weight:.medium)).foregroundStyle(color),at:.init(x:30,y:17))
                 }
             case .framing:
-                // Two extruded profiles: omega/furring and U-channel, seen obliquely.
-                line([.init(x:2,y:30),.init(x:6,y:30),.init(x:6,y:20),.init(x:14,y:20),.init(x:14,y:30),.init(x:18,y:30)])
-                line([.init(x:6,y:20),.init(x:12,y:7),.init(x:20,y:7),.init(x:14,y:20)],closed:true,fill:true)
-                line([.init(x:14,y:30),.init(x:20,y:17),.init(x:20,y:7)])
-                line([.init(x:23,y:23),.init(x:23,y:34),.init(x:35,y:34),.init(x:35,y:23)])
-                line([.init(x:23,y:23),.init(x:29,y:10),.init(x:29,y:21),.init(x:23,y:34)],closed:true,fill:true)
-                line([.init(x:35,y:34),.init(x:41,y:21),.init(x:41,y:10),.init(x:35,y:23)],closed:true,fill:true)
-                line([.init(x:29,y:21),.init(x:41,y:21)])
+                for x in [10.0,20.0,30.0] {
+                    line([.init(x:x,y:5),.init(x:x,y:35)])
+                }
             case .opening:
                 line([.init(x:4,y:3),.init(x:36,y:3),.init(x:36,y:36),.init(x:4,y:36)],closed:true)
                 line([.init(x:8,y:7),.init(x:32,y:7),.init(x:32,y:32),.init(x:8,y:32)],closed:true)
-                line([.init(x:20,y:7),.init(x:20,y:32)])
-                line([.init(x:8,y:19),.init(x:32,y:19)])
             case .electrical:
                 line([.init(x:25,y:3),.init(x:8,y:22),.init(x:19,y:22),.init(x:14,y:37),.init(x:33,y:15),.init(x:22,y:15)],closed:true,fill:true)
             }
@@ -177,6 +170,47 @@ struct LayoutVisibilityIcon: View {
             }
         }.accessibilityHidden(true)
     }
+}
+
+/// Shared presentation only: millimetres here never change the quantity model.
+enum LayoutPreciseStyle {
+    static let profileWidthMM = 50.0
+    static let edgeWidth = 1.6
+    static let transitionDuration = 0.5
+    static let ink = Color(red:0.26,green:0.34,blue:0.39)
+    static let steel = Color(red:0.43,green:0.55,blue:0.63)
+    static let steelFill = Color(red:0.76,green:0.84,blue:0.89)
+    static func profilePolygon(_ line:LayoutJoint,width:Double = profileWidthMM) -> [LayoutPoint] {
+        let d=line.end-line.start
+        guard d.length.isFinite, d.length>0.001, width.isFinite, width>0 else { return [] }
+        let normal=LayoutPoint(x:-d.y,y:d.x)*(width/(2*d.length))
+        return [line.start+normal,line.end+normal,line.end-normal,line.start-normal]
+    }
+    static func orderedLines(_ geometry:LayoutFurringResult) -> [LayoutJoint] {
+        let rear=geometry.wallFixedProfiles.filter { $0.role == .supportHorizontal }.map(\.line)
+            + geometry.openingProfiles.filter { $0.role == .horizontal }.map(\.line)
+        return geometry.lines.filter { line in rear.contains { LayoutOpeningFraming.same($0,line) } }
+            + geometry.lines.filter { line in !rear.contains { LayoutOpeningFraming.same($0,line) } }
+    }
+    static func blur(focus:Double) -> Double { 0.6*(1-min(1,max(0,focus))) }
+    static func plateOpacity(focus:Double) -> Double { 0.64-0.48*min(1,max(0,focus)) }
+    static func drawProfiles(context:inout GraphicsContext,geometry:LayoutFurringResult,viewport:LayoutViewport) {
+        for line in orderedLines(geometry) {
+            let polygon=profilePolygon(line)
+            guard !polygon.isEmpty else { continue }
+            context.fill(layoutPath(polygon,transform:viewport),with:.color(steel))
+            context.fill(layoutPath(profilePolygon(line,width:34),transform:viewport),with:.color(steelFill))
+        }
+    }
+}
+
+/// Canvas itself doesn't interpolate captured state. Animate one explicit scalar
+/// so the steel becomes sharp over 0.5 s, without animating the model or viewport.
+private struct LayoutPreciseCanvas: View, Animatable {
+    var focus:Double
+    var render:(inout GraphicsContext,CGSize,Double)->Void
+    var animatableData:Double { get { focus } set { focus=newValue } }
+    var body:some View { Canvas { context,size in render(&context,size,focus) } }
 }
 
 struct LayoutStaggerIcon: View {
@@ -339,6 +373,7 @@ struct SheetLayoutView: View {
     var reviewLinkedDocument: ((LayoutDocument) throws -> ComponentAdjacencyReview)? = nil
     var saveReviewedDocument: ((LayoutDocument, ComponentAdjacencyReview, ComponentAdjacencyDecision) throws -> Void)? = nil
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var loadedInitial = false
     @StateObject private var model: LayoutEditorModel
     init(initialDocument: LayoutDocument? = nil, onSaveDocument: ((LayoutDocument) throws -> Void)? = nil, requiredSupportKind: LayoutSupportKind? = nil, sharedPartitionFraming: Bool = false,
@@ -719,11 +754,15 @@ struct SheetLayoutView: View {
                 }
             }.padding(3).background(Color(.tertiarySystemFill),in:Capsule()).padding(.horizontal)
             HStack(spacing:2) {
-                Button { visibility.angles.toggle() } label: {
-                    LayoutVisibilityIcon(kind:.angle,state:visibility.angles ? .visible : .hidden)
-                        .frame(height:42).frame(maxWidth:.infinity)
-                }.buttonStyle(.plain).accessibilityLabel("Angles")
-                    .accessibilityValue(visibility.angles ? "Visibles" : "Masqués")
+                Menu {
+                    Toggle("Afficher les angles",isOn:$visibility.angles)
+                    Button("Recentrer le plan") { recenterToken += 1 }
+                } label: {
+                    VStack(spacing:2) {
+                        Image(systemName:"eye").font(.system(size:23))
+                        Text("Vue").font(.caption2)
+                    }.frame(height:42).frame(maxWidth:.infinity)
+                }.buttonStyle(.plain).accessibilityLabel("Options de vue")
                 visibilityButton(.sheet,title:"Plaques",state:$visibility.sheets)
                 visibilityButton(.framing,title:"Ossatures",state:$visibility.framing)
                 visibilityButton(.opening,title:"Ouvertures",state:$visibility.openings)
@@ -733,7 +772,10 @@ struct SheetLayoutView: View {
                 let contour = drag?.document.surface.contour ?? document.surface.contour
                 let pivot = LayoutViewport.geometricCenter(contour)
                 let viewport = LayoutViewport(bounds:fittedBounds ?? LayoutViewport.fittedBounds(contour, rotation:0, pivot:pivot), size: proxy.size, zoom: zoom * magnification, pan: pan, rotation:rotation, pivot:pivot, fittingSize:canvasFitSize,mirrored:document.surface.kind == .ceiling && ceilingFromBelow)
-                Canvas { context, size in draw(context: &context, size: size, document: document, viewport: viewport) }
+                LayoutPreciseCanvas(focus:mode == .framing || !visibility.sheets.isVisible ? 1 : 0) { context,size,focus in
+                    draw(context:&context,size:size,document:document,viewport:viewport,framingFocus:focus)
+                }
+                    .animation(reduceMotion ? nil : .easeInOut(duration:LayoutPreciseStyle.transitionDuration),value:mode == .framing || !visibility.sheets.isVisible)
                     .background(Color(.secondarySystemGroupedBackground))
                     .contentShape(Rectangle())
                     .gesture(DragGesture(minimumDistance: 7).onChanged { value in dragChanged(value, document: document, viewport: viewport) }.onEnded { _ in
@@ -882,27 +924,67 @@ struct SheetLayoutView: View {
             if mode == .contour, let index = selectedVertex, document.surface.contour.indices.contains(index) {
                 Button("Modifier le sommet \(index + 1) · ajouter / supprimer") { sheet = .vertex(index) }.font(.subheadline)
             }
-            if mode == .grid, let layer = document.layers.first {
-                Text("Décalage X : \(layoutCM(layer.offset.x)) · Y : \(layoutCM(layer.offset.y))").font(.caption.monospacedDigit())
-            }
-            HStack(spacing: 8) {
-                bottomButton("Plaques",symbol:"rectangle.portrait",destination:.settings)
-                bottomButton(document.surface.kind == .wall ? "Ossature" : "Fourrures",symbol:"line.3.horizontal",destination:.furring)
-                bottomButton("Ouvertures",symbol:"plus.rectangle",destination:.opening(nil))
-                bottomButton(document.surface.kind == .wall ? "Électricité" : "Éclairage",symbol:"lightbulb",destination:.lighting)
-            }.tint(.teal).padding(.horizontal).padding(.bottom, 8)
+            activeModeSummary(document).padding(.horizontal).padding(.bottom,8)
             }
         }.padding(.top, 8)
     }
 
-    private func bottomButton(_ title:String,symbol:String,destination:LayoutEditorSheet) -> some View {
+    private func summaryCard(_ title:String,detail:String,symbol:String,destination:LayoutEditorSheet) -> some View {
         Button { sheet = destination } label: {
-            VStack(spacing:5) {
-                Image(systemName:symbol).font(.title3).frame(height:23)
-                Text(title).font(.caption).lineLimit(1).minimumScaleFactor(0.75)
-            }.frame(minWidth:0,maxWidth:.infinity).frame(height:64)
-                .background(.regularMaterial,in:RoundedRectangle(cornerRadius:12))
-        }.buttonStyle(.plain).frame(minWidth:0,maxWidth:.infinity)
+            HStack(spacing:12) {
+                Image(systemName:symbol).font(.title3).foregroundStyle(LayoutPreciseStyle.steel)
+                VStack(alignment:.leading,spacing:4) {
+                    Text(title).font(.subheadline.weight(.semibold)).foregroundStyle(.primary)
+                    Text(detail).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal:false,vertical:true)
+                }.frame(maxWidth:.infinity,alignment:.leading)
+                Image(systemName:"slider.horizontal.3").foregroundStyle(Color.accentColor)
+            }.padding(13).background(.regularMaterial,in:RoundedRectangle(cornerRadius:16))
+        }.buttonStyle(.plain).accessibilityHint("Ouvrir les réglages détaillés")
+    }
+
+    @ViewBuilder private func activeModeSummary(_ document:LayoutDocument) -> some View {
+        switch mode {
+        case .grid:
+            if let layer=document.layers.first {
+                let name=catalogue.layoutFormats.first { $0.id == layer.catalogFormatID }?.title
+                    ?? (layer.catalogFormatID == nil ? "Parement personnalisé" : "Parement enregistré")
+                summaryCard(name,
+                    detail:"\(layoutCM(layer.sheetWidth)) × \(layoutCM(layer.sheetLength)) · \(layer.fourTaperedEdges == true ? "4" : "2") bords amincis · \(layer.staggered == true ? "Quinconce" : "Pose alignée")",
+                    symbol:"rectangle.portrait",destination:.settings)
+            }
+        case .framing:
+            if let f=document.layers.first?.furring {
+                let length=model.result?.furring.lines.reduce(0) { $0+($1.end-$1.start).length } ?? 0
+                summaryCard(f.openingSystem == .studs || f.isFurringSystem == false ? "Ossature rails et montants" : "Ossature sur fourrures",
+                    detail:"Entraxe \(layoutCM(f.spacing)) · \((length/1000).formatted(.number.precision(.fractionLength(1)))) ml au total" + (f.includesHorizontalSupportFurring == true ? " · Fourrures horizontales de fixation" : ""),
+                    symbol:"line.3.horizontal",destination:.furring)
+            } else {
+                summaryCard("Aucune ossature configurée",detail:"Définir l’entraxe et le sens de pose",symbol:"line.3.horizontal",destination:.furring)
+            }
+        case .openings:
+            VStack(spacing:6) {
+                let details=document.surface.openings.prefix(2).map {
+                    "\($0.kind.rawValue) · \(layoutCM($0.bounds.width)) × \(layoutCM($0.bounds.height))"
+                }.joined(separator:" · ")
+                summaryCard("\(document.surface.openings.count) ouverture(s)",detail:details.isEmpty ? "Ajouter une porte, une fenêtre ou une réservation" : details,symbol:"square.on.square",destination:.opening(nil))
+                if !document.surface.openings.isEmpty {
+                    Menu("Modifier une ouverture") {
+                        ForEach(document.surface.openings) { opening in
+                            Button("\(opening.kind.rawValue) · \(layoutCM(opening.bounds.width)) × \(layoutCM(opening.bounds.height))") { sheet = .opening(opening.id) }
+                        }
+                    }.font(.caption)
+                }
+            }
+        case .lighting:
+            let lights=document.lighting
+            let count=lights?.positions.count ?? 0
+            let sockets=lights.map { l in l.positions.indices.filter { l.kind(at:$0) == .socket }.count } ?? 0
+            summaryCard(document.surface.kind == .wall ? "\(count-sockets) lumière(s) · \(sockets) prise(s)" : "\(count) spots",
+                detail:count == 0 ? "Configurer la répartition" : "Diamètre \(layoutCM(lights?.diameter ?? 68))" + (document.surface.kind == .ceiling ? " · \(lights?.perpendicularToFurring == true ? "Perpendiculaires" : "Parallèles") aux fourrures" : ""),
+                symbol:"bolt",destination:.lighting)
+        case .move,.contour:
+            EmptyView()
+        }
     }
 
     @ViewBuilder private func lightingControls(_ document:LayoutDocument) -> some View {
@@ -1069,14 +1151,29 @@ struct SheetLayoutView: View {
         if wasClean { cleanDocument = document }
     }
 
-    private func draw(context: inout GraphicsContext, size: CGSize, document: LayoutDocument, viewport: LayoutViewport) {
+    private func drawSteel(context:inout GraphicsContext,document:LayoutDocument,viewport:LayoutViewport,focus:Double) {
+        guard visibility.framing.isVisible, let layer=document.layers.first else { return }
+        let current=LayoutPlanning.worldFurring(surface:document.surface,layer:layer)
+        var mask=layoutPath(document.surface.contour,transform:viewport)
+        for opening in document.surface.openings { mask.addPath(layoutPath(opening.contour,transform:viewport)) }
+        context.drawLayer { steel in
+            steel.clip(to:mask,style:.init(eoFill:true))
+            let blur=LayoutPreciseStyle.blur(focus:focus)
+            if blur>0.001 { steel.addFilter(.blur(radius:blur)) }
+            // Physical rectangles preserve width under zoom, rotation and mirroring.
+            LayoutPreciseStyle.drawProfiles(context:&steel,geometry:current,viewport:viewport)
+        }
+    }
+
+    private func draw(context: inout GraphicsContext, size: CGSize, document: LayoutDocument, viewport: LayoutViewport,framingFocus:Double) {
         let surface = document.surface
+        drawSteel(context:&context,document:document,viewport:viewport,focus:framingFocus)
         var numbers: [(label:String, anchor:CGPoint, size:CGSize, fits:Bool)] = []
         // The construction axes remain part of the coordinate system used by
         // snapping and alignment; only their visual overlay is intentionally hidden.
         if let result = model.result {
             if drag != nil && mode != .lighting {
-                drawLiveGrids(context:&context,document:document,viewport:viewport)
+                drawLiveGrids(context:&context,document:document,viewport:viewport,framingFocus:framingFocus)
             } else {
             let boardEdges = visibility.sheets.showsDimensions ? result.sheets.flatMap { placement in
                 placement.pieces.flatMap { piece in
@@ -1091,14 +1188,14 @@ struct SheetLayoutView: View {
             })
             let boardLabels = LayoutDimensionLabels.representatives(boardEdges,preferred:visibleBoardEdges)
             var boardEdgeIndex = 0
-            for placement in result.sheets where visibility.sheets.isVisible {
+            for (placementIndex,placement) in result.sheets.enumerated() where visibility.sheets.isVisible {
                 for piece in placement.pieces {
                     var path = layoutPath(piece.contour.map(result.frame.world), transform: viewport)
                     for hole in piece.holes { path.addPath(layoutPath(hole.map(result.frame.world), transform: viewport)) }
-                    let color = Color.gray
-                    context.fill(path, with: .linearGradient(Gradient(colors:[Color.gray.opacity(0.13),Color.gray.opacity(0.27)]),startPoint:.zero,endPoint:.init(x:size.width,y:size.height)), style: FillStyle(eoFill: true))
-                    context.stroke(path, with: .color(.primary.opacity(0.16)), lineWidth: 3)
-                    context.stroke(path, with: .color(.primary.opacity(0.5)), lineWidth: 1)
+                    let color = LayoutPreciseStyle.ink
+                    let tint=placementIndex.isMultiple(of:2) ? Color(red:0.98,green:0.985,blue:0.99) : Color(red:0.86,green:0.89,blue:0.91)
+                    context.fill(path,with:.color(tint.opacity(LayoutPreciseStyle.plateOpacity(focus:framingFocus))),style:.init(eoFill:true))
+                    context.stroke(path,with:.color(LayoutPreciseStyle.ink),lineWidth:LayoutPreciseStyle.edgeWidth)
                     if visibility.sheets.showsDimensions {
                         for edge in LayoutGeometry.edges(piece.contour) {
                             if boardLabels.contains(boardEdgeIndex) {
@@ -1125,7 +1222,6 @@ struct SheetLayoutView: View {
             }
             if visibility.framing.isVisible, let layer=document.layers.first {
                 let current=LayoutPlanning.worldFurring(surface:surface,layer:layer)
-                let joints=result.joints.map { LayoutJoint(start:result.frame.world($0.start),end:result.frame.world($0.end)) }
                 let visibleLengths = Set(current.lines.indices.filter { i in
                     let line = current.lines[i]
                     return CGRect(origin: .zero, size: size).insetBy(dx: 16, dy: 16)
@@ -1133,16 +1229,8 @@ struct SheetLayoutView: View {
                 })
                 let labels = LayoutDimensionLabels.representatives(current.lines, preferred: visibleLengths)
                 for (index, line) in current.lines.enumerated() {
-                    let junction = current.fixedLines.contains(line) || LayoutPlanning.isJunction(line,joints:joints)
-                    let openingVertical = current.openingProfiles.contains {
-                        $0.role != .horizontal && LayoutOpeningFraming.same($0.line, line)
-                    }
-                    var path = Path()
-                    path.move(to:viewport.screen(line.start))
-                    path.addLine(to:viewport.screen(line.end))
-                    context.stroke(path,with:.color(.purple),style:StrokeStyle(lineWidth:junction ? 2.5 : 1.5,dash:openingVertical || !junction ? [6,3] : []))
                     if visibility.framing.showsDimensions && labels.contains(index) {
-                        drawAlongDimension(context:&context,a:line.start,b:line.end,viewport:viewport,color:.purple,offset:7)
+                        drawAlongDimension(context:&context,a:line.start,b:line.end,viewport:viewport,color:LayoutPreciseStyle.steel,offset:7)
                     }
                 }
                 // Intermediate supports remain in the takeoff, but their dots
@@ -1150,18 +1238,18 @@ struct SheetLayoutView: View {
                 if visibility.framing.showsDimensions {
                     for callout in framingCallouts(document:document,viewport:viewport) {
                         var p=Path(); p.move(to:callout.a); p.addLine(to:callout.b)
-                        context.stroke(p,with:.color(.purple),lineWidth:0.8)
+                        context.stroke(p,with:.color(LayoutPreciseStyle.steel),lineWidth:0.8)
                         var leaders=Path()
                         leaders.move(to:viewport.screen(callout.dimension.start)); leaders.addLine(to:callout.a)
                         leaders.move(to:viewport.screen(callout.dimension.end)); leaders.addLine(to:callout.b)
-                        context.stroke(leaders,with:.color(.purple.opacity(0.4)),style:.init(lineWidth:0.6,dash:[2,3]))
+                        context.stroke(leaders,with:.color(LayoutPreciseStyle.steel.opacity(0.4)),style:.init(lineWidth:0.6,dash:[2,3]))
                         context.fill(Path(roundedRect:callout.rect,cornerRadius:5),with:.color(Color(.secondarySystemGroupedBackground)))
-                        context.draw(Text(layoutCM(callout.dimension.distance)).font(.system(size:11,weight:.semibold)).foregroundStyle(.purple),at:callout.center)
+                        context.draw(Text(layoutCM(callout.dimension.distance)).font(.system(size:11,weight:.semibold)).foregroundStyle(LayoutPreciseStyle.steel),at:callout.center)
                     }
                 }
             }
         }
-        context.stroke(layoutPath(surface.contour, transform: viewport), with: .color(.primary), lineWidth: 2)
+        context.stroke(layoutPath(surface.contour, transform: viewport), with: .color(LayoutPreciseStyle.ink), lineWidth: LayoutPreciseStyle.edgeWidth)
         let layer = document.layers.first
         let referenceEdge = mode == .framing && layer?.furring?.usesOwnReference == true ? layer?.furring?.referenceEdge : layer?.referenceEdge
         if surface.kind == .ceiling, (mode == .grid || mode == .framing), let edge = referenceEdge,
@@ -1226,7 +1314,7 @@ struct SheetLayoutView: View {
         }
     }
 
-    private func drawLiveGrids(context:inout GraphicsContext,document:LayoutDocument,viewport:LayoutViewport) {
+    private func drawLiveGrids(context:inout GraphicsContext,document:LayoutDocument,viewport:LayoutViewport,framingFocus:Double) {
         guard let initialLayer = document.layers.first else { return }
         let layer=initialLayer.forSurface(document.surface)
         let frame = LayoutGridFrame.make(surface:document.surface,layer:layer)
@@ -1239,33 +1327,15 @@ struct SheetLayoutView: View {
             for loop in loops { path.addPath(layoutPath(loop,transform:viewport)) }
             return path
         }
-        let boardClip = clippingPath(laying), framingClip = clippingPath(measured)
-        if visibility.sheets.isVisible { context.fill(boardClip,with:.color(.gray.opacity(0.18)),style:.init(eoFill:true)) }
-        func grid(step:Double,offset:Double,vertical:Bool,color:Color) {
-            guard step >= 1 else { return }
-            var clipped = context
-            clipped.clip(to:color == .purple ? framingClip : boardClip,style:.init(eoFill:true))
-            let low = vertical ? bounds.min.x : bounds.min.y, high = vertical ? bounds.max.x : bounds.max.y
-            let start = Int(floor((low-offset)/step)), end = Int(ceil((high-offset)/step))
-            guard end-start <= 2000 else { return }
-            for n in start...end {
-                let position = offset+Double(n)*step
-                let a = vertical ? LayoutPoint(x:position,y:bounds.min.y) : LayoutPoint(x:bounds.min.x,y:position)
-                let z = vertical ? LayoutPoint(x:position,y:bounds.max.y) : LayoutPoint(x:bounds.max.x,y:position)
-                var path = Path(); path.move(to:viewport.screen(frame.world(a))); path.addLine(to:viewport.screen(frame.world(z)))
-                clipped.stroke(path,with:.color(color),lineWidth:color == .purple ? 1.5 : 0.8)
-            }
-        }
+        let boardClip = clippingPath(laying)
         if visibility.sheets.isVisible {
-            if LayoutBoardGrid.staggerDistance(layer)>0 {
-                var clipped=context; clipped.clip(to:boardClip,style:.init(eoFill:true))
-                for cell in (try? LayoutBoardGrid.cells(bounds:bounds,layer:layer)) ?? [] {
-                    let rectangle=LayoutBounds(min:cell.origin,max:cell.origin + .init(x:layer.cellWidth,y:layer.cellHeight))
-                    clipped.stroke(layoutPath(rectangle.polygon.map(frame.world),transform:viewport),with:.color(.gray),lineWidth:0.8)
-                }
-            } else {
-                grid(step:layer.cellWidth,offset:layer.offset.x,vertical:true,color:.gray)
-                grid(step:layer.cellHeight,offset:layer.offset.y,vertical:false,color:.gray)
+            var clipped=context; clipped.clip(to:boardClip,style:.init(eoFill:true))
+            for (i,cell) in ((try? LayoutBoardGrid.cells(bounds:bounds,layer:layer)) ?? []).enumerated() {
+                let rectangle=LayoutBounds(min:cell.origin,max:cell.origin + .init(x:layer.cellWidth,y:layer.cellHeight))
+                let path=layoutPath(rectangle.polygon.map(frame.world),transform:viewport)
+                let tint=i.isMultiple(of:2) ? Color(red:0.98,green:0.985,blue:0.99) : Color(red:0.86,green:0.89,blue:0.91)
+                clipped.fill(path,with:.color(tint.opacity(LayoutPreciseStyle.plateOpacity(focus:framingFocus))))
+                clipped.stroke(path,with:.color(LayoutPreciseStyle.ink),lineWidth:LayoutPreciseStyle.edgeWidth)
             }
         }
     }

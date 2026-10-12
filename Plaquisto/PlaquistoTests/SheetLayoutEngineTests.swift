@@ -3,6 +3,38 @@ import SwiftUI
 @testable import Plaquisto
 
 final class SheetLayoutEngineTests: XCTestCase {
+    func testPreciseProfilesAreFiftyMillimetresInEveryDirection() {
+        for end:LayoutPoint in [.init(x:1000,y:0),.init(x:0,y:1000),.init(x:800,y:600)] {
+            let line=LayoutJoint(start:.zero,end:end)
+            let polygon=LayoutPreciseStyle.profilePolygon(line)
+            XCTAssertEqual(polygon.count,4)
+            XCTAssertEqual((polygon[0]-polygon[3]).length,50,accuracy:0.0001)
+            XCTAssertEqual((polygon[1]-polygon[0]).length,line.end.length,accuracy:0.0001)
+            XCTAssertEqual(abs(LayoutGeometry.area(polygon)),50*end.length,accuracy:0.001)
+        }
+        XCTAssertTrue(LayoutPreciseStyle.profilePolygon(.init(start:.zero,end:.zero)).isEmpty)
+    }
+
+    func testPreciseFramingPlacesSupportHorizontalsBehindVerticals() {
+        let v=LayoutJoint(start:.zero,end:.init(x:0,y:2500))
+        let h=LayoutJoint(start:.init(x:-1000,y:1200),end:.init(x:1000,y:1200))
+        let lintel=LayoutJoint(start:.init(x:0,y:2100),end:.init(x:900,y:2100))
+        var geometry=LayoutFurringResult(lines:[v,h,lintel])
+        geometry.wallFixedProfiles=[.init(line:h,role:.supportHorizontal)]
+        geometry.openingProfiles=[.init(line:lintel,role:.horizontal)]
+        XCTAssertEqual(LayoutPreciseStyle.orderedLines(geometry),[h,lintel,v])
+        XCTAssertEqual(geometry.lines,[v,h,lintel],"Presentation must not mutate quantities or geometry")
+    }
+
+    func testPreciseFocusInterpolatesOnlyPresentation() {
+        XCTAssertEqual(LayoutPreciseStyle.transitionDuration,0.5)
+        XCTAssertEqual(LayoutPreciseStyle.blur(focus:0),0.6,accuracy:0.001)
+        XCTAssertEqual(LayoutPreciseStyle.blur(focus:0.5),0.3,accuracy:0.001)
+        XCTAssertEqual(LayoutPreciseStyle.blur(focus:1),0)
+        XCTAssertEqual(LayoutPreciseStyle.plateOpacity(focus:0),0.64,accuracy:0.001)
+        XCTAssertEqual(LayoutPreciseStyle.plateOpacity(focus:1),0.16,accuracy:0.001)
+    }
+
     func testAutomaticPartitionHasTwoMirroredFacesAndSharedFrameForEverySkin() throws {
         let surface = Surface2D(name:"Cloison",kind:.wall,contour:LayoutPreset.rectangle.contour(length:2600,height:2400,secondaryHeight:0))
         var c = CloisonDistributionConfiguration(); c.layers=2; c.geometryMode="surface"; c.enteredSurface=6.24
