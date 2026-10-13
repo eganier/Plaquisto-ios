@@ -684,6 +684,63 @@ final class ProjectStoreTests: XCTestCase {
         XCTAssertEqual(AdhesiveFacingFormat.selected(id: selected.id, in: [only, selected]), selected)
     }
 
+    private func adhesiveCatalogue(records:[[String:Any]]) throws -> Data {
+        try JSONSerialization.data(withJSONObject:["doublageParementColle":[
+            "parements":records,
+            "catalogue":["id":"rule","data":["schema_version":1,"allowed_families":["BA6","BA13"],
+                "formats":[["width_mm":1200,"height_mm":2700]]]],
+            "quantitatif":["id":"quantities","data":["schema_version":1,
+                "coefficients":["plate_m2_m2":1.05,"adhesive_kg_m2":1.8,"band_ml_m2":1.4,"powder_kg_m2":0.33]]]
+        ]])
+    }
+
+    func testAdhesiveFacingUsesCommonReferencesAndProductSpecificFormats() throws {
+        let store=AdhesiveFacingReferenceStore()
+        let records:[[String:Any]] = [
+            ["id":"FACING-BA13-QUATRE-BORDS-AMINCIS","title":"BA13 quatre bords amincis","data":[
+                "mechanical_family":"BA13","function":"quatre_bords_amincis","catalog_schema_version":2,
+                "dimensions":[["width_mm":1200,"length_mm":2400]]]],
+            ["id":"FACING-BA25-STANDARD","title":"BA25","data":[
+                "mechanical_family":"BA25","function":"standard","catalog_schema_version":2,
+                "compatible_work_codes":["doublage-peripherique-parement-colle"],
+                "dimensions":[["width_mm":900,"length_mm":2600]]]],
+            ["id":"incompatible","data":["mechanical_family":"BA13","function":"standard","catalog_schema_version":2,
+                "compatible_work_codes":["other"],"dimensions":[["width_mm":1200,"length_mm":2500]]]],
+            ["id":"invalid","data":["mechanical_family":"BA13","function":"standard","catalog_schema_version":2,
+                "dimensions":[["width_mm":-1,"length_mm":2500]]]]
+        ]
+        XCTAssertTrue(try store.apply(data:adhesiveCatalogue(records:records)))
+        XCTAssertEqual(store.families,["BA13","BA25"])
+        let four=try XCTUnwrap(store.functions(for:"BA13").first)
+        XCTAssertEqual(four.id,"FACING-BA13-QUATRE-BORDS-AMINCIS")
+        XCTAssertEqual(four.formats.map(\.id),["1200x2400"])
+        XCTAssertEqual(four.quantityTitle(format:four.formats[0]),"BA13 quatre bords amincis · 1200 × 2400 mm")
+        XCTAssertEqual(store.formats(for:"FACING-BA25-STANDARD").map(\.id),["900x2600"])
+        XCTAssertEqual(store.quantities.plate,1.05)
+        XCTAssertEqual(store.quantities.adhesive,1.8)
+    }
+
+    func testAdhesiveFacingPreservesSavedFormatWithoutAddingItToNewWorks() throws {
+        let store=AdhesiveFacingReferenceStore()
+        XCTAssertTrue(try store.apply(data:adhesiveCatalogue(records:[
+            ["id":"board","title":"BA13","data":["mechanical_family":"BA13","function":"standard",
+                "catalog_schema_version":2,"dimensions":[["width_mm":1200,"length_mm":2400]]]]
+        ])))
+        XCTAssertEqual(store.formats(for:"board",preserving:"1200x2700").map(\.id),["1200x2400","1200x2700"])
+        XCTAssertEqual(store.formats(for:"board").map(\.id),["1200x2400"])
+        XCTAssertEqual(store.formats(for:"board",preserving:"1200x2400").count,1)
+        XCTAssertNil(AdhesiveFacingFormat.legacy("1200x-1"))
+        XCTAssertNil(AdhesiveFacingFormat.legacy("bad"))
+    }
+
+    func testAdhesiveFacingStillDecodesLegacyCatalogue() throws {
+        let store=AdhesiveFacingReferenceStore()
+        XCTAssertTrue(try store.apply(data:adhesiveCatalogue(records:[
+            ["id":"legacy","title":"BA13","data":["mechanical_family":"BA13","function":"standard"]]
+        ])))
+        XCTAssertEqual(store.formats(for:"legacy").map(\.id),["1200x2700"])
+    }
+
     func testAdhesiveFacingFormRendersWhileCatalogueIsStillLoading() async throws {
         // Regression: the alert message accessed formats[1] before the first network response.
         for editing in [false, true] {

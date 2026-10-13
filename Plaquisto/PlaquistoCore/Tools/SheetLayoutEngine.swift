@@ -164,6 +164,8 @@ struct LayoutFurringSettings: Codable, Equatable {
     var includesHorizontalSupportFurring: Bool? = nil
     var maximumSupportSpacing: Double? = nil // millimetres, Admin rule snapshot
     var firstSupportHeightWhenMultiple: Double? = nil
+    /// Fixed end studs, only for rail/stud peripheral linings (not partitions).
+    var liningEndStudInset: Double? = nil
 
     func resolvedOrientation(boardOrientation: LayoutOrientation) -> LayoutOrientation {
         if let orientation { return orientation }
@@ -234,7 +236,7 @@ struct LayoutFurringResult: Equatable {
     }
 }
 struct LayoutWallFixedProfile: Equatable {
-    enum Role { case leftFurring, rightAngle, supportHorizontal }
+    enum Role { case leftFurring, rightAngle, supportHorizontal, endStud }
     var line: LayoutJoint
     var role: Role
 }
@@ -280,6 +282,26 @@ enum LayoutOpeningFraming {
     static func same(_ a: LayoutJoint, _ b: LayoutJoint) -> Bool {
         ((a.start-b.start).length < 0.5 && (a.end-b.end).length < 0.5) ||
         ((a.start-b.end).length < 0.5 && (a.end-b.start).length < 0.5)
+    }
+    /// The fixed window jamb replaces a regular furring immediately outside it
+    /// (up to 100 mm axis-to-axis). Only subtract the height actually covered by
+    /// that jamb: sloping/stepped walls can leave a useful segment above it.
+    /// Called on the regular grid only, never on the opening/perimeter profiles.
+    static func subtractWindowNeighbors(_ line: LayoutJoint, openings: [LayoutOpening],
+                                        profiles: [LayoutOpeningProfile]) -> [LayoutJoint] {
+        guard abs(line.start.x-line.end.x)<0.5 else { return [line] }
+        let x=line.start.x
+        var replacements: [LayoutJoint] = []
+        for opening in openings where opening.kind == .window || opening.kind == .roofWindow {
+            let left=opening.bounds.min.x-50, right=opening.bounds.max.x+50
+            for side in [left,right] {
+                let outsideDistance=side == left ? side-x : x-side
+                guard outsideDistance >= -0.001, outsideDistance <= 100.001 else { continue }
+                replacements += profiles.filter { $0.role == .side && abs($0.line.start.x-side)<0.5 }
+                    .map { .init(start:.init(x:x,y:$0.line.start.y),end:.init(x:x,y:$0.line.end.y)) }
+            }
+        }
+        return subtractFixed(line,fixed:replacements)
     }
     static func clip(_ line: LayoutJoint, to surface: Surface2D) -> [LayoutJoint] {
         let a = line.start, d = line.end-a
@@ -442,6 +464,19 @@ enum LayoutFurringEngine {
                 result.wallFixedProfiles += wallRows.map { .init(line:$0,role:.supportHorizontal) }
             }
         }
+        if surface.kind == .wall, settings.openingSystem == .studs,
+           let inset = settings.liningEndStudInset {
+            guard inset.isFinite, inset > 0, inset <= 1000 else { throw LayoutGeometryError.invalidFormat }
+            // On very narrow returns keep one central stud rather than crossing
+            // the end profiles or placing them outside the measured wall.
+            let positions = b.width > 2*inset ? [b.min.x+inset,b.max.x-inset] : [b.center.x]
+            for x in positions {
+                let line = LayoutJoint(start:.init(x:x,y:b.min.y),end:.init(x:x,y:b.max.y))
+                result.wallFixedProfiles += LayoutOpeningFraming.clip(line,to:surface)
+                    .flatMap { LayoutOpeningFraming.subtractFixed($0,fixed:result.fixedLines) }
+                    .map { .init(line:$0,role:.endStud) }
+            }
+        }
         let inset = surface.kind == .ceiling ? settings.peripheralInset ?? 0 : 0
         guard inset.isFinite, inset >= 0, inset <= 1000 else { throw LayoutGeometryError.invalidFormat }
         let perimeter = settings.peripheralReferenceContour?.map(gridFrame.local) ?? surface.contour
@@ -512,8 +547,18 @@ enum LayoutFurringEngine {
                 segments.contains { (contact.point-$0.start).length < 0.01 || (contact.point-$0.end).length < 0.01 }
             })
         }
+        if surface.kind == .wall, settings.openingSystem == .furring {
+            result.lines = result.lines.flatMap {
+                LayoutOpeningFraming.subtractWindowNeighbors($0,openings:surface.openings,profiles:result.openingProfiles)
+            }
+        }
         result.lines = result.lines.flatMap { LayoutOpeningFraming.subtractFixed($0, fixed: result.fixedLines) }
         result.lines += result.fixedLines
+        if surface.kind == .wall, settings.openingSystem == .furring {
+            result.contacts = result.contacts.filter { contact in
+                result.lines.contains { LayoutGeometry.distance(contact.point,to:$0.start,$0.end)<0.01 }
+            }
+        }
         if surface.kind == .wall, settings.openingSystem == .furring, let count = settings.intermediateSupportLines, count > 0 {
             for line in result.lines where abs(line.end.x-line.start.x)<0.5 {
                 if result.wallFixedProfiles.contains(where:{ $0.role == .rightAngle && LayoutOpeningFraming.same($0.line,line) }) { continue }
@@ -618,8 +663,24 @@ enum SheetLayoutEngine {
         let w = layer.cellWidth, h = layer.cellHeight
         guard w.isFinite, h.isFinite, w >= 1, h >= 1, w <= 100_000, h <= 100_000,
               layer.offset.finite, abs(layer.offset.x) <= 1_000_000, abs(layer.offset.y) <= 1_000_000 else { throw LayoutGeometryError.invalidFormat }
-        let cells = try LayoutBoardGrid.cells(bounds:surface.bounds,layer:layer)
-        var sheets: [LayoutSheetPlacement] = []
+        var sheets = try LayoutBoardGrid.clippedSheets(surface:surface,layer:layer)
+        let joints = LayoutBoardGrid.joints(sheets.flatMap(\.pieces))
+        sheets = try LayoutOffcutPacking.assign(sheets, surface:measured, furring:furring, enabled:true,
+            preserveFactoryEdges: surface.kind == .ceiling && layer.fourTaperedEdges == true)
+        return .init(sheets: sheets, joints: joints, frame:frame,
+                     furring:furring,staggerDistance:LayoutBoardGrid.staggerDistance(layer))
+    }
+}
+
+/// One source for the computed layout and the lightweight grid drawn during a
+/// drag. Alternate strips shift along the LONG board axis, never across it.
+enum LayoutBoardGrid {
+    /// Geometry only: no offcut packing or optimization during a gesture.
+    /// Surface is in grid coordinates, with its laying contour already applied.
+    static func clippedSheets(surface:Surface2D,layer:LayoutLayer) throws -> [LayoutSheetPlacement] {
+        let w=layer.cellWidth, h=layer.cellHeight
+        let cells = try cells(bounds:surface.bounds,layer:layer)
+        var sheets:[LayoutSheetPlacement]=[]
         for cell in cells {
                 try Task.checkCancellation()
                 let origin = cell.origin
@@ -637,17 +698,15 @@ enum SheetLayoutEngine {
                 guard !pieces.isEmpty else { continue }
                 sheets.append(.init(id: id, number: sheets.count + 1, origin: origin, width: w, height: h, pieces: pieces))
         }
-        let joints = LayoutBoardGrid.joints(sheets.flatMap(\.pieces))
-        sheets = try LayoutOffcutPacking.assign(sheets, surface:measured, furring:furring, enabled:true,
-            preserveFactoryEdges: surface.kind == .ceiling && layer.fourTaperedEdges == true)
-        return .init(sheets: sheets, joints: joints, frame:frame,
-                     furring:furring,staggerDistance:LayoutBoardGrid.staggerDistance(layer))
+        return sheets
     }
-}
-
-/// One source for the computed layout and the lightweight grid drawn during a
-/// drag. Alternate strips shift along the LONG board axis, never across it.
-enum LayoutBoardGrid {
+    /// Framing movement, lighting and camera changes do not invalidate board cuts.
+    static func sameGeometry(_ a:LayoutDocument,_ b:LayoutDocument) -> Bool {
+        guard a.surface == b.surface, var x=a.layers.first, var y=b.layers.first else { return false }
+        guard staggerDistance(x) == staggerDistance(y) else { return false }
+        x.furring=nil; y.furring=nil
+        return x == y
+    }
     struct Cell { var id:String; var origin:LayoutPoint }
     static func staggerChoices(_ layer:LayoutLayer) -> [Double] {
         let length = max(layer.cellWidth,layer.cellHeight)

@@ -221,6 +221,12 @@ struct LayoutWallElectricalForm: View {
                         LayoutLivePreview(surface:surface,layer:layer)
                         Canvas { context,size in
                             let v = LayoutViewport(bounds:surface.bounds,size:size,zoom:1,pan:.zero)
+                            for height in LayoutWallLighting.heights(lighting,surface:surface) {
+                                for segment in LayoutWallLighting.rowSegments(height:height,surface:surface) {
+                                    var path=Path(); path.move(to:v.screen(segment.start)); path.addLine(to:v.screen(segment.end))
+                                    context.stroke(path,with:.color(.orange.opacity(0.6)),style:.init(lineWidth:1,dash:[4,4]))
+                                }
+                            }
                             if let lighting {
                                 for (i,p) in lighting.positions.enumerated() {
                                     let s = v.screen(p), color:Color = lighting.kind(at:i) == .socket ? .blue : .orange
@@ -234,10 +240,30 @@ struct LayoutWallElectricalForm: View {
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 Section("Ajouter une rangée") {
+                    LayoutDimensionField(title:"Hauteur depuis le sol",millimetres:$height)
+                    Button("Créer la rangée",systemImage:"plus.circle") {
+                        do { lighting=try LayoutWallLighting.addingRow(lighting,height:height,surface:surface); error=nil }
+                        catch { self.error=error.localizedDescription }
+                    }.disabled(height<=0)
+                }
+                if !LayoutWallLighting.heights(lighting,surface:surface).isEmpty {
+                    Section("Rangées") {
+                        ForEach(LayoutWallLighting.heights(lighting,surface:surface),id:\.self) { row in
+                            Button { height=row } label: {
+                                LabeledContent("Hauteur depuis le sol",value:layoutCM(row))
+                            }
+                        }
+                        .onDelete { offsets in
+                            let rows=LayoutWallLighting.heights(lighting,surface:surface)
+                            lighting?.wallRowHeights=rows.enumerated().filter { !offsets.contains($0.offset) }.map(\.element)
+                        }
+                        Text("Appliquez, puis ajoutez vos points sur le plan : ils s’aimantent à ces hauteurs.").font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+                Section("Répartir des points à cette hauteur") {
                     Picker("Équipement",selection:$kind) { ForEach(LayoutElectricalKind.allCases,id:\.self) { Text($0.rawValue) } }.pickerStyle(.segmented)
                     Stepper("\(count) point(s) aligné(s)",value:$count,in:1...min(64,max(1,64-(lighting?.count ?? 0))))
-                    LayoutDimensionField(title:"Hauteur depuis le sol",millimetres:$height)
-                    Button("Ajouter la rangée à cette hauteur",systemImage:"plus.circle") {
+                    Button("Ajouter les points à \(layoutCM(height))",systemImage:"plus.circle") {
                         do { lighting = try LayoutPlanning.addingWallRow(to:lighting,count:count,height:height,kind:kind,surface:surface); error = nil }
                         catch { self.error = "Cette rangée rencontre un bord, une ouverture ou un autre point. Modifiez la hauteur ou le nombre, ou ajoutez les points un à un sur le plan." }
                     }.disabled(height <= 0 || (lighting?.count ?? 0)+count > 64)
@@ -247,7 +273,12 @@ struct LayoutWallElectricalForm: View {
                     Section("Implantation") {
                         LabeledContent("Points positionnés",value:"\(lighting.count)")
                         Text("Ajoutez une autre rangée à une autre hauteur, ou appliquez pour déplacer et aligner les points directement sur le plan.").font(.footnote)
-                        Button("Effacer les points",role:.destructive) { self.lighting = nil }
+                        Button("Effacer les points",role:.destructive) {
+                            var copy=lighting
+                            copy.wallRowHeights=LayoutWallLighting.heights(lighting,surface:surface)
+                            copy.positions=[]; copy.kinds=[]; copy.count=0
+                            self.lighting=copy
+                        }.disabled(lighting.positions.isEmpty)
                     }
                 }
                 Section { Text("Plan géométrique d’implantation, sans validation des règles électriques ni des distances réglementaires.").font(.footnote).foregroundStyle(.secondary) }
@@ -257,6 +288,49 @@ struct LayoutWallElectricalForm: View {
             .toolbar {
                 ToolbarItem(placement:.cancellationAction) { Button("Annuler") { dismiss() } }
                 ToolbarItem(placement:.confirmationAction) { Button("Appliquer") { onSave(lighting); dismiss() } }
+            }
+        }
+    }
+}
+
+struct LayoutWallPointForm: View {
+    @Environment(\.dismiss) private var dismiss
+    let lighting:LayoutLighting
+    let index:Int
+    let surface:Surface2D
+    let onSave:(LayoutLighting)->Void
+    @State private var fromRight=false
+    @State private var distance:Double
+    @State private var error:String?
+    init(lighting:LayoutLighting,index:Int,surface:Surface2D,onSave:@escaping(LayoutLighting)->Void) {
+        self.lighting=lighting; self.index=index; self.surface=surface; self.onSave=onSave
+        let point=lighting.positions[index]
+        _distance=State(initialValue:point.x-(LayoutWallLighting.span(at:point,surface:surface)?.start.x ?? surface.bounds.min.x))
+    }
+    var body:some View {
+        NavigationStack {
+            Form {
+                LabeledContent("Hauteur depuis le sol",value:layoutCM(lighting.positions[index].y-surface.bounds.min.y))
+                Picker("Mesurer depuis",selection:$fromRight) {
+                    Text("Bord gauche").tag(false); Text("Bord droit").tag(true)
+                }.pickerStyle(.segmented)
+                .onChange(of:fromRight) { _,_ in
+                    if let limits=LayoutWallLighting.span(at:lighting.positions[index],surface:surface) {
+                        distance=(limits.end.x-limits.start.x)-distance
+                    }
+                }
+                LayoutDimensionField(title:fromRight ? "Distance depuis la droite" : "Distance depuis la gauche",millimetres:$distance)
+                if let error { Text(error).foregroundStyle(.orange) }
+            }
+            .navigationTitle("Position de \(lighting.label(at:index,wall:true))").navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement:.cancellationAction) { Button("Annuler") { dismiss() } }
+                ToolbarItem(placement:.confirmationAction) {
+                    Button("Valider") {
+                        do { onSave(try LayoutWallLighting.positioning(lighting,index:index,distance:distance,fromRight:fromRight,surface:surface)); dismiss() }
+                        catch { self.error=error.localizedDescription }
+                    }
+                }
             }
         }
     }

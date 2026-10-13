@@ -14,6 +14,16 @@ struct LayoutViewport {
         return min(max(1, fit.width - 70) / max(100, bounds.width), max(1, fit.height - 70) / max(100, bounds.height)) * zoom
     }
     var rotationPivot: LayoutPoint { pivot ?? bounds.center }
+    /// Fit into an editing-sized area, even when View has more vertical space.
+    /// Keeping this fit afterwards prevents the mode controls from changing zoom.
+    static func initialEditingSize(_ size: CGSize) -> CGSize {
+        .init(width: size.width, height: min(size.height, max(180, size.width * 0.95)))
+    }
+    func upperFramingPan(contour: [LayoutPoint]) -> CGSize {
+        guard let top = contour.map({ screen($0).y }).min() else { return .zero }
+        let topMargin = min(60, size.height * 0.15)
+        return .init(width: pan.width, height: pan.height + topMargin - top)
+    }
     static func rotated(_ p: LayoutPoint, by angle: Double) -> LayoutPoint {
         .init(x: p.x * cos(angle) - p.y * sin(angle), y: p.x * sin(angle) + p.y * cos(angle))
     }
@@ -261,8 +271,21 @@ private enum LayoutInteraction: String, CaseIterable {
         }
     }
 }
+struct LayoutPlanActionStyle: ButtonStyle {
+    @Environment(\.isEnabled) private var isEnabled
+    func makeBody(configuration:Configuration) -> some View {
+        configuration.label
+            .multilineTextAlignment(.center)
+            .padding(.horizontal,14).padding(.vertical,8)
+            .frame(minHeight:52)
+            .foregroundStyle(Color.accentColor.opacity(isEnabled ? 1 : 0.4))
+            .background(Color.accentColor.opacity(isEnabled ? (configuration.isPressed ? 0.25 : 0.14) : 0.06),in:Capsule())
+            .contentShape(Capsule())
+    }
+}
+
 private enum LayoutEditorSheet: Identifiable {
-    case newSurface, settings, furring, lighting, lightingSpacing(Set<Int>), export, opening(UUID?), vertex(Int), correction(Int), cut(LayoutCutSelection), pieces, furringDimensions, parts, framingDistance(LayoutWallDimension)
+    case newSurface, settings, furring, lighting, lightingSpacing(Set<Int>), wallPoint(Int), export, opening(UUID?), vertex(Int), correction(Int), cut(LayoutCutSelection), pieces, furringDimensions, parts, framingDistance(LayoutWallDimension)
     var id: String {
         switch self {
         case .newSurface: return "new"
@@ -270,6 +293,7 @@ private enum LayoutEditorSheet: Identifiable {
         case .furring: return "furring"
         case .lighting: return "lighting"
         case .lightingSpacing: return "lightingSpacing"
+        case .wallPoint(let i): return "wallPoint-\(i)"
         case .export: return "export"
         case .opening(let id): return "opening-\(id?.uuidString ?? "new")"
         case .vertex(let i): return "vertex-\(i)"
@@ -416,6 +440,9 @@ struct SheetLayoutView: View {
     @State private var ceilingFromBelow = true
     @State private var recenterToken = 0
     @State private var addingSpot = false
+    @State private var pendingWallPoint:LayoutPoint?
+    @State private var wallDragFinger:CGPoint?
+    @State private var ignoreWallTapUntil=Date.distantPast
     @State private var addingKind = LayoutElectricalKind.light
     @GestureState private var magnification = 1.0
     @State private var drag: LayoutDragState?
@@ -755,6 +782,7 @@ struct SheetLayoutView: View {
             }.padding(3).background(Color(.tertiarySystemFill),in:Capsule()).padding(.horizontal)
             HStack(spacing:2) {
                 Menu {
+                    Toggle("Afficher les numéros de plaques",isOn:$visibility.sheetNumbers)
                     Toggle("Afficher les angles",isOn:$visibility.angles)
                     Button("Recentrer le plan") { recenterToken += 1 }
                 } label: {
@@ -779,7 +807,10 @@ struct SheetLayoutView: View {
                     .background(Color(.secondarySystemGroupedBackground))
                     .contentShape(Rectangle())
                     .gesture(DragGesture(minimumDistance: 7).onChanged { value in dragChanged(value, document: document, viewport: viewport) }.onEnded { _ in
-                        if let drag { model.finishGesture(from: drag.document) }; drag = nil; spotGuides = []
+                        if mode == .lighting, document.surface.kind == .wall, drag != nil { ignoreWallTapUntil=Date().addingTimeInterval(0.2) }
+                        if let point=pendingWallPoint, !pinching { addWallPoint(point) }
+                        else if let drag { model.finishGesture(from: drag.document) }
+                        pendingWallPoint=nil; wallDragFinger=nil; drag = nil; spotGuides = []
                         if spotSelectionBox != nil { spotSelectionBox=nil; selectSpotsByBox=false }
                     })
                     .simultaneousGesture(SpatialTapGesture().onEnded { value in tapped(value.location, document: document, viewport: viewport) })
@@ -787,6 +818,7 @@ struct SheetLayoutView: View {
                         .onChanged { _ in
                             if !pinching {
                                 pinching = true
+                                pendingWallPoint=nil; wallDragFinger=nil
                                 if let original = drag { model.cancelGesture(restoring:original.document); pan = original.initialPan; drag = nil; spotGuides = [] }
                             }
                         }.onEnded { value in
@@ -868,13 +900,15 @@ struct SheetLayoutView: View {
                             .disabled(drag != nil || pinching || model.isOptimizing)
                         }
                     }
-                    .onAppear { if canvasFitSize == nil { canvasFitSize = proxy.size } }
+                    .onAppear { if canvasFitSize == nil { fitCanvas(document, size:proxy.size, initial:true) } }
+                    .onChange(of:canvasFitSize) { _,size in
+                        if size == nil { fitCanvas(document, size:proxy.size, initial:true) }
+                    }
                     .onChange(of:recenterToken) { _,_ in
-                        fittedBounds = LayoutViewport.fittedBounds(document.surface.contour,rotation:rotation)
-                        canvasFitSize = proxy.size; zoom = 1; pan = .zero
+                        fitCanvas(document, size:proxy.size, initial:false)
                     }
                     .onChange(of:proxy.size) { oldSize,newSize in
-                        if canvasFitSize == nil { canvasFitSize = newSize }
+                        if canvasFitSize == nil { fitCanvas(document, size:newSize, initial:true); return }
                         let candidate = CGSize(width:pan.width+(oldSize.width-newSize.width)/2,
                                                height:pan.height+(oldSize.height-newSize.height)/2)
                         pan = viewport.constrainedPan(candidate,contour:document.surface.contour)
@@ -884,8 +918,6 @@ struct SheetLayoutView: View {
             if !fullscreen {
             if let error = model.error {
                 Text(error).font(.footnote).foregroundStyle(.red).padding(.horizontal)
-            } else {
-                Text(addingSpot ? "Touchez le plan pour ajouter un spot. Répétez pour en placer plusieurs, puis touchez Terminer." : mode.hint).font(.caption).foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal)
             }
             if let saveError = model.saveError { Text(saveError).font(.caption).foregroundStyle(.orange).padding(.horizontal) }
             if mode == .framing && sharedPartitionFraming {
@@ -903,19 +935,24 @@ struct SheetLayoutView: View {
             // Keep the active mode's editing actions available in full screen.
             if mode == .lighting { lightingControls(document) }
             if mode == .grid || mode == .framing {
-                HStack {
+                HStack(spacing:10) {
                     Button { model.optimize(furring:mode == .framing) } label: {
                         Label(model.isOptimizing ? "Optimisation…" : "Optimiser",systemImage:"sparkles")
                     }.disabled(model.isOptimizing || model.isCalculating || drag != nil || (mode == .framing && document.layers.first?.furring == nil))
                     if let layer = document.layers.first, layer.furring != nil {
-                        Button(mode == .framing ? "Caler les plaques sur l’ossature" : "Caler les ossatures sur les plaques") {
+                        Button {
                             var copy = document
                             copy.layers[0] = LayoutPlanning.alignOtherLayer(layer,surface:document.surface,framingMode:mode == .framing)
                             model.apply(copy)
+                        } label: {
+                            Text(mode == .framing ? "Caler les plaques sur l’ossature" : "Caler les ossatures sur les plaques")
+                                .frame(maxWidth:.infinity)
                         }.disabled(model.isOptimizing || drag != nil || pinching || !LayoutPlanning.compatibleSpacings(layer).contains(layer.furring?.spacing ?? 0))
                     }
-                }.font(.caption).buttonStyle(.bordered).padding(.horizontal)
-                if let message = model.optimizationMessage { Text(message).font(.caption2).foregroundStyle(.secondary).padding(.horizontal) }
+                }.font(.subheadline.weight(.semibold)).buttonStyle(LayoutPlanActionStyle()).padding(.horizontal)
+                if model.optimizationFailed, let message = model.optimizationMessage {
+                    Text(message).font(.caption).foregroundStyle(.orange).padding(.horizontal)
+                }
                 if let layer = document.layers.first, layer.furring != nil, !LayoutPlanning.aligned(layer) {
                     Label("Joints et fourrures décalés : utilisez « Caler ».",systemImage:"exclamationmark.triangle").font(.caption).foregroundStyle(.orange)
                 }
@@ -1053,7 +1090,8 @@ struct SheetLayoutView: View {
                             var copy = document, value = lighting
                             value.kinds = lighting.positions.indices.filter { !selectedSpots.contains($0) }.map { lighting.kind(at:$0) }
                             value.positions = lighting.positions.enumerated().filter { !selectedSpots.contains($0.offset) }.map(\.element)
-                            value.count = value.positions.count; copy.lighting = value.count == 0 ? nil : value
+                            value.wallRowHeights=LayoutWallLighting.heights(lighting,surface:document.surface)
+                            value.count = value.positions.count; copy.lighting = value.count == 0 && value.wallRowHeights?.isEmpty != false ? nil : value
                             model.apply(copy); selectedSpots = []; referenceSpot = nil
                         }
                     }
@@ -1098,6 +1136,18 @@ struct SheetLayoutView: View {
               let alignment=LayoutViewport.initialCeilingAlignment(document.surface.contour,referenceEdge:document.layers.first?.referenceEdge) else { return }
         rotation=alignment.angle; viewAlignedEdge=alignment.index
         fittedBounds=LayoutViewport.fittedBounds(document.surface.contour,rotation:rotation)
+    }
+
+    private func fitCanvas(_ document:LayoutDocument, size:CGSize, initial:Bool) {
+        guard size.width > 1, size.height > 1 else { return }
+        if initial { initializeCeilingView() }
+        let contour=document.surface.contour
+        let bounds=LayoutViewport.fittedBounds(contour,rotation:rotation)
+        let fit=LayoutViewport.initialEditingSize(size)
+        let viewport=LayoutViewport(bounds:bounds,size:size,zoom:1,pan:.zero,rotation:rotation,
+                                    pivot:LayoutViewport.geometricCenter(contour),fittingSize:fit)
+        fittedBounds=bounds; canvasFitSize=fit; zoom=1
+        pan=viewport.upperFramingPan(contour:contour)
     }
 
     private func referenceWallButton(_ document: LayoutDocument, clockwise: Bool) -> some View {
@@ -1172,7 +1222,7 @@ struct SheetLayoutView: View {
         // The construction axes remain part of the coordinate system used by
         // snapping and alignment; only their visual overlay is intentionally hidden.
         if let result = model.result {
-            if drag != nil && mode != .lighting {
+            if model.resultDocument.map({ !LayoutBoardGrid.sameGeometry(document,$0) }) == true {
                 drawLiveGrids(context:&context,document:document,viewport:viewport,framingFocus:framingFocus)
             } else {
             let boardEdges = visibility.sheets.showsDimensions ? result.sheets.flatMap { placement in
@@ -1206,7 +1256,7 @@ struct SheetLayoutView: View {
                     }
                     let label = placement.label(for:piece)
                     let anchor = viewport.screen(result.frame.world(piece.labelPoint))
-                    if CGRect(origin:.zero,size:size).contains(anchor) {
+                    if visibility.sheetNumbers && CGRect(origin:.zero,size:size).contains(anchor) {
                         let measured = context.resolve(Text(label).font(.system(size:12,weight:.semibold)))
                             .measure(in:CGSize(width:200,height:30))
                         let labelSize = CGSize(width:measured.width+8,height:measured.height+4)
@@ -1270,6 +1320,27 @@ struct SheetLayoutView: View {
                 drawWallDimensions(context:&context,points:opening.contour,surface:surface,viewport:viewport,color:.orange)
             }
         }
+        if mode == .lighting, surface.kind == .wall, visibility.electrical.isVisible {
+            for height in LayoutWallLighting.heights(document.lighting,surface:surface) {
+                for segment in LayoutWallLighting.rowSegments(height:height,surface:surface) {
+                    var row=Path(); row.move(to:viewport.screen(segment.start)); row.addLine(to:viewport.screen(segment.end))
+                    context.stroke(row,with:.color(.orange.opacity(0.55)),style:.init(lineWidth:1,dash:[5,5]))
+                }
+            }
+            if let point=pendingWallPoint {
+                let p=viewport.screen(point)
+                let valid=(try? LayoutPlanning.addingSpot(to:document.lighting,at:point,surface:surface,kind:addingKind)) != nil
+                context.fill(Path(ellipseIn:.init(x:p.x-6,y:p.y-6,width:12,height:12)),with:.color(valid ? .orange : .red))
+                drawWallPointDimensions(context:&context,point:point,surface:surface,viewport:viewport)
+            }
+            if let finger=wallDragFinger,
+               let point=pendingWallPoint ?? drag?.spot.flatMap({ document.lighting?.positions.indices.contains($0) == true ? document.lighting?.positions[$0] : nil }) {
+                let p=viewport.screen(point)
+                var link=Path(); link.move(to:finger); link.addLine(to:p)
+                context.stroke(link,with:.color(.orange.opacity(0.5)),style:.init(lineWidth:1,dash:[3,3]))
+                context.stroke(Path(ellipseIn:.init(x:p.x-10,y:p.y-10,width:20,height:20)),with:.color(.orange),lineWidth:1)
+            }
+        }
         if let lighting = document.lighting, visibility.electrical.isVisible {
             for (i,p) in lighting.positions.enumerated() {
                 let s = viewport.screen(p), radius = max(4,lighting.diameter/2*viewport.scale)
@@ -1279,7 +1350,10 @@ struct SheetLayoutView: View {
                     context.stroke(Path(ellipseIn:.init(x:s.x-13,y:s.y-13,width:26,height:26)),with:.color(i == referenceSpot ? .blue : .orange),lineWidth:2)
                 }
                 context.draw(Text(lighting.label(at:i,wall:document.surface.kind == .wall)).font(.system(size:10,weight:.bold)).foregroundStyle(lighting.kind(at:i) == .socket ? Color.blue : .orange),at:.init(x:s.x,y:s.y-radius-8))
-                if visibility.electrical.showsDimensions { drawWallDimensions(context:&context,points:[p],surface:surface,viewport:viewport,color:.orange) }
+                if visibility.electrical.showsDimensions || (mode == .lighting && drag?.spot == i) {
+                    if surface.kind == .wall { drawWallPointDimensions(context:&context,point:p,surface:surface,viewport:viewport) }
+                    else { drawWallDimensions(context:&context,points:[p],surface:surface,viewport:viewport,color:.orange) }
+                }
             }
             if mode == .lighting, let anchor = drag?.spot, lighting.positions.indices.contains(anchor) {
                 let p = viewport.screen(lighting.positions[anchor])
@@ -1318,24 +1392,31 @@ struct SheetLayoutView: View {
         guard let initialLayer = document.layers.first else { return }
         let layer=initialLayer.forSurface(document.surface)
         let frame = LayoutGridFrame.make(surface:document.surface,layer:layer)
-        let measured = document.surface.contour
-        let laying = (try? document.surface.layingContour()) ?? measured
-        let bounds = LayoutBounds(points:(measured+laying).map(frame.local))
-        func clippingPath(_ contour:[LayoutPoint]) -> Path {
-            let loops = (try? LayoutGeometry.intersection(outer:contour,holes:document.surface.openings.map(\.contour),rectangle:LayoutBounds(points:contour))) ?? []
-            var path = Path()
-            for loop in loops { path.addPath(layoutPath(loop,transform:viewport)) }
-            return path
-        }
-        let boardClip = clippingPath(laying)
+        var local=document.surface
+        local.contour=document.surface.contour.map(frame.local)
+        local.openings=document.surface.openings.map { var o=$0; o.contour=o.contour.map(frame.local); return o }
+        local.contour=(try? local.layingContour()) ?? local.contour
         if visibility.sheets.isVisible {
-            var clipped=context; clipped.clip(to:boardClip,style:.init(eoFill:true))
-            for (i,cell) in ((try? LayoutBoardGrid.cells(bounds:bounds,layer:layer)) ?? []).enumerated() {
-                let rectangle=LayoutBounds(min:cell.origin,max:cell.origin + .init(x:layer.cellWidth,y:layer.cellHeight))
-                let path=layoutPath(rectangle.polygon.map(frame.world),transform:viewport)
+            let sheets=(try? LayoutBoardGrid.clippedSheets(surface:local,layer:layer)) ?? []
+            for (i,sheet) in sheets.enumerated() {
+                for piece in sheet.pieces {
+                var path=layoutPath(piece.contour.map(frame.world),transform:viewport)
+                for hole in piece.holes { path.addPath(layoutPath(hole.map(frame.world),transform:viewport)) }
                 let tint=i.isMultiple(of:2) ? Color(red:0.98,green:0.985,blue:0.99) : Color(red:0.86,green:0.89,blue:0.91)
-                clipped.fill(path,with:.color(tint.opacity(LayoutPreciseStyle.plateOpacity(focus:framingFocus))))
-                clipped.stroke(path,with:.color(LayoutPreciseStyle.ink),lineWidth:LayoutPreciseStyle.edgeWidth)
+                context.fill(path,with:.color(tint.opacity(LayoutPreciseStyle.plateOpacity(focus:framingFocus))),style:.init(eoFill:true))
+                context.stroke(path,with:.color(LayoutPreciseStyle.ink),lineWidth:LayoutPreciseStyle.edgeWidth)
+                }
+            }
+            if visibility.sheets.showsDimensions {
+                let edges=sheets.flatMap(\.pieces).flatMap { LayoutGeometry.edges($0.contour) }
+                    .map { LayoutJoint(start:frame.world($0.a),end:frame.world($0.b)) }
+                let visible=Set(edges.indices.filter { i in
+                    CGRect(origin:.zero,size:viewport.size).insetBy(dx:16,dy:16)
+                        .contains(viewport.screen((edges[i].start+edges[i].end)*0.5))
+                })
+                for i in LayoutDimensionLabels.representatives(edges,preferred:visible).sorted() {
+                    drawAlongDimension(context:&context,a:edges[i].start,b:edges[i].end,viewport:viewport,color:LayoutPreciseStyle.ink,offset:9)
+                }
             }
         }
     }
@@ -1398,6 +1479,29 @@ struct SheetLayoutView: View {
         label.draw(resolved,at:.zero)
     }
 
+    private func drawWallPointDimensions(context:inout GraphicsContext,point:LayoutPoint,surface:Surface2D,viewport:LayoutViewport) {
+        guard let span=LayoutWallLighting.span(at:point,surface:surface) else { return }
+        let floor=LayoutPoint(x:point.x,y:surface.bounds.min.y)
+        for (a,b) in [(span.start,point),(point,span.end),(floor,point)] {
+            var line=Path(); line.move(to:viewport.screen(a)); line.addLine(to:viewport.screen(b))
+            context.stroke(line,with:.color(.orange.opacity(0.65)),style:.init(lineWidth:0.8,dash:[3,3]))
+            drawAlongDimension(context:&context,a:a,b:b,viewport:viewport,color:.orange,offset:15)
+        }
+    }
+
+    private func wallCursor(_ finger:CGPoint,document:LayoutDocument,viewport:LayoutViewport) -> LayoutPoint {
+        let point=viewport.world(.init(x:finger.x-64,y:finger.y))
+        guard snapSpots else { return point }
+        return LayoutWallLighting.snapped(point,lighting:document.lighting,surface:document.surface,tolerance:14/viewport.scale)
+    }
+    private func addWallPoint(_ point:LayoutPoint) {
+        guard var copy=model.document else { return }
+        do {
+            copy.lighting=try LayoutPlanning.addingSpot(to:copy.lighting,at:point,surface:copy.surface,kind:addingKind)
+            model.apply(copy); spotEditError=nil
+        } catch { spotEditError=error.localizedDescription }
+    }
+
     private func drawWallDimensions(context:inout GraphicsContext,points:[LayoutPoint],surface:Surface2D,viewport:LayoutViewport,color:Color) {
         var occupied: [CGRect] = []
         for dimension in LayoutPlanning.wallDimensions(points:points,surface:surface) {
@@ -1444,11 +1548,16 @@ struct SheetLayoutView: View {
         }
     }
     private func tapped(_ p: CGPoint, document: LayoutDocument, viewport: LayoutViewport) {
+        if mode == .lighting, document.surface.kind == .wall,
+           drag != nil || Date()<ignoreWallTapUntil { return }
         if visibility.framing.showsDimensions, mode == .framing || mode == .move,
            let callout=framingCallouts(document:document,viewport:viewport).first(where:{$0.rect.insetBy(dx:-8,dy:-10).contains(p)}) {
             sheet = .framingDistance(callout.dimension); return
         }
         if mode == .lighting && addingSpot && visibility.electrical.isVisible {
+            if document.surface.kind == .wall {
+                addWallPoint(wallCursor(p,document:document,viewport:viewport)); return
+            }
             do {
                 var copy = document
                 copy.lighting = try LayoutPlanning.addingSpot(to:document.lighting,at:viewport.world(p),surface:document.surface,kind:addingKind)
@@ -1459,6 +1568,7 @@ struct SheetLayoutView: View {
         if mode == .lighting {
             guard visibility.electrical.isVisible else { return }
             if let i = nearestSpot(p,document:document,viewport:viewport) {
+                if document.surface.kind == .wall, !selectSpotsByBox { sheet = .wallPoint(i); return }
                 if selectedSpots.contains(i) { selectedSpots.remove(i); referenceSpot = selectedSpots.sorted().last }
                 else { selectedSpots.insert(i); referenceSpot = i }
             } else { selectedSpots = []; referenceSpot = nil }
@@ -1486,6 +1596,12 @@ struct SheetLayoutView: View {
     }
     private func dragChanged(_ value: DragGesture.Value, document: LayoutDocument, viewport: LayoutViewport) {
         guard !pinching, rotationStart == nil, !model.isOptimizing else { return }
+        if mode == .lighting, addingSpot, document.surface.kind == .wall, visibility.electrical.isVisible {
+            if drag == nil { drag = .init(document:document,viewport:viewport,vertex:nil,opening:nil,initialPan:pan) }
+            pendingWallPoint=wallCursor(value.location,document:drag!.document,viewport:drag!.viewport)
+            wallDragFinger=value.location
+            return
+        }
         if mode == .lighting, selectSpotsByBox, let lighting=document.lighting {
             let box=CGRect(x:min(value.startLocation.x,value.location.x),y:min(value.startLocation.y,value.location.y),
                 width:abs(value.location.x-value.startLocation.x),height:abs(value.location.y-value.startLocation.y))
@@ -1500,7 +1616,7 @@ struct SheetLayoutView: View {
             let opening = mode == .openings && visibility.openings.isVisible ? document.surface.openings.last(where: { LayoutGeometry.contains(p, in: $0.contour) })?.id : nil
             drag = .init(document: document, viewport: viewport, vertex: vertex, opening: opening, initialPan: pan)
             if mode == .lighting, visibility.electrical.isVisible, let i = nearestSpot(value.startLocation,document:document,viewport:viewport) {
-                if !selectedSpots.contains(i) { selectedSpots = [i] }
+                if document.surface.kind == .wall || !selectedSpots.contains(i) { selectedSpots = [i] }
                 referenceSpot = i; drag?.spot = i; drag?.spots = selectedSpots; spotEditError = nil
             }
             if let vertex { selectedVertex = vertex }
@@ -1509,6 +1625,14 @@ struct SheetLayoutView: View {
         var updated = drag.document
         let delta = drag.viewport.worldDelta(value.translation)
         if mode == .lighting, let i = drag.spot, let lighting = drag.document.lighting {
+            if document.surface.kind == .wall {
+                let target=wallCursor(value.location,document:drag.document,viewport:drag.viewport)
+                updated.lighting=LayoutPlanning.translatedLighting(lighting,indices:[i],delta:target-lighting.positions[i])
+                updated.lighting?.wallRowHeights=LayoutWallLighting.heights(lighting,surface:updated.surface)
+                wallDragFinger=value.location
+                model.preview(updated)
+                return
+            }
             let snapped = snapSpots ? LayoutPlanning.snappedLightingDelta(lighting,selected:drag.spots,anchor:i,delta:delta,tolerance:8/drag.viewport.scale) : (delta:delta,guides:[])
             spotGuides = snapped.guides
             updated.lighting = LayoutPlanning.translatedLighting(lighting,indices:drag.spots,delta:snapped.delta)
@@ -1565,6 +1689,12 @@ struct SheetLayoutView: View {
 
     @ViewBuilder private func sheetContent(_ destination: LayoutEditorSheet) -> some View {
         switch destination {
+        case .wallPoint(let i):
+            if let document=model.document, let lighting=document.lighting, lighting.positions.indices.contains(i) {
+                LayoutWallPointForm(lighting:lighting,index:i,surface:document.surface) { value in
+                    var copy=document; copy.lighting=value; model.apply(copy)
+                }
+            }
         case .framingDistance(let dimension):
             if let document=model.document, let layer=document.layers.first {
                 LayoutFurringDistanceForm(value:dimension.distance) { value in

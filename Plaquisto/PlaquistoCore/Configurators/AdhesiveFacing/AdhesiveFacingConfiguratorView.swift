@@ -33,6 +33,7 @@ struct AdhesiveFacingConfiguratorView: View {
     let onClose: () -> Void
     let showsCloseButton: Bool
     private let isEditing: Bool
+    private let originalConfiguration: AdhesiveFacingConfiguration?
     @State private var step: Int
     @State private var geometryMode: GeometryMode
     @State private var height: Double
@@ -69,15 +70,20 @@ struct AdhesiveFacingConfiguratorView: View {
         self.onClose = onClose
         self.showsCloseButton = showsCloseButton
         self.isEditing = initialConfiguration != nil
+        self.originalConfiguration = initialConfiguration
     }
 
     private var actualLength: Double { geometryMode == .length ? enteredLength : (height > 0 ? enteredSurface / height : 0) }
     private var actualArea: Double { geometryMode == .surface ? enteredSurface : enteredLength * height }
     private var functions: [AdhesiveFacingOption] { references.functions(for: selectedFamily) }
     private var selectedFunction: AdhesiveFacingOption? { functions.first { $0.id == selectedFunctionID } ?? functions.first }
+    private var availableFormats: [AdhesiveFacingFormat] {
+        let retained = originalConfiguration.flatMap { $0.facingFunctionID == selectedFunction?.id ? $0.formatID : nil }
+        return references.formats(for:selectedFunction?.id ?? "", preserving:retained)
+    }
     // SwiftUI also evaluates the alert while the catalogue is loading or unavailable.
     private var selectedFormat: AdhesiveFacingFormat? {
-        AdhesiveFacingFormat.selected(id: selectedFormatID, in: references.formats)
+        AdhesiveFacingFormat.selected(id: selectedFormatID, in: availableFormats)
     }
     private var panelIsShort: Bool {
         guard let selectedFormat else { return false }
@@ -109,9 +115,13 @@ struct AdhesiveFacingConfiguratorView: View {
             }
         }
         .tint(green)
+        .onAppear { if !references.isLoading { normalizeSelections() } }
         .onChange(of: references.options) { _, _ in normalizeSelections() }
         .onChange(of: references.formats) { _, _ in normalizeSelections() }
         .onChange(of: selectedFamily) { _, _ in normalizeFunction() }
+        .onChange(of: selectedFunctionID) { _, _ in
+            if let selectedFormat { selectedFormatID = selectedFormat.id }
+        }
         .onChange(of: height) { _, _ in normalizeFormatForHeight() }
         .toolbar {
             if isEditing, let onSave {
@@ -241,12 +251,13 @@ struct AdhesiveFacingConfiguratorView: View {
             card {
                 LabeledContent("Format") {
                     Picker("Format", selection: $selectedFormatID) {
-                        ForEach(references.formats) { Text($0.title).tag($0.id) }
+                        ForEach(availableFormats) { Text($0.title).tag($0.id) }
                     }.labelsHidden()
                 }
             }
-            Text("Ces dimensions génériques sont proposées quel que soit le type de parement. La disponibilité exacte sera à confirmer auprès du fournisseur.")
-                .font(.footnote).foregroundStyle(.secondary)
+            if let selectedFormat, selectedFunction?.formats.contains(selectedFormat) == false {
+                Text("Format enregistré conservé, absent du catalogue actuel.").font(.footnote).foregroundStyle(.secondary)
+            }
             if panelIsShort {
                 warning("La hauteur sélectionnée est inférieure à la hauteur sous plafond de \(format(height, "m")).")
             }
@@ -299,7 +310,8 @@ struct AdhesiveFacingConfiguratorView: View {
     }
 
     private var quantityRows: [(name: String, quantity: Double, unit: String)] {
-        var result = [("Plaque de plâtre \(selectedFamily)", actualArea * references.quantities.plate, "m²"),
+        let plateName = selectedFormat.flatMap { selectedFunction?.quantityTitle(format:$0) } ?? selectedFamily
+        var result = [(plateName, actualArea * references.quantities.plate, "m²"),
                       (references.quantities.names["adhesive"] ?? "Mortier adhésif", actualArea * references.quantities.adhesive, "kg")]
         if jointTreatment {
             result.append((references.quantities.names["band"] ?? "Bande à joint", actualArea * references.quantities.band, "ml"))
@@ -328,7 +340,7 @@ struct AdhesiveFacingConfiguratorView: View {
         if !references.families.contains(selectedFamily) { selectedFamily = references.families.first ?? "BA13" }
         normalizeFunction()
         if let selectedFormat { selectedFormatID = selectedFormat.id }
-        normalizeFormatForHeight()
+        // Do not silently replace the format already saved on an existing work.
     }
 
     private func normalizeFunction() {
@@ -337,7 +349,7 @@ struct AdhesiveFacingConfiguratorView: View {
 
     private func normalizeFormatForHeight() {
         guard panelIsShort else { return }
-        let next = references.formats
+        let next = availableFormats
             .filter { Double($0.heightMM) / 1000 >= height }
             .sorted {
                 let leftWidth = abs($0.widthMM - 1_200)

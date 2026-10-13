@@ -90,6 +90,9 @@ enum AutomaticSurveyLayout {
             for (index, configuration) in configurations.enumerated() {
                 var layer = WorkLayoutDefaults.document(surface: surface, configuration: configuration).layers[0]
                 layer = WorkLayoutDefaults.resolvingFacing(layer, configuration: configuration, formats: formats)
+                // Partition skins reuse the lining's facing configuration, not
+                // its end-stud rule. Resolve framing from the actual ouvrage.
+                layer = WorkLayoutDefaults.resolvingSupport(layer,configuration:work.payload)
                 guard layer.catalogFormatID != nil else {
                     warnings.append("\(surface.name) : choisissez un format de plaque pour générer le calepinage.")
                     continue
@@ -433,9 +436,11 @@ enum WorkLayoutDefaults {
             result.furring?.peripheralInset = value.perimeterSupport == false ? 100 : nil
         }
         if case .railStudCeiling = configuration { result.furring?.isFurringSystem = false }
+        if case .distributionPartition = configuration { result.furring?.liningEndStudInset = nil }
         if case .peripheralLining = configuration {
             result.furring?.openingSystem = .studs
             result.furring?.isFurringSystem = false
+            result.furring?.liningEndStudInset = 100
         }
         if case .furringLining(let value) = configuration {
             result.furring?.isFurringSystem = true
@@ -468,6 +473,7 @@ struct LayoutVisibilitySettings {
     var openings = LayoutVisibilityState.visible
     var electrical = LayoutVisibilityState.visible
     var angles = false
+    var sheetNumbers = false
 }
 
 extension LayoutDocument {
@@ -507,6 +513,8 @@ struct LayoutLighting: Codable, Equatable {
     var widthSpread: Double? = nil
     var lengthSpread: Double? = nil
     var twelveSpotGrid: LayoutTwelveSpotGrid? = nil
+    /// Guide heights in millimetres above the wall's floor; independent of points.
+    var wallRowHeights: [Double]? = nil
     var resolvedWidthSpread: Double { widthSpread ?? spread }
     var resolvedLengthSpread: Double { lengthSpread ?? spread }
     func kind(at index:Int) -> LayoutElectricalKind { kinds?.indices.contains(index) == true ? kinds![index] : .light }
@@ -528,7 +536,48 @@ enum LayoutSpotArrangement: String, CaseIterable {
 
 enum LayoutLightingEditError: Error, LocalizedError {
     case invalidPlacement
-    var errorDescription: String? { "Placement impossible : les spots doivent rester dans le plafond, hors des ouvertures et sans se chevaucher." }
+    var errorDescription: String? { "Placement impossible : les points doivent rester dans le mur ou le plafond, hors des ouvertures et sans se chevaucher." }
+}
+
+enum LayoutWallLighting {
+    static func heights(_ lighting:LayoutLighting?,surface:Surface2D) -> [Double] {
+        let values=lighting?.wallRowHeights ?? lighting?.positions.map { $0.y-surface.bounds.min.y } ?? []
+        return Array(Set(values.filter { $0.isFinite && $0>0 && $0<surface.bounds.height })).sorted()
+    }
+    static func rowSegments(height:Double,surface:Surface2D) -> [LayoutJoint] {
+        let y=surface.bounds.min.y+height
+        return LayoutOpeningFraming.clip(.init(start:.init(x:surface.bounds.min.x,y:y),end:.init(x:surface.bounds.max.x,y:y)),to:surface)
+    }
+    static func addingRow(_ lighting:LayoutLighting?,height:Double,surface:Surface2D) throws -> LayoutLighting {
+        guard surface.kind == .wall, height.isFinite, height>0, height<surface.bounds.height,
+              !rowSegments(height:height,surface:surface).isEmpty else { throw LayoutLightingEditError.invalidPlacement }
+        var copy=lighting ?? .init(count:0)
+        copy.wallRowHeights=Array(Set(heights(lighting,surface:surface)+[height])).sorted()
+        return copy
+    }
+    static func snapped(_ point:LayoutPoint,lighting:LayoutLighting?,surface:Surface2D,tolerance:Double) -> LayoutPoint {
+        guard surface.kind == .wall, let height=heights(lighting,surface:surface).min(by:{
+            abs(surface.bounds.min.y+$0-point.y)<abs(surface.bounds.min.y+$1-point.y)
+        }), abs(surface.bounds.min.y+height-point.y)<=tolerance else { return point }
+        return .init(x:point.x,y:surface.bounds.min.y+height)
+    }
+    /// Actual outer wall limits at this height, not the opening's edges or the
+    /// bounding rectangle of a sloped/stepped wall.
+    static func span(at point:LayoutPoint,surface:Surface2D) -> LayoutJoint? {
+        var outer=surface; outer.openings=[]
+        return rowSegments(height:point.y-surface.bounds.min.y,surface:outer).first {
+            point.x >= $0.start.x-0.01 && point.x <= $0.end.x+0.01
+        }
+    }
+    static func positioning(_ lighting:LayoutLighting,index:Int,distance:Double,fromRight:Bool,surface:Surface2D) throws -> LayoutLighting {
+        guard lighting.positions.indices.contains(index), distance.isFinite, distance>=0,
+              let limits=span(at:lighting.positions[index],surface:surface) else { throw LayoutLightingEditError.invalidPlacement }
+        var copy=lighting
+        copy.wallRowHeights=heights(lighting,surface:surface)
+        copy.positions[index].x=fromRight ? limits.end.x-distance : limits.start.x+distance
+        guard LayoutPlanning.lightingFits(copy,surface:surface) else { throw LayoutLightingEditError.invalidPlacement }
+        return copy
+    }
 }
 
 struct LayoutWallDimension: Identifiable {
@@ -695,6 +744,10 @@ enum LayoutPlanning {
     }
     static func addingSpot(to lighting:LayoutLighting?, at point:LayoutPoint, surface:Surface2D, kind:LayoutElectricalKind = .light) throws -> LayoutLighting {
         var copy = lighting ?? .init()
+        if surface.kind == .wall, copy.wallRowHeights == nil {
+            let previous=LayoutWallLighting.heights(lighting,surface:surface)
+            copy.wallRowHeights=previous.isEmpty ? [point.y-surface.bounds.min.y] : previous
+        }
         copy.kinds = copy.positions.indices.map { copy.kind(at:$0) } + [kind]
         copy.positions.append(point); copy.count = copy.positions.count
         guard lightingFits(copy,surface:surface) else { throw LayoutLightingEditError.invalidPlacement }
@@ -710,7 +763,7 @@ enum LayoutPlanning {
             return t >= 0 && t < 1 ? edge.a.x+t*d.x : nil
         }.sorted()
         guard let first = intervals.first, let last = intervals.last, last-first > 1 else { throw LayoutLightingEditError.invalidPlacement }
-        var copy = lighting
+        var copy:LayoutLighting? = try LayoutWallLighting.addingRow(lighting,height:height,surface:surface)
         for i in 0..<count {
             let point = LayoutPoint(x:first+(last-first)*Double(i+1)/Double(count+1),y:y)
             copy = try addingSpot(to:copy,at:point,surface:surface,kind:kind)
@@ -785,7 +838,7 @@ enum LayoutPlanning {
         return (candidate,nil)
     }
     static func lightingFits(_ settings: LayoutLighting, surface: Surface2D) -> Bool {
-        guard (1...64).contains(settings.count), settings.positions.count == settings.count,
+        guard (surface.kind == .wall ? 0...64 : 1...64).contains(settings.count), settings.positions.count == settings.count,
               settings.diameter.isFinite, (10...500).contains(settings.diameter),
               settings.positions.allSatisfy(\.finite) else { return false }
         for i in settings.positions.indices {

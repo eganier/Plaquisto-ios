@@ -44,6 +44,7 @@ final class LayoutEditorModel: ObservableObject {
     @Published private(set) var document: LayoutDocument?
     @Published private(set) var savedDocuments: [SavedLayoutDocument] = []
     @Published private(set) var result: SheetLayoutResult?
+    private(set) var resultDocument: LayoutDocument?
     @Published private(set) var error: String?
     @Published private(set) var isCalculating = false
     @Published private(set) var canUndo = false
@@ -51,6 +52,7 @@ final class LayoutEditorModel: ObservableObject {
     @Published private(set) var saveError: String?
     @Published private(set) var isOptimizing = false
     @Published private(set) var optimizationMessage: String?
+    @Published private(set) var optimizationFailed = false
     @Published private(set) var lightingWarning: String?
     private var past: [LayoutDocument] = []
     private var future: [LayoutDocument] = []
@@ -161,7 +163,7 @@ final class LayoutEditorModel: ObservableObject {
 
     func optimize(furring:Bool) {
         guard let original = document, let layer = original.layers.first, !isOptimizing else { return }
-        isOptimizing = true; optimizationMessage = nil
+        isOptimizing = true; optimizationMessage = nil; optimizationFailed = false
         Task {
             defer {
                 isOptimizing = false
@@ -175,7 +177,7 @@ final class LayoutEditorModel: ObservableObject {
                 guard document == original else { return }
                 var copy = original; copy.layers[0] = value; apply(copy)
                 optimizationMessage = value == layer ? "Aucune meilleure disposition trouvée parmi les essais." : "Meilleure disposition testée appliquée. Vous pouvez annuler cette modification."
-            } catch { optimizationMessage = error.localizedDescription }
+            } catch { optimizationFailed = true; optimizationMessage = error.localizedDescription }
             isOptimizing = false
         }
     }
@@ -257,7 +259,7 @@ final class LayoutEditorModel: ObservableObject {
             let output = await withTaskCancellationHandler(operation: { await worker.value }, onCancel: { worker.cancel() })
             guard !Task.isCancelled, let self, self.revision == expectedRevision else { return }
             switch output {
-            case .success(let value): self.result = value; self.error = nil
+            case .success(let value): self.resultDocument = document; self.result = value; self.error = nil
             case .failure(let e): self.result = nil; self.error = e.localizedDescription
             }
             self.isCalculating = false

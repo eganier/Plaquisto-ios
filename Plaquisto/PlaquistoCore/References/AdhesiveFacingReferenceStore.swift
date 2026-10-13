@@ -4,6 +4,10 @@ struct AdhesiveFacingOption: Identifiable, Hashable {
     let id: String
     let family: String
     let function: String
+    let title: String
+    let formats: [AdhesiveFacingFormat]
+
+    func quantityTitle(format: AdhesiveFacingFormat) -> String { "\(title) · \(format.title)" }
 
     var functionTitle: String {
         switch function {
@@ -26,6 +30,12 @@ struct AdhesiveFacingFormat: Identifiable, Hashable {
 
     static func selected(id: String, in formats: [Self]) -> Self? {
         formats.first { $0.id == id } ?? formats.first
+    }
+
+    static func legacy(_ id: String) -> Self? {
+        let parts = id.split(separator: "x").compactMap { Int($0) }
+        guard parts.count == 2, parts.allSatisfy({ $0 > 0 && $0 <= 100_000 }) else { return nil }
+        return .init(widthMM:parts[0],heightMM:parts[1])
     }
 }
 
@@ -51,6 +61,7 @@ private struct AdhesiveFacingPayload: Codable {
 
 private struct AdhesiveFacingRecord: Codable {
     let id: String
+    let title: String?
     let data: [String: AdhesiveFacingJSON]
 }
 
@@ -103,6 +114,20 @@ final class AdhesiveFacingReferenceStore: ObservableObject {
         options.filter { $0.family == family }.sorted { functionOrder($0.function) < functionOrder($1.function) }
     }
 
+    func formats(for optionID: String, preserving legacyID: String? = nil) -> [AdhesiveFacingFormat] {
+        var result = options.first { $0.id == optionID }?.formats ?? []
+        // Existing saved formats stay editable without becoming catalogue choices for new works.
+        if let legacyID, let legacy = AdhesiveFacingFormat.legacy(legacyID), !result.contains(legacy) {
+            result.append(legacy)
+        }
+        return result
+    }
+
+    @discardableResult
+    func apply(data: Data) throws -> Bool {
+        apply(try JSONDecoder().decode(AdhesiveFacingCatalogue.self, from:data))
+    }
+
     func load() async {
         isLoading = true
         error = nil
@@ -112,8 +137,7 @@ final class AdhesiveFacingReferenceStore: ObservableObject {
             request.timeoutInterval = 8
             let (data, response) = try await URLSession.shared.data(for: request)
             guard let http = response as? HTTPURLResponse, http.statusCode == 200 else { throw URLError(.badServerResponse) }
-            let catalogue = try JSONDecoder().decode(AdhesiveFacingCatalogue.self, from: data)
-            guard apply(catalogue) else { throw URLError(.zeroByteResource) }
+            guard try apply(data:data) else { throw URLError(.zeroByteResource) }
         } catch {
             options = []
             formats = []
@@ -128,19 +152,30 @@ final class AdhesiveFacingReferenceStore: ObservableObject {
               payload.catalogue?.data["schema_version"]?.number == 1,
               payload.quantitatif?.data["schema_version"]?.number == 1 else { return false }
         let allowedFamilies = Set(payload.catalogue?.data["allowed_families"]?.array?.compactMap(\.string) ?? [])
+        func format(_ value: AdhesiveFacingJSON, lengthKey: String) -> AdhesiveFacingFormat? {
+            guard let item = value.object, let width = item["width_mm"]?.number,
+                  let height = item[lengthKey]?.number,
+                  [width,height].allSatisfy({ $0.isFinite && $0 > 0 && $0 <= 100_000 && $0.rounded() == $0 }) else { return nil }
+            return .init(widthMM:Int(width),heightMM:Int(height))
+        }
+        let legacyFormats = payload.catalogue?.data["formats"]?.array?.compactMap { format($0,lengthKey:"height_mm") } ?? []
         options = payload.parements.compactMap { record in
             guard let family = record.data["mechanical_family"]?.string,
-                  allowedFamilies.contains(family),
                   let function = record.data["function"]?.string else { return nil }
-            return AdhesiveFacingOption(id: record.id, family: family, function: function)
+            let commonCatalogue = record.data["catalog_schema_version"]?.number == 2
+            if commonCatalogue {
+                if let works = record.data["compatible_work_codes"]?.array,
+                   !works.compactMap(\.string).contains("doublage-peripherique-parement-colle") { return nil }
+            } else if !allowedFamilies.contains(family) { return nil }
+            let choices = record.data["dimensions"]?.array?.compactMap { format($0,lengthKey:"length_mm") }
+                ?? (commonCatalogue ? [] : legacyFormats)
+            guard !choices.isEmpty else { return nil }
+            return AdhesiveFacingOption(id: record.id, family: family, function: function,
+                                        title:record.title ?? family,formats:choices)
         }
-
-        formats = payload.catalogue?.data["formats"]?.array?.compactMap { value in
-            guard let item = value.object,
-                  let width = item["width_mm"]?.number,
-                  let height = item["height_mm"]?.number else { return nil }
-            return AdhesiveFacingFormat(widthMM: Int(width), heightMM: Int(height))
-        } ?? []
+        formats = Array(Set(options.flatMap(\.formats))).sorted {
+            $0.widthMM == $1.widthMM ? $0.heightMM < $1.heightMM : $0.widthMM > $1.widthMM
+        }
 
         let quantityData = payload.quantitatif?.data
         let coefficients = quantityData?["coefficients"]?.object ?? [:]
@@ -154,7 +189,9 @@ final class AdhesiveFacingReferenceStore: ObservableObject {
         return !options.isEmpty && !formats.isEmpty && quantities.plate > 0 && quantities.adhesive > 0
     }
 
-    private func plateOrder(_ family: String) -> Int { family == "BA6" ? 0 : 1 }
+    private func plateOrder(_ family: String) -> Int {
+        ["BA6", "BA10", "BA13", "BA15", "BA18", "BA18S", "BA25"].firstIndex(of:family) ?? 99
+    }
     private func functionOrder(_ function: String) -> Int {
         ["standard", "hydrofuge", "incendie", "phonique", "haute_durete", "quatre_bords_amincis", "tres_haute_resistance_eau"].firstIndex(of: function) ?? 99
     }

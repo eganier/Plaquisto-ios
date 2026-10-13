@@ -1,5 +1,47 @@
 # Plaquisto — état du développement
 
+## Base avant simplification ergonomique — 13 octobre 2026
+
+- État installé du 12 octobre sauvegardé avant la nouvelle passe ergonomique : cotes live, cadrage, rangées électriques, montants fixes, parement collé commun, numéros facultatifs et retrait des fourrures voisines des fenêtres.
+- Vérification avant intégration : 285 tests ProjectStoreTests/SheetLayoutEngineTests réussis, aucun échec (`/tmp/plaquisto-pre-ergonomie-merge-tests.log`).
+- L’audit des sous-agents du 13 octobre n’a modifié aucun code. Prochaine passe Lab prévue sur une branche distincte : modification ciblée de configuration, distinction affichage/édition, quantitatif direct avec filtre, accès direct à Annuler.
+
+## Installation iPhone — 12 octobre 2026, 23:22
+
+- Dernier état local compilé et signé en PlaquistoLab (`/tmp/plaquisto-window-neighbors-device.log`, BUILD SUCCEEDED), signature vérifiée.
+- Installation physique confirmée sur l’iPhone d’Edouard : `fr.plaquisto.lab`, séquence 4204, conteneur `810145A9-3A32-4596-8C21-B46CE8B90D48`. Mise à jour sans désinstallation ni effacement des données ; app de production inchangée. Aucun lancement automatique revendiqué.
+- Inclut numéros de plaques masqués par défaut/menu Vue, retrait des fourrures voisines des fenêtres, ainsi que les modifications locales précédentes de cadrage, cotes en mouvement, montants fixes, parements collés et rangées électriques.
+
+## Fourrures voisines des fenêtres — 12 octobre 2026
+
+- Après confirmation du dessin barré : dans les doublages sur fourrures, retire les segments de trame régulière à l’extérieur et à 100 mm au plus des renforts latéraux fixes des fenêtres. Cadre à 50 mm, traverses, petits bouts intérieurs et profils périphériques conservés ; portes et rails/montants inchangés.
+- Soustraction limitée à la hauteur réellement couverte par le renfort fixe pour préserver les éventuels prolongements sous rampant. Appliquée dans le moteur commun (affichage, déplacements, calculs), avant décompte des appuis ; contacts des lignes retirées filtrés. Les quantitatifs calculés à partir du calepinage utilisent ces lignes corrigées, sans prétendre réécrire les anciennes estimations enregistrées.
+- 172 tests SheetLayoutEngineTests réussis dont trois nouveaux cas (deux voisins extérieurs et longueurs/appuis, limites et hauteur non couverte, portes/montants inchangés). Journal `/tmp/plaquisto-window-neighbors-tests.log`. Compilation simulateur réussie ; pas encore installé sur iPhone.
+
+## Numéros de plaques facultatifs — 12 octobre 2026
+
+- Menu Vue du calepinage : « Afficher les numéros de plaques », désactivé par défaut à l’ouverture d’une surface. Réglage d’affichage commun aux murs/plafonds, conservé lors des changements de mode et du passage en plein écran ; aucune modification de la géométrie ni des quantitatifs.
+- Masque les numéros intérieurs et les repères déportés des petites découpes, indépendamment des cotes et des angles. La liste des découpes conserve ses identifiants.
+- Compilation simulateur et deux tests ciblés de visibilité réussis (`/tmp/plaquisto-sheet-number-visibility-tests.log`). Non installé sur iPhone à ce stade.
+
+## Cadrage haut, parement collé et édition électrique — 12 octobre 2026
+
+- Calepinages murs/plafonds : cadrage initial dans la partie haute du canvas avec une zone de fit dimensionnée pour l'édition. Échelle de fit conservée au changement de mode et compensation du centre quand les commandes réduisent le canvas. Le recadrage explicite applique la même présentation ; zoom, rotation et déplacements manuels ne sont pas réinitialisés au changement d'onglet.
+- Parement collé : le catalogue Admin publié fournit déjà les références communes (schéma 2), mais le client limitait encore les familles à BA6/BA13 et lisait les anciens formats génériques. Le formulaire utilise maintenant les familles compatibles et les dimensions de chaque produit, conserve l'identifiant et le libellé complet fonction/format dans le quantitatif. Les formats historiques restent accessibles uniquement pour leur ouvrage enregistré. Aucun changement de coefficient, aucune publication Admin nécessaire.
+- Électricité sur murs : rangées de hauteur indépendantes des points, ajout individuel au curseur déporté de 64 points, aimantage aux rangées et cotes live ; toucher un point ouvre la saisie précise depuis la gauche/droite. Enregistrement des rangées et compatibilité des anciens plans vérifiés par tests.
+- Textes de consigne sous le dessin retirés dans les cinq modes, confirmations ordinaires d'optimisation masquées (erreurs conservées). Boutons Optimiser/Caler agrandis, hauteur minimale 52 points.
+- Diagnostic distinct : les formulaires de plafonds issus du scan conservent la surface nette et les contours dans les composants, mais les dimensions de formulaire sont synthétisées par racine carrée de la surface. Cette partie n'a pas été modifiée dans ce lot.
+- Build iPhone signé réussi : `/tmp/plaquisto-upper-framing-catalogue-device.log`. 281/281 tests réussis (SheetLayoutEngineTests et ProjectStoreTests), résultat confirmé par xcresult : `/tmp/plaquisto-upper-framing-catalogue-tests.log`. Nouveaux cas cadrage haut/rotation/paysage/stabilité entre modes, catalogue commun/formats spécifiques/compatibilité/anciens formats, en plus des rangées et montants fixes. Contrôle gestuel natif non réalisé : le contrôle du simulateur ne répond pas. Pas encore installé ni poussé.
+
+## Cotes pendant les glissements et montants fixes des doublages — 12 octobre 2026
+
+- Les cotes de plaques utilisent les contours réellement découpés pendant le geste, sans lancer l'optimiseur ni le placement des chutes. Le calcul léger partage la même intersection que le calcul définitif, avec ouvertures et contours de pose. L'aperçu reste actif après le relâchement jusqu'au résultat à jour : pas de retour temporaire aux anciennes cotes.
+- Un glissement de caméra ou d'ossature ne masque plus les plaques/cotes existantes ; les longueurs d'ossatures continuent à provenir de leur géométrie courante.
+- Doublages rails-montants : montants fixes à 100 mm de chaque extrémité (correction demandée par l'utilisateur ; fourrures conservées à 120 mm), suivant pente et ouvertures, fusion géométrique des superpositions avec la trame et les renforts. Les retours de moins de 200 mm reçoivent un seul montant centré. Réglage optionnel persistant, appliqué également à l'ouverture des anciens plans liés à un doublage. Cloisons et plafonds exclus.
+- 160/160 tests SheetLayoutEngineTests réussis, y compris les nouveaux cas découpe live/définitive, ouverture, rampant, superposition, retrait fixe, compatibilité et non-régression cloisons. Journal final : `/tmp/plaquisto-live-dimensions-tests-final.log`.
+- Compilation iPhone signée Plaquisto Lab réussie : `/tmp/plaquisto-live-dimensions-device.log` ; application dans `/tmp/PlaquistoPricesDevice/Build/Products/Debug-iphoneos/Plaquisto Lab.app`.
+- Changements locaux sur `codex/calepinage-lecture-precise`, pas encore installés sur iPhone ni poussés.
+
 ## Calepinage « Lecture précise » — 12 octobre 2026
 
 - Avant modification : état existant sauvegardé au commit `cecdcab` et poussé sur `origin/codex/survey-layout-refinements`. Nouvelle branche `codex/calepinage-lecture-precise` créée ensuite ; aucun merge sur main.
