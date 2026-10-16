@@ -1,6 +1,105 @@
 import Foundation
 import CryptoKit
 
+/// Presentation-only finished surfaces. Never writes back into a scan, a work,
+/// its areas, or the DAE exporter. Dimensions come from the saved configuration.
+enum SurveyWorkPreview {
+    struct Mesh: Equatable {
+        var surfaceID: String
+        var kind: SurveySurfaceSource.Kind
+        var triangles: [RoomPoint]
+        var joints: [RoomPoint]
+    }
+    static func ceilingDrop(_ payload: WorkConfiguration) -> Double {
+        let cm: Double
+        switch payload {
+        case .ceiling(let c): cm = c.plenum
+        case .modularCeiling(let c): cm = c.plenumCM
+        case .railStudCeiling(let c):
+            let layers = [c.firstInsulation] + (c.insulationLayers == 2 ? [c.secondInsulation] : [])
+            let below = c.insulationEnabled ? layers.filter { c.support != "wood" || $0.location == "below" }.reduce(0) { $0 + $1.thickness } : 0
+            cm = c.frameMode == "selfSupporting" ? 0 : Double(below) / 10 + c.extraPlenumCM
+        default: cm = 0
+        }
+        return cm.isFinite && cm > 0 && cm < 1000 ? cm / 100 : 0
+    }
+    static func make(survey: ProjectSurveyRecord, surfaces: [SurveyWorkSurface], works: [WorkItem], showJoints: Bool) -> [Mesh] {
+        var result: [Mesh] = []
+        let separate = survey.checkpoints.count > 1 && survey.checkpoints.contains { $0.spatialLinkState == .needsLink }
+        var displayOffset = 0.0
+        for checkpoint in survey.checkpoints {
+            let values = surfaces.filter { $0.source.checkpointID == checkpoint.id }
+            let points = values.flatMap(\.triangles)
+            let minX = points.map(\.x).min() ?? 0, maxX = points.map(\.x).max() ?? 0
+            func transform(_ p: RoomPoint) -> RoomPoint {
+                if separate { return .init(x: p.x - minX + displayOffset, y: p.y, z: p.z) }
+                let t = checkpoint.transformToSurvey.values
+                return .init(x: t[0]*p.x + t[4]*p.y + t[8]*p.z + t[12],
+                    y: t[1]*p.x + t[5]*p.y + t[9]*p.z + t[13], z: t[2]*p.x + t[6]*p.y + t[10]*p.z + t[14])
+            }
+            let room = checkpoint.document.room
+            let rings = ScanEnclosedSpaces.wallsBySpace(in: room)
+            for selection in values {
+                let candidates = works.flatMap { work in work.components.compactMap { component -> (WorkItem, WorkComponentRecord)? in
+                    guard let source = component.surveySource, SurveyWorkGeometry.hasSameSource(source, selection.source) else { return nil }
+                    return (work, component)
+                } }
+                // A painting work and a lining can refer to the same wall. Draw
+                // the finished lining once, not two coincident opaque surfaces.
+                guard let (work, component) = candidates.max(by: {
+                    (SurveyPlanFinishes.depth($0.0.payload) ?? ceilingDrop($0.0.payload)) < (SurveyPlanFinishes.depth($1.0.payload) ?? ceilingDrop($1.0.payload))
+                }), let surface = component.surface, let frame = surface.localFrame else { continue }
+                let ceiling = selection.source.kind == .ceiling
+                var normal = RoomPoint(x: 0, y: -1, z: 0)
+                if !ceiling {
+                    normal = .init(x: -frame.axisX.z, y: 0, z: frame.axisX.x)
+                    if let ringWall = rings.flatMap({ $0 }).first(where: { $0.id == selection.source.surfaceID }) {
+                        normal = .init(x: -ringWall.direction.z, y: 0, z: ringWall.direction.x)
+                    } else {
+                        let center = room.walls.reduce(RoomPoint.zero) { $0 + $1.start } * (1 / Double(max(1, room.walls.count)))
+                        let toward = center - RoomPoint(x: frame.origin.x, y: frame.origin.y, z: frame.origin.z)
+                        if toward.x * normal.x + toward.z * normal.z < 0 { normal = normal * -1 }
+                    }
+                }
+                let depth = ceiling ? ceilingDrop(work.payload) : (SurveyPlanFinishes.depth(work.payload) ?? 0)
+                let offset = normal * max(0.003, depth)
+                let originalTriangles = SurveyWorkGeometry.ceilingTriangles(surface)
+                guard !originalTriangles.isEmpty else { continue }
+                let triangles: [RoomPoint]
+                if !ceiling {
+                    let wall = room.walls.first { $0.id == selection.source.surfaceID }
+                    let back = min(0.4, max(0.04, wall?.thickness?.effectiveValue ?? 0.08)) / 2
+                    let front = max(0.003, depth)
+                    triangles = SurveySceneRenderer.wallSolid(originalTriangles.map { $0 + normal * ((front - back) / 2) }, normal: normal, thickness: front + back)
+                } else { triangles = originalTriangles.map { $0 + offset } }
+                var joints: [RoomPoint] = []
+                if showJoints, let plan = component.plans.first(where: { !component.isOppositeSide($0.sideRoomID) }),
+                   let document = component.document(for: plan), let rawLayer = document.layers.last {
+                    let layer = rawLayer.forSurface(document.surface)
+                    let grid = LayoutGridFrame.make(surface: document.surface, layer: layer)
+                    var local = document.surface
+                    local.contour = local.contour.map(grid.local)
+                    local.openings = local.openings.map { var copy = $0; copy.contour = copy.contour.map(grid.local); return copy }
+                    if let contour = try? local.layingContour() { local.contour = contour }
+                    if let sheets = try? LayoutBoardGrid.clippedSheets(surface: local, layer: layer) {
+                        let lines = LayoutBoardGrid.joints(sheets.flatMap(\.pieces))
+                        func world(_ p: LayoutPoint) -> RoomPoint {
+                            let p = grid.world(p)
+                            return RoomPoint(x: frame.origin.x + (frame.axisX.x*p.x + frame.axisY.x*p.y)/1000,
+                                y: frame.origin.y + (frame.axisX.y*p.x + frame.axisY.y*p.y)/1000,
+                                z: frame.origin.z + (frame.axisX.z*p.x + frame.axisY.z*p.y)/1000) + offset + normal * 0.002
+                        }
+                        joints = lines.flatMap { [world($0.start), world($0.end)] }
+                    }
+                }
+                result.append(.init(surfaceID: selection.id, kind: selection.source.kind, triangles: triangles.map(transform), joints: joints.map(transform)))
+            }
+            displayOffset += maxX - minX + 2
+        }
+        return result
+    }
+}
+
 /// Portable COLLADA writer: SceneKit's DAE *writer* is macOS-only.
 /// Export domain geometry, never cameras, selection overlays or display recentering.
 enum SurveyDAEExport {
@@ -84,6 +183,10 @@ enum SurveyDAEExport {
                 let name="\(roomName) · Sol \(index+1)"
                 meshes.append(.init(name:name,kind:"floor",
                     triangles:try usableTriangles(SurveyWorkGeometry.ceilingTriangles(shape).map(transform),name:name)))
+            }
+            for (index, column) in (room.columns ?? []).enumerated() {
+                let name = "\(roomName) · Poteau \(index+1)"
+                meshes.append(.init(name: name, kind: "wall", triangles: try usableTriangles(column.triangles.map(transform), name: name)))
             }
         }
         guard !meshes.isEmpty else { throw Failure.empty }
@@ -322,7 +425,7 @@ enum SurveyWorkGeometry {
 
     static func availableWorkTypes(for surfaces:[SurveyWorkSurface]) -> [WorkType] {
         guard !surfaces.isEmpty else { return [] }
-        if surfaces.allSatisfy({$0.source.kind == .ceiling}) { return [.ceilingOnFurring,.ceilingOnRailsAndStuds,.paintingBeta] }
+        if surfaces.allSatisfy({$0.source.kind == .ceiling}) { return [.ceilingOnFurring,.ceilingOnRailsAndStuds,.modularCeiling,.paintingBeta] }
         if surfaces.allSatisfy(isDesignedPartition) { return [.distributionPartition,.paintingBeta] }
         if surfaces.contains(where:isDesignedPartition) { return [.paintingBeta] }
         return [.peripheralLiningStuds,.peripheralLiningFurrings,.paintingBeta]
@@ -333,6 +436,14 @@ enum SurveyWorkGeometry {
         result.area=totalArea(surfaces); result.dimensionsSpecified=false
         result.length=base.length; result.width=base.width
         result.shape=base.ceilingShape == "rampant" ? "sloped" : "horizontal"
+        return result
+    }
+    static func modularCeiling(_ surfaces: [SurveyWorkSurface]) -> ModularCeilingConfiguration {
+        var result = ModularCeilingConfiguration()
+        result.surveyedSurfaces = surfaces.map(\.surface)
+        let bounds = surfaces.map { ModularCeilingCalculator.aligned($0.surface).bounds }
+        result.length = (bounds.map(\.width).max() ?? 0) / 1000
+        result.width = (bounds.map(\.height).max() ?? 0) / 1000
         return result
     }
     static func surfaces(in survey: ProjectSurveyRecord) -> [SurveyWorkSurface] {
@@ -364,7 +475,8 @@ enum SurveyWorkGeometry {
                     }
                     return LayoutOpening(id: opening.id, kind: kind, contour: [
                         .init(x: x, y: y), .init(x: x + width, y: y),
-                        .init(x: x + width, y: y + height), .init(x: x, y: y + height)])
+                        .init(x: x + width, y: y + height), .init(x: x, y: y + height)],
+                        doorHanding:opening.doorHanding,doorOpeningSide:opening.doorOpeningSide)
                 }
                 let surface = Surface2D(id: projectedID(source(wall.id, .wall)), name: "\(roomName) · \(name)", kind: .wall, contour: contour,
                     openings: openings, provenance: "scan", sourceIdentifier: wall.id.uuidString,
@@ -497,6 +609,12 @@ enum SurveyWorkGeometry {
         }
         var result = work
         switch work.payload {
+        case .modularCeiling(var value):
+            value.surveyedSurfaces = surfaces
+            let bounds = surfaces.map { ModularCeilingCalculator.aligned($0).bounds }
+            value.length = (bounds.map(\.width).max() ?? 0) / 1000
+            value.width = (bounds.map(\.height).max() ?? 0) / 1000
+            result.payload = .modularCeiling(value)
         case .ceiling(var value):
             let previous = value.enteredArea ?? value.length * value.width
             let ratio = previous > 0 ? total / previous : 1

@@ -297,6 +297,75 @@ enum CeilingZoneEditing {
         }
         return result
     }
+
+    /// Only undo the zoning caused by the removed divider. Keeping the pans
+    /// intact preserves heights, slopes and all saved work/calepinage sources.
+    static func rejoiningAfterRemovingPartition(_ document:PlaquistoRoomDocument,
+                                                wall:PlaquistoWall) throws -> PlaquistoRoomDocument {
+        var result=document
+        let operations=Set(document.room.slopes.compactMap { $0.splitOrigin?.operationID })
+        for operation in operations.sorted(by:{$0.uuidString<$1.uuidString}) {
+            let parts=result.room.ceilings.filter { ceiling in
+                let pans=result.room.slopes.filter { ceiling.slopeIDs.contains($0.id) }
+                return !pans.isEmpty && pans.allSatisfy { $0.splitOrigin?.operationID==operation }
+            }
+            // A later cut has its own operation. Do not undo it indirectly.
+            guard parts.count==2 else { continue }
+            let ids=Set(parts.flatMap(\.slopeIDs))
+            let origins=result.room.slopes.filter { ids.contains($0.id) }.compactMap(\.splitOrigin)
+            let attributed=origins.allSatisfy { $0.partitionWallIDs?.contains(wall.id)==true }
+            let legacy=origins.allSatisfy { $0.partitionWallIDs==nil }
+                && legacyDividerMatches(parts[0],parts[1],wall:wall,in:result)
+            guard attributed || legacy else { continue }
+            // Use the same conservative polygon union as the explicit merge;
+            // no bounding box, no flattened ramp and no restoration of old data.
+            guard let a=WallCeilingEstimate.footprint(of:parts[0],in:result.room),
+                  let b=WallCeilingEstimate.footprint(of:parts[1],in:result.room),
+                  joinedBoundary(a,b) != nil else { continue }
+            result=try merge(result,first:parts[0].id,second:parts[1].id)
+            for i in result.room.slopes.indices where ids.contains(result.room.slopes[i].id) {
+                result.room.slopes[i].splitOrigin?.partitionWallIDs=[]
+            }
+        }
+        return result
+    }
+
+    /// Old archives have split operation IDs but no link to the partition.
+    /// Recover only when the entire common boundary follows designed walls and
+    /// a non-zero part of it belongs to the removed wall, never from proximity alone.
+    private static func legacyDividerMatches(_ a:PlaquistoCeiling,_ b:PlaquistoCeiling,
+                                              wall:PlaquistoWall,in document:PlaquistoRoomDocument) -> Bool {
+        guard let pa=WallCeilingEstimate.footprint(of:a,in:document.room),
+              let pb=WallCeilingEstimate.footprint(of:b,in:document.room) else { return false }
+        let partitions=document.room.walls.filter { SurveyPlanEditing.isDesignedPartition($0,in:document) }
+        var shared=0.0, removed=0.0
+        func follows(_ p:RoomPoint,_ q:RoomPoint,_ candidate:PlaquistoWall) -> Bool {
+            [p,q].allSatisfy { point in
+                let delta=point-candidate.start
+                let along=delta.x*candidate.direction.x+delta.z*candidate.direction.z
+                // Endpoints may terminate at the finished lining face.
+                return abs(delta.x*candidate.direction.z-delta.z*candidate.direction.x)<0.005
+                    && along >= -0.5 && along <= candidate.length.effectiveValue+0.5
+            }
+        }
+        for i in pa.indices {
+            let p=pa[i],d=pa[(i+1)%pa.count]-p,length=d.horizontalLength
+            guard length>0.001 else { continue }
+            let u=d*(1/length)
+            for j in pb.indices {
+                let q=pb[j],r=pb[(j+1)%pb.count]
+                guard [q,r].allSatisfy({abs(($0.x-p.x)*u.z-($0.z-p.z)*u.x)<0.00001}) else { continue }
+                let values=[q,r].map { ($0.x-p.x)*u.x+($0.z-p.z)*u.z }
+                let lo=max(0,values.min()!),hi=min(length,values.max()!)
+                guard hi-lo>0.001 else { continue }
+                let start=p+u*lo,end=p+u*hi
+                guard partitions.contains(where:{follows(start,end,$0)}) else { return false }
+                shared += hi-lo
+                if follows(start,end,wall) { removed += hi-lo }
+            }
+        }
+        return shared>0.05 && removed>0.05
+    }
 }
 
 enum WallCeilingEstimate {
@@ -684,7 +753,7 @@ enum WallCeilingEstimate {
                 if !loops.isEmpty {
                     var next=slope; next.boundaries=loops
                     let ancestors=slope.splitOrigin.map { [$0.sourceSlopeID]+($0.ancestorSlopeIDs ?? []) }
-                    next.splitOrigin = .init(operationID:splitOperation,sourceSlopeID:slope.id,ancestorSlopeIDs:ancestors)
+                    next.splitOrigin = .init(operationID:splitOperation,sourceSlopeID:slope.id,ancestorSlopeIDs:ancestors,partitionWallIDs:[])
                     if sign < 0 { next.id=UUID() }
                     pans.append(next)
                 }
@@ -705,7 +774,7 @@ enum WallCeilingEstimate {
     static func splitForNewPartition(before: PlaquistoRoomDocument, after: PlaquistoRoomDocument,
                                      depths: [UUID: Double]) throws -> PlaquistoRoomDocument {
         let oldIDs=Set(before.room.walls.map(\.id))
-        let added=after.room.walls.filter { !oldIDs.contains($0.id) }
+        let added=after.room.walls.filter { !oldIDs.contains($0.id) && SurveyPlanEditing.isDesignedPartition($0,in:after) }
         guard !added.isEmpty else { throw Failure.invalidSplit }
         let finished=SurveyPlanFinishes.finishedWalls(in:before,depths:depths)
         var topology=after.room
@@ -777,7 +846,8 @@ enum WallCeilingEstimate {
                 guard !loops.isEmpty else { continue }
                 var next=slope; next.boundaries=loops
                 next.splitOrigin = .init(operationID:operation,sourceSlopeID:slope.id,
-                    ancestorSlopeIDs:slope.splitOrigin.map { [$0.sourceSlopeID]+($0.ancestorSlopeIDs ?? []) })
+                    ancestorSlopeIDs:slope.splitOrigin.map { [$0.sourceSlopeID]+($0.ancestorSlopeIDs ?? []) },
+                    partitionWallIDs:added.map(\.id))
                 if !usedIDs.insert(slope.id).inserted { next.id=UUID() }
                 pans.append(next)
             }

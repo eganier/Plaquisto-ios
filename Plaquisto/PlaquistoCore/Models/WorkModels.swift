@@ -225,6 +225,20 @@ struct CloisonQuantity: Identifiable, Codable, Equatable {
     var id: String { "\(name)|\(unit)" }
 }
 
+enum PartitionFacingArea {
+    /// Every face/layer covers the NET partition area, not half that area.
+    /// Preserve mixed product shares when the measured geometry changes.
+    static func resized(_ selections:[CloisonFacingSelection],area:Double) -> [CloisonFacingSelection] {
+        guard area.isFinite, area>=0, !selections.isEmpty else { return selections }
+        let total=selections.reduce(0) { $0+max(0,$1.surface) }
+        return selections.enumerated().map { index,selection in
+            var result=selection
+            result.surface=total>0 ? max(0,selection.surface)*area/total : (index==0 ? area : 0)
+            return result
+        }
+    }
+}
+
 struct CloisonDistributionConfiguration: Codable, Equatable {
     var geometryMode = "length"
     var height: Double = 0
@@ -249,6 +263,28 @@ struct CloisonDistributionConfiguration: Codable, Equatable {
     var quantities: [CloisonQuantity] = []
 
     var area: Double { geometryMode == "surface" ? enteredSurface : enteredLength * height }
+
+    /// Repair the legacy dimension-edit bug without changing selected products,
+    /// the published wastage coefficient or any framing/insulation quantity.
+    func repairingStaleFacingAreas() -> Self {
+        let groups=layers==2 ? [faceAFirst,faceBFirst,faceASecond,faceBSecond] : [faceAFirst,faceBFirst]
+        let totals=groups.map { $0.reduce(0) { $0+$1.surface } }
+        guard area>0, let previous=totals.first, previous>0,
+              totals.allSatisfy({abs($0-previous)<0.01}), abs(previous-area)>0.01 else { return self }
+        var result=self
+        result.faceAFirst=PartitionFacingArea.resized(faceAFirst,area:area)
+        result.faceBFirst=PartitionFacingArea.resized(faceBFirst,area:area)
+        result.faceASecond=PartitionFacingArea.resized(faceASecond,area:area)
+        result.faceBSecond=PartitionFacingArea.resized(faceBSecond,area:area)
+        result.quantities=quantities.map { row in
+            var next=row
+            let name=SupplyListingConsolidator.canonicalName(row.name)
+            if name.range(of:#"^BA\d+\b"#,options:.regularExpression) != nil,
+               SupplyListingConsolidator.canonicalUnit(row.unit)=="m²" { next.quantity *= area/previous }
+            return next
+        }
+        return result
+    }
 }
 
 struct AlveolarPanelSelection: Identifiable, Codable, Equatable, Hashable {
@@ -836,6 +872,8 @@ struct WorkComponentRecord: Identifiable, Codable, Equatable {
     var framing: LayoutFurringSettings? = nil
     /// Acquisition link, not ownership: edited component geometry remains authoritative.
     var surveySource: SurveySurfaceSource? = nil
+    /// Explicitly accepted in the overlap dialog; absent on historical works.
+    var allowsExistingSurveyCoverage: Bool? = nil
 
     func isOppositeSide(_ sideRoomID: UUID?) -> Bool {
         guard let referenceSideRoomID, let sideRoomID else { return false }

@@ -45,6 +45,54 @@ struct AutomaticLayoutRecord: Codable, Equatable {
 }
 
 enum AutomaticSurveyLayout {
+    /// Re-read physical framing from saved plans so old cached opening lintels
+    /// never survive a change of the opening rule. Count a partition only once.
+    static func wallFramingMinimum(_ work:WorkItem) -> [LayoutQuantityLine]? {
+        guard work.furringLiningConfiguration != nil || work.doublageConfiguration != nil || work.cloisonDistributionConfiguration != nil,
+              !work.components.isEmpty else { return nil }
+        var framing=0.0, angles=0.0, rails=0.0, sides=0.0, supports=0, splices=0
+        for component in work.components {
+            guard let plan=component.plans.first, plan.geometryRevision==component.geometryRevision,
+                  let document=component.document(for:plan), document.surface.kind == .wall,
+                  let layer=document.layers.first,
+                  let result=try? SheetLayoutEngine.calculate(surface:document.surface,
+                    layer:WorkLayoutDefaults.resolvingSupport(layer,configuration:work.payload)) else { return nil }
+            let angleLines=result.furring.wallFixedProfiles.filter { $0.role == .rightAngle }.map(\.line)
+            for line in result.furring.lines {
+                let meters=(line.end-line.start).length/1000
+                if angleLines.contains(where:{LayoutOpeningFraming.same($0,line)}) { angles += meters }
+                else { framing += meters }
+            }
+            sides += result.furring.openingProfiles.filter { $0.role == .side }.reduce(0) { $0+($1.line.end-$1.line.start).length/1000 }
+            rails += document.surface.bounds.width/1000*2
+            supports += result.furring.supportPoints.count
+            splices += result.furring.furringSpliceCount
+        }
+        if let c=work.furringLiningConfiguration {
+            var rows:[LayoutQuantityLine]=[
+                .init(name:"Fourrures F45/F47",quantity:framing*1.1,unit:"ml"),
+                .init(name:"Cornière",quantity:angles*1.1,unit:"ml"),
+                .init(name:c.supportSupplyName,quantity:Double(supports),unit:"unités")]
+            if let source=c.quantities.first(where:{$0.name.lowercased().contains("lisses") || $0.name.lowercased().contains("rails pour fourrure")}) {
+                rows.append(.init(name:source.name,quantity:rails*1.1,unit:source.unit))
+            }
+            if let source=c.quantities.first(where:{$0.name.lowercased().contains("éclisse")}) {
+                rows.append(.init(name:source.name,quantity:Double(splices),unit:source.unit))
+            }
+            return rows
+        }
+        let frame=work.cloisonDistributionConfiguration?.frame ?? work.doublageConfiguration?.frame
+        let doubled=work.cloisonDistributionConfiguration?.doubledStuds ?? work.doublageConfiguration?.doubledStuds ?? false
+        return [.init(name:OpeningContext.profileName(frame:frame,rail:false),quantity:((framing-sides)*(doubled ? 2 : 1)+sides)*1.1,unit:"ml"),
+                .init(name:OpeningContext.profileName(frame:frame,rail:true),quantity:rails*1.1,unit:"ml")]
+    }
+
+    static func refreshedMinimum(_ record:AutomaticLayoutRecord,work:WorkItem) -> [LayoutQuantityLine] {
+        guard let framing=wallFramingMinimum(work) else { return record.minimumSupplies }
+        let names=Set(framing.map { SupplyListingConsolidator.canonicalName($0.name) })
+        return record.minimumSupplies.filter { !names.contains(SupplyListingConsolidator.canonicalName($0.name)) }+framing
+    }
+
     struct Prepared {
         var sourceSurfaces: [Surface2D]
         var configurationFingerprint: String
@@ -56,6 +104,17 @@ enum AutomaticSurveyLayout {
     /// actor, then the store revalidates the scan before committing atomically.
     static func prepare(_ work: WorkItem, formats: [LayoutCatalogFormat], catalogue: CeilingCataloguePayload?) throws -> Prepared {
         var generated = work
+        if let configuration = work.modularCeilingConfiguration {
+            _ = try ModularCeilingCalculator.scanned(configuration, surfaces: work.components.compactMap(\.surface))
+            for i in generated.components.indices where generated.components[i].plans.isEmpty {
+                guard let surface = generated.components[i].surface, generated.components[i].surveySource != nil else { continue }
+                let layer = ModularCeilingCalculator.layoutLayer(configuration, surface: surface)
+                generated.components[i].plans = [.init(layers: [layer], geometryRevision: generated.components[i].geometryRevision)]
+            }
+            let fingerprint = LayoutQuantityCalculator.configurationFingerprint(work)
+            return .init(sourceSurfaces: work.components.compactMap(\.surface), configurationFingerprint: fingerprint,
+                components: generated.components, record: .init(configurationFingerprint: fingerprint, minimumSupplies: [], warnings: []))
+        }
         var warnings: [String] = []
         var boardCounts: [String: (LayoutLayer, Int)] = [:]
         var framing = 0.0, angles = 0.0, rails = 0.0, supports = 0, splices = 0
@@ -111,8 +170,6 @@ enum AutomaticSurveyLayout {
                 if !LayoutPlanning.aligned(layer) {
                     warnings.append("\(surface.name) : le format des plaques et l’entraxe choisi nécessitent une vérification des jonctions.")
                 }
-                let key = layer.catalogFormatID!
-                boardCounts[key] = (layer, (boardCounts[key]?.1 ?? 0) + result.purchasedSheetCount)
                 if index == 0, faceIndex == 0, surface.kind == .wall {
                     let horizontal = result.furring.openingProfiles.filter { $0.role == .horizontal }.map(\.line)
                         + result.furring.wallFixedProfiles.filter { $0.role == .rightAngle }.map(\.line)
@@ -131,6 +188,18 @@ enum AutomaticSurveyLayout {
             if faceIndex == 0 { generated.components[i].framing = layers.first?.furring }
             for j in layers.indices { layers[j].furring = nil }
             generated.components[i].plans.append(.init(sideRoomID: sides.isEmpty ? nil : sides[faceIndex], layers: layers, geometryRevision: generated.components[i].geometryRevision))
+            }
+        }
+        // Include preserved plans as well as newly generated ones when backfilling
+        // an older ouvrage. Otherwise its previous board allowance would vanish.
+        for component in generated.components {
+            for plan in component.plans where plan.geometryRevision == component.geometryRevision {
+                guard let document = component.document(for: plan) else { continue }
+                for layer in document.layers {
+                    guard let key = layer.catalogFormatID else { continue }
+                    let result = try SheetLayoutEngine.calculate(surface: document.surface, layer: layer)
+                    boardCounts[key] = (layer, (boardCounts[key]?.1 ?? 0) + result.purchasedSheetCount)
+                }
             }
         }
         var minimum: [LayoutQuantityLine] = []
@@ -153,7 +222,7 @@ enum AutomaticSurveyLayout {
                 func normalized(_ s: String) -> String { s.lowercased().replacingOccurrences(of: "×", with: "x").replacingOccurrences(of: " ", with: "") }
                 let dimensions = ["\(Int(layer.sheetWidth))x\(Int(layer.sheetLength))", "\(Int(layer.sheetWidth/10))x\(Int(layer.sheetLength/10))"]
                 guard let source = initial.first(where: {
-                    normalized($0.name).contains(normalized(format.title)) && dimensions.contains(where: normalized($0.name).contains)
+                    normalized(SupplyListingConsolidator.canonicalName($0.name)).contains(normalized(SupplyListingConsolidator.canonicalName(format.title))) && dimensions.contains(where: normalized($0.name).contains)
                 }) else { warnings.append("\(format.title) : vérifiez la quantité, la référence du formulaire n’a pas pu être rapprochée du plan."); continue }
                 let quantity = ceil(Double(count)*1.1)
                 minimum.append(.init(name: source.name, quantity: source.unit == "m²" ? quantity*layer.sheetWidth*layer.sheetLength/1_000_000 : quantity, unit: source.unit))
@@ -181,7 +250,8 @@ enum AutomaticSurveyLayout {
             warnings.append("Quantitatif conservé : référentiel Admin indisponible pour comparer les fournitures.")
         }
         let fingerprint = LayoutQuantityCalculator.configurationFingerprint(work)
-        let record = AutomaticLayoutRecord(configurationFingerprint: fingerprint, minimumSupplies: minimum, warnings: Array(Set(warnings)).sorted())
+        var record = AutomaticLayoutRecord(configurationFingerprint: fingerprint, minimumSupplies: minimum, warnings: Array(Set(warnings)).sorted())
+        record.minimumSupplies = refreshedMinimum(record,work:generated)
         return Prepared(sourceSurfaces: work.components.compactMap(\.surface), configurationFingerprint: fingerprint, components: generated.components, record: record)
     }
 
@@ -289,19 +359,24 @@ enum LayoutQuantityCalculator {
                     coveredAreaBySkin[i] += componentArea
                 }
                 if i == 0, layer.furring != nil {
+                    let planPeripheral = railStud ? peripheral : (layer.furring?.ceilingPerimeterSupport ?? peripheral)
+                    let planSupportSpacing = railStud ? supportSpacing : layer.furring.map { $0.resolvedCeilingSuspensionSpacing / 1000 }
+                    if let spacing = planSupportSpacing, !spacing.isFinite || spacing <= 0 {
+                        throw Unavailable(message:"Distance entre suspentes invalide dans le calepinage.")
+                    }
                     if !railStud { splices += result.furring.furringSpliceCount }
                     area += componentArea
-                    if peripheral { perimeter += LayoutGeometry.edges(document.surface.contour).reduce(0) { $0+($1.b-$1.a).length/1000 } }
+                    if planPeripheral { perimeter += LayoutGeometry.edges(document.surface.contour).reduce(0) { $0+($1.b-$1.a).length/1000 } }
                     for line in result.furring.lines {
                         let length=(line.end-line.start).length/1000
                         framing += length*multiplier
                         if let maxSpan, length > maxSpan+0.001 {
                             throw Unavailable(message:"Une ligne de montants dépasse la portée autoportante autorisée par le formulaire. Vérifiez le montage avant de reprendre le quantitatif.")
                         }
-                        if let spacing=supportSpacing {
+                        if let spacing=planSupportSpacing {
                             guard spacing.isFinite, spacing>0 else { throw Unavailable(message:"Distance entre suspentes invalide dans le formulaire.") }
                             let ends=[line.start,line.end].map(result.frame.world)
-                            let boundarySupports=peripheral ? ends.filter { p in LayoutGeometry.edges(document.surface.contour).contains { LayoutGeometry.distance(p,to:$0.a,$0.b)<1 } }.count : 0
+                            let boundarySupports=planPeripheral ? ends.filter { p in LayoutGeometry.edges(document.surface.contour).contains { LayoutGeometry.distance(p,to:$0.a,$0.b)<1 } }.count : 0
                             hangers += max(0,Int(ceil(max(0,length-0.000001)/spacing))+1-boundarySupports)
                         }
                     }
@@ -433,7 +508,8 @@ enum WorkLayoutDefaults {
             // Nil is the legacy/default furring system; do not rewrite otherwise
             // unchanged manual plans just to materialize this default.
             result.furring?.isFurringSystem = nil
-            result.furring?.peripheralInset = value.perimeterSupport == false ? 100 : nil
+            let peripheral = result.furring?.ceilingPerimeterSupport ?? value.perimeterSupport ?? true
+            result.furring?.peripheralInset = peripheral ? nil : 100
         }
         if case .railStudCeiling = configuration { result.furring?.isFurringSystem = false }
         if case .distributionPartition = configuration { result.furring?.liningEndStudInset = nil }
@@ -468,12 +544,56 @@ enum LayoutVisibilityState: Int, CaseIterable {
 }
 
 struct LayoutVisibilitySettings {
+    enum Element: String, CaseIterable {
+        case sheets, framing, openings, electrical
+        var title: String {
+            switch self {
+            case .sheets: return "Plaques"
+            case .framing: return "Ossature"
+            case .openings: return "Ouvertures"
+            case .electrical: return "Électricité"
+            }
+        }
+    }
     var sheets = LayoutVisibilityState.visible
     var framing = LayoutVisibilityState.visible
     var openings = LayoutVisibilityState.visible
     var electrical = LayoutVisibilityState.visible
     var angles = false
     var sheetNumbers = false
+
+    subscript(element: Element) -> LayoutVisibilityState {
+        get {
+            switch element {
+            case .sheets: return sheets
+            case .framing: return framing
+            case .openings: return openings
+            case .electrical: return electrical
+            }
+        }
+        set {
+            switch element {
+            case .sheets: sheets = newValue
+            case .framing: framing = newValue
+            case .openings: openings = newValue
+            case .electrical: electrical = newValue
+            }
+        }
+    }
+    var dimensionedElement: Element? { Element.allCases.first { self[$0].showsDimensions } }
+    /// One dimension layer at a time, in toolbar order; hidden layers are skipped.
+    /// After the last visible layer, dimensions turn off rather than wrapping.
+    mutating func cycleDimensions() {
+        let elements = Element.allCases
+        let start = dimensionedElement.flatMap { elements.firstIndex(of: $0) }.map { $0 + 1 } ?? 0
+        let next = elements.dropFirst(start).first { self[$0].isVisible }
+        for element in elements where self[element].isVisible { self[element] = element == next ? .dimensioned : .visible }
+    }
+    mutating func toggleVisibility(_ element: Element) {
+        let wasDimensioned = self[element].showsDimensions
+        if wasDimensioned { cycleDimensions() }
+        self[element] = self[element].isVisible ? .hidden : .visible
+    }
 }
 
 extension LayoutDocument {

@@ -88,6 +88,7 @@ struct BondedLiningConfiguratorView: View {
             } else { wizard }
         }
         .tint(green)
+        .configurationEntry(in:1...5) { step = $0 }
         .onChange(of: references.references) { _, _ in normalizeAll() }
         .onChange(of: height) { _, _ in normalizeHeightForWork() }
         .onChange(of: allocations) { _, _ in normalizeAll() }

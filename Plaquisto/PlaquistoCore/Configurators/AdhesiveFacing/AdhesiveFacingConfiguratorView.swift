@@ -115,6 +115,7 @@ struct AdhesiveFacingConfiguratorView: View {
             }
         }
         .tint(green)
+        .configurationEntry(in:1...4) { step = $0 }
         .onAppear { if !references.isLoading { normalizeSelections() } }
         .onChange(of: references.options) { _, _ in normalizeSelections() }
         .onChange(of: references.formats) { _, _ in normalizeSelections() }

@@ -190,6 +190,62 @@ extension WorkItem {
 }
 
 enum WorkOpeningRelations {
+    static func planOpenings(for work:WorkItem) -> [LayoutOpening] {
+        var seen=Set<UUID>()
+        return work.components.flatMap { $0.surface?.openings ?? [] }.filter { seen.insert($0.id).inserted }
+    }
+
+    static func planOpeningTitle(_ opening:LayoutOpening) -> String {
+        let dimensions="\((opening.bounds.width/10).formatted(.number.locale(Locale(identifier:"fr_FR")).precision(.fractionLength(0...1)))) × \((opening.bounds.height/10).formatted(.number.locale(Locale(identifier:"fr_FR")).precision(.fractionLength(0...1)))) cm"
+        let handing=opening.kind == .door ? opening.doorHanding.map { " · \($0.title)" } ?? "" : ""
+        return "\(opening.kind.rawValue) · \(dimensions)\(handing)"
+    }
+    private static func attached(to work: WorkItem, allWorks: [WorkItem]) -> [OpeningConfiguration] {
+        var seen = Set<UUID>()
+        return allWorks.filter { $0.projectID == work.projectID && seen.insert($0.id).inserted }
+            .compactMap(\.openingConfiguration).filter { $0.sourceWorkID == work.id }
+    }
+
+    static func insulationRemainingRatio(for work: WorkItem, allWorks: [WorkItem]) -> Double {
+        guard work.area.isFinite, work.area > 0 else { return 1 }
+        // Openings already represented by the measured contour are already
+        // deducted from its net area; never subtract their ID a second time.
+        var seen = Set(work.components.flatMap { $0.surface?.openings.map(\.id) ?? [] })
+        let deduction = attached(to: work, allWorks: allWorks).reduce(0.0) { total, configuration in
+            total + configuration.openings.reduce(0.0) { subtotal, opening in
+                guard seen.insert(opening.id).inserted, opening.area.isFinite, opening.area > 0 else { return subtotal }
+                let result = OpeningQuantityCalculator.calculate(opening, context: configuration.context)
+                return subtotal + (result.isComplete ? result.insulationAreaDeduction : 0)
+            }
+        }
+        // Preserve each layer's original reserve and treat only its parent
+        // ouvrage, never another insulation reference in the project.
+        return max(0, 1 - deduction / work.area)
+    }
+
+    static func summary(for work: WorkItem, allWorks: [WorkItem]) -> [String] {
+        var seen = Set<UUID>()
+        var lines: [String] = []
+        func append(id: UUID, title: String, widthCM: Double, heightCM: Double) {
+            guard seen.insert(id).inserted, widthCM.isFinite, heightCM.isFinite, widthCM > 0, heightCM > 0 else { return }
+            func number(_ value: Double) -> String {
+                value.formatted(.number.locale(Locale(identifier: "fr_FR")).precision(.fractionLength(0...1)))
+            }
+            lines.append("\(title) · \(number(widthCM)) × \(number(heightCM)) cm")
+        }
+        for opening in planOpenings(for:work) where seen.insert(opening.id).inserted {
+            lines.append(planOpeningTitle(opening))
+        }
+        let configurations = attached(to: work, allWorks: allWorks) + (work.openingConfiguration.map { [$0] } ?? [])
+        for configuration in configurations {
+            for opening in configuration.openings {
+                append(id: opening.id, title: opening.name?.isEmpty == false ? opening.name! : opening.kind.title(in: configuration.context.system),
+                       widthCM: opening.width * 100, heightCM: opening.height * 100)
+            }
+        }
+        return lines
+    }
+
     static func includingAttached(to selected: [WorkItem], allWorks: [WorkItem]) -> [WorkItem] {
         let ids = Set(selected.map(\.id))
         let projects = Set(selected.map(\.projectID))
@@ -232,6 +288,15 @@ struct WorkOpeningsView: View {
                 Text("Les ouvertures sont rattachées à cet ouvrage. Leurs fournitures sont incluses dans son quantitatif.")
                     .font(.footnote).foregroundStyle(.secondary)
                 Button("Ajouter une ouverture", systemImage: "plus") { creating = true }
+            }
+            if !WorkOpeningRelations.planOpenings(for:current).isEmpty {
+                Section {
+                    ForEach(WorkOpeningRelations.planOpenings(for:current)) { opening in
+                        Label(WorkOpeningRelations.planOpeningTitle(opening),systemImage:opening.kind == .door ? "door.left.hand.open" : "rectangle")
+                    }
+                } header: { Text("Ouvertures du plan") } footer: {
+                    Text("Déjà intégrées à l’ouvrage et déduites de sa surface. Modifiez-les dans le plan ou le calepinage.")
+                }
             }
             ForEach(linked) { record in
                 NavigationLink {

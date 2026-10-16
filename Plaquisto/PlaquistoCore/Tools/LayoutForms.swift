@@ -157,13 +157,24 @@ struct LayoutOpeningForm: View {
     @State private var y: Double
     @State private var width: Double
     @State private var height: Double
-    init(support: LayoutSupportKind, existing: LayoutOpening? = nil, onSave: @escaping (LayoutOpening) -> Void, onDelete: (() -> Void)? = nil) {
+    @State private var angle: Double
+    @State private var referenceEdge: Int
+    private let surfaceContour: [LayoutPoint]
+    private let frame: LayoutOpeningFrame
+    private let displayRotation: Double
+    init(support: LayoutSupportKind, existing: LayoutOpening? = nil, surfaceContour: [LayoutPoint] = [], alignedEdge: Int? = nil, displayRotation: Double = 0, onSave: @escaping (LayoutOpening) -> Void, onDelete: (() -> Void)? = nil) {
         self.support = support; self.existing = existing; self.onSave = onSave; self.onDelete = onDelete
+        self.surfaceContour = surfaceContour; self.displayRotation = displayRotation
+        let frame = LayoutOpeningFrame(contour: existing?.contour ?? LayoutBounds(min: .zero, max: .init(x: 900, y: 1200)).polygon)
+        self.frame = frame
+        let center = existing != nil ? frame.center : LayoutBounds(points: surfaceContour).center
+        _angle = State(initialValue: existing != nil ? frame.angle : (alignedEdge.flatMap { LayoutOpeningFrame.wallAngle(surfaceContour, edge: $0) } ?? -displayRotation))
+        _referenceEdge = State(initialValue: existing == nil ? (alignedEdge ?? -1) : -1)
         _kind = State(initialValue: existing?.kind ?? (support == .wall ? .window : .stairwell))
-        _x = State(initialValue: existing?.bounds.min.x ?? 1000)
-        _y = State(initialValue: existing?.bounds.min.y ?? (support == .wall ? 900 : 1000))
-        _width = State(initialValue: existing?.bounds.width ?? 900)
-        _height = State(initialValue: existing?.bounds.height ?? 1200)
+        _x = State(initialValue: support == .ceiling ? center.x : (existing?.bounds.min.x ?? 1000))
+        _y = State(initialValue: support == .ceiling ? center.y : (existing?.bounds.min.y ?? 900))
+        _width = State(initialValue: support == .ceiling ? frame.width : (existing?.bounds.width ?? 900))
+        _height = State(initialValue: support == .ceiling ? frame.height : (existing?.bounds.height ?? 1200))
     }
     var body: some View {
         NavigationStack {
@@ -173,7 +184,22 @@ struct LayoutOpeningForm: View {
                     LayoutDimensionField(title: "Largeur", millimetres: $width)
                     LayoutDimensionField(title: support == .wall ? "Hauteur" : "Longueur", millimetres: $height)
                 }
-                Section("Position du coin inférieur gauche") {
+                if support == .ceiling, surfaceContour.count >= 3 {
+                    Section("Orientation") {
+                        openingPreview.frame(height: 180)
+                        Picker("Parallèle à", selection: $referenceEdge) {
+                            Text(existing == nil ? "Vue du plan" : "Orientation actuelle").tag(-1)
+                            ForEach(surfaceContour.indices, id: \.self) { index in
+                                let length = (surfaceContour[(index + 1) % surfaceContour.count] - surfaceContour[index]).length / 1000
+                                Text("Mur \(index + 1) · \(length.formatted(.number.precision(.fractionLength(2)))) m").tag(index)
+                            }
+                        }
+                        .onChange(of: referenceEdge) { _, value in
+                            angle = LayoutOpeningFrame.wallAngle(surfaceContour, edge: value) ?? (existing != nil ? frame.angle : -displayRotation)
+                        }
+                    }
+                }
+                Section(support == .ceiling ? "Position du centre" : "Position du coin inférieur gauche") {
                     LayoutDimensionField(title: "Depuis la gauche (X)", millimetres: $x, signed: true)
                     LayoutDimensionField(title: support == .wall ? "Depuis le sol (Y)" : "Depuis le bas (Y)", millimetres: $y, signed: true)
                     Text("La partie située dans le support sera retirée des plaques. Une porte peut toucher le sol ; les ouvertures qui se chevauchent ne sont déduites qu’une fois.").font(.footnote).foregroundStyle(.secondary)
@@ -186,12 +212,46 @@ struct LayoutOpeningForm: View {
                 ToolbarItem(placement: .cancellationAction) { Button("Annuler") { dismiss() } }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Valider") {
-                        let polygon = LayoutBounds(min: .init(x: x, y: y), max: .init(x: x + width, y: y + height)).polygon
-                        onSave(.init(id: existing?.id ?? UUID(), kind: kind, contour: polygon)); dismiss()
+                        let polygon = openingContour
+                        onSave(.init(id: existing?.id ?? UUID(), kind: kind, contour: polygon,
+                            doorHanding:kind == .door ? existing?.doorHanding : nil,
+                            doorOpeningSide:kind == .door ? existing?.doorOpeningSide : nil)); dismiss()
                     }.disabled(width <= 0 || height <= 0 || [x, y, width, height].contains { !$0.isFinite || abs($0) > 100_000 })
                 }
             }
             .onChange(of: kind) { _, value in if value == .door { y = 0 } }
+        }
+    }
+    private var openingContour: [LayoutPoint] {
+        support == .ceiling ? frame.contour(center: .init(x: x, y: y), width: width, height: height, angle: angle)
+            : LayoutBounds(min: .init(x: x, y: y), max: .init(x: x + width, y: y + height)).polygon
+    }
+    private var openingPreview: some View {
+        Canvas { context, size in
+            let points = surfaceContour.map { LayoutOpeningFrame.rotate($0, by: displayRotation) }
+            let bounds = LayoutBounds(points: points)
+            let scale = min((size.width - 36) / max(bounds.width, 1), (size.height - 36) / max(bounds.height, 1))
+            func screen(_ p: LayoutPoint) -> CGPoint {
+                let q = LayoutOpeningFrame.rotate(p, by: displayRotation) - bounds.center
+                return .init(x: size.width / 2 + q.x * scale, y: size.height / 2 - q.y * scale)
+            }
+            func path(_ contour: [LayoutPoint]) -> Path {
+                Path { p in
+                    guard let first = contour.first else { return }
+                    p.move(to: screen(first)); for point in contour.dropFirst() { p.addLine(to: screen(point)) }; p.closeSubpath()
+                }
+            }
+            context.stroke(path(surfaceContour), with: .color(.secondary), lineWidth: 2)
+            for i in surfaceContour.indices {
+                let a = surfaceContour[i], b = surfaceContour[(i + 1) % surfaceContour.count]
+                if i == referenceEdge {
+                    var line = Path(); line.move(to: screen(a)); line.addLine(to: screen(b))
+                    context.stroke(line, with: .color(.orange), lineWidth: 4)
+                }
+                context.draw(Text("\(i + 1)").font(.caption.bold()), at: screen((a + b) * 0.5))
+            }
+            context.fill(path(openingContour), with: .color(.orange.opacity(0.25)))
+            context.stroke(path(openingContour), with: .color(.orange), lineWidth: 2)
         }
     }
 }

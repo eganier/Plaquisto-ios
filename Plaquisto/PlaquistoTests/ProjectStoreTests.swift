@@ -2,6 +2,62 @@ import XCTest
 import SwiftUI
 @testable import Plaquisto
 
+final class PartitionRegressionTests: XCTestCase {
+    func testInsulationDefaultTracksFrameWidthInsteadOfFirstThinRoll() {
+        let wool = CloisonInsulation(id:"wool",title:"Laine de verre phonique",lambda:0.04,thicknessesMM:[30,45,60,70,85],maxOverFrameMM:10)
+        XCTAssertEqual(wool.preferredThickness(frameWidthMM:45),45)
+        XCTAssertEqual(wool.preferredThickness(frameWidthMM:48),45)
+        XCTAssertEqual(wool.preferredThickness(frameWidthMM:70),70)
+        XCTAssertEqual(wool.preferredThickness(frameWidthMM:90),85)
+        let rigid = CloisonInsulation(id:"wood",title:"Laine de bois",lambda:0.036,thicknessesMM:[40,50,60,80,100],maxOverFrameMM:0)
+        XCTAssertEqual(rigid.preferredThickness(frameWidthMM:48),40)
+        XCTAssertEqual(rigid.preferredThickness(frameWidthMM:70),60)
+        XCTAssertEqual(rigid.preferredThickness(frameWidthMM:20),0)
+    }
+    func testReal279SquareMeterPartitionRepairsBothSixSquareMeterFacesOnlyOnce() throws {
+        var c=CloisonDistributionConfiguration()
+        c.enteredLength=9.3; c.height=3
+        c.faceAFirst=[.init(facingID:"FACING-BA13-STANDARD",formatID:"1200x3000",surface:6)]
+        c.faceBFirst=c.faceAFirst
+        c.quantities=[.init(name:"Parement · BA13 Standard · 1200 × 3000 mm",quantity:12.6,unit:"m²"),
+            .init(name:"Rails R48",quantity:23.44,unit:"ml")]
+        let repaired=c.repairingStaleFacingAreas()
+        XCTAssertEqual(repaired.faceAFirst[0].surface,27.9,accuracy:1e-8)
+        XCTAssertEqual(repaired.faceBFirst[0].surface,27.9,accuracy:1e-8)
+        XCTAssertEqual(repaired.quantities[0].quantity,58.59,accuracy:1e-8)
+        XCTAssertEqual(repaired.quantities[1].quantity,23.44)
+        XCTAssertEqual(repaired.repairingStaleFacingAreas(),repaired)
+        XCTAssertEqual(try JSONDecoder().decode(CloisonDistributionConfiguration.self,from:JSONEncoder().encode(repaired)),repaired)
+    }
+    func testPartitionAndLiningBoardNamesConsolidateWithoutMixingVariants() {
+        let rows=SupplyListingConsolidator.rows([
+            .init(name:"Parement · BA13 Standard · 1200 × 3000 mm",quantity:58.59,unit:"m²"),
+            .init(name:"BA13 · 1200 × 3000 mm",quantity:10,unit:"m²"),
+            .init(name:"BA13 · 1200 × 2600 mm",quantity:5,unit:"m²"),
+            .init(name:"Parement · BA13 Hydrofuge H1 · 1200 × 3000 mm",quantity:7,unit:"m²")])
+        XCTAssertEqual(rows.count,3)
+        XCTAssertEqual(rows.first?.name,"BA13 · 1200 × 3000 mm")
+        XCTAssertEqual(rows.first?.measurements.first?.quantity ?? 0,68.59,accuracy:1e-8)
+    }
+    func testGeometryChangeResizesEachFaceAndPreservesMixedShares() {
+        let mixed:[CloisonFacingSelection]=[.init(facingID:"standard",surface:4),.init(facingID:"hydro",surface:2)]
+        let resized=PartitionFacingArea.resized(mixed,area:27.9)
+        XCTAssertEqual(resized[0].surface,18.6,accuracy:1e-8)
+        XCTAssertEqual(resized[1].surface,9.3,accuracy:1e-8)
+        XCTAssertEqual(resized.map(\.facingID),mixed.map(\.facingID))
+    }
+    func testWallOpeningsCountOnlyTwoFullHeightProfiles() {
+        for system in [OpeningWorkSystem.furringLining,.railStudLining,.distributionPartition] {
+            let context=OpeningContext(system:system,hsp:3,spacing:0.6,doubledStuds:true,frame:"R48 + M48/35")
+            let opening=OpeningInput(kind:.window,width:1,height:1)
+            let result=OpeningQuantityCalculator.calculate(opening,context:context)
+            XCTAssertTrue(result.isComplete)
+            XCTAssertEqual(result.quantities.count,1)
+            XCTAssertEqual(result.quantities.first?.quantity,6)
+        }
+    }
+}
+
 final class FurringIntermediateSupportTests: XCTestCase {
     private let ranges: [(String, Int, Int, Bool)] = [
         ("15-45",0,60,true),("75",60,85,false),("100",85,100,false),
@@ -230,6 +286,179 @@ final class WoodCeilingPlenumDiagramTests: XCTestCase {
 
 @MainActor
 final class ProjectStoreTests: XCTestCase {
+    func testModularCeilingFromScanIsSavedAndTracksCeilingChanges() throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID()).json")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let store = ProjectStore(fileURL: url)
+        var document = scanDocument(name: "Atelier")
+        let source = document.room.walls[0].provenance
+        let ring: [RoomPoint] = [.init(x: 0, y: 0, z: 0), .init(x: 4, y: 0, z: 0), .init(x: 4, y: 0, z: 3), .init(x: 0, y: 0, z: 3)]
+        document.room.walls = ring.indices.map { i in
+            let a = ring[i], b = ring[(i + 1) % ring.count]
+            return .init(start: a, end: b, length: .init(rawValue: (b-a).length, provenance: source), height: .init(rawValue: 2.5, provenance: source), provenance: source)
+        }
+        document = try WallCeilingEstimate.addingIfMissing(to: document)
+        let saved = try store.saveScannedRoom(projectID: nil, newProjectName: "Modulaire", surveyID: nil, surveyName: "Scan", roomID: nil, roomName: "Atelier", document: document)
+        let survey = try XCTUnwrap(store.surveys.first)
+        let selected = SurveyWorkGeometry.surfaces(in: survey).filter { $0.source.kind == .ceiling }
+        XCTAssertTrue(SurveyWorkGeometry.availableWorkTypes(for: selected).contains(.modularCeiling))
+        var configuration = SurveyWorkGeometry.modularCeiling(selected)
+        configuration.plenumCM = 20
+        XCTAssertEqual(configuration.area, 12, accuracy: 0.001)
+        let id = try store.createSurveyWork(surveyID: survey.id, selections: selected, name: "Dalles", type: .modularCeiling, payload: .modularCeiling(configuration), roomID: nil)
+        let work = try XCTUnwrap(ProjectStore(fileURL: url).project(id: saved.projectID)?.works.first { $0.id == id })
+        XCTAssertEqual(work.modularCeilingConfiguration, configuration)
+        XCTAssertEqual(work.components.count, selected.count)
+        XCTAssertNotNil(work.automaticLayout)
+        XCTAssertTrue(work.components.allSatisfy { !$0.plans.isEmpty })
+        XCTAssertEqual(work.components.first?.plans.first?.layers.first?.sheetWidth, 600)
+        XCTAssertNil(work.components.first?.plans.first?.layers.first?.furring)
+        var altered = work
+        altered.components[0].surface?.openings = [.init(kind: .stairwell, contour: LayoutBounds(min: .init(x: 1000, y: 1000), max: .init(x: 2000, y: 2000)).polygon)]
+        altered.layoutNeedsRecalculation = true
+        let refreshed = SurveyWorkGeometry.workForRecalculation(altered)
+        XCTAssertEqual(refreshed.modularCeilingConfiguration?.surveyedSurfaces, altered.components.compactMap(\.surface))
+        XCTAssertEqual(refreshed.modularCeilingConfiguration?.plenumCM, 20)
+    }
+
+    func testModularCeilingScanClipsConcaveContourAndHoleWithoutYawInflation() throws {
+        let contour: [LayoutPoint] = [.init(x: 0, y: 0), .init(x: 6000, y: 0), .init(x: 6000, y: 2400), .init(x: 3600, y: 2400), .init(x: 3600, y: 3600), .init(x: 0, y: 3600)]
+        let hole = LayoutBounds(min: .init(x: 1200, y: 600), max: .init(x: 1800, y: 1200)).polygon
+        var baseline: ModularCeilingQuantities?
+        for yaw in [0.0, 0.19, -0.47] {
+            let surface = Surface2D(name: "Atelier", kind: .ceiling, contour: contour.map { LayoutOpeningFrame.rotate($0, by: yaw) },
+                openings: [.init(kind: .stairwell, contour: hole.map { LayoutOpeningFrame.rotate($0, by: yaw) })])
+            var c = ModularCeilingConfiguration(length: 6, width: 3.6)
+            c.surveyedSurfaces = [surface]
+            let q = try ModularCeilingCalculator.scanned(c, surfaces: [surface])
+            XCTAssertEqual(q.area, 18.36, accuracy: 0.001)
+            XCTAssertEqual(c.area, q.area, accuracy: 0.001)
+            XCTAssertEqual(q.installedTiles, 51)
+            XCTAssertEqual(q.fullTiles, 51)
+            if let baseline {
+                XCTAssertEqual(q.mainRunnerLength, baseline.mainRunnerLength, accuracy: 0.001)
+                XCTAssertEqual(q.hangers, baseline.hangers)
+                XCTAssertEqual(q.orderedTiles, baseline.orderedTiles)
+                XCTAssertEqual(q.perimeter, baseline.perimeter, accuracy: 0.001)
+            } else { baseline = q }
+        }
+    }
+    func testFacingPurchasingDisplayUsesAreaAndDoesNotChangeInternalCounts() throws {
+        let board = SupplyListingEntry(name: "BA13 · 1200 × 2400 mm", quantity: 20, unit: "plaque(s)")
+        let rows = SupplyListingConsolidator.rows([board,
+            .init(name: board.name, quantity: 2.4, unit: "m²"),
+            .init(name: "BA13 · 1200 × 2600 mm", quantity: 10.78, unit: "m²")])
+        XCTAssertEqual(rows.count, 2)
+        XCTAssertEqual(rows[0].measurements.count, 1)
+        XCTAssertEqual(rows[0].measurements[0].unit, "m²")
+        XCTAssertEqual(rows[0].measurements[0].quantity, 60, accuracy: 0.00001)
+        XCTAssertEqual(rows[1].measurements[0].quantity, 10.78)
+        XCTAssertEqual(board.quantity, 20)
+        XCTAssertEqual(SupplyListingConsolidator.displayedMeasurement(.init(name: "BA13 · 120 × 260 cm", quantity: 2, unit: "plaques")).quantity, 6.24, accuracy: 0.00001)
+        XCTAssertEqual(SupplyListingConsolidator.displayedMeasurement(.init(name: "Format inconnu", quantity: 2, unit: "plaques")).unit, "plaques")
+        XCTAssertEqual(SupplyListingConsolidator.displayedMeasurement(.init(name: "Vis 25 mm", quantity: 100, unit: "unités")).quantity, 100)
+    }
+
+    func testAttachedOpeningInsulationIsDeductedOnlyFromParentAndEachLayer() throws {
+        let project = UUID(), now = Date()
+        var config = DoublageConfiguration(height: 2.5, enteredLength: 8)
+        config.quantities = [.init(name: "Isolation · Laine 100 mm", quantity: 22, unit: "m²"),
+                             .init(name: "Isolation · Laine 60 mm", quantity: 22, unit: "m²"),
+                             .init(name: "Rails", quantity: 16, unit: "ml")]
+        var source = WorkItem(id: UUID(), projectID: project, name: "Doublage", type: .peripheralLiningStuds,
+                             doublageConfiguration: config, createdAt: now, updatedAt: now)
+        let other = WorkItem(id: UUID(), projectID: project, name: "Autre", type: .peripheralLiningStuds,
+                            doublageConfiguration: config, createdAt: now, updatedAt: now)
+        let input = OpeningInput(kind: .window, width: 2, height: 1)
+        let openingConfig = OpeningConfiguration(context: .init(system: .railStudLining, hsp: 2.5), openings: [input], sourceWorkID: source.id)
+        let opening = WorkItem(id: UUID(), projectID: project, name: "Fenêtre", type: .openings,
+                              openingConfiguration: openingConfig, createdAt: now, updatedAt: now)
+        let catalogue = CeilingCataloguePayload(version: "test", ouvrage: nil, isolation: [], systemesFixation: [], parements: [], quantitatifs: [], pareVapeur: [], regles: [])
+        let all = [source, other, opening]
+        let result = CombinedQuantityCalculator.calculate(works: [source, other, opening, opening], catalogue: catalogue, projectWorks: all)
+        for name in ["Isolation · Laine 100 mm", "Isolation · Laine 60 mm"] {
+            XCTAssertEqual(try XCTUnwrap(result.supplies.first { $0.name == name }).quantity, 41.8, accuracy: 0.00001)
+        }
+        XCTAssertFalse(result.supplies.contains { $0.name.contains("déduire") })
+        let only = CombinedQuantityCalculator.calculate(works: [source], catalogue: catalogue, projectWorks: all)
+        XCTAssertEqual(try XCTUnwrap(only.supplies.first { $0.name == "Isolation · Laine 100 mm" }).quantity, 19.8, accuracy: 0.00001)
+        XCTAssertEqual(WorkOpeningRelations.insulationRemainingRatio(for: source, allWorks: [other]), 1)
+        // Automatic minimum quantities must not reapply the subtraction recursively.
+        source.automaticLayout = .init(configurationFingerprint: LayoutQuantityCalculator.configurationFingerprint(source), minimumSupplies: [], warnings: [])
+        let automatic = CombinedQuantityCalculator.calculate(works: [source], catalogue: catalogue, projectWorks: [source, opening])
+        XCTAssertEqual(try XCTUnwrap(automatic.supplies.first { $0.name == "Isolation · Laine 100 mm" }).quantity, 19.8, accuracy: 0.00001)
+        // A scanned/layout opening already included in net area is not deducted twice.
+        var surface = Surface2D(name: "Mur", kind: .wall, contour: [.init(x:0,y:0),.init(x:8000,y:0),.init(x:8000,y:2500),.init(x:0,y:2500)])
+        surface.openings = [.init(id: input.id, kind: .window, contour: [.init(x:0,y:0),.init(x:2000,y:0),.init(x:2000,y:1000),.init(x:0,y:1000)])]
+        source.components = [.init(name: "Mur", surface: surface)]
+        XCTAssertEqual(WorkOpeningRelations.insulationRemainingRatio(for: source, allWorks: [opening]), 1)
+        XCTAssertEqual(WorkOpeningRelations.summary(for: source, allWorks: [opening, opening]).count, 1)
+        XCTAssertTrue(WorkOpeningRelations.summary(for: source, allWorks: [opening])[0].contains("200 × 100 cm"))
+        XCTAssertFalse(OpeningQuantityCalculator.totals([OpeningQuantityCalculator.calculate(input, context: openingConfig.context)]).contains { $0.name.contains("déduire") })
+    }
+
+    func testConfigurationShortcutsCoverOnlyEditableSteps() {
+        let expected: [(WorkType, ClosedRange<Int>)] = [
+            (.ceilingOnFurring, 0...6), (.ceilingOnRailsAndStuds, 0...7),
+            (.peripheralLiningStuds, 1...5), (.peripheralLiningFurrings, 1...5),
+            (.distributionPartition, 1...6), (.alveolarPartition, 1...3),
+            (.peripheralLiningBonded, 1...5), (.peripheralLiningAdhesiveFacing, 1...4),
+            (.modularCeiling, 0...2)
+        ]
+        for (type, range) in expected {
+            let shortcuts = WorkConfigurationShortcut.choices(for: type)
+            XCTAssertEqual(shortcuts.map(\.step), Array(range), type.title)
+            XCTAssertEqual(Set(shortcuts.map(\.id)).count, shortcuts.count)
+            XCTAssertTrue(shortcuts.allSatisfy { !$0.title.isEmpty })
+        }
+        for type in [WorkType.paintingBeta, .jointTreatment, .openings] {
+            XCTAssertTrue(WorkConfigurationShortcut.choices(for: type).isEmpty)
+        }
+        XCTAssertEqual(WorkConfigurationShortcut.choices(for: .ceilingOnFurring)[2].title, "Isolation et pare-vapeur")
+        XCTAssertEqual(WorkConfigurationShortcut.choices(for: .peripheralLiningFurrings)[3].step, 4)
+    }
+
+    func testConfigurationEntryIsOptionalAndRejectsInvalidSteps() async throws {
+        for entry: Int? in [nil, -1, 2, 7] {
+            var entries: [Int] = []
+            let controller = UIHostingController(rootView:
+                Text("Formulaire")
+                    .configurationEntry(in: 0...6) { entries.append($0) }
+                    .environment(\.configurationEntryStep, entry)
+            )
+            let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 390, height: 844))
+            window.rootViewController = controller
+            window.makeKeyAndVisible()
+            controller.view.layoutIfNeeded()
+            try await Task.sleep(for: .milliseconds(100))
+            XCTAssertEqual(entries, entry == 2 ? [2] : [])
+            window.isHidden = true
+            window.rootViewController = nil
+        }
+    }
+
+    func testConfigurationEntryDoesNotResetStepWhenReturningToForm() async throws {
+        var entries: [Int] = []
+        let controller = UIHostingController(rootView:
+            Text("Formulaire")
+                .configurationEntry(in: 1...5) { entries.append($0) }
+                .environment(\.configurationEntryStep, 4)
+        )
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 390, height: 844))
+        window.rootViewController = controller
+        window.makeKeyAndVisible()
+        controller.view.layoutIfNeeded()
+        try await Task.sleep(for: .milliseconds(100))
+        controller.beginAppearanceTransition(false, animated: false)
+        controller.endAppearanceTransition()
+        controller.beginAppearanceTransition(true, animated: false)
+        controller.endAppearanceTransition()
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(entries, [4])
+        window.isHidden = true
+        window.rootViewController = nil
+    }
+
     func testSavingCeilingPlanAutomaticallyUpdatesPartialQuantitiesAndReloads() throws {
         let url=FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID()).json")
         defer { try? FileManager.default.removeItem(at:url) }
@@ -381,7 +610,7 @@ final class ProjectStoreTests: XCTestCase {
             let wallID = try XCTUnwrap(document.wallWorkIntents?.first(where: { $0.use == .partition })?.wallID)
             if withDoor {
                 document = try SurveyPlanEditing.addingDoor(document, wallID: wallID,
-                    width: 0.83, height: 2.04, position: 1)
+                    width: 0.83, height: 2.04, position: 1,handing:.left,openingSide:.negative)
             }
             let saved = try store.saveScannedRoom(projectID: nil, newProjectName: "Test", surveyID: nil,
                 surveyName: "Scan", roomID: nil, roomName: "Salon", document: document)
@@ -402,6 +631,25 @@ final class ProjectStoreTests: XCTestCase {
             XCTAssertEqual(work.components[0].plans.count, 2)
             XCTAssertEqual(work.area, 7.5 - (withDoor ? 0.83 * 2.04 : 0), accuracy: 0.000001)
             XCTAssertEqual(work.components[0].plans, prepared.components[0].plans)
+            XCTAssertEqual(WorkOpeningRelations.planOpenings(for:work).count,withDoor ? 1 : 0)
+            XCTAssertEqual(WorkOpeningRelations.insulationRemainingRatio(for:work,allWorks:[work]),1)
+            XCTAssertEqual(configuration.faceAFirst[0].surface+configuration.faceBFirst[0].surface,work.area*2,accuracy:1e-8)
+            if withDoor {
+                let door=try XCTUnwrap(work.components[0].surface?.openings.first)
+                XCTAssertEqual(door.doorHanding,.left)
+                XCTAssertEqual(door.doorOpeningSide,.negative)
+                XCTAssertEqual(door.bounds.width,830,accuracy:1e-8)
+                XCTAssertEqual(door.bounds.height,2040,accuracy:1e-8)
+                XCTAssertEqual(door.bounds.min.x,1000,accuracy:1e-8)
+                XCTAssertTrue(WorkOpeningRelations.summary(for:work,allWorks:[work])[0].contains("Poussant gauche"))
+                let checkpoint=try XCTUnwrap(store.surveys[0].checkpoints.first)
+                let flipped=try SurveyPlanEditing.movingDoor(checkpoint.document,id:door.id,position:1,openingSide:.positive)
+                try store.updateSurveyRoom(surveyID:saved.surveyID,checkpointID:checkpoint.id,expectedDocument:checkpoint.document,document:flipped)
+                let updated=try XCTUnwrap(ProjectStore(fileURL:fileURL).project(id:saved.projectID)?.works.first { $0.id==id })
+                XCTAssertEqual(updated.components[0].surface?.openings.first?.doorOpeningSide,.positive)
+                XCTAssertEqual(updated.area,work.area,accuracy:1e-8)
+                XCTAssertEqual(WorkOpeningRelations.planOpenings(for:updated).count,1)
+            }
         }
     }
 
@@ -542,6 +790,34 @@ final class ProjectStoreTests: XCTestCase {
         XCTAssertNotEqual(copiedLayer.id,work.components[0].plans[0].layers[0].id)
         copiedLayer.id=work.components[0].plans[0].layers[0].id
         XCTAssertEqual(copiedLayer,work.components[0].plans[0].layers[0])
+    }
+
+    func testExistingCoverageRequiresExplicitConfirmationAndKeepsBothWorks() throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID()).json")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let store = ProjectStore(fileURL: url)
+        let saved = try store.saveScannedRoom(projectID:nil,newProjectName:"Recouvrement",surveyID:nil,surveyName:"Scan",roomID:nil,roomName:"Salon",document:scanDocument(name:"Salon"))
+        let survey = try XCTUnwrap(store.surveys.first)
+        let surfaces = SurveyWorkGeometry.surfaces(in: survey)
+        var c = SurveyWorkGeometry.lining(surfaces)
+        c.firstSkin = [.init(facingID: "ba13", formatID: "1200x2400", surface: c.area)]
+        let first = try store.createSurveyWork(surveyID: saved.surveyID, selections: surfaces, name: "Premier", type: .peripheralLiningStuds, payload: .peripheralLining(c), roomID: nil)
+        let works = try XCTUnwrap(store.project(id: saved.projectID)).works
+        XCTAssertEqual(SurveyOverlapView.conflictingIDs(selections: surfaces, works: works), Set(surfaces.map(\.id)))
+        XCTAssertThrowsError(try store.createSurveyWork(surveyID: saved.surveyID, selections: surfaces, name: "Deuxième", type: .peripheralLiningStuds, payload: .peripheralLining(c), roomID: nil))
+        let second = try store.createSurveyWork(surveyID: saved.surveyID, selections: surfaces, name: "Deuxième", type: .peripheralLiningStuds, payload: .peripheralLining(c), roomID: nil, allowsExistingCoverage: true)
+        XCTAssertNotEqual(first, second)
+        let result = try XCTUnwrap(store.project(id: saved.projectID)).works
+        XCTAssertEqual(result.count, 2)
+        XCTAssertTrue(result.allSatisfy { $0.hasSavedLayout })
+        XCTAssertEqual(ProjectStore(fileURL: url).project(id: saved.projectID)?.works.count, 2)
+        XCTAssertTrue(result.first { $0.id == second }?.components.allSatisfy { $0.allowsExistingSurveyCoverage == true } == true)
+        let copy = try store.duplicateProject(id: saved.projectID)
+        XCTAssertEqual(store.project(id: copy)?.works.count, 2)
+        XCTAssertEqual(store.surveys.first, survey)
+        try store.renameSurvey(projectID: saved.projectID, surveyID: saved.surveyID, name: "Variante")
+        XCTAssertEqual(ProjectStore(fileURL: url).surveys.first?.name, "Variante")
+        XCTAssertThrowsError(try store.renameSurvey(projectID: saved.projectID, surveyID: saved.surveyID, name: "   "))
     }
 
     func testAutomaticQuantitiesOnlyIncreaseAndInvalidateOnConfigurationChange() throws {
@@ -766,6 +1042,33 @@ final class ProjectStoreTests: XCTestCase {
         }
     }
 
+    func testPartitionJunctionSplitsLinkedWallWithoutLosingSavedLayoutOrArea() throws {
+        let url=FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID()).json")
+        defer { try? FileManager.default.removeItem(at:url) }
+        let store=ProjectStore(fileURL:url)
+        let document=scanDocument(name:"Mur à diviser")
+        let saved=try store.saveScannedRoom(projectID:nil,newProjectName:"Jonction",surveyID:nil,surveyName:"Scan",roomID:nil,roomName:"Pièce",document:document)
+        let survey=try XCTUnwrap(store.surveys.first), checkpoint=try XCTUnwrap(survey.checkpoints.first)
+        let wall=try XCTUnwrap(checkpoint.document.room.walls.first)
+        let selections=SurveyWorkGeometry.surfaces(in:survey).filter { $0.source.kind == .wall && $0.source.surfaceID==wall.id }
+        let configuration=SurveyWorkGeometry.lining(selections)
+        let workID=try store.createSurveyWork(surveyID:survey.id,selections:selections,name:"Doublage",type:.peripheralLiningStuds,payload:.peripheralLining(configuration),roomID:nil)
+        let component=try XCTUnwrap(store.project(id:saved.projectID)?.works.first?.components.first)
+        var layout=LayoutDocument.newSupport(try XCTUnwrap(component.surface))
+        layout.layers[0].offset = .init(x:127,y:311)
+        try store.saveComponentPlan(projectID:saved.projectID,workID:workID,componentID:component.id,sideRoomID:nil,document:layout)
+        // Avoid the fixture's opening when choosing the T-junction.
+        let point=wall.start+wall.direction*(wall.length.effectiveValue*0.1)
+        let cut=try SurveyPlanEditing.splittingJoinedWalls(checkpoint.document,at:[point],excluding:UUID())
+        try store.updateSurveyRoom(surveyID:survey.id,checkpointID:checkpoint.id,expectedDocument:checkpoint.document,document:cut)
+        let reloaded=ProjectStore(fileURL:url)
+        let work=try XCTUnwrap(reloaded.project(id:saved.projectID)?.works.first)
+        XCTAssertEqual(work.components.count,2)
+        XCTAssertEqual(work.area,configuration.area,accuracy:1e-8)
+        XCTAssertTrue(work.components.allSatisfy { $0.plans.count==1 && $0.plans[0].layers[0].offset==layout.layers[0].offset })
+        XCTAssertEqual(try work.components.reduce(0.0) { $0+(try XCTUnwrap($1.surface).netMeasuredArea()) },configuration.area*1_000_000,accuracy:0.01)
+    }
+
     func testBentPartitionSplitInheritsCeilingLayoutInSameWork() throws {
         let url=FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID()).json")
         defer { try? FileManager.default.removeItem(at:url) }
@@ -797,6 +1100,15 @@ final class ProjectStoreTests: XCTestCase {
         XCTAssertEqual(parts.count,2)
         XCTAssertTrue(parts.allSatisfy { $0.plans.count == 1 && $0.plans[0].layers[0].offset == layout.layers[0].offset })
         XCTAssertEqual(try parts.reduce(0.0) { $0 + (try XCTUnwrap($1.surface).netMeasuredArea()) },12_000_000,accuracy:0.01)
+        let partitionID=try XCTUnwrap(partition.room.walls.last?.id)
+        let reunited=try SurveyPlanEditing.removingPartition(split,id:partitionID)
+        try store.updateSurveyRoom(surveyID:survey.id,checkpointID:checkpoint.id,expectedDocument:split,document:reunited)
+        let reloaded=ProjectStore(fileURL:url)
+        XCTAssertEqual(reloaded.surveys.first?.checkpoints.first?.document.room.ceilings.count,1)
+        let retained=try XCTUnwrap(reloaded.project(id:saved.projectID)?.works.first)
+        XCTAssertEqual(retained.components.map(\.id),parts.map(\.id))
+        XCTAssertEqual(retained.components.map(\.plans),parts.map(\.plans))
+        XCTAssertEqual(try retained.components.reduce(0.0) { $0 + (try XCTUnwrap($1.surface).netMeasuredArea()) },12_000_000,accuracy:0.01)
     }
     func testCeilingSplitInheritsSavedLayoutAndRepeatedCutsAcrossReloads() throws {
         for pitch in [0.0,0.25] {
@@ -2134,6 +2446,57 @@ final class ProjectStoreTests: XCTestCase {
         XCTAssertEqual(works.first(where: { $0.id == copyID })?.alveolarPartitionConfiguration, configuration)
     }
 
+    func testPersistedMixedProjectConsolidatesSuppliesWithoutMergingTechnicalVariants() throws {
+        let url=FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID()).json")
+        defer { try? FileManager.default.removeItem(at:url) }
+        let store=ProjectStore(fileURL:url)
+        let project=try store.createProject(name:"Essai multi-ouvrages",client:"Test",address:"",notes:"")
+        for width in [48,70] {
+            var c=CloisonDistributionConfiguration(height:2.5,enteredLength:4)
+            c.frame="R\(width) + M\(width)"; c.insulationThicknessMM = width == 48 ? 45 : 70
+            c.quantities=[.init(name:"Rails",quantity:8,unit:"ml"),.init(name:"Montants",quantity:20,unit:"ml"),
+                .init(name:"Parement · BA13 Standard · 1200 × 2400 mm",quantity:21,unit:"m²"),
+                .init(name:"Vis TTPC 25mm (1er parement)",quantity:100,unit:"unités"),
+                .init(name:"Bande à joint",quantity:30,unit:"ml")]
+            _ = try store.createWork(projectID:project,name:"Cloison R\(width)",type:.distributionPartition,cloisonDistributionConfiguration:c)
+        }
+        var lining=DoublageConfiguration(height:2.5,enteredLength:4)
+        lining.quantities=[.init(name:"Rail R48",quantity:8,unit:"ml"),.init(name:"Montant M48",quantity:20,unit:"ml"),
+            .init(name:"BA13 · 1200 × 2400 mm",quantity:10.5,unit:"m²"),
+            .init(name:"Vis TTPC 25",quantity:100,unit:"unité"),.init(name:"Bande PP grand rouleau",quantity:15,unit:"ml")]
+        _ = try store.createWork(projectID:project,name:"Doublage montants",type:.peripheralLiningStuds,doublageConfiguration:lining)
+        var furring=FurringLiningConfiguration(height:2.5,enteredLength:4)
+        furring.quantities=[.init(name:"Fourrures F45",quantity:12,unit:"ml"),.init(name:"Fourrures F45/F47",quantity:6,unit:"ml"),
+            .init(name:"Bande à joint · papier",quantity:15,unit:"ml"),.init(name:"BA13 Hydrofuge H1 · 1200 × 2400 mm",quantity:10.5,unit:"m²")]
+        _ = try store.createWork(projectID:project,name:"Doublage hydro",type:.peripheralLiningFurrings,furringLiningConfiguration:furring)
+        var ceiling=RailStudCeilingConfiguration()
+        ceiling.area=10; ceiling.studWidth=70
+        ceiling.quantities=[.init(name:"Rails R70",quantity:8,unit:"ml"),.init(name:"Montants M70",quantity:20,unit:"ml"),
+            .init(name:"BA13 · 1200 × 2400 mm",quantity:4,unit:"plaque(s)"),.init(name:"Vis TTPC 35 mm (2e parement)",quantity:100,unit:"unités")]
+        _ = try store.createWork(projectID:project,name:"Plafond double peau",type:.ceilingOnRailsAndStuds,railStudCeilingConfiguration:ceiling)
+        var adhesive=AdhesiveFacingConfiguration(height:2.5,enteredLength:4)
+        adhesive.quantities=[.init(name:"BA13 · 1200 × 2600 mm",quantity:10.5,unit:"m²"),.init(name:"Bande à joint",quantity:15,unit:"ml")]
+        _ = try store.createWork(projectID:project,name:"Parement collé",type:.peripheralLiningAdhesiveFacing,adhesiveFacingConfiguration:adhesive)
+        let works=try XCTUnwrap(ProjectStore(fileURL:url).project(id:project)?.works)
+        XCTAssertEqual(works.count,6)
+        let catalogue=CeilingCataloguePayload(version:"test",ouvrage:nil,isolation:[],systemesFixation:[],parements:[],quantitatifs:[],pareVapeur:[],regles:[])
+        let result=CombinedQuantityCalculator.calculate(works:works+works,catalogue:catalogue)
+        let rows=SupplyListingConsolidator.rows(result.supplies.map { .init(name:$0.name,quantity:$0.quantity,unit:$0.unit) })
+        func value(_ name:String)->Double { rows.first { $0.name==name }?.measurements.first?.quantity ?? 0 }
+        XCTAssertEqual(Set(rows.map(\.name)).count,rows.count)
+        XCTAssertEqual(value("Rails R48"),16)
+        XCTAssertEqual(value("Rails R70"),16)
+        XCTAssertEqual(value("Montants M48"),40)
+        XCTAssertEqual(value("Montants M70"),40)
+        XCTAssertEqual(value("Fourrures F45/F47"),18)
+        XCTAssertEqual(value("Vis TTPC 25"),300)
+        XCTAssertEqual(value("Vis TTPC 35"),100)
+        XCTAssertEqual(value("Bande à joint"),105)
+        XCTAssertEqual(value("BA13 · 1200 × 2400 mm"),64.02,accuracy:1e-6)
+        XCTAssertEqual(value("BA13 · 1200 × 2600 mm"),10.5)
+        XCTAssertEqual(value("BA13 Hydrofuge H1 · 1200 × 2400 mm"),10.5)
+    }
+
     func testCombinedQuantityIncludesAllWorkTypes() {
         let projectID = UUID()
         let now = Date()
@@ -2203,7 +2566,7 @@ final class ProjectStoreTests: XCTestCase {
         XCTAssertEqual(studs.count, 1)
         XCTAssertEqual(studs.first?.name, "Montants M48/35")
         XCTAssertEqual(studs.first?.unit, "ml")
-        XCTAssertEqual(studs.first?.quantity ?? 0, 42.3, accuracy: 0.001)
+        XCTAssertEqual(studs.first?.quantity ?? 0, 25, accuracy: 0.001) // 20 ml + two full-height jambs, no lintels.
     }
 
     func testLegacyArchiveIsNotSilentlyImportedOrOverwritten() throws {
@@ -2468,6 +2831,45 @@ final class ProjectStoreTests: XCTestCase {
         XCTAssertTrue(store.surveys(projectID: saved.projectID).isEmpty)
         XCTAssertEqual(store.surveys(projectID: copyID).count, 1)
         XCTAssertEqual(ProjectStore(fileURL: fileURL).surveys(projectID: copyID).count, 1)
+    }
+
+    func testDuplicateSurveyIsIndependentAndDoesNotCopyOrRelinkWorks() throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID()).json")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let store = ProjectStore(fileURL: url)
+        let saved = try store.saveScannedRoom(projectID: nil, newProjectName: "Maison", surveyID: nil,
+            surveyName: "Scan", roomID: nil, roomName: "Salon", document: scanDocument(name: "Salon"))
+        try validateAllCheckpoints(in: store, surveyID: saved.surveyID)
+        let source = try XCTUnwrap(store.surveys.first)
+        let selected = SurveyWorkGeometry.surfaces(in: source)
+        _ = try store.createSurveyWork(surveyID: source.id, selections: selected,
+            name: "Doublage", type: .peripheralLiningStuds,
+            payload: .peripheralLining(SurveyWorkGeometry.lining(selected)), roomID: nil)
+        let works = try XCTUnwrap(store.project(id: saved.projectID)).works
+        let copyID = try store.duplicateSurvey(projectID: saved.projectID, surveyID: source.id)
+        let copy = try XCTUnwrap(store.surveys.first { $0.id == copyID })
+        let checkpoint = try XCTUnwrap(copy.checkpoints.first)
+        XCTAssertEqual(copy.name, "Scan – copie")
+        XCTAssertEqual(copy.projectID, source.projectID)
+        XCTAssertEqual(copy.scanDate, source.scanDate)
+        XCTAssertEqual(checkpoint.roomID, source.checkpoints[0].roomID)
+        XCTAssertEqual(checkpoint.transformToSurvey, source.checkpoints[0].transformToSurvey)
+        XCTAssertNotEqual(checkpoint.id, source.checkpoints[0].id)
+        XCTAssertNotEqual(checkpoint.document.room.id, source.checkpoints[0].document.room.id)
+        XCTAssertNotEqual(checkpoint.document.room.walls[0].id, source.checkpoints[0].document.room.walls[0].id)
+        var modified = checkpoint.document
+        try modified.room.walls[0].length.correct(4.5)
+        try store.updateSurveyRoom(surveyID: copyID, checkpointID: checkpoint.id, expectedDocument: checkpoint.document, document: modified)
+        XCTAssertEqual(store.surveys.first { $0.id == source.id }, source)
+        XCTAssertEqual(store.project(id: saved.projectID)?.works, works)
+        let reloaded = try XCTUnwrap(ProjectStore(fileURL: url).surveys.first { $0.id == copyID }?.checkpoints[0].document)
+        // The archive's ISO-8601 date encoding intentionally drops subsecond precision.
+        XCTAssertEqual(try reloaded.encoded(), try modified.encoded())
+        let second = try store.duplicateSurvey(projectID: saved.projectID, surveyID: source.id)
+        XCTAssertEqual(store.surveys.first { $0.id == second }?.name, "Scan – copie 2")
+        let before = try Data(contentsOf: url)
+        XCTAssertThrowsError(try store.duplicateSurvey(projectID: saved.projectID, surveyID: UUID()))
+        XCTAssertEqual(try Data(contentsOf: url), before)
     }
 
     func testScannedRoomValidationLeavesNoPhantomProject() throws {

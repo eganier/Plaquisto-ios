@@ -29,14 +29,62 @@ struct MaquetteRenderingSettingsSection: View {
 /// Keep SceneKit's native orbit, translation and pinch, but reject camera roll.
 /// Filtering the public gesture type also covers controls reinstalled when the
 /// scene or allowsCameraControl changes. No private SceneKit recognizer names.
-class UprightSurveySceneView: SCNView {
+class UprightSurveySceneView: SCNView, UIGestureRecognizerDelegate {
+    private lazy var translationGesture: UIPanGestureRecognizer = {
+        let gesture = UIPanGestureRecognizer(target: self, action: #selector(translateModel(_:)))
+        gesture.minimumNumberOfTouches = 2; gesture.maximumNumberOfTouches = 2
+        gesture.delegate = self
+        return gesture
+    }()
+    private var installingTranslation = false
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        if translationGesture.view == nil {
+            installingTranslation = true
+            super.addGestureRecognizer(translationGesture)
+            installingTranslation = false
+        }
+        // SceneKit may reinstall/reconfigure its orbit recognizer after loading
+        // a scene. Reserve two-finger drags explicitly for translation.
+        for case let pan as UIPanGestureRecognizer in gestureRecognizers ?? [] where pan !== translationGesture {
+            pan.minimumNumberOfTouches = 1; pan.maximumNumberOfTouches = 1
+        }
+    }
     override func addGestureRecognizer(_ gestureRecognizer: UIGestureRecognizer) {
         // SceneKit re-enables its recognizers after adding them. Simply setting
         // isEnabled=false here is insufficient; do not attach the roll handler.
         if gestureRecognizer is UIRotationGestureRecognizer {
             return
         }
+        if let pan = gestureRecognizer as? UIPanGestureRecognizer, !installingTranslation {
+            pan.minimumNumberOfTouches = 1; pan.maximumNumberOfTouches = 1
+        }
         super.addGestureRecognizer(gestureRecognizer)
+    }
+    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool {
+        other is UIPinchGestureRecognizer && other.view === self
+    }
+    @objc private func translateModel(_ gesture: UIPanGestureRecognizer) {
+        guard allowsCameraControl else { return }
+        if gesture.state == .began { defaultCameraController.stopInertia() }
+        let delta = gesture.translation(in: self)
+        gesture.setTranslation(.zero, in: self)
+        if gesture.state == .began || gesture.state == .changed { translateCamera(by: delta) }
+    }
+    /// Move camera and orbit target together so subsequent orbit/pinch never
+    /// snaps back to the room centre. Projection works with perspective and ortho.
+    func translateCamera(by delta: CGPoint) {
+        guard let camera = pointOfView, bounds.width > 0, bounds.height > 0 else { return }
+        let target = defaultCameraController.target
+        let projected = projectPoint(target)
+        let a = unprojectPoint(projected)
+        let b = unprojectPoint(SCNVector3(projected.x - Float(delta.x), projected.y - Float(delta.y), projected.z))
+        let movement = SIMD3<Float>(b.x - a.x, b.y - a.y, b.z - a.z)
+        guard movement.x.isFinite, movement.y.isFinite, movement.z.isFinite else { return }
+        SCNTransaction.begin(); SCNTransaction.animationDuration = 0
+        camera.simdWorldPosition += movement
+        defaultCameraController.target = SCNVector3(target.x + movement.x, target.y + movement.y, target.z + movement.z)
+        SCNTransaction.commit()
     }
 }
 

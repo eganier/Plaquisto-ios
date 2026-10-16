@@ -467,6 +467,7 @@ struct RailStudCeilingConfiguratorView: View {
             }
         }
         .navigationBarBackButtonHidden()
+        .configurationEntry(in:0...7) { step = visibleStepIndices.contains($0) ? $0 : 3; showingResult = false }
         .tint(Color(red: 0.12, green: 0.38, blue: 0.29))
         .toolbar {
             if isEditing, let onSave {
@@ -1027,7 +1028,10 @@ struct RailStudCeilingConfiguratorView: View {
     }
     private func format(_ value: Double) -> String { value.formatted(.number.precision(.fractionLength(0...2))) }
     private func lambda(_ value: Double) -> String { value.formatted(.number.precision(.fractionLength(3))) }
-    private func quantityTitle(_ supply: LabSupply) -> String { "\(supply.unit == "unité" || supply.unit == "plaque(s)" ? String(Int(ceil(supply.quantity))) : format(supply.quantity)) \(supply.unit)" }
+    private func quantityTitle(_ supply: LabSupply) -> String {
+        let displayed = SupplyListingConsolidator.displayedMeasurement(.init(name: supply.name, quantity: supply.quantity, unit: supply.unit))
+        return "\(SupplyListingConsolidator.isDiscrete(displayed.unit) ? String(Int(ceil(displayed.quantity))) : format(displayed.quantity)) \(displayed.unit)"
+    }
 }
 
 private struct LabMeasureField: View {

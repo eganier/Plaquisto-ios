@@ -149,8 +149,14 @@ struct ScannerCampaignWorkspaceView: View {
     @State private var revision = Date()
     @State private var showsCeilings = false
     @State private var cameraReset = 0
+    @State private var showsWorks = false
+    @State private var showsWorkJoints = true
+    @StateObject private var layoutFormats = ToolTechnicalStore()
+    @StateObject private var layoutReferences = CeilingReferenceStore()
+    @State private var inspectedSurface: String?
     @State private var diagnosticExport: ScanDiagnosticExport?
     @State private var diagnosticError: String?
+    @State private var duplicationError: String?
     @State private var daeExport:SurveyExportFile?
     @State private var exportingDAE=false
     private var survey: ProjectSurveyRecord {
@@ -167,12 +173,21 @@ struct ScannerCampaignWorkspaceView: View {
     private var liningWorks: [WorkItem] {
         store.project(id:survey.projectID)?.works.filter { $0.type.category == .wallInsulation } ?? []
     }
+    private var linkedWorks: [WorkItem] {
+        store.project(id: survey.projectID)?.works.filter { $0.components.contains { $0.surveySource?.surveyID == survey.id } } ?? []
+    }
     private var liningClaims: Set<UUID> { Set(liningWorks.flatMap(\.components).compactMap(\.surveySource).filter { $0.surveyID==survey.id }.map(\.surfaceID)) }
     static func key(_ value: SurveyWorkSurface) -> String {
         "\(value.source.surfaceID)/\(value.source.kind.rawValue)/\(value.source.boundaryIndex)"
     }
     private var chosen: [SurveyWorkSurface] { surfaces.filter { $0.source.kind == kind && selectedKeys.contains(Self.key($0)) } }
     private var chosenIDs: Set<String> { Set(chosen.map(\.id)) }
+    private var inspectedWorks: [WorkItem] {
+        guard showsWorks, let surface = surfaces.first(where: { $0.id == inspectedSurface }) else { return [] }
+        return linkedWorks.filter { work in work.components.contains { component in
+            component.surveySource.map { SurveyWorkGeometry.hasSameSource($0, surface.source) } ?? false
+        } }
+    }
     private var surfacePicker: some View {
         Picker("Surfaces", selection: $kind) {
             Text("Murs").tag(SurveySurfaceSource.Kind.wall)
@@ -181,6 +196,7 @@ struct ScannerCampaignWorkspaceView: View {
     }
     private func toggle(_ id: String) {
         guard let value = surfaces.first(where: { $0.id == id && $0.source.kind == kind }) else { return }
+        inspectedSurface = id
         if choosingLining {
             guard value.source.kind == .wall, value.source.checkpointID == liningCheckpoint else { return }
             if liningClaims.contains(value.source.surfaceID) {
@@ -196,9 +212,16 @@ struct ScannerCampaignWorkspaceView: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack {
-                Picker("Vue", selection: $plan) { Text("3D").tag(false); Text("Plan 2D").tag(true) }.pickerStyle(.segmented)
-                if !isLab { surfacePicker }
+                Picker("Vue", selection: $plan) { Text("3D").tag(false); Text("2D").tag(true) }.pickerStyle(.segmented)
             }.padding()
+            if !inspectedWorks.isEmpty {
+                VStack(alignment: .leading, spacing: 3) {
+                    ForEach(inspectedWorks) { work in
+                        Text("\(work.name) · \(work.type.title) · \(work.area.formatted(.number.precision(.fractionLength(1)))) m²")
+                            .font(.caption).frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                }.padding(.horizontal).padding(.bottom, 6)
+            }
             if survey.checkpoints.count > 1 && survey.checkpoints.contains(where: { $0.spatialLinkState == .needsLink }) {
                 Label("Raccord non confirmé : zones présentées séparément", systemImage: "exclamationmark.triangle")
                     .font(.caption).foregroundStyle(.orange).padding(.horizontal)
@@ -206,56 +229,41 @@ struct ScannerCampaignWorkspaceView: View {
             Group {
                 if plan {
                     SurveySurfacePlan(survey: survey, surfaces: surfaces, kind: kind, selected: chosenIDs,
-                        blocked: [], onTap: toggle, showsDimensions: dimensions)
+                        blocked: [], onTap: toggle, showsDimensions: true)
                 } else {
                     SurveySurfaceScene(survey: survey, surfaces: surfaces, kind: kind, selected: chosenIDs,
-                        claimed: [], onTap: toggle, showsCeilings: showsCeilings, resetToken: cameraReset)
+                        claimed: [], onTap: toggle, showsCeilings: showsCeilings, resetToken: cameraReset,
+                        previewWorks: showsWorks ? linkedWorks : [], showsWorkJoints: showsWorkJoints)
                 }
             }.overlay(alignment: .bottomLeading) {
                 VStack(alignment: .leading, spacing: 8) {
-                if kind == .ceiling {
-                    VStack(alignment: .leading, spacing: 6) {
-                        if !surfaces.contains(where: { $0.source.kind == .ceiling }) {
-                            Text("Les plafonds ne sont pas encore configurés.").font(.caption)
-                        }
-                        Button("Configurer les plafonds", systemImage: "square.3.layers.3d") {
-                            openEditor(ceilings: true)
-                        }.buttonStyle(.borderedProminent)
-                    }.padding(10).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16)).padding()
-                } else if chosen.isEmpty && (!isLab || choosingLining || quickLayout) {
+                if kind == .wall && chosen.isEmpty && (!isLab || choosingLining || quickLayout) {
                     Text(choosingLining ? "Sélectionnez les murs à doubler. Touchez un doublage existant pour renseigner sa tapée." : quickLayout ? "Touchez le mur à calepiner" : "Touchez les murs à inclure dans un ouvrage")
                         .font(.caption).padding(10).background(.regularMaterial, in: Capsule()).padding()
-                }
-                if isLab {
-                    surfacePicker.padding(8).background(.regularMaterial, in: Capsule()).padding(12)
                 }
                 }
             }
             .clipShape(RoundedRectangle(cornerRadius: isLab ? 24 : 0))
             .padding(.horizontal, isLab ? 12 : 0)
             .overlay(alignment: .topTrailing) {
-                if !plan {
                     VStack(spacing: 12) {
-                        Button { cameraReset += 1 } label: { Image(systemName: "scope").padding(12) }
-                            .accessibilityLabel("Recentrer la maquette")
-                        Button { showsCeilings.toggle() } label: {
-                            Image(systemName: showsCeilings ? "square.3.layers.3d.top.filled" : "square.3.layers.3d.slash").padding(12)
-                        }.accessibilityLabel(showsCeilings ? "Masquer les plafonds" : "Afficher les plafonds")
+                        if !plan {
+                            Button { showsWorks.toggle() } label: {
+                                Image(systemName: "square.stack.3d.up.fill").foregroundStyle(showsWorks ? Color.orange : Color.accentColor).padding(12)
+                            }.accessibilityLabel(showsWorks ? "Masquer les ouvrages" : "Afficher les ouvrages et leurs joints")
+                        }
+                        Button { kind = kind == .wall ? .ceiling : .wall } label: {
+                            SurveySelectionCube(ceiling: kind == .ceiling).frame(width: 30, height: 30).padding(12)
+                        }.disabled(choosingLining).accessibilityLabel(kind == .ceiling ? "Plafonds sélectionnables — afficher les murs" : "Murs sélectionnables — afficher les plafonds")
                     }.buttonStyle(.borderless).background(.regularMaterial, in: Capsule()).padding()
-                }
             }
             HStack {
                 Button("Modifier le plan", systemImage: "pencil.and.outline") {
                     openEditor(ceilings: false)
                 }.disabled(choosingLining)
                 Spacer()
-                if plan { Toggle("Cotes", isOn: $dimensions).fixedSize() }
-                Button(action:exportDAE) {
-                    if exportingDAE { ProgressView().accessibilityLabel("Préparation du DAE") }
-                    else { Label(plan ? "DAE" : "Exporter DAE",systemImage:"square.and.arrow.up").lineLimit(1) }
-                }.disabled(exportingDAE)
-                    .accessibilityLabel(exportingDAE ? "Préparation du DAE" : "Exporter le relevé en DAE")
-                    .accessibilityIdentifier("survey.exportDAE")
+                Button("Configurer les plafonds", systemImage: "square.3.layers.3d") { openEditor(ceilings: true) }
+                    .disabled(choosingLining)
             }.padding().background(.regularMaterial)
         }
         .background(isLab ? ContrastPalette.paper : Color(uiColor: .systemBackground))
@@ -292,28 +300,42 @@ struct ScannerCampaignWorkspaceView: View {
         }
         .toolbar {
             Menu {
+                if !quickLayout, store.surveys.contains(where: { $0.id == draft.id }) {
+                    Button("Dupliquer le relevé", systemImage: "doc.on.doc") {
+                        do {
+                            let copyID = try store.duplicateSurvey(projectID: survey.projectID, surveyID: survey.id)
+                            draft = ScanCampaignDraft(id: copyID)
+                            selectedKeys = []; revision = Date(); cameraReset += 1
+                            choosingLining = false; liningCheckpoint = nil
+                        } catch { duplicationError = error.localizedDescription }
+                    }
+                    Divider()
+                }
                 Button("Partager le diagnostic complet", systemImage: "square.and.arrow.up") {
                     do { diagnosticExport = try ScanDiagnosticExport.prepare(draft: draft, survey: survey) }
                     catch { diagnosticError = "Impossible de préparer le diagnostic : \(error.localizedDescription)" }
                 }
                 Divider()
-                Button("Tout désélectionner") { selectedKeys = [] }
-                Button("Créer ou modifier un plafond", systemImage: "square.3.layers.3d.top.filled") {
-                    openEditor(ceilings: true)
-                }
-                Button("Réparer le relevé", systemImage: "wand.and.stars") {
-                    if survey.checkpoints.count == 1 { repairing=survey.checkpoints.first }
-                    else { choosingRepairRoom=true }
-                }
+                Button("Exporter DAE", systemImage: "square.and.arrow.up", action: exportDAE)
+                    .disabled(exportingDAE).accessibilityIdentifier("survey.exportDAE")
             } label: { Image(systemName: "ellipsis.circle") }
         }
         .onChange(of: kind) { _, value in showsCeilings = value == .ceiling; if quickLayout { selectedKeys=[] } }
+        .task(id: linkedWorks.map(\.id)) {
+            guard linkedWorks.contains(where: { $0.components.contains(where: { $0.plans.isEmpty }) }) else { return }
+            await layoutFormats.load(); await layoutReferences.load()
+            do { try await store.prepareMissingSurveyLayouts(surveyID: survey.id, formats: layoutFormats.layoutFormats, catalogue: layoutReferences.catalogue) }
+            catch { diagnosticError = "Le calepinage automatique n’a pas pu être préparé : \(error.localizedDescription)" }
+        }
         .navigationDestination(isPresented: $showingQuickLayout) {
             if let quickDocument { SheetLayoutView(initialDocument: quickDocument) }
         }
         .alert("Partage impossible", isPresented: Binding(get: { diagnosticError != nil }, set: { if !$0 { diagnosticError = nil } })) {
             Button("OK", role: .cancel) { diagnosticError = nil }
         } message: { Text(diagnosticError ?? "") }
+        .alert("Copie impossible", isPresented: Binding(get: { duplicationError != nil }, set: { if !$0 { duplicationError = nil } })) {
+            Button("OK", role: .cancel) { duplicationError = nil }
+        } message: { Text(duplicationError ?? "") }
         .sheet(item:$daeExport) { file in SurveyExportShareSheet(url:file.url) }
         .sheet(item: $diagnosticExport) { export in
             NavigationStack {
@@ -420,6 +442,27 @@ struct ScannerCampaignWorkspaceView: View {
     }
 }
 
+/// The dark faces indicate which surfaces can currently be selected.
+struct SurveySelectionCube: View {
+    var ceiling: Bool
+    var body: some View {
+        Canvas { context, size in
+            let top = CGPoint(x: size.width / 2, y: 1)
+            let left = CGPoint(x: 1, y: size.height * 0.27)
+            let right = CGPoint(x: size.width - 1, y: size.height * 0.27)
+            let middle = CGPoint(x: size.width / 2, y: size.height * 0.52)
+            let bottom = CGPoint(x: size.width / 2, y: size.height - 1)
+            let faces = [[top, right, middle, left], [left, middle, bottom, CGPoint(x: 1, y: size.height * 0.73)],
+                         [middle, right, CGPoint(x: size.width - 1, y: size.height * 0.73), bottom]]
+            for (index, points) in faces.enumerated() {
+                var path = Path(); path.addLines(points); path.closeSubpath()
+                context.fill(path, with: .color(Color.blue.opacity((index == 0) == ceiling ? 0.85 : 0.12)))
+                context.stroke(path, with: .color(.blue), lineWidth: 1.4)
+            }
+        }
+    }
+}
+
 private struct SurveyWorkspaceCreationFlow: View {
     @EnvironmentObject private var store: ProjectStore
     @Environment(\.dismiss) private var dismiss
@@ -438,12 +481,15 @@ private struct SurveyWorkspaceCreationFlow: View {
     @State private var name = ""
     @State private var category: WorkCategory?
     @State private var configuration: SurveyWorkFormDraft?
+    @State private var overlapType: WorkType?
+    @State private var confirmedOverlapType: WorkType?
+    @State private var excludedKeys: Set<String> = []
     @State private var error: String?
     private var survey: ProjectSurveyRecord? { store.surveys.first { $0.id == draft.id } }
     private var chosen: [SurveyWorkSurface] {
         guard let survey else { return [] }
         return SurveyWorkGeometry.surfaces(in: survey).filter {
-            selectedKeys.contains(ScannerCampaignWorkspaceView.key($0)) && !SurveyWorkGeometry.isHidden($0,in:survey)
+            selectedKeys.contains(ScannerCampaignWorkspaceView.key($0)) && !excludedKeys.contains(ScannerCampaignWorkspaceView.key($0)) && !SurveyWorkGeometry.isHidden($0,in:survey)
         }
     }
     private var types: [WorkType] {
@@ -515,6 +561,17 @@ private struct SurveyWorkspaceCreationFlow: View {
             .sheet(item: $configuration) { draft in
                 SurveyWorkForm(draft: draft) { if let survey { onSaved(survey.projectID) } }
             }
+            .sheet(item: $overlapType, onDismiss: {
+                if let type = confirmedOverlapType { confirmedOverlapType = nil; configure(type, confirmed: true) }
+            }) { type in
+                if let survey {
+                    SurveyOverlapView(survey: survey, selections: chosen,
+                        works: store.project(id: survey.projectID)?.works ?? [], onExclude: { ids in
+                            excludedKeys.formUnion(chosen.filter { ids.contains($0.id) }.map(ScannerCampaignWorkspaceView.key))
+                            confirmedOverlapType = chosen.isEmpty ? nil : type; overlapType = nil
+                        }, onKeep: { confirmedOverlapType = type; overlapType = nil })
+                }
+            }
         }
     }
     private func icon(_ category: WorkCategory) -> String {
@@ -535,15 +592,20 @@ private struct SurveyWorkspaceCreationFlow: View {
             if saveOnly, let survey { onSaved(survey.projectID); dismiss() }
         } catch { self.error = error.localizedDescription }
     }
-    private func configure(_ type: WorkType) {
+    private func configure(_ type: WorkType, confirmed: Bool = false) {
         do {
             guard let survey, !chosen.isEmpty else { return }
+            let works = store.project(id: survey.projectID)?.works ?? []
+            if !confirmed && !SurveyOverlapView.conflictingIDs(selections: chosen, works: works).isEmpty {
+                overlapType = type; return
+            }
             for checkpoint in survey.checkpoints where chosen.contains(where: { $0.source.checkpointID == checkpoint.id }) {
                 try store.validateSurveyCheckpoint(surveyID: survey.id, checkpointID: checkpoint.id, expectedDocument: checkpoint.document)
             }
             let typed = name.trimmingCharacters(in: .whitespacesAndNewlines)
             configuration = .init(surveyID: survey.id, selections: chosen,
-                name: typed.isEmpty ? store.defaultWorkName(projectID: survey.projectID, type: type) : typed, type: type, roomID: nil)
+                name: typed.isEmpty ? store.defaultWorkName(projectID: survey.projectID, type: type) : typed, type: type, roomID: nil,
+                allowsExistingCoverage: confirmed)
         } catch { self.error = error.localizedDescription }
     }
 }

@@ -237,6 +237,7 @@ struct FurringLiningConfiguratorView: View {
             }
         }
         .tint(green)
+        .configurationEntry(in:1...5) { step = $0 }
         .onChange(of: facings.count, initial: true) { _, _ in initializeFacingsIfNeeded() }
         .onChange(of: insulationFamilies.count, initial: true) { _, _ in initializeInsulationIfNeeded() }
         .onChange(of: skinCount) { _, _ in normalizeSkinCount() }

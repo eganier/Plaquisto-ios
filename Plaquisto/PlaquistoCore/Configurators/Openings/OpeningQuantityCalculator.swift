@@ -29,6 +29,14 @@ enum OpeningQuantityCalculator {
             quantities.append(.init(name: name, quantity: quantity, unit: unit))
         }
 
+        // Simplified wall-opening estimate: exactly one full-height profile on
+        // each side, without lintel, sill or extra short vertical framing.
+        if [.furringLining,.railStudLining,.distributionPartition].contains(context.system) {
+            guard context.hsp>0 else { return invalidContext(opening,"La HSP doit être renseignée.") }
+            add(context.system == .furringLining ? "Fourrures F45/F47" : context.studName,2*context.hsp,.linearMeter)
+            return .init(opening:opening,quantities:quantities,insulationAreaDeduction:opening.area,notes:[],isComplete:true)
+        }
+
         switch opening.kind {
         case .window:
             guard context.hsp > 0, context.spacing > 0 else {
@@ -111,9 +119,9 @@ enum OpeningQuantityCalculator {
 
     static func totals(_ results: [OpeningQuantityResult]) -> [OpeningQuantity] {
         let complete = results.filter(\.isComplete)
-        return merged(complete.flatMap(\.quantities) + [
-            .init(name: "Surface d’isolant à déduire", quantity: complete.reduce(0) { $0 + $1.insulationAreaDeduction }, unit: .squareMeter)
-        ])
+        // An opening is not a positive insulation supply. The linked work's
+        // insulation is reduced by CombinedQuantityCalculator before aggregation.
+        return merged(complete.flatMap(\.quantities))
     }
 
     private static func addProfilePositions(

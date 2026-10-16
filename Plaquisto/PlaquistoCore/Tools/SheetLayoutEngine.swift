@@ -1,5 +1,16 @@
 import Foundation
 
+enum DoorHanding: String, Codable, CaseIterable, Identifiable {
+    case right, left
+    var id: Self { self }
+    var title: String { self == .right ? "Poussant droit" : "Poussant gauche" }
+}
+enum DoorOpeningSide: String, Codable {
+    case positive, negative
+    var sign: Double { self == .positive ? 1 : -1 }
+    var reversed: Self { self == .positive ? .negative : .positive }
+}
+
 enum LayoutSupportKind: String, Codable, CaseIterable { case wall = "Mur", ceiling = "Plafond" }
 enum LayoutOrientation: String, Codable, CaseIterable { case vertical = "Vertical", horizontal = "Horizontal" }
 enum LayoutOpeningKind: String, Codable, CaseIterable {
@@ -13,7 +24,43 @@ struct LayoutOpening: Codable, Equatable, Identifiable {
     var id = UUID()
     var kind: LayoutOpeningKind
     var contour: [LayoutPoint]
+    var doorHanding:DoorHanding? = nil
+    var doorOpeningSide:DoorOpeningSide? = nil
     var bounds: LayoutBounds { .init(points: contour) }
+}
+/// Edit in the opening's own axes, not its axis-aligned bounding box in the scan.
+struct LayoutOpeningFrame {
+    var center: LayoutPoint
+    var angle: Double
+    var width: Double
+    var height: Double
+    var normalizedContour: [LayoutPoint]
+
+    init(contour: [LayoutPoint]) {
+        let edge = LayoutGeometry.edges(contour).first { ($0.b - $0.a).length > 0.001 }
+        let angle = edge.map { atan2($0.b.y - $0.a.y, $0.b.x - $0.a.x) } ?? 0
+        self.angle = angle
+        let local = contour.map { Self.rotate($0, by: -angle) }
+        let bounds = LayoutBounds(points: local)
+        let middle = (bounds.min + bounds.max) * 0.5
+        center = Self.rotate(middle, by: angle)
+        width = bounds.width; height = bounds.height
+        normalizedContour = local.map { .init(x: ($0.x - middle.x) / max(bounds.width, 0.001), y: ($0.y - middle.y) / max(bounds.height, 0.001)) }
+    }
+    static func rotate(_ p: LayoutPoint, by angle: Double) -> LayoutPoint {
+        .init(x: p.x * cos(angle) - p.y * sin(angle), y: p.x * sin(angle) + p.y * cos(angle))
+    }
+    func contour(center: LayoutPoint, width: Double, height: Double, angle: Double) -> [LayoutPoint] {
+        normalizedContour.map { center + Self.rotate(.init(x: $0.x * width, y: $0.y * height), by: angle) }
+    }
+    static func wallAngle(_ contour: [LayoutPoint], edge: Int) -> Double? {
+        guard contour.indices.contains(edge), contour.count > 1 else { return nil }
+        let delta = contour[(edge + 1) % contour.count] - contour[edge]
+        guard delta.length > 0.001 else { return nil }
+        // Parallel is undirected; keep consistent width/length axes.
+        let angle = atan2(delta.y, delta.x)
+        return angle < 0 ? angle + .pi : angle
+    }
 }
 enum LayoutEdgeTone: String, Codable {
     case blue, orange, purple, green, teal, gray
@@ -166,6 +213,20 @@ struct LayoutFurringSettings: Codable, Equatable {
     var firstSupportHeightWhenMultiple: Double? = nil
     /// Fixed end studs, only for rail/stud peripheral linings (not partitions).
     var liningEndStudInset: Double? = nil
+    /// Explicit plan overrides. Nil preserves legacy/form-driven defaults.
+    var ceilingPerimeterSupport: Bool? = nil
+    var ceilingSuspensionSpacing: Double? = nil // millimetres, default 1 200
+
+    var resolvedCeilingPerimeterSupport: Bool { ceilingPerimeterSupport ?? (peripheralInset == nil || peripheralInset == 0) }
+    var resolvedCeilingSuspensionSpacing: Double { ceilingSuspensionSpacing ?? 1200 }
+    func allowsCeilingSupportControls(on surface: Surface2D) -> Bool {
+        surface.kind == .ceiling && isFurringSystem != false
+    }
+
+    mutating func setCeilingPerimeterSupport(_ enabled: Bool) {
+        ceilingPerimeterSupport = enabled
+        peripheralInset = enabled ? nil : 100
+    }
 
     func resolvedOrientation(boardOrientation: LayoutOrientation) -> LayoutOrientation {
         if let orientation { return orientation }
@@ -263,19 +324,7 @@ enum LayoutOpeningFraming {
         }
         for opening in surface.openings {
             let b = opening.bounds, left = b.min.x - 50, right = b.max.x + 50
-            let top = b.max.y + 50, bottom = b.min.y - 50
-            let hasSill = opening.kind == .window || opening.kind == .other || opening.kind == .roofWindow
             for x in [left, right] { add(.init(x: x, y: wall.min.y), .init(x: x, y: wall.max.y), .side) }
-            add(.init(x: left, y: top), .init(x: right, y: top), .horizontal)
-            if hasSill { add(.init(x: left, y: bottom), .init(x: right, y: bottom), .horizontal) }
-            if system == .furring {
-                // The short pieces sit 100 mm inward from the full-height side
-                // profiles. The side clearance itself remains 50 mm from the opening.
-                for x in [left + 100, right - 100] where x > left && x < right {
-                    if top < wall.max.y { add(.init(x: x, y: top), .init(x: x, y: wall.max.y), .shortVertical) }
-                    if hasSill, bottom > wall.min.y { add(.init(x: x, y: wall.min.y), .init(x: x, y: bottom), .shortVertical) }
-                }
-            }
         }
         return profiles
     }

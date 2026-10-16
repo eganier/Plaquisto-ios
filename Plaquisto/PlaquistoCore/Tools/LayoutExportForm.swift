@@ -127,6 +127,10 @@ enum LayoutWorkGeometry {
     static func partition(_ document:LayoutDocument?, base:CloisonDistributionConfiguration = .init()) -> CloisonDistributionConfiguration {
         guard let document else { return base }
         var c = base; c.height = document.surface.bounds.height/1000; c.geometryMode = "surface"; c.enteredSurface = area(document)
+        c.faceAFirst=PartitionFacingArea.resized(c.faceAFirst,area:c.enteredSurface)
+        c.faceBFirst=PartitionFacingArea.resized(c.faceBFirst,area:c.enteredSurface)
+        c.faceASecond=PartitionFacingArea.resized(c.faceASecond,area:c.enteredSurface)
+        c.faceBSecond=PartitionFacingArea.resized(c.faceBSecond,area:c.enteredSurface)
         c.enteredLength = document.surface.bounds.width/1000; return c
     }
 }
