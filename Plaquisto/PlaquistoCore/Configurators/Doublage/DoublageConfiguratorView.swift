@@ -143,6 +143,7 @@ struct DoublageConfiguratorView: View {
             else { wizard }
         }
         .onChange(of: groups.count, initial: true) { _, _ in initializeParementsIfNeeded(); normalizeSelections() }
+        .configurationEntry(in:1...5) { step = $0 }
         .onChange(of: facings.count) { _, _ in initializeParementsIfNeeded(); normalizeSelections() }
         .onChange(of: skinCount) { _, _ in resetParementsForSkinCount() }
         .onChange(of: firstSkin) { _, _ in normalizeAfterFirstSkinChange() }

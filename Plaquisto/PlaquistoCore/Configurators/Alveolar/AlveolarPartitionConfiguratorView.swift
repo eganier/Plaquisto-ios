@@ -105,6 +105,7 @@ struct AlveolarPartitionConfiguratorView: View {
             }
         }
         .tint(green)
+        .configurationEntry(in:1...3) { step = $0 }
         .onChange(of: references.panels.count, initial: true) { _, _ in initializeAllocations() }
         .onChange(of: height) { _, _ in normalizeFormats() }
         .toolbar {

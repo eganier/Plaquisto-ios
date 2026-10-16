@@ -97,6 +97,13 @@ struct CloisonInsulation: Identifiable, Hashable {
     let lambda: Double
     let thicknessesMM: [Int]
     let maxOverFrameMM: Int
+    func preferredThickness(frameWidthMM: Int) -> Int {
+        guard frameWidthMM > 0 else { return 0 }
+        return thicknessesMM.filter { $0 > 0 && $0 <= frameWidthMM + maxOverFrameMM }.min {
+            let a = abs($0-frameWidthMM), b = abs($1-frameWidthMM)
+            return a == b ? $0 < $1 : a < b
+        } ?? 0
+    }
 }
 
 struct CloisonQuantityTable {

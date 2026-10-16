@@ -3,6 +3,7 @@ import SwiftUI
 
 struct ScannerDebugView: View {
     var quickLayout = false
+    var targetProjectID: UUID? = nil
     @Environment(\.dismiss) private var dismiss
     @EnvironmentObject private var store: ProjectStore
     let onOpenAccount: () -> Void
@@ -12,11 +13,16 @@ struct ScannerDebugView: View {
     @State private var recoveredDrafts: [ScanCampaignDraft] = []
     @State private var recoveryError: String?
     @State private var showDiagnostics = false
+    @State private var projectSaveError: String?
 
     var body: some View {
         NavigationStack {
             List {
                 Section {
+                    if let targetProjectID, let project=store.project(id:targetProjectID) {
+                        Label(project.name,systemImage:"folder").font(.headline)
+                        Text("Le relevé sera enregistré dans ce projet.").font(.caption).foregroundStyle(.secondary)
+                    }
                     Button {
                         model.prepareForCapture()
                         showingCapture = true
@@ -162,7 +168,7 @@ struct ScannerDebugView: View {
             .navigationTitle("Scanner")
             .onAppear { reloadDrafts() }
             .toolbar {
-                if quickLayout {
+                if quickLayout || targetProjectID != nil {
                     ToolbarItem(placement: .cancellationAction) { Button("Fermer") { dismiss() } }
                 } else {
                     AccountToolbarButton(action: onOpenAccount)
@@ -172,11 +178,27 @@ struct ScannerDebugView: View {
                 ScannerCampaignWorkspaceView(draft: model.campaign, quickLayout: quickLayout)
             }
             .fullScreenCover(isPresented: $showingCapture, onDismiss: {
-                if model.didFinish && !model.campaign.chunks.isEmpty { showingWorkspace = true }
+                if model.didFinish && !model.campaign.chunks.isEmpty { finishProjectCapture() }
             }) {
                 ScannerDebugCaptureView(model: model, isPresented: $showingCapture)
             }
             .onChange(of: showingCapture) { _, showing in if !showing { reloadDrafts() } }
+            .alert("Enregistrement du relevé",isPresented:Binding(get:{projectSaveError != nil},set:{if !$0 { projectSaveError=nil }})) {
+                Button("Réessayer") { finishProjectCapture() }
+                Button("Ouvrir le relevé",role:.cancel) { showingWorkspace=true }
+            } message: { Text(projectSaveError ?? "") }
+        }
+    }
+
+    private func finishProjectCapture() {
+        do {
+            if let targetProjectID, !store.surveys.contains(where:{$0.id==model.campaign.id}) {
+                try store.saveScanCampaign(model.campaign,projectID:targetProjectID,newProjectName:"",
+                    surveyName:"Relevé du \(model.campaign.createdAt.formatted(date:.numeric,time:.shortened))")
+            }
+            projectSaveError=nil; showingWorkspace=true
+        } catch {
+            projectSaveError="Le relevé est conservé dans cette session, mais son rattachement au projet a échoué : \(error.localizedDescription)"
         }
     }
 

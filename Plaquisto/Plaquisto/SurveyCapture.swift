@@ -611,6 +611,132 @@ enum SurveyPlanEditing {
         try result.validate(); return result
     }
 
+    /// A drawn partition follows the accepted ceiling along its whole length.
+    /// Missing roof coverage uses the height of the wall at the starting point.
+    static func addingFittedPartition(_ document: PlaquistoRoomDocument, start: RoomPoint,
+                                      end: RoomPoint, thickness: Double = 0.072,
+                                      finishedSupports:[PlaquistoWall] = []) throws -> PlaquistoRoomDocument {
+        let length=hypot(end.x-start.x,end.z-start.z)
+        guard length.isFinite, length >= 0.1 else { throw Failure.invalidSize }
+        let direction=RoomPoint(x:(end.x-start.x)/length,y:0,z:(end.z-start.z)/length)
+        func supportPoint(_ p:RoomPoint) -> RoomPoint {
+            for face in finishedSupports {
+                let delta=p-face.start, x=delta.x*face.direction.x+delta.z*face.direction.z
+                guard x>=0, x<=face.length.effectiveValue,
+                      abs(delta.x*face.direction.z-delta.z*face.direction.x)<0.025,
+                      let raw=document.room.walls.first(where:{$0.id==face.id}) else { continue }
+                let d=p-raw.start
+                let projection=min(raw.length.effectiveValue,max(0,d.x*raw.direction.x+d.z*raw.direction.z))
+                return raw.start+raw.direction*projection
+            }
+            return p
+        }
+        let fallback=suggestedHeight(in:document.room,at:supportPoint(start))
+        let slopes=document.room.slopes.filter(\.accepted)
+        var positions=[0.0,length]
+        for slope in slopes {
+            for ring in slope.boundaries {
+                for i in ring.indices {
+                    let a=ring[i], b=ring[(i+1)%ring.count], edge=b-a, delta=a-start
+                    let determinant=direction.x*edge.z-direction.z*edge.x
+                    guard abs(determinant)>1e-9 else { continue }
+                    let t=(delta.x*edge.z-delta.z*edge.x)/determinant
+                    let u=(delta.x*direction.z-delta.z*direction.x)/determinant
+                    if t>1e-6 && t<length-1e-6 && u >= 0 && u <= 1 { positions.append(t) }
+                }
+            }
+        }
+        positions=positions.sorted().reduce([]) { values,p in
+            values.last.map { abs($0-p)<1e-6 } == true ? values : values+[p]
+        }
+        var top:[RoomPoint]=[]
+        for i in 1..<positions.count {
+            let lo=positions[i-1], hi=positions[i], midpoint=start+direction*((lo+hi)/2)
+            let slope=slopes.filter { covers($0,point:midpoint) }
+                .min { $0.plane.height(x:midpoint.x,z:midpoint.z) < $1.plane.height(x:midpoint.x,z:midpoint.z) }
+            for x in [lo,hi] {
+                let p=start+direction*x
+                let h=slope.map { $0.plane.height(x:p.x,z:p.z)-start.y } ?? fallback
+                guard h.isFinite, h>0, h<=100 else { throw Failure.invalidSize }
+                let vertex=RoomPoint(x:x,y:h,z:0)
+                if top.last.map({ ($0-vertex).length<1e-6 }) != true { top.append(vertex) }
+            }
+        }
+        let maximum=top.map(\.y).max() ?? fallback
+        var result=try addingPartition(document,start:start,end:end,height:maximum,thickness:thickness)
+        let id=result.room.walls.last!.id
+        result.room.walls[result.room.walls.count-1].localOutline = [.zero,.init(x:length,y:0,z:0)] + top.reversed()
+        result=try splittingJoinedWalls(result,at:[supportPoint(start),supportPoint(end)],excluding:id)
+        try result.validate()
+        return result
+    }
+
+    private static func covers(_ slope:PlaquistoSlope,point:RoomPoint) -> Bool {
+        guard let outer=slope.boundaries.first, PlaquistoWallGeometry.contains(point,polygon:outer,tolerance:0.001) else { return false }
+        return !slope.boundaries.dropFirst().contains { PlaquistoWallGeometry.contains(point,polygon:$0,tolerance:0.001) }
+    }
+
+    /// Cut supporting surfaces without removing any material or losing openings.
+    /// Existing IDs stay on the first piece; ancestry lets saved plans follow both.
+    static func splittingJoinedWalls(_ document:PlaquistoRoomDocument,at points:[RoomPoint],excluding:UUID) throws -> PlaquistoRoomDocument {
+        var result=document
+        for original in document.room.walls where original.id != excluding {
+            let length=original.length.effectiveValue
+            let cuts=points.compactMap { p -> Double? in
+                let d=p-original.start, x=d.x*original.direction.x+d.z*original.direction.z
+                let distance=abs(d.x*original.direction.z-d.z*original.direction.x)
+                return distance<0.025 && x>0.05 && x<length-0.05 ? x : nil
+            }
+            let breaks=Array(Set([0,length]+cuts)).sorted()
+            guard breaks.count>2 else { continue }
+            let openings=result.room.openings.filter { $0.wallID==original.id }
+            for cut in cuts where openings.contains(where:{
+                cut>$0.positionOnWall.effectiveValue+1e-6 && cut<$0.positionOnWall.effectiveValue+$0.width.effectiveValue-1e-6
+            }) { _ = cut; throw Failure.openingOutside }
+            func clipped(_ polygon:[RoomPoint],at x:Double,keepRight:Bool) -> [RoomPoint] {
+                var output:[RoomPoint]=[]
+                for i in polygon.indices {
+                    let a=polygon[i], b=polygon[(i+1)%polygon.count]
+                    let insideA=keepRight ? a.x>=x : a.x<=x
+                    let insideB=keepRight ? b.x>=x : b.x<=x
+                    if insideA { output.append(a) }
+                    if insideA != insideB { output.append(a+(b-a)*((x-a.x)/(b.x-a.x))) }
+                }
+                var unique=output.reduce(into:[RoomPoint]()) { values,p in
+                    if values.last.map({ ($0-p).length>1e-8 }) ?? true { values.append(p) }
+                }
+                if unique.count>1, (unique[0]-unique[unique.count-1]).length<1e-8 { unique.removeLast() }
+                return unique
+            }
+            var children:[PlaquistoWall]=[]
+            for i in 1..<breaks.count {
+                let lo=breaks[i-1], hi=breaks[i]
+                let outline=clipped(clipped(original.effectiveOutline,at:lo,keepRight:true),at:hi,keepRight:false)
+                let source=GeometryProvenance(source:.manual)
+                var child=PlaquistoWall(id:i==1 ? original.id : UUID(),start:original.start+original.direction*lo,
+                    end:original.start+original.direction*hi,length:.init(rawValue:hi-lo,provenance:source,manuallyValidated:true),
+                    height:.init(rawValue:original.height.effectiveValue,provenance:source,manuallyValidated:true),
+                    thickness:original.thickness,provenance:source,
+                    localOutline:outline.map { .init(x:$0.x-lo,y:$0.y,z:0) },
+                    splitAncestorIDs:[original.id]+(original.splitAncestorIDs ?? []).filter { $0 != original.id })
+                for opening in openings where opening.positionOnWall.effectiveValue >= lo-1e-6 && opening.positionOnWall.effectiveValue+opening.width.effectiveValue <= hi+1e-6 {
+                    let index=result.room.openings.firstIndex { $0.id==opening.id }!
+                    result.room.openings[index].wallID=child.id
+                    result.room.openings[index].positionOnWall.manualValue=opening.positionOnWall.effectiveValue-lo
+                    result.room.openings[index].positionOnWall.manuallyValidated=true
+                    child.openingIDs.append(opening.id)
+                }
+                children.append(child)
+                if i>1, var intent=document.wallWorkIntents?.first(where:{$0.wallID==original.id}) {
+                    intent.wallID=child.id; result.wallWorkIntents?.append(intent)
+                }
+            }
+            let index=result.room.walls.firstIndex { $0.id==original.id }!
+            result.room.walls.replaceSubrange(index...index,with:children)
+        }
+        try result.validate(); return result
+    }
+
     static func addingPartition(_ document: PlaquistoRoomDocument, start: RoomPoint,
                                 end: RoomPoint, height: Double, thickness: Double = 0.072) throws -> PlaquistoRoomDocument {
         guard start.finite, end.finite, height.isFinite, height > 0, height <= 100,
@@ -629,15 +755,19 @@ enum SurveyPlanEditing {
     }
 
     static func addingDoor(_ document: PlaquistoRoomDocument, wallID: UUID,
-                           width: Double, height: Double, position: Double) throws -> PlaquistoRoomDocument {
+                           width: Double, height: Double, position: Double, handing: DoorHanding? = nil,
+                           openingSide:DoorOpeningSide? = nil, kind: RoomOpeningKind = .door,
+                           sill: Double = 0, pocket: Bool = false) throws -> PlaquistoRoomDocument {
         guard width.isFinite, width > 0, height.isFinite, height > 0 else { throw Failure.invalidSize }
         guard let wall = document.room.walls.first(where: { $0.id == wallID }) else { throw Failure.missingWall }
         let source = GeometryProvenance(source: .manual)
-        var opening = PlaquistoOpening(wallID: wallID, kind: .door, center: .zero,
+        var opening = PlaquistoOpening(wallID: wallID, kind: kind, center: .zero,
             width: .init(rawValue: width, provenance: source, manuallyValidated: true),
             height: .init(rawValue: height, provenance: source, manuallyValidated: true),
-            sillHeight: .init(rawValue: 0, provenance: source, manuallyValidated: true),
-            positionOnWall: .init(rawValue: position, provenance: source, manuallyValidated: true), provenance: source)
+            sillHeight: .init(rawValue: sill, provenance: source, manuallyValidated: true),
+            positionOnWall: .init(rawValue: position, provenance: source, manuallyValidated: true), provenance: source,
+            doorHanding: kind == .door && !pocket ? handing : nil,
+            doorOpeningSide: kind == .door && !pocket ? openingSide : nil, isPocketDoor: pocket ? true : nil)
         try validateOpening(opening, wall: wall)
         try checkOverlap(opening, in: document)
         opening.center = openingCenter(opening, wall: wall)
@@ -648,12 +778,14 @@ enum SurveyPlanEditing {
         try result.validate(); return result
     }
 
-    static func movingDoor(_ document: PlaquistoRoomDocument, id: UUID, position: Double) throws -> PlaquistoRoomDocument {
+    static func movingDoor(_ document: PlaquistoRoomDocument, id: UUID, position: Double,
+                           openingSide:DoorOpeningSide? = nil) throws -> PlaquistoRoomDocument {
         var result = document
         guard let i = result.room.openings.firstIndex(where: { $0.id == id }),
               let wall = result.room.walls.first(where: { $0.id == result.room.openings[i].wallID }) else { throw Failure.missingWall }
         result.room.openings[i].positionOnWall.manualValue = position
         result.room.openings[i].positionOnWall.manuallyValidated = true
+        if let openingSide { result.room.openings[i].doorOpeningSide=openingSide }
         try validateOpening(result.room.openings[i], wall: wall)
         try checkOverlap(result.room.openings[i], in: result)
         result.room.openings[i].center = openingCenter(result.room.openings[i], wall: wall)
@@ -661,7 +793,8 @@ enum SurveyPlanEditing {
     }
 
     static func changingOpening(_ document: PlaquistoRoomDocument, id: UUID,
-                                width: Double, height: Double, sill: Double, position: Double) throws -> PlaquistoRoomDocument {
+                                width: Double, height: Double, sill: Double, position: Double, handing: DoorHanding? = nil,
+                                openingSide:DoorOpeningSide? = nil, pocket: Bool? = nil) throws -> PlaquistoRoomDocument {
         var result=document
         guard let i=result.room.openings.firstIndex(where: { $0.id==id }),
               let wall=result.room.walls.first(where: { $0.id==result.room.openings[i].wallID }) else { throw Failure.missingWall }
@@ -671,6 +804,12 @@ enum SurveyPlanEditing {
         result.room.openings[i].sillHeight.manuallyValidated=true
         result.room.openings[i].positionOnWall.manualValue=position
         result.room.openings[i].positionOnWall.manuallyValidated=true
+        if let handing { result.room.openings[i].doorHanding=handing }
+        if let openingSide { result.room.openings[i].doorOpeningSide=openingSide }
+        if let pocket, result.room.openings[i].kind == .door {
+            result.room.openings[i].isPocketDoor = pocket
+            if pocket { result.room.openings[i].doorHanding = nil; result.room.openings[i].doorOpeningSide = nil }
+        }
         try validateOpening(result.room.openings[i],wall:wall)
         try checkOverlap(result.room.openings[i],in:result)
         result.room.openings[i].center=openingCenter(result.room.openings[i],wall:wall)
@@ -684,12 +823,12 @@ enum SurveyPlanEditing {
         try result.validate(); return result
     }
 
-    /// Remove only a designed partition and its openings. Roof geometry and the
-    /// original scan are deliberately retained; deleting a divider is not a roof merge.
+    /// Reunite the ceiling zones divided by this partition, while preserving the
+    /// actual pans and IDs used by saved works/layouts. The raw scan is untouched.
     static func removingPartition(_ document: PlaquistoRoomDocument, id: UUID) throws -> PlaquistoRoomDocument {
         guard let wall=document.room.walls.first(where: { $0.id == id }) else { throw Failure.missingWall }
         guard isDesignedPartition(wall,in:document) else { throw Failure.scannedWallRemoval }
-        var result=document
+        var result=try CeilingZoneEditing.rejoiningAfterRemovingPartition(document,wall:wall)
         let openings=Set(result.room.openings.filter { $0.wallID == id }.map(\.id))
         result.room.walls.removeAll { $0.id == id }
         result.room.openings.removeAll { openings.contains($0.id) }
@@ -765,10 +904,44 @@ enum SurveyPlanEditing {
     }
 
     static func suggestedHeight(in room: PlaquistoRoomModel, at point: RoomPoint) -> Double {
-        if let slope = room.slopes.first(where: { $0.accepted && $0.boundaries.first.map { PlaquistoWallGeometry.contains(point, polygon: $0) } == true }) {
+        if let slope = room.slopes.filter({ $0.accepted && covers($0,point:point) })
+            .min(by:{ $0.plane.height(x:point.x,z:point.z)<$1.plane.height(x:point.x,z:point.z) }) {
             return max(0.1, slope.plane.height(x: point.x, z: point.z)-point.y)
         }
+        for wall in room.walls {
+            let d=point-wall.start, x=d.x*wall.direction.x+d.z*wall.direction.z
+            guard x >= -0.025, x <= wall.length.effectiveValue+0.025,
+                  abs(d.x*wall.direction.z-d.z*wall.direction.x)<0.025 else { continue }
+            let heights=PlaquistoWallGeometry.analyze(wall:wall,room:room).strips.compactMap { s -> Double? in
+                guard x>=s.x0-1e-6, x<=s.x1+1e-6 else { return nil }
+                return wall.start.y+s.h0+(s.h1-s.h0)*min(1,max(0,(x-s.x0)/(s.x1-s.x0)))-point.y
+            }
+            if let height=heights.max(), height>0 { return height }
+        }
         return room.walls.map { $0.height.effectiveValue }.sorted().dropFirst(room.walls.count/2).first ?? 2.5
+    }
+    static func placingColumn(_ document: PlaquistoRoomDocument, column: PlaquistoColumn) throws -> PlaquistoRoomDocument {
+        guard column.isValid else { throw Failure.invalidSize }
+        var next = document
+        var column = column
+        let hasCeiling = document.room.slopes.contains { $0.accepted && covers($0, point: column.center) }
+        if hasCeiling { column.height = suggestedHeight(in: document.room, at: column.center) }
+        else {
+            let nearest = document.room.walls.min { a, b in
+                func distance(_ wall: PlaquistoWall) -> Double {
+                    let d = column.center-wall.start
+                    let t = min(wall.length.effectiveValue, max(0, d.x*wall.direction.x+d.z*wall.direction.z))
+                    return (column.center-wall.start-wall.direction*t).horizontalLength
+                }
+                return distance(a) < distance(b)
+            }
+            column.height = nearest?.height.effectiveValue ?? 2.5
+        }
+        var columns = next.room.columns ?? []
+        if let index = columns.firstIndex(where: { $0.id == column.id }) { columns[index] = column }
+        else { columns.append(column) }
+        next.room.columns = columns
+        try next.validate(); return next
     }
     private static func validateOpening(_ opening: PlaquistoOpening, wall: PlaquistoWall) throws {
         let x = opening.positionOnWall.effectiveValue, w = opening.width.effectiveValue

@@ -37,8 +37,20 @@ struct ModularCeilingConfiguration: Codable, Equatable {
     var plenumCM: Double = 0
     var wastePercent: Double = 5
     var replacedSquareModules: Int = 0
+    var surveyedSurfaces: [Surface2D]? = nil
 
-    var area: Double { length * width }
+    var area: Double {
+        guard let surfaces = surveyedSurfaces else { return length * width }
+        return surfaces.reduce(0) { $0 + ((try? $1.netMeasuredArea()) ?? 0) / 1_000_000 }
+    }
+    var scanCalculationError: String? {
+        guard let surfaces = surveyedSurfaces else { return nil }
+        do {
+            guard !surfaces.isEmpty else { throw LayoutGeometryError.invalidContour }
+            _ = try ModularCeilingCalculator.scanned(self, surfaces: surfaces)
+            return nil
+        } catch { return "Le plafond modulaire ne peut pas être calculé sur ce contour. Vérifiez le plan avant de commander les fournitures." }
+    }
 }
 
 struct ModularCeilingQuantities: Equatable {
@@ -60,7 +72,22 @@ struct ModularCeilingQuantities: Equatable {
 }
 
 enum ModularCeilingCalculator {
+    /// The saved tile grid and the indicative T24 calculation share one origin.
+    static func layoutLayer(_ configuration: ModularCeilingConfiguration, surface: Surface2D) -> LayoutLayer {
+        let angle = LayoutViewport.initialCeilingAlignment(surface.contour, referenceEdge: nil)?.angle ?? 0
+        let b = aligned(surface).bounds
+        let moduleY = configuration.tileFormat.transverseModule * 1000
+        let columns = ceil(b.width / 600 - 0.000_001), rows = ceil(b.height / moduleY - 0.000_001)
+        var layer = LayoutLayer()
+        layer.sheetWidth = 600; layer.sheetLength = moduleY
+        layer.offset = .init(x: b.min.x - (columns * 600 - b.width) / 2, y: b.min.y - (rows * moduleY - b.height) / 2)
+        layer.inheritedGridFrame = .init(angle: -angle)
+        layer.furring = nil; layer.staggered = false; layer.reuseOffcuts = false
+        return layer
+    }
     static func calculate(_ configuration: ModularCeilingConfiguration) -> ModularCeilingQuantities {
+        if let surfaces = configuration.surveyedSurfaces, !surfaces.isEmpty,
+           let measured = try? scanned(configuration, surfaces: surfaces) { return measured }
         let longSide = max(0, max(configuration.length, configuration.width))
         let shortSide = max(0, min(configuration.length, configuration.width))
         let wasteFactor = 1 + max(0, configuration.wastePercent) / 100
@@ -109,6 +136,76 @@ enum ModularCeilingCalculator {
         )
     }
 
+    /// Independent T24 grids in each measured support. Clip tiles and profiles
+    /// against the same contour/openings; scan yaw must not inflate quantities.
+    static func scanned(_ configuration: ModularCeilingConfiguration, surfaces: [Surface2D]) throws -> ModularCeilingQuantities {
+        var area = 0.0, perimeter = 0.0, runnerLength = 0.0
+        var tiles = 0, full = 0, runners = 0, tees1200 = 0, tees600 = 0, hangers = 0
+        for original in surfaces {
+            let surface = aligned(original), b = surface.bounds
+            guard b.width.isFinite, b.height.isFinite, b.width > 0, b.height > 0,
+                  b.width < 100_000, b.height < 100_000 else { throw LayoutGeometryError.invalidContour }
+            area += try surface.netMeasuredArea() / 1_000_000
+            let loops = try LayoutGeometry.intersection(outer: surface.contour, holes: surface.openings.map(\.contour), rectangle: b)
+            perimeter += loops.reduce(0) { $0 + LayoutGeometry.edges($1).reduce(0) { $0 + ($1.b - $1.a).length } } / 1000
+            let moduleY = configuration.tileFormat.transverseModule * 1000
+            let layer = layoutLayer(configuration, surface: original)
+            let origin = layer.offset
+            let columns = ceil(b.width / 600 - 0.000_001)
+            let sheets = try LayoutBoardGrid.clippedSheets(surface: surface, layer: layer)
+            tiles += sheets.count
+            full += sheets.filter { abs($0.area - 600 * moduleY) < 1 }.count
+            func clipped(_ a: LayoutPoint, _ z: LayoutPoint) -> [LayoutJoint] {
+                LayoutOpeningFraming.clip(.init(start: a, end: z), to: surface)
+            }
+            let runnerYs = stride(from: origin.y + 1200, to: b.max.y - 0.5, by: 1200).filter { $0 > b.min.y + 0.5 }
+            for y in runnerYs {
+                let segments = clipped(.init(x: b.min.x, y: y), .init(x: b.max.x, y: y))
+                if !segments.isEmpty { runners += 1 }
+                for segment in segments {
+                    let length = (segment.end - segment.start).length / 1000
+                    runnerLength += length
+                    hangers += max(1, Int(ceil(max(0, length - 0.9) / 1.2)) + 1)
+                }
+            }
+            let ys = [b.min.y] + runnerYs + [b.max.y]
+            for column in 1..<max(1, Int(columns)) {
+                let x = origin.x + Double(column) * 600
+                for pair in zip(ys, ys.dropFirst()) {
+                    tees1200 += clipped(.init(x: x, y: pair.0), .init(x: x, y: pair.1)).count
+                }
+            }
+            if configuration.tileFormat == .square600 {
+                // Secondary 600-mm cross tees halfway between main runners.
+                let secondaryYs = stride(from: origin.y + 600, to: b.max.y - 0.5, by: 1200).filter { $0 > b.min.y + 0.5 }
+                for y in secondaryYs {
+                    for column in 0..<max(1, Int(columns)) {
+                        let x = origin.x + Double(column) * 600
+                        tees600 += clipped(.init(x: x, y: y), .init(x: x + 600, y: y)).count
+                    }
+                }
+            }
+        }
+        let factor = 1 + max(0, configuration.wastePercent) / 100
+        let replaced = configuration.tileFormat == .square600 ? min(tiles, max(0, configuration.replacedSquareModules)) : 0
+        return .init(area: area, perimeter: perimeter, installedTiles: tiles, fullTiles: full, cutTiles: tiles - full,
+            orderedTiles: Int(ceil(Double(tiles - replaced) * factor)), mainRunnerLines: runners,
+            mainRunnerLength: runnerLength, mainRunnerBars: Int(ceil(runnerLength * factor / 3.6)),
+            crossTees1200Useful: tees1200, crossTees1200Ordered: Int(ceil(Double(tees1200) * factor)),
+            crossTees600Useful: tees600, crossTees600Ordered: Int(ceil(Double(tees600) * factor)),
+            perimeterAngleBars: Int(ceil(perimeter * factor / 3)), hangers: hangers)
+    }
+
+    static func aligned(_ original: Surface2D) -> Surface2D {
+        let angle = LayoutViewport.initialCeilingAlignment(original.contour, referenceEdge: nil)?.angle ?? 0
+        var result = original
+        result.contour = original.contour.map { LayoutOpeningFrame.rotate($0, by: angle) }
+        result.openings = original.openings.map { opening in
+            var copy = opening; copy.contour = opening.contour.map { LayoutOpeningFrame.rotate($0, by: angle) }; return copy
+        }
+        return result
+    }
+
     private static func centeredModuleCount(dimension: Double, module: Double) -> Int {
         guard dimension > 0, module > 0 else { return 0 }
         return max(1, Int(ceil(dimension / module - 0.000_001)))
@@ -155,14 +252,15 @@ struct ModularCeilingConfiguratorView: View {
     }
 
     private var canSave: Bool {
-        configuration.length > 0 &&
+        configuration.scanCalculationError == nil && configuration.length > 0 &&
         configuration.width > 0 &&
         configuration.tileThicknessMM > 0 &&
         configuration.plenumCM > 0
     }
 
     private var canContinue: Bool {
-        switch step {
+        guard configuration.scanCalculationError == nil else { return false }
+        return switch step {
         case 0: configuration.length > 0 && configuration.width > 0
         case 1: configuration.tileThicknessMM > 0
         case 2: configuration.plenumCM > 0
@@ -189,6 +287,7 @@ struct ModularCeilingConfiguratorView: View {
 
             Form { currentStepContent }
         }
+        .configurationEntry(in:0...2) { step = $0 }
         .safeAreaInset(edge: .bottom) {
             HStack(spacing: 12) {
                 if step > 0 {
@@ -256,12 +355,20 @@ struct ModularCeilingConfiguratorView: View {
 
     private var dimensionsSection: some View {
         Section {
-            metricRow("Longueur", value: $configuration.length, unit: "m")
-            metricRow("Largeur", value: $configuration.width, unit: "m")
+            if let error = configuration.scanCalculationError { Text(error).foregroundStyle(.orange) }
+            if let surfaces = configuration.surveyedSurfaces {
+                LabeledContent("Plafonds du relevé", value: "\(surfaces.count)")
+                LabeledContent("Surface nette", value: "\(configuration.area.formatted(.number.precision(.fractionLength(2)))) m²")
+            } else {
+                metricRow("Longueur", value: $configuration.length, unit: "m")
+                metricRow("Largeur", value: $configuration.width, unit: "m")
+            }
         } header: {
             Text("Dimensions de la pièce")
         } footer: {
-            Text("Première version limitée aux pièces rectangulaires. Les porteurs sont calculés dans le sens de la plus grande longueur.")
+            Text(configuration.surveyedSurfaces == nil
+                ? "Pièce rectangulaire. Les porteurs sont calculés dans le sens de la plus grande longueur."
+                : "Contour et ouvertures repris du relevé. Le quantitatif est recalculé lorsque le plan change.")
         }
     }
 
@@ -323,6 +430,7 @@ struct ModularCeilingConfiguratorView: View {
 
     private var quantitySection: some View {
         Section {
+            if let error = configuration.scanCalculationError { Text(error).foregroundStyle(.orange) } else {
             LabeledContent("Surface", value: "\(format(quantities.area)) m²")
             LabeledContent(
                 "Dalles à commander",
@@ -351,6 +459,7 @@ struct ModularCeilingConfiguratorView: View {
                 value: "\(quantities.perimeterAngleBars) u · \(format(quantities.perimeter)) ml"
             )
             LabeledContent("Suspentes + fixations", value: "\(quantities.hangers) u")
+            }
         } header: {
             Text("Quantitatif")
         } footer: {
@@ -361,7 +470,9 @@ struct ModularCeilingConfiguratorView: View {
     private var configurationSummarySection: some View {
         Section {
             DisclosureGroup("Configuration retenue", isExpanded: $showsConfiguration) {
-                LabeledContent("Dimensions", value: "\(format(configuration.length)) × \(format(configuration.width)) m")
+                if configuration.surveyedSurfaces == nil {
+                    LabeledContent("Dimensions", value: "\(format(configuration.length)) × \(format(configuration.width)) m")
+                } else { LabeledContent("Surface du relevé", value: "\(format(configuration.area)) m²") }
                 LabeledContent("Format", value: configuration.tileFormat.title)
                 LabeledContent("Épaisseur", value: "\(format(configuration.tileThicknessMM)) mm")
                 LabeledContent("Plénum", value: "\(format(configuration.plenumCM)) cm")

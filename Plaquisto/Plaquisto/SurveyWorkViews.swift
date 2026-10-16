@@ -86,6 +86,8 @@ struct SurveyWorkSelectionView: View {
     @State private var workName = ""
     @State private var creating: SurveyWorkFormDraft?
     @State private var showsPlan = true
+    @State private var showingOverlap = false
+    @State private var continueAfterOverlap = false
 
     init(surveyID: UUID, preferredType: WorkType? = nil, name: String = "", onFinished: (() -> Void)? = nil) {
         self.surveyID = surveyID; self.preferredType = preferredType; self.onFinished = onFinished
@@ -115,10 +117,10 @@ struct SurveyWorkSelectionView: View {
         }
     }
     private var chosen: [SurveyWorkSurface] {
-        visible.filter { selected.contains($0.id) && isUsable($0) && !isClaimed($0) }
+        visible.filter { selected.contains($0.id) && isUsable($0) }
     }
     private var chosenIDs: Set<String> { Set(chosen.map(\.id)) }
-    private var blockedIDs: Set<String> { Set(candidates.filter { isClaimed($0) || !isUsable($0) }.map(\.id)) }
+    private var blockedIDs: Set<String> { Set(candidates.filter { !isUsable($0) }.map(\.id)) }
     private var grossArea: Double { chosen.reduce(0) { $0 + $1.grossArea } }
     private var netArea: Double { SurveyWorkGeometry.totalArea(chosen) }
     private var project: ProjectItem? { survey.flatMap { store.project(id: $0.projectID) } }
@@ -131,7 +133,7 @@ struct SurveyWorkSelectionView: View {
         survey?.checkpoints.first { $0.id == value.source.checkpointID }?.isUsableForWork == true
     }
     private func toggle(_ id: String) {
-        guard let value = visible.first(where: { $0.id == id }), !isClaimed(value), isUsable(value) else { return }
+        guard let value = visible.first(where: { $0.id == id }), isUsable(value) else { return }
         var ids = selected
         if ids.contains(id) { ids.remove(id) } else { ids.insert(id) }
         selectionsByMode[selectionMode] = ids
@@ -148,6 +150,16 @@ struct SurveyWorkSelectionView: View {
         .navigationTitle("Choisir les surfaces")
         .navigationBarTitleDisplayMode(.inline)
         .safeAreaInset(edge: .bottom) { selectionBar }
+        .sheet(isPresented: $showingOverlap, onDismiss: {
+            if continueAfterOverlap { continueAfterOverlap = false; continueToForm(confirmed: true) }
+        }) {
+            if let survey, let project {
+                SurveyOverlapView(survey: survey, selections: chosen, works: project.works, onExclude: { ids in
+                    selectionsByMode[selectionMode] = selected.subtracting(ids)
+                    continueAfterOverlap = !chosen.isEmpty; showingOverlap = false
+                }, onKeep: { continueAfterOverlap = true; showingOverlap = false })
+            }
+        }
         .sheet(item: $creating) { draft in
             SurveyWorkForm(draft: draft) {
                 creating = nil; selectionsByMode[selectionMode] = []
@@ -233,7 +245,7 @@ struct SurveyWorkSelectionView: View {
                 Spacer()
                 Text("\(value.netArea.formatted(.number.precision(.fractionLength(2)))) m²")
             }
-        }.buttonStyle(.plain).disabled(assigned || !usable)
+        }.buttonStyle(.plain).disabled(!usable)
     }
 
     private var creationSection: some View {
@@ -255,6 +267,7 @@ struct SurveyWorkSelectionView: View {
                     Picker("Système",selection:$ceilingType) {
                         Text("Fourrures").tag(WorkType.ceilingOnFurring)
                         Text("Rails et montants").tag(WorkType.ceilingOnRailsAndStuds)
+                        Text("Plafond modulaire").tag(WorkType.modularCeiling)
                     }
                 }
                 TextField("Nom de l’ouvrage (facultatif)", text: $workName)
@@ -272,19 +285,57 @@ struct SurveyWorkSelectionView: View {
                 Text("\(area(netArea)) nets").font(.subheadline).foregroundStyle(.secondary)
             }
             Spacer(minLength: 0)
-            Button("Continuer", action: continueToForm)
+            Button("Continuer") { continueToForm() }
                 .buttonStyle(.borderedProminent).disabled(chosen.isEmpty)
         }
         .padding().background(.regularMaterial)
     }
 
-    private func continueToForm() {
+    private func continueToForm(confirmed: Bool = false) {
         guard let project, !chosen.isEmpty else { return }
-        let type: WorkType = painting ? .paintingBeta : (kind == .ceiling ? ceilingType : workType)
+        if !confirmed && !SurveyOverlapView.conflictingIDs(selections: chosen, works: project.works).isEmpty { showingOverlap = true; return }
+        let type: WorkType = preferredType ?? (painting ? .paintingBeta : (kind == .ceiling ? ceilingType : workType))
         let typedName = workName.trimmingCharacters(in: .whitespacesAndNewlines)
         creating = .init(surveyID: surveyID, selections: chosen,
             name: typedName.isEmpty ? store.defaultWorkName(projectID: project.id, type: type) : typedName,
-            type: type, roomID: nil)
+            type: type, roomID: nil, allowsExistingCoverage: confirmed)
+    }
+}
+
+struct SurveyOverlapView: View {
+    @Environment(\.dismiss) private var dismiss
+    let survey: ProjectSurveyRecord
+    let selections: [SurveyWorkSurface]
+    let works: [WorkItem]
+    let onExclude: (Set<String>) -> Void
+    let onKeep: () -> Void
+    static func conflictingIDs(selections: [SurveyWorkSurface], works: [WorkItem]) -> Set<String> {
+        let sources = works.flatMap(\.components).compactMap(\.surveySource)
+        return Set(selections.filter { surface in sources.contains { SurveyWorkGeometry.hasSameSource($0, surface.source) } }.map(\.id))
+    }
+    var body: some View {
+        let ids = Self.conflictingIDs(selections: selections, works: works)
+        let conflicted = selections.filter { ids.contains($0.id) }
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    Text("Un ouvrage existe déjà sur cette zone.").font(.headline)
+                    SurveySurfacePlan(survey: survey, surfaces: SurveyWorkGeometry.surfaces(in: survey),
+                        kind: selections.first?.source.kind ?? .wall, selected: ids, blocked: [], onTap: { _ in })
+                        .frame(height: 240).clipShape(RoundedRectangle(cornerRadius: 16))
+                    ForEach(works.filter { work in !Self.conflictingIDs(selections: conflicted, works: [work]).isEmpty }) { work in
+                        VStack(alignment: .leading) {
+                            Text(work.name).font(.headline)
+                            Text("\(work.type.title) · \(work.area.formatted(.number.precision(.fractionLength(1)))) m²").font(.subheadline)
+                        }
+                    }
+                    Button("Exclure de la nouvelle sélection") { onExclude(ids) }.buttonStyle(.bordered)
+                    Button("Conserver la sélection", action: onKeep).buttonStyle(.borderedProminent)
+                    Text("Les ouvrages existants ne sont ni supprimés ni modifiés.").font(.caption).foregroundStyle(.secondary)
+                }.padding()
+            }.navigationTitle("Zone déjà utilisée").navigationBarTitleDisplayMode(.inline)
+                .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Annuler") { dismiss() } } }
+        }
     }
 }
 
@@ -296,6 +347,7 @@ struct SurveyWorkFormDraft: Identifiable {
     let name: String
     let type: WorkType
     let roomID: UUID?
+    var allowsExistingCoverage = false
 }
 
 struct SurveyWorkForm: View {
@@ -327,6 +379,8 @@ struct SurveyWorkForm: View {
                     CeilingConfiguratorView(initialConfiguration: SurveyWorkGeometry.ceiling(draft.selections), lockScannedGeometry: true) { save(.ceiling($0)) }
                 case .ceilingOnRailsAndStuds:
                     RailStudCeilingConfiguratorView(initialConfiguration:SurveyWorkGeometry.railStudCeiling(draft.selections),lockScannedGeometry:true) { save(.railStudCeiling($0)) }
+                case .modularCeiling:
+                    ModularCeilingConfiguratorView(initialConfiguration: SurveyWorkGeometry.modularCeiling(draft.selections)) { save(.modularCeiling($0)) }
                 case .peripheralLiningStuds:
                     DoublageConfiguratorView(initialConfiguration: SurveyWorkGeometry.lining(draft.selections),
                         onSave: { save(.peripheralLining($0)) }, onClose: { dismiss() }, showsCloseButton: false)
@@ -358,6 +412,13 @@ struct SurveyWorkForm: View {
         Task {
             defer { preparingLayouts = false }
             do {
+                if draft.type == .modularCeiling {
+                    try store.createSurveyWork(surveyID: draft.surveyID, selections: draft.selections,
+                        name: draft.name, type: draft.type, payload: payload, roomID: draft.roomID,
+                        allowsExistingCoverage: draft.allowsExistingCoverage)
+                    onSaved()
+                    return
+                }
                 let now = Date()
                 var work = WorkItem(id: UUID(), projectID: UUID(), name: draft.name, type: draft.type, payload: payload, createdAt: now, updatedAt: now)
                 work.components = draft.selections.map { selection in
@@ -373,7 +434,8 @@ struct SurveyWorkForm: View {
                     try AutomaticSurveyLayout.prepare(work, formats: formats, catalogue: catalogue)
                 }.value
                 try store.createSurveyWork(surveyID: draft.surveyID, selections: draft.selections,
-                    name: draft.name, type: draft.type, payload: payload, roomID: draft.roomID, automatic: prepared)
+                    name: draft.name, type: draft.type, payload: payload, roomID: draft.roomID, automatic: prepared,
+                    allowsExistingCoverage: draft.allowsExistingCoverage)
                 onSaved()
             } catch { self.error = error.localizedDescription }
         }
@@ -382,6 +444,23 @@ struct SurveyWorkForm: View {
 
 /// Both previews use the same surface identifiers and registration. Camera
 /// gestures change the view only; attribution remains in the parent draft.
+enum SurveyPlanOrientation {
+    /// Choose a real wall axis, preferring the largest portrait footprint. Only
+    /// the view rotates: source coordinates and dimensions remain untouched.
+    static func angle(points: [CGPoint], edges: [[CGPoint]], aspect: Double = 0.62) -> Double {
+        let candidates = edges.compactMap { edge -> Double? in
+            guard let a = edge.first, let b = edge.last, hypot(b.x-a.x, b.y-a.y) > 0.1 else { return nil }
+            return .pi / 2 - atan2(b.y-a.y, b.x-a.x)
+        }
+        func score(_ angle: Double) -> Double {
+            let xs = points.map { $0.x*cos(angle)-$0.y*sin(angle) }
+            let ys = points.map { $0.x*sin(angle)+$0.y*cos(angle) }
+            return min(aspect/max(0.1,(xs.max() ?? 1)-(xs.min() ?? 0)), 1/max(0.1,(ys.max() ?? 1)-(ys.min() ?? 0)))
+        }
+        return candidates.max { score($0) < score($1) } ?? 0
+    }
+}
+
 struct SurveySurfacePlan: View {
     let survey: ProjectSurveyRecord
     let surfaces: [SurveyWorkSurface]
@@ -393,6 +472,7 @@ struct SurveySurfacePlan: View {
     @State private var zoom: CGFloat = 1
     @State private var offset = CGSize.zero
     @GestureState private var pinch: CGFloat = 1
+    @GestureState private var pinchAnchor: UnitPoint = .center
     @State private var drag = CGSize.zero
     @State private var cachedDrawing: [DrawingSurface]?
     @State private var cachedLabels: [(title:String,point:CGPoint)] = []
@@ -440,6 +520,12 @@ struct SurveySurfacePlan: View {
                         title:String(value.name.split(separator:"·").first ?? "").trimmingCharacters(in:.whitespaces)))
                 }
             }
+            for column in checkpoint.document.room.columns ?? [] {
+                for i in 0..<4 {
+                    result.append(.init(id: "column/\(column.id)/\(i)", kind: .wall,
+                        points: [project(column.corners[i]), project(column.corners[(i+1)%4])]))
+                }
+            }
             offset += maxX - minX + 2
         }
         return result
@@ -454,11 +540,15 @@ struct SurveySurfacePlan: View {
             let minY = points.map(\.y).min() ?? 0, maxY = points.map(\.y).max() ?? 1
             let width = max(0.5, maxX - minX), height = max(0.5, maxY - minY)
             let fit = max(1, min((proxy.size.width - 96) / width, (proxy.size.height - 96) / height))
-            let scale = fit * min(8, max(1, zoom * pinch))
+            let effectiveZoom = min(8, max(0.4, zoom * pinch))
+            let scale = fit * effectiveZoom
             let limitX = max(0, proxy.size.width / 2 + width * scale / 2 - 40)
             let limitY = max(0, proxy.size.height / 2 + height * scale / 2 - 40)
-            let dx = min(limitX, max(-limitX, offset.width + drag.width))
-            let dy = min(limitY, max(-limitY, offset.height + drag.height))
+            let ratio = effectiveZoom / zoom
+            let anchorX = (pinchAnchor.x - 0.5) * proxy.size.width
+            let anchorY = (pinchAnchor.y - 0.5) * proxy.size.height
+            let dx = min(limitX, max(-limitX, anchorX + (offset.width - anchorX) * ratio + drag.width))
+            let dy = min(limitY, max(-limitY, anchorY + (offset.height - anchorY) * ratio + drag.height))
             let center = CGPoint(x: (minX + maxX) / 2, y: (minY + maxY) / 2)
             let screen: (CGPoint) -> CGPoint = { p in
                 CGPoint(x: (p.x - center.x) * scale + proxy.size.width / 2 + dx,
@@ -502,7 +592,8 @@ struct SurveySurfacePlan: View {
             }
             .background(ArchitecturalPlanInk.paper)
             .contentShape(Rectangle())
-            .gesture(SpatialTapGesture().onEnded { tap in
+            .gesture(SpatialTapGesture(count: 2).onEnded { _ in zoom = 1; offset = .zero; drag = .zero }
+                .exclusively(before: SpatialTapGesture().onEnded { tap in
                 let hits = elements.filter { $0.kind == kind }.filter { element in
                     let path = shape(element, transform: screen)
                     return element.kind == .wall
@@ -513,9 +604,15 @@ struct SurveySurfacePlan: View {
                     distance(tap.location, to: a, transform: screen) < distance(tap.location, to: b, transform: screen)
                 }
                 if let nearest { onTap(nearest.id) }
-            })
+            }))
             .simultaneousGesture(MagnifyGesture().updating($pinch) { value, state, _ in state = value.magnification }
-                .onEnded { value in zoom = min(8, max(1, zoom * value.magnification)) })
+                .updating($pinchAnchor) { value, state, _ in state = value.startAnchor }
+                .onEnded { value in
+                    let next = min(8, max(0.4, zoom * value.magnification)), ratio = next / zoom
+                    let a = CGSize(width: (value.startAnchor.x - 0.5) * proxy.size.width, height: (value.startAnchor.y - 0.5) * proxy.size.height)
+                    offset = CGSize(width: a.width + (offset.width - a.width) * ratio, height: a.height + (offset.height - a.height) * ratio)
+                    zoom = next
+                })
             .simultaneousGesture(DragGesture(minimumDistance: 3).onChanged { drag = $0.translation }
                 .onEnded { value in
                     offset = CGSize(width: min(limitX, max(-limitX, offset.width + value.translation.width)),
@@ -523,11 +620,7 @@ struct SurveySurfacePlan: View {
                     drag = .zero
                 })
             .transaction { $0.animation = nil }
-            .overlay(alignment: .topTrailing) {
-                Button { zoom = 1; offset = .zero } label: { Image(systemName: "scope").padding(10) }
-                    .buttonStyle(.borderless).background(.regularMaterial, in: Circle()).padding(8)
-                    .accessibilityLabel("Recentrer le plan")
-            }
+            .accessibilityAction(named: "Recentrer le plan") { zoom = 1; offset = .zero }
             .overlay {
                 if elements.isEmpty { Text("Aucune surface exploitable dans ce relevé").font(.footnote).padding() }
             }
@@ -539,7 +632,14 @@ struct SurveySurfacePlan: View {
         .accessibilityLabel("Plan 2D de sélection des surfaces")
     }
     private func refreshDrawing() {
-        let elements = drawing
+        let raw = drawing
+        let angle = SurveyPlanOrientation.angle(points: raw.flatMap(\.points), edges: raw.filter { $0.kind == .wall }.map(\.points))
+        func rotate(_ p: CGPoint) -> CGPoint { .init(x: p.x * cos(angle) - p.y * sin(angle), y: p.x * sin(angle) + p.y * cos(angle)) }
+        let elements = raw.map { item in
+            DrawingSurface(id: item.id, kind: item.kind, points: item.points.map(rotate),
+                openings: item.openings.map { $0.map(rotate) }, windows: item.windows,
+                outlines: item.outlines.map { $0.map(rotate) }, title: item.title)
+        }
         cachedDrawing = elements; cachedLabels = ceilingLabels(elements)
     }
 
@@ -637,6 +737,12 @@ struct SurveySurfacePlan: View {
                 MaquetteStyle.attachEdges(to:node,points:triangles.map(transform))
                 scene.rootNode.addChildNode(node)
             }
+            for column in checkpoint.document.room.columns ?? [] {
+                let points = column.triangles.map(transform)
+                let mesh = MaquetteStyle.geometry(points); mesh.firstMaterial = MaquetteStyle.material(.wall)
+                let node = SCNNode(geometry: mesh); node.name = "column/\(column.id)"; node.categoryBitMask = 2
+                MaquetteStyle.attachEdges(to: node, points: points); scene.rootNode.addChildNode(node)
+            }
             for floor in checkpoint.document.room.floors {
                 guard let outer = floor.boundaries.first, outer.count >= 3 else { continue }
                 let elevation = floor.referenceElevation ?? outer[0].y
@@ -702,6 +808,8 @@ struct SurveySurfaceScene: UIViewRepresentable {
     let onTap: (String) -> Void
     var showsCeilings: Bool? = nil
     var resetToken = 0
+    var previewWorks: [WorkItem] = []
+    var showsWorkJoints = true
 
     func makeCoordinator() -> Coordinator { Coordinator(onTap:onTap) }
     func makeUIView(context: Context) -> SCNView {
@@ -709,7 +817,10 @@ struct SurveySurfaceScene: UIViewRepresentable {
         view.backgroundColor = SurveySceneRenderer.background
         view.allowsCameraControl = true
         MaquetteStyle.configure(view,quality:.current)
-        view.addGestureRecognizer(UITapGestureRecognizer(target:context.coordinator,action:#selector(Coordinator.tap(_:))))
+        let tap = UITapGestureRecognizer(target:context.coordinator,action:#selector(Coordinator.tap(_:)))
+        let reset = UITapGestureRecognizer(target:context.coordinator,action:#selector(Coordinator.recenter(_:)))
+        reset.numberOfTapsRequired = 2; tap.require(toFail: reset)
+        view.addGestureRecognizer(tap); view.addGestureRecognizer(reset)
         return view
     }
     func updateUIView(_ view: SCNView, context: Context) {
@@ -722,6 +833,7 @@ struct SurveySurfaceScene: UIViewRepresentable {
         coordinator.selectableIDs = Set(surfaces.filter { $0.source.kind == kind }.map(\.id))
         let key = GeometryKey(checkpoints:survey.checkpoints,surfaces:surfaces.map { .init(id:$0.id,kind:$0.source.kind,triangles:$0.triangles) })
         if coordinator.geometryKey != key {
+            coordinator.previewWorks = nil
             coordinator.geometryKey = key
             coordinator.geometryBuildCount += 1
             view.scene = SurveySceneRenderer.make(survey:survey,surfaces:surfaces)
@@ -757,17 +869,47 @@ struct SurveySurfaceScene: UIViewRepresentable {
                 floor.geometry?.firstMaterial=MaquetteStyle.material(.floor)
             }
         }
+        if coordinator.previewWorks != previewWorks || coordinator.showsWorkJoints != showsWorkJoints {
+            view.scene?.rootNode.childNode(withName: "work-preview", recursively: false)?.removeFromParentNode()
+            let root = SCNNode(); root.name = "work-preview"
+            for mesh in SurveyWorkPreview.make(survey: survey, surfaces: surfaces, works: previewWorks, showJoints: showsWorkJoints) {
+                let node = SCNNode(geometry: MaquetteStyle.geometry(mesh.triangles))
+                node.name = mesh.surfaceID
+                node.categoryBitMask = 1
+                if !mesh.joints.isEmpty {
+                    let geometry = SCNGeometry(sources: [.init(vertices: mesh.joints.map { SCNVector3($0.x, $0.y, $0.z) })],
+                        elements: [.init(indices: mesh.joints.indices.map(Int32.init), primitiveType: .line)])
+                    let ink = SCNMaterial(); ink.lightingModel = .constant
+                    ink.diffuse.contents = UIColor(red: 0.15, green: 0.28, blue: 0.36, alpha: 1)
+                    ink.isDoubleSided = true; geometry.materials = [ink]
+                    let lines = SCNNode(geometry: geometry); lines.name = mesh.surfaceID; node.addChildNode(lines)
+                }
+                root.addChildNode(node)
+            }
+            view.scene?.rootNode.addChildNode(root)
+            coordinator.previewWorks = previewWorks; coordinator.showsWorkJoints = showsWorkJoints
+        }
         for surface in surfaces {
             guard let node = view.scene?.rootNode.childNode(withName:surface.id,recursively:false) else { continue }
             let ceiling = surface.source.kind == .ceiling
             node.isHidden = SurveyWorkGeometry.isHidden(surface, in: survey) || (ceiling && !(showsCeilings ?? (kind == .ceiling)))
-            node.opacity = ceiling ? 0.88 : (kind == .ceiling ? 0.32 : 1)
+            node.opacity = ceiling ? 0.88 : 1
             if ceiling && selected.contains(surface.id) && MaquetteRendering.current == .elevated { node.opacity=0.8 }
             node.geometry?.firstMaterial = MaquetteStyle.material(ceiling ? .ceiling : .wall,
                 state:selected.contains(surface.id) ? .selected : (claimed.contains(surface.id) ? .claimed : .normal),
                 translucent:node.opacity < 1)
             node.castsShadow = !node.isHidden && node.opacity == 1
             MaquetteStyle.updateEdges(on:node,selected:selected.contains(surface.id))
+            if let preview = view.scene?.rootNode.childNode(withName: "work-preview", recursively: false)?.childNode(withName: surface.id, recursively: false) {
+                preview.isHidden = node.isHidden
+                preview.opacity = ceiling ? 0.8 : 1
+                let material = SCNMaterial(); material.lightingModel = .lambert; material.isDoubleSided = true
+                material.diffuse.contents = selected.contains(surface.id) ? UIColor.systemOrange : UIColor(red: 1, green: 0.78, blue: 0.16, alpha: 1)
+                preview.geometry?.materials = [material]
+                // Finished surfaces replace their raw visual counterpart only;
+                // otherwise raw roof/wall thickness can occlude the facing.
+                if !preview.isHidden { node.isHidden = true }
+            }
         }
     }
     struct GeometryKey:Equatable {
@@ -783,7 +925,19 @@ struct SurveySurfaceScene: UIViewRepresentable {
         var rendering:MaquetteRendering?
         var resetToken = -1
         var selectableIDs = Set<String>()
+        var previewWorks: [WorkItem]?
+        var showsWorkJoints = true
         init(onTap: @escaping (String) -> Void) { self.onTap = onTap }
+        @MainActor @objc func recenter(_ gesture: UITapGestureRecognizer) {
+            guard let view = gesture.view as? SCNView, let scene = view.scene else { return }
+            SurveySceneRenderer.frame(scene, aspect: Double(max(1, view.bounds.width) / max(1, view.bounds.height)))
+            if let camera = scene.rootNode.childNode(withName: "camera", recursively: false) { view.pointOfView = camera }
+            let boxes = scene.rootNode.childNodes.filter { $0.geometry != nil }.map(\.boundingBox)
+            view.defaultCameraController.target = SCNVector3(
+                ((boxes.map { $0.min.x }.min() ?? 0)+(boxes.map { $0.max.x }.max() ?? 0))/2,
+                ((boxes.map { $0.min.y }.min() ?? 0)+(boxes.map { $0.max.y }.max() ?? 0))/2,
+                ((boxes.map { $0.min.z }.min() ?? 0)+(boxes.map { $0.max.z }.max() ?? 0))/2)
+        }
         @objc func tap(_ gesture: UITapGestureRecognizer) {
             guard let view = gesture.view as? SCNView else { return }
             let hits = view.hitTest(gesture.location(in:view),options:[.searchMode:SCNHitTestSearchMode.all.rawValue])

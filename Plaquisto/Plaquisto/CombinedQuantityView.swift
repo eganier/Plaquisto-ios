@@ -110,6 +110,11 @@ struct WorkSelectionView: View {
 }
 
 struct CombinedQuantityView: View {
+    @ObservedObject private var stock = StockStore.shared
+    @State private var deductStock = false
+    @State private var reservingStock = false
+    @State private var reservationProductID:String?
+    @State private var choosingSuppliesToExport = false
     @StateObject private var store = CeilingReferenceStore()
     @StateObject private var prices = SupplyPriceStore()
     @EnvironmentObject private var projectStore: ProjectStore
@@ -117,8 +122,6 @@ struct CombinedQuantityView: View {
     private var isLab: Bool { presentation == .contrastLab }
     let works: [WorkItem]
     let title: String
-    @State private var exportURL: URL?
-    @State private var exportError: String?
 
     private var currentWorks: [WorkItem] {
         let refreshed = works.map { work in projectStore.project(id: work.projectID)?.works.first { $0.id == work.id } ?? work }
@@ -134,6 +137,18 @@ struct CombinedQuantityView: View {
         store.catalogue.map { CombinedQuantityCalculator.calculate(works: currentWorks, catalogue: $0, projectWorks: projectWorks) }
     }
 
+    private var stockProjectID:UUID? {
+        let ids = Set(works.map(\.projectID))
+        return ids.count == 1 ? ids.first : nil
+    }
+    private func stockLines(_ summary:CombinedQuantitySummary) -> [StockTakeoffLine] {
+        StockTakeoffLine.make(summary.supplies,stock:stock,projectID:stockProjectID)
+    }
+    private func pricedSupplies(_ summary:CombinedQuantitySummary) -> [CombinedSupply] {
+        guard isLab && deductStock else { return summary.supplies }
+        return stockLines(summary).map { .init(name:$0.product.name,quantity:$0.toBuy,unit:$0.product.unit) }
+    }
+
     var body: some View {
         Group {
             if works.isEmpty {
@@ -146,13 +161,29 @@ struct CombinedQuantityView: View {
             } else if let summary {
                 List {
                     if let catalogue=store.catalogue {
-                        SupplyCostSection(estimate:SupplyCostEstimator.estimate(summary.supplies,prices:prices.catalogue,catalogue:catalogue,day:SupplyCostEstimator.day()),loading:prices.isLoading,message:prices.message)
+                        SupplyCostSection(estimate:SupplyCostEstimator.estimate(pricedSupplies(summary),prices:prices.catalogue,catalogue:catalogue,day:SupplyCostEstimator.day()),loading:prices.isLoading,message:prices.message)
+                    }
+                    if isLab {
+                        Section("Mon stock") {
+                            Toggle("Déduire le stock disponible",isOn:$deductStock).frame(minHeight:48)
+                            if let error = stock.loadError { Text(error).font(.caption).foregroundStyle(.red) }
+                            if deductStock {
+                                Text("Affichage des quantités à acheter. Inclut les réservations de ce chantier, exclut celles des autres. Aucune sortie de stock.").font(.caption).foregroundStyle(.secondary)
+                            }
+                            if stockProjectID != nil {
+                                Button { reservationProductID=nil; reservingStock = true } label: { Label("Réserver pour ce chantier",systemImage:"bookmark").font(.headline).frame(minHeight:48) }
+                                    .disabled(stock.loadError != nil || !stockLines(summary).contains { $0.fromStock > 0 })
+                            } else { Text("Ouvrez le quantitatif d’un seul chantier pour réserver.").font(.caption).foregroundStyle(.secondary) }
+                        }
                     }
                     ForEach(currentWorks.filter { $0.jointTreatmentConfiguration != nil }) { work in
                         if let c = work.jointTreatmentConfiguration {
                             JointTreatmentDeductionSection(configuration: c, works: projectWorks.filter { $0.projectID == work.projectID })
                             Section { Text(JointTreatmentCalculator.reminder).font(.footnote) }
                         }
+                    }
+                    ForEach(currentWorks.filter { $0.modularCeilingConfiguration?.scanCalculationError != nil }) { work in
+                        Section { Text("\(work.name) : quantitatif incomplet. \(work.modularCeilingConfiguration?.scanCalculationError ?? "")").foregroundStyle(.orange) }
                     }
                     ForEach(currentWorks.filter { $0.automaticLayout != nil }) { work in
                         if let automatic = work.automaticLayout,
@@ -194,7 +225,11 @@ struct CombinedQuantityView: View {
                                     .font(.caption).foregroundStyle(.orange)
                             }
                         }
-                        ForEach(supplyRows(summary.supplies)) { row in
+                        if isLab {
+                            ForEach(stockLines(summary)) { line in
+                                stockSupplyRow(line)
+                            }
+                        } else { ForEach(supplyRows(summary.supplies)) { row in
                             if isLab {
                                 HStack(alignment: .firstTextBaseline, spacing: 20) {
                                     Text(row.name).frame(maxWidth: .infinity, alignment: .leading)
@@ -202,40 +237,17 @@ struct CombinedQuantityView: View {
                                         .multilineTextAlignment(.trailing)
                                 }.padding(.vertical, 8)
                             } else { LabeledContent(row.name, value: row.value) }
-                        }
+                        } }
                     }
-                    if !isLab { Section {
-                        if let exportURL {
-                            ShareLink(item: exportURL) { Label("Partager la liste", systemImage: "square.and.arrow.up") }
-                        } else { ProgressView("Préparation de la liste…") }
-                        if let exportError { Text(exportError).foregroundStyle(.red) }
-                    } }
                 }
                 .scrollContentBackground(isLab ? .hidden : .visible)
                 .background(isLab ? ContrastPalette.paper : Color(uiColor: .systemGroupedBackground))
                 .safeAreaInset(edge: .bottom) {
-                    if isLab {
-                        VStack(spacing: 6) {
-                            if let exportError { Text(exportError).font(.caption).foregroundStyle(.red) }
-                            if let exportURL {
-                                ShareLink(item: exportURL) {
-                                    Label("Partager la liste", systemImage: "square.and.arrow.up")
+                            Button { choosingSuppliesToExport = true } label: {
+                                    Label("Partager / copier", systemImage: "square.and.arrow.up")
                                         .font(.headline).frame(maxWidth: .infinity, minHeight: 50)
                                         .foregroundStyle(.white).background(ContrastPalette.ink, in: RoundedRectangle(cornerRadius: 17))
-                                }
-                            } else if exportError == nil { ProgressView("Préparation de la liste…") }
-                        }.padding().background(.regularMaterial)
-                    }
-                }
-                .task(id: exportText(summary)) {
-                    exportURL = nil
-                    do {
-                        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("Quantitatifs", isDirectory: true)
-                        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-                        let url = directory.appendingPathComponent("Quantitatif-\(UUID().uuidString.prefix(8)).txt")
-                        try exportText(summary).write(to: url, atomically: true, encoding: .utf8)
-                        exportURL = url; exportError = nil
-                    } catch { exportError = "Impossible de préparer le partage : \(error.localizedDescription)" }
+                            }.padding().background(.regularMaterial)
                 }
             }
         }
@@ -243,6 +255,44 @@ struct CombinedQuantityView: View {
         .navigationBarTitleDisplayMode(.inline)
         .task { if !works.isEmpty && store.catalogue == nil { await store.load() } }
         .task { if !works.isEmpty { await prices.load() } }
+        .sheet(isPresented:$reservingStock) {
+            if let summary, let id = stockProjectID {
+                StockReservationView(lines:stockLines(summary).filter { reservationProductID == nil || $0.id == reservationProductID },
+                    projectID:id,projectName:projectStore.project(id:id)?.name ?? "Chantier",onReserved:{ deductStock=true })
+            }
+        }
+        .sheet(isPresented:$choosingSuppliesToExport) {
+            if let summary {
+                SupplyExportSelectionView(projects:projectStore.projects.filter { Set(works.map(\.projectID)).contains($0.id) },
+                    supplies:stockLines(summary).map { .init(name:$0.product.name,quantity:isLab && deductStock ? $0.toBuy : $0.required,unit:$0.product.unit) })
+            }
+        }
+    }
+
+    private func stockSupplyRow(_ line:StockTakeoffLine) -> some View {
+        let available=stock.available(line.id,for:stockProjectID)
+        let reserved=stock.reservations.filter { $0.productID==line.id && $0.projectID==stockProjectID }.reduce(0) { $0+$1.quantity }
+        return VStack(alignment:.leading,spacing:7) {
+            HStack(alignment:.firstTextBaseline) {
+                Text(line.product.name).frame(maxWidth:.infinity,alignment:.leading)
+                Text("\(format(deductStock ? line.toBuy : line.required)) \(line.product.unit)").bold().foregroundStyle(ContrastPalette.blue)
+            }
+            if deductStock && line.fromStock>0 {
+                Text("Besoin total : \(format(line.required)) \(line.product.unit)").font(.caption).foregroundStyle(.secondary)
+            }
+            if available>0 {
+                HStack {
+                    Text("\(format(available)) \(line.product.unit) en stock").foregroundStyle(.orange)
+                    Spacer(minLength:8)
+                    if stockProjectID != nil {
+                        Button(reserved>0 ? "Modifier" : "Réserver") {
+                            reservationProductID=line.id; reservingStock=true
+                        }.buttonStyle(.borderless).frame(minHeight:44).disabled(stock.loadError != nil)
+                    }
+                }.font(.subheadline)
+            }
+            if reserved>0 { Text("\(format(reserved)) \(line.product.unit) réservées à ce chantier").font(.caption).foregroundStyle(.orange) }
+        }.padding(.vertical,8)
     }
 
     private func format(_ value: Double) -> String { value.formatted(.number.precision(.fractionLength(0...2))) }
@@ -261,42 +311,93 @@ struct CombinedQuantityView: View {
             }
         }
     }
-    private func exportText(_ summary: CombinedQuantitySummary) -> String {
-        var lines = ["Plaquisto — \(title)", "", "Ouvrages inclus :"]
-        lines += currentWorks.map { "• \($0.name)" }
-        for work in currentWorks {
-            if let automatic=work.automaticLayout,automatic.configurationFingerprint == LayoutQuantityCalculator.configurationFingerprint(work) {
-                lines.append("\(work.name) : estimation complétée à la hausse par le calepinage automatique, marge déjà incluse.")
-                lines += automatic.warnings
-            }
-            if let c = work.jointTreatmentConfiguration {
-                let context = projectWorks.filter { $0.projectID == work.projectID }
-                lines.append("Bandes à joint : surface restante \(JointTreatmentCalculator.remainingArea(c, works: context)) m²")
-                for (source, area) in JointTreatmentCalculator.deductions(c, works: context) {
-                    lines.append("Déjà prévu dans \(source.name) : \(area) m² (déduit)")
-                }
-                lines.append(JointTreatmentCalculator.reminder)
-            }
-        }
-        lines += ["", "Surface totale : \(format(summary.totalArea)) m²", "", "Fournitures indicatives :"]
-        lines += supplyRows(summary.supplies).map { "\($0.name) : \($0.value)" }
-        if let catalogue=store.catalogue {
-            let estimate=SupplyCostEstimator.estimate(summary.supplies,prices:prices.catalogue,catalogue:catalogue,day:SupplyCostEstimator.day())
-            if let lower=estimate.lower,let upper=estimate.upper {
-                lines += ["",estimate.missing.isEmpty ? "Estimation des fournitures HT :" : "Estimation PARTIELLE des fournitures HT :", "\(SupplyCostEstimator.money(lower)) à \(SupplyCostEstimator.money(upper)) HT (±5 %, éco-contribution incluse, hors main-d’œuvre et livraison)"]
-                if let revision=prices.catalogue?.revision { lines.append("Révision des tarifs : \(revision)") }
-            } else { lines += ["", "Estimation indisponible : aucun tarif validé correspondant."] }
-            if let message=prices.message { lines.append(message) }
-            if !estimate.missing.isEmpty { lines += ["Non chiffrées (exclues du montant) :"] + estimate.missing.map(\.name) }
-        }
-        let review = currentWorks.filter(\.surveySourceNeedsReview)
-        if !review.isEmpty { lines += ["", "Relevés modifiés à contrôler : " + review.map(\.name).joined(separator: ", ")] }
-        return lines.joined(separator: "\n")
-    }
     private func supplyRows(_ supplies: [CombinedSupply]) -> [SupplyListingRow] {
         SupplyListingConsolidator.rows(supplies.map {
             .init(name: $0.name, quantity: $0.quantity, unit: $0.unit)
         })
+    }
+}
+
+enum QuantityTextExport {
+    static func eligible(_ supplies:[CombinedSupply]) -> [CombinedSupply] {
+        supplies.filter { $0.quantity.isFinite && $0.quantity>0 }
+    }
+    static func text(projects:[ProjectItem],supplies:[CombinedSupply],selected:Set<String>) -> String {
+        var lines:[String]=[],seen=Set<UUID>()
+        for project in projects where seen.insert(project.id).inserted {
+            if !lines.isEmpty { lines.append("") }
+            lines.append("Projet : \(project.name)")
+            if !project.client.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty { lines.append("Client : \(project.client)") }
+            if !project.address.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty { lines.append("Adresse : \(project.address)") }
+        }
+        if !lines.isEmpty { lines.append("") }
+        lines += eligible(supplies).filter { selected.contains($0.id) }.map {
+            "• \($0.name) : \($0.quantity.formatted(.number.locale(Locale(identifier:"fr_FR")).precision(.fractionLength(0...2)))) \($0.unit)"
+        }
+        return lines.joined(separator:"\n")
+    }
+}
+
+private struct SupplyExportSelectionView: View {
+    let projects:[ProjectItem]
+    let supplies:[CombinedSupply]
+    @Environment(\.dismiss) private var dismiss
+    @State private var selected:Set<String>
+    @State private var share:StockShareDocument?
+    @State private var error:String?
+    @State private var copied=false
+    init(projects:[ProjectItem],supplies:[CombinedSupply]) {
+        self.projects=projects; self.supplies=supplies
+        _selected=State(initialValue:Set(QuantityTextExport.eligible(supplies).map(\.id)))
+    }
+    private var rows:[CombinedSupply] { QuantityTextExport.eligible(supplies) }
+    private var count:Int { rows.filter { selected.contains($0.id) }.count }
+    private var text:String { QuantityTextExport.text(projects:projects,supplies:supplies,selected:selected) }
+    var body:some View {
+        NavigationStack {
+            List {
+                Section {
+                    Button(count == rows.count ? "Tout désélectionner" : "Tout sélectionner") {
+                        selected=count == rows.count ? [] : Set(rows.map(\.id))
+                    }.frame(minHeight:44)
+                    ForEach(rows) { row in
+                        Button {
+                            if !selected.insert(row.id).inserted { selected.remove(row.id) }
+                        } label: {
+                            HStack(spacing:14) {
+                                Image(systemName:selected.contains(row.id) ? "checkmark.circle.fill" : "circle").font(.title2)
+                                VStack(alignment:.leading,spacing:5) {
+                                    Text(row.name).foregroundStyle(.primary)
+                                    Text("\(StockQuantity.text(row.quantity)) \(row.unit)").font(.subheadline).foregroundStyle(.secondary)
+                                }
+                            }.frame(minHeight:52)
+                        }.accessibilityAddTraits(selected.contains(row.id) ? .isSelected : [])
+                    }
+                } header: { Text("\(count) fourniture(s) sélectionnée(s)") }
+                if let error { Text(error).foregroundStyle(.red) }
+            }
+            .navigationTitle("Fournitures à transmettre").navigationBarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem(placement:.cancellationAction) { Button("Fermer") { dismiss() } } }
+            .safeAreaInset(edge:.bottom) {
+                VStack(spacing:8) {
+                    Button {
+                        do {
+                            let url=FileManager.default.temporaryDirectory.appendingPathComponent("Quantitatif-\(UUID().uuidString.prefix(8)).txt")
+                            try text.write(to:url,atomically:true,encoding:.utf8)
+                            share = .init(url:url); error=nil
+                        } catch { self.error="Impossible de préparer le partage : \(error.localizedDescription)" }
+                    } label: { StockActionLabel(title:"Partager la liste",symbol:"square.and.arrow.up") }
+                    Button {
+                        UIPasteboard.general.string=text; copied=true
+                    } label: {
+                        Label(copied ? "Texte copié" : "Copier le texte",systemImage:copied ? "checkmark" : "doc.on.doc")
+                            .font(.headline).frame(maxWidth:.infinity,minHeight:48)
+                    }
+                }.padding().background(.regularMaterial).disabled(count==0)
+            }
+            .onChange(of:text) { _,_ in copied=false }
+            .sheet(item:$share) { StockShareSheet(url:$0.url) }
+        }
     }
 }
 
@@ -334,6 +435,7 @@ enum CombinedQuantityCalculator {
         let works = WorkOpeningRelations.includingAttached(to: works, allWorks: projectWorks ?? works)
         var totals: [String: CombinedSupply] = [:]
         var totalArea = 0.0
+        var insulationRemaining = 1.0
 
         func add(name: String, quantity: Double, unit: String) {
             guard quantity > 0 else { return }
@@ -341,19 +443,22 @@ enum CombinedQuantityCalculator {
                 let name = SupplyListingConsolidator.canonicalName(component.name)
                 let unit = SupplyListingConsolidator.canonicalUnit(component.unit)
                 let key = "\(name)|\(unit)"
+                let quantity = component.quantity * (unit == "m²" && name.hasPrefix("Isolation · ") ? insulationRemaining : 1)
+                guard quantity > 0 else { continue }
                 let previous = totals[key]?.quantity ?? 0
-                totals[key] = CombinedSupply(name: name, quantity: previous + component.quantity, unit: unit)
+                totals[key] = CombinedSupply(name: name, quantity: previous + quantity, unit: unit)
             }
         }
 
         var includedWorkIDs = Set<UUID>()
         for work in works where includedWorkIDs.insert(work.id).inserted {
+            insulationRemaining = WorkOpeningRelations.insulationRemainingRatio(for: work, allWorks: works)
             if let automatic = work.automaticLayout,
                automatic.configurationFingerprint == LayoutQuantityCalculator.configurationFingerprint(work) {
                 var baseline = work; baseline.automaticLayout = nil
                 let initial = calculate(works: [baseline], catalogue: catalogue)
                 var merged: [String: LayoutQuantityLine] = [:]
-                for line in initial.supplies.map({ LayoutQuantityLine(name: $0.name, quantity: $0.quantity, unit: $0.unit) }) + automatic.minimumSupplies {
+                for line in initial.supplies.map({ LayoutQuantityLine(name: $0.name, quantity: $0.quantity, unit: $0.unit) }) + AutomaticSurveyLayout.refreshedMinimum(automatic,work:work) {
                     let name = SupplyListingConsolidator.canonicalName(line.name)
                     let unit = SupplyListingConsolidator.canonicalUnit(line.unit)
                     let key = name + "|" + unit
@@ -422,6 +527,7 @@ enum CombinedQuantityCalculator {
                 continue
             }
             if work.type == .modularCeiling, let ceiling = work.modularCeilingConfiguration {
+                guard ceiling.scanCalculationError == nil else { continue }
                 let quantities = ModularCeilingCalculator.calculate(ceiling)
                 totalArea += quantities.area
                 add(name: "Dalles modulaires \(ceiling.tileFormat.title)", quantity: Double(quantities.orderedTiles), unit: "unité(s)")
@@ -443,7 +549,7 @@ enum CombinedQuantityCalculator {
             }
             if work.type == .distributionPartition, let partition = work.cloisonDistributionConfiguration {
                 totalArea += partition.area
-                for item in partition.quantities {
+                for item in partition.repairingStaleFacingAreas().quantities {
                     let name = item.name == "Rails" ? OpeningContext.profileName(frame: partition.frame, rail: true)
                         : item.name == "Montants" ? OpeningContext.profileName(frame: partition.frame, rail: false) : item.name
                     add(name: name, quantity: item.quantity, unit: item.unit)

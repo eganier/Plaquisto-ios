@@ -32,6 +32,24 @@ struct SupplyListingRow: Identifiable {
 /// Builds a purchasing-oriented list: installation roles are removed when they
 /// refer to the very same product, while each useful measurement is retained.
 enum SupplyListingConsolidator {
+    /// Quantities keep their calculation units internally. Purchasing screens
+    /// and exports show facing area, using only explicitly dimensioned boards.
+    static func displayedMeasurement(_ entry: SupplyListingEntry) -> SupplyListingEntry {
+        guard canonicalUnit(entry.unit) == "plaques",
+              let expression = try? NSRegularExpression(pattern: #"([0-9]+(?:[.,][0-9]+)?)\s*[×x]\s*([0-9]+(?:[.,][0-9]+)?)\s*(mm|cm|m)$"#),
+              let match = expression.firstMatch(in: entry.name, range: NSRange(entry.name.startIndex..., in: entry.name)) else { return entry }
+        func part(_ index: Int) -> String {
+            Range(match.range(at: index), in: entry.name).map { String(entry.name[$0]) } ?? ""
+        }
+        guard let width = Double(part(1).replacingOccurrences(of: ",", with: ".")),
+              let length = Double(part(2).replacingOccurrences(of: ",", with: ".")),
+              width > 0, length > 0 else { return entry }
+        let scale = part(3) == "mm" ? 0.001 : part(3) == "cm" ? 0.01 : 1
+        let quantity = entry.quantity * width * length * scale * scale
+        guard quantity.isFinite else { return entry }
+        return .init(name: entry.name, quantity: quantity, unit: "m²")
+    }
+
     /// Legacy assembly stored as one unit: preserve its count for EACH component.
     static func components(_ entry: SupplyListingEntry) -> [SupplyListingEntry] {
         guard entry.name.trimmingCharacters(in: .whitespacesAndNewlines) == "Cheville et piton",
@@ -46,7 +64,7 @@ enum SupplyListingConsolidator {
         var unitsInOrder: [String: [String]] = [:]
         var totals: [String: [String: Double]] = [:]
 
-        for entry in entries.flatMap(components) where entry.quantity > 0 {
+        for entry in entries.flatMap(components).map(displayedMeasurement) where entry.quantity > 0 {
             let name = canonicalName(entry.name)
             let unit = canonicalUnit(entry.unit)
             if totals[name] == nil {
@@ -80,6 +98,12 @@ enum SupplyListingConsolidator {
         for prefix in ["Parement · 1re peau · ", "Parement · 2e peau · ", "Parement · 3e peau · "] where name.hasPrefix(prefix) {
             name = "Parement · " + String(name.dropFirst(prefix.count))
         }
+        // Facing identity is shared by partitions, linings and the plan engine.
+        // Strip presentation words only, never dimensions or technical variants.
+        if name.hasPrefix("Parement · BA") { name.removeFirst("Parement · ".count) }
+        if name.range(of:#"^BA\d+\b"#,options:.regularExpression) != nil {
+            name=name.replacingOccurrences(of:#"(?i)\s+(?:·\s*)?standard(?=\s*·|$)"#,with:"",options:.regularExpression)
+        }
 
         if name == "Appuis intermédiaires pour doublage sur fourrure"
             || name.hasPrefix("Appuis intermédiaires pour doublage sur fourrure — ") {
@@ -102,7 +126,7 @@ enum SupplyListingConsolidator {
         case "suspente hourdis", "suspente hourdis à griffe", "suspentes hourdis simples": return "Suspentes hourdis simples"
         case "cornière d’angle", "cornière d'angle", "cornières périphériques", "cornières", "cornière": return "Cornière"
         case "demi collier", "demi-collier": return "Demi-collier"
-        case "bande pp grand rouleau", "bande à joint": return "Bande à joint"
+        case "bande pp grand rouleau", "bande à joint", "bande à joint · papier", "bande à joint papier": return "Bande à joint"
         case "vis ttpc 35 mm (2e parement)", "vis ttpc 35": return "Vis TTPC 35"
         case "vis trpf 13 · solidarisation des montants", "vis trpf 13 · fixation des suspentes",
              "vis trpf 13": return "Vis TRPF 13"

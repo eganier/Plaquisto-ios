@@ -311,6 +311,7 @@ private struct SurveyPlanManipulation {
     var start: RoomPoint
     var end: RoomPoint
     var doorPosition: Double?
+    var doorOpeningSide:DoorOpeningSide? = nil
     var preservesOpeningLocations: Bool {
         guard handle == .start || handle == .end else { return false }
         let v = end-start, axis = wall.direction
@@ -388,7 +389,7 @@ struct SurveyCeilingCutConfirmation: View {
 }
 
 private enum SurveyPlanMode: String, CaseIterable, Identifiable {
-    case view = "Vue", dimensions = "Cotes", partitions = "Cloisons", openings = "Ouvertures"
+    case view = "Vue", dimensions = "Cotes", partitions = "Cloisons", openings = "Portes", glazing = "Verrière", columns = "Poteau"
     var id: Self { self }
 }
 
@@ -404,7 +405,6 @@ struct SurveyPlanEditor: View {
     @State private var pendingPoint: RoomPoint?
     @State private var cursor: RoomPoint?
     @State private var confirmingPoint = false
-    @State private var needsLining = false
     @State private var showingProperties = false
     @State private var traceStart: PlaquistoRoomDocument?
     @State private var traceHistoryIndex = 0
@@ -442,6 +442,22 @@ struct SurveyPlanEditor: View {
     @State private var length = 300.0
     @State private var doorWidth = 0.83
     @State private var doorHeight = 204.0
+    @State private var doorHanding = DoorHanding.right
+    @State private var doorOpeningSide = DoorOpeningSide.positive
+    @State private var pocketDoor = false
+    @State private var glazingSill = 100.0
+    @State private var glazingWidth = 120.0
+    @State private var glazingHeight = 100.0
+    @State private var columnA = 30.0
+    @State private var columnB = 30.0
+    @State private var columnAngle = 0.0
+    @State private var columnWall: UUID?
+    @State private var selectedColumn: UUID?
+    @State private var placingColumn = false
+    @State private var columnPreview: PlaquistoColumn?
+    @State private var columnDragStart: RoomPoint?
+    @State private var confirmingColumn = false
+    @State private var deletingColumn = false
     @State private var openingWidth = 83.0
     @State private var openingHeight = 204.0
     @State private var openingSill = 0.0
@@ -481,6 +497,7 @@ struct SurveyPlanEditor: View {
         _document = State(initialValue: document)
     }
     private var wall: PlaquistoWall? { draftWall ?? document.room.walls.first { $0.id == selected } }
+    private var placementOpeningWidth: Double { mode == .glazing ? glazingWidth / 100 : doorWidth }
     private var hasChanges: Bool { document != original || draftWall != nil || firstPoint != nil || ceilingCut.start != nil }
     var body: some View {
         Group {
@@ -526,7 +543,7 @@ struct SurveyPlanEditor: View {
                             .accessibilityAddTraits(mode == item ? [.isSelected] : [])
                     }
                 }.padding(3).background(Color(.tertiarySystemFill),in:Capsule()).padding(.horizontal)
-                    .disabled(drawingPartition || placingDoor || manipulation != nil || splittingCeiling != nil)
+                    .disabled(drawingPartition || placingDoor || placingColumn || columnPreview != nil || manipulation != nil || splittingCeiling != nil)
                 if !fullscreen { Text(instructions)
                     .font(.caption).foregroundStyle(.secondary).padding(.horizontal)
                 }
@@ -563,7 +580,17 @@ struct SurveyPlanEditor: View {
                         roundPlanButton("Annuler le dernier geste",symbol:"arrow.uturn.backward",action:undoPlanEdit)
                             .disabled(history.isEmpty || manipulation != nil || drawingPartition || placingDoor || splittingCeiling != nil).padding(8)
                     }
-                    .overlay(alignment:.bottomTrailing) { selectionActions.padding(8) }
+                    .overlay(alignment:.bottomTrailing) {
+                        if mode == .columns {
+                            Menu {
+                                ForEach(Array(document.room.walls.enumerated()), id: \.element.id) { index, wall in
+                                    Button("Parallèle au mur \(index+1)") { columnAngle = wall.orientationRadians; columnWall = wall.id; updateColumnDimensions() }
+                                    Button("Perpendiculaire au mur \(index+1)") { columnAngle = wall.orientationRadians + .pi/2; columnWall = wall.id; updateColumnDimensions() }
+                                }
+                            } label: { Image(systemName: "arrow.up.and.down.and.arrow.left.and.right").padding(14).background(.regularMaterial, in: Circle()) }
+                                .accessibilityLabel("Orienter le poteau par rapport à un mur").padding(8)
+                        } else { selectionActions.padding(8) }
+                    }
                     .clipShape(RoundedRectangle(cornerRadius:24))
                     .padding(.horizontal,fullscreen ? 4 : 16)
                 if splittingCeiling != nil {
@@ -590,7 +617,24 @@ struct SurveyPlanEditor: View {
             .interactiveDismissDisabled(hasChanges)
             .onAppear { refreshPlanGeometry() }
             .onChange(of: document) { _,_ in refreshPlanGeometry() }
-            .onChange(of: mode) { _,_ in selected=nil; selectedDoor=nil; snapResult=nil }
+            .onChange(of: mode) { _,_ in
+                selected=nil; selectedDoor=nil; selectedColumn=nil; snapResult=nil; placingDoor=false; placingColumn=false; columnPreview=nil; cursor=nil
+                if mode == .columns, columnWall == nil, let wall = document.room.walls.max(by: { $0.length.effectiveValue < $1.length.effectiveValue }) {
+                    columnWall = wall.id; columnAngle = wall.orientationRadians
+                }
+            }
+            .confirmationDialog("Positionner ce poteau ?", isPresented: $confirmingColumn, titleVisibility: .visible) {
+                Button("Valider") {
+                    if let columnPreview { edit { try SurveyPlanEditing.placingColumn(document, column: columnPreview) }; selectedColumn = columnPreview.id }
+                    columnPreview = nil; placingColumn = false
+                }
+                Button("Recommencer", role: .cancel) { columnPreview = nil }
+            }
+            .confirmationDialog("Supprimer ce poteau ?", isPresented: $deletingColumn, titleVisibility: .visible) {
+                Button("Supprimer", role: .destructive) {
+                    var next = document; next.room.columns?.removeAll { $0.id == selectedColumn }; commitDocument(next); selectedColumn = nil
+                }
+            }
     }
     private var planForms: some View {
         planContent
@@ -626,20 +670,10 @@ struct SurveyPlanEditor: View {
                 if firstPoint != nil { Button("Valider et terminer") { acceptPoint(finish:true) } }
                 Button("Annuler",role:.cancel) { pendingPoint=nil; cursor=nil; snapResult=nil }
             }
-            .confirmationDialog("Positionner cette porte ?",isPresented:$confirmingDoor,titleVisibility:.visible) {
+            .confirmationDialog(mode == .glazing ? "Positionner cette verrière ?" : "Positionner cette porte ?",isPresented:$confirmingDoor,titleVisibility:.visible) {
                 Button("Valider") { acceptDoor() }
                 Button("Annuler",role:.cancel) { pendingDoorWall=nil; cursor=nil }
             }
-            .confirmationDialog("Renseigner les doublages avant de tracer ?",isPresented:$needsLining,titleVisibility:.visible) {
-                if onRequestLining != nil {
-                    Button("Renseigner les doublages") {
-                        do { if document != original { try onSave(document) }; onRequestLining?(); dismiss() }
-                        catch { self.error=error.localizedDescription }
-                    }
-                }
-                Button("Continuer sans doublage") { startTrace() }
-                Button("Annuler",role:.cancel) { }
-            } message: { Text("Les tapées définissent la position des faces finies. Sans ces données, les cotes sont prises sur les murs supports.") }
             .confirmationDialog("Diviser le plafond pour les nouvelles pièces ?",isPresented:$confirmingSplit,titleVisibility:.visible) {
                 Button("Créer les deux sous-parties") { if let next=proposedSplit { commitDocument(next) }; proposedSplit=nil }
                 Button("Conserver le plafond entier",role:.cancel) { proposedSplit=nil }
@@ -676,7 +710,7 @@ struct SurveyPlanEditor: View {
                 Button("Annuler",role:.cancel) { }
             } message: {
                 let count=document.room.openings.filter { $0.wallID == selected }.count
-                Text("La cloison et ses \(count) ouverture(s) seront retirées. Les plafonds ne seront pas fusionnés. Vous pourrez annuler ce geste avant d’enregistrer.")
+                Text("La cloison et ses \(count) ouverture(s) seront retirées. Les deux plafonds séparés par cette cloison seront réunis, sauf s’ils ont été redécoupés depuis. Vous pourrez annuler ce geste avant d’enregistrer.")
             }
             .confirmationDialog("Fusionner ces deux murs ? Le contour et les ouvertures seront conservés. Les ouvrages déjà créés devront être vérifiés.", isPresented:Binding(get:{ mergingWith != nil },set:{ if !$0 { mergingWith=nil } }),titleVisibility:.visible) {
                 Button("Fusionner les murs") {
@@ -760,7 +794,7 @@ struct SurveyPlanEditor: View {
                     ZeroEmptyDecimalTextField(value:$thicknessMM).frame(width:55)
                     Text("mm").foregroundStyle(.secondary)
                     Spacer()
-                    number("Hauteur",value:$height)
+                    Text("Hauteur du plafond").font(.caption).foregroundStyle(.secondary)
                 }.disabled(drawingPartition)
                 if drawingPartition {
                     HStack {
@@ -773,12 +807,17 @@ struct SurveyPlanEditor: View {
                         Button("Tracer une cloison",systemImage:"plus") {
                             guard thicknessMM.isFinite, thicknessMM > 0, thicknessMM <= 1000,
                                   height.isFinite, height > 0 else { error="Renseignez une épaisseur et une hauteur positives."; return }
-                            let supports=document.room.walls.filter { !SurveyPlanEditing.isDesignedPartition($0,in:document) }
-                            if supports.contains(where:{ liningDepths[$0.id] == nil }) { needsLining=true } else { startTrace() }
+                            startTrace()
                         }.buttonStyle(.borderedProminent)
                     }
                 }
             } else if mode == .openings {
+                Toggle("Porte à galandage", isOn: $pocketDoor)
+                if !pocketDoor {
+                Picker("Sens de la porte",selection:$doorHanding) {
+                    ForEach(DoorHanding.allCases) { Text($0.title).tag($0) }
+                }.pickerStyle(.segmented)
+                }
                 HStack {
                     Menu {
                         ForEach(SurveyPlanEditing.doorWidths,id:\.self) { width in
@@ -792,6 +831,27 @@ struct SurveyPlanEditor: View {
                         placingDoor.toggle(); cursor=nil; pendingDoorWall=nil
                     }.buttonStyle(.borderedProminent)
                 }
+            } else if mode == .columns {
+                HStack { number("Côté A", value: $columnA); number("Côté B", value: $columnB) }
+                HStack {
+                    if selectedColumn != nil {
+                        Button("Appliquer", action: updateColumnDimensions).buttonStyle(.bordered)
+                        Button("Supprimer", systemImage: "trash", role: .destructive) { deletingColumn = true }
+                    }
+                    Spacer()
+                    Button(placingColumn ? "Annuler" : "Placer un poteau") {
+                        placingColumn.toggle(); columnPreview = nil; selectedColumn = nil
+                    }.buttonStyle(.borderedProminent)
+                }
+            } else if mode == .glazing {
+                HStack {
+                    number("Largeur", value: $glazingWidth)
+                    number("Hauteur", value: $glazingHeight)
+                    number("Du sol", value: $glazingSill)
+                }
+                Button(placingDoor ? "Annuler" : "Placer la verrière") {
+                    placingDoor.toggle(); cursor=nil; pendingDoorWall=nil
+                }.buttonStyle(.borderedProminent)
             } else if mode == .dimensions {
                 HStack {
                     Button("Cotes du mur",systemImage:"ruler") { showingProperties=true }.disabled(wall == nil)
@@ -840,7 +900,7 @@ struct SurveyPlanEditor: View {
         guard let point=pendingPoint else { return }
         do {
             if let start=firstPoint {
-                let next=try SurveyPlanEditing.addingPartition(document,start:start,end:point,height:height/100,thickness:thicknessMM/1000)
+                let next=try SurveyPlanEditing.addingFittedPartition(document,start:start,end:point,thickness:thicknessMM/1000,finishedSupports:finishedShell)
                 commitDocument(next)
             }
             firstPoint=point; pendingPoint=nil; cursor=nil; snapResult=nil
@@ -861,13 +921,12 @@ struct SurveyPlanEditor: View {
             cursor=snappedPoint(point,anchor:firstPoint,tolerance:tolerance)
         } else if placingDoor {
             let candidates=document.room.walls.filter { SurveyPlanEditing.isDesignedPartition($0,in:document) }
-            guard let support=candidates.min(by:{ distance(point,$0)<distance(point,$1) }),
-                  distance(point,support)<tolerance, doorWidth.isFinite,doorWidth>0,
-                  doorWidth<=support.length.effectiveValue else { pendingDoorWall=nil; cursor=point; return }
-            let d=point-support.start
-            pendingDoorPosition=min(support.length.effectiveValue-doorWidth,max(0,d.x*support.direction.x+d.z*support.direction.z-doorWidth/2))
-            pendingDoorWall=support.id
-            cursor=support.start+support.direction*(pendingDoorPosition+doorWidth/2)
+            guard let placement=DoorPlanGeometry.placement(point:point,walls:candidates,width:placementOpeningWidth,
+                latchedWallID:pendingDoorWall,previous:doorOpeningSide,captureDistance:tolerance) else {
+                pendingDoorWall=nil; cursor=point; return
+            }
+            pendingDoorPosition=placement.position; pendingDoorWall=placement.wallID
+            doorOpeningSide=placement.side; cursor=placement.center
         }
     }
     private func finishPlacement() {
@@ -877,10 +936,18 @@ struct SurveyPlanEditor: View {
     private func acceptDoor() {
         guard let wallID=pendingDoorWall else { return }
         do {
-            let next=try SurveyPlanEditing.addingDoor(document,wallID:wallID,width:doorWidth,height:doorHeight/100,position:pendingDoorPosition)
+            let next=try SurveyPlanEditing.addingDoor(document,wallID:wallID,width:placementOpeningWidth,
+                height:(mode == .glazing ? glazingHeight : doorHeight)/100,position:pendingDoorPosition,
+                handing:doorHanding,openingSide:doorOpeningSide,kind:mode == .glazing ? .glazedBay : .door,
+                sill:mode == .glazing ? glazingSill/100 : 0,pocket:mode == .openings && pocketDoor)
             commitDocument(next); selected=wallID; selectedDoor=next.room.openings.last?.id
             placingDoor=false; pendingDoorWall=nil; cursor=nil; syncFields()
         } catch { self.error=error.localizedDescription }
+    }
+    private func updateColumnDimensions() {
+        guard var column = document.room.columns?.first(where: { $0.id == selectedColumn }) else { return }
+        column.sideA = columnA/100; column.sideB = columnB/100; column.angle = columnAngle
+        edit { try SurveyPlanEditing.placingColumn(document, column: column) }
     }
 
     private var controls: some View {
@@ -903,7 +970,7 @@ struct SurveyPlanEditor: View {
                 }.buttonStyle(.borderedProminent)
             } else if let opening=document.room.openings.first(where: { $0.id==selectedDoor }) {
                 HStack {
-                    Text(opening.kind.title).font(.headline)
+                    Text(opening.isPocketDoor == true ? "Porte à galandage" : opening.kind == .glazedBay ? "Verrière" : opening.kind.title).font(.headline)
                     Spacer()
                     Button("Supprimer",systemImage:"trash",role:.destructive) { deletingOpening=true }
                 }
@@ -913,9 +980,22 @@ struct SurveyPlanEditor: View {
                     number("Allège",value:$openingSill)
                     number("Position",value:$openingPosition)
                 }
+                if opening.kind == .door { Toggle("Porte à galandage", isOn: $pocketDoor) }
+                if opening.kind == .door && !pocketDoor {
+                    Picker("Sens de la porte",selection:$doorHanding) {
+                        ForEach(DoorHanding.allCases) { Text($0.title).tag($0) }
+                    }.pickerStyle(.segmented)
+                    Button("Ouvrir vers l’autre pièce",systemImage:"arrow.up.arrow.down") {
+                        edit { try SurveyPlanEditing.movingDoor(document,id:opening.id,
+                            position:opening.positionOnWall.effectiveValue,
+                            openingSide:(opening.doorOpeningSide ?? .positive).reversed) }
+                    }
+                }
                 Button("Appliquer à l’ouverture") {
                     edit { try SurveyPlanEditing.changingOpening(document,id:opening.id,width:openingWidth/100,
-                        height:openingHeight/100,sill:openingSill/100,position:openingPosition/100) }
+                        height:openingHeight/100,sill:openingSill/100,position:openingPosition/100,
+                        handing:opening.kind == .door ? doorHanding : nil,
+                        openingSide:opening.kind == .door ? doorOpeningSide : nil, pocket:opening.kind == .door ? pocketDoor : nil) }
                 }.buttonStyle(.borderedProminent)
                 Text("Allège : hauteur depuis le bas du mur. Position : distance depuis son point de départ.")
                     .font(.caption2).foregroundStyle(.secondary)
@@ -938,7 +1018,7 @@ struct SurveyPlanEditor: View {
                     Button("Porte", systemImage: "door.left.hand.open") {
                         edit {
                             let next = try SurveyPlanEditing.addingDoor(document, wallID: wall.id, width: doorWidth,
-                                height: doorHeight/100, position: max(0, (wall.length.effectiveValue-doorWidth)/2))
+                                height: doorHeight/100, position: max(0, (wall.length.effectiveValue-doorWidth)/2),handing:doorHanding,openingSide:doorOpeningSide)
                             selectedDoor = next.room.openings.last?.id
                             return next
                         }
@@ -1019,6 +1099,9 @@ struct SurveyPlanEditor: View {
         } else { mergeCandidateIDs=[] }
         if let wall { length = wall.length.effectiveValue*100; height = wall.height.effectiveValue*100 }
         if let opening=document.room.openings.first(where:{ $0.id==selectedDoor }) {
+            pocketDoor = opening.isPocketDoor == true
+            doorHanding=opening.doorHanding ?? .right
+            doorOpeningSide=opening.doorOpeningSide ?? .positive
             openingWidth=opening.width.effectiveValue*100
             openingHeight=opening.height.effectiveValue*100
             openingSill=opening.sillHeight.effectiveValue*100
@@ -1077,7 +1160,7 @@ struct SurveyPlanEditor: View {
             selectedDoor = opening.id; selected = opening.wallID; syncFields(); return
         }
         selectedDoor = nil
-        if mode == .openings { selected=nil; syncFields(); return }
+        if mode == .openings || mode == .glazing { selected=nil; syncFields(); return }
         let candidates=document.room.walls.filter { mode != .partitions || SurveyPlanEditing.isDesignedPartition($0,in:document) }
         selected = candidates.min(by: { distance(p, $0) < distance(p, $1) }).flatMap {
             distance(p, $0) < tolerance ? $0.id : nil
@@ -1087,11 +1170,8 @@ struct SurveyPlanEditor: View {
     private func opening(at point:RoomPoint,tolerance:Double) -> PlaquistoOpening? {
         document.room.openings.compactMap { opening -> (PlaquistoOpening,Double)? in
             guard let wall=document.room.walls.first(where: { $0.id == opening.wallID }) else { return nil }
-            let start=wall.start+wall.direction*opening.positionOnWall.effectiveValue
-            let delta=point-start
-            let along=min(opening.width.effectiveValue,max(0,delta.x*wall.direction.x+delta.z*wall.direction.z))
-            let gap=(point-(start+wall.direction*along)).horizontalLength
-            return gap<tolerance ? (opening,gap) : nil
+            guard let gap = DoorPlanGeometry.hitDistance(point: point, opening: opening, wall: wall, tolerance: tolerance) else { return nil }
+            return (opening, gap)
         }.min { $0.1<$1.1 }?.0
     }
     private func distance(_ p: RoomPoint, _ wall: PlaquistoWall) -> Double {
@@ -1123,11 +1203,11 @@ struct SurveyPlanEditor: View {
     private func beginManipulation(at point: RoomPoint, tolerance: Double, scale: Double) {
         guard splittingCeiling == nil, !drawingPartition, !placingDoor, mode != .view, let wall else { return }
         if mode == .partitions && !SurveyPlanEditing.isDesignedPartition(wall,in:document) { return }
-        if mode == .openings && selectedDoor == nil { return }
+        if (mode == .openings || mode == .glazing) && selectedDoor == nil { return }
         let door=document.room.openings.first { $0.id == selectedDoor }
         let handle: SurveyPlanManipulation.Handle
         if let door, opening(at:point,tolerance:tolerance)?.id == door.id { handle = .door }
-        else if mode == .openings { return }
+        else if mode == .openings || mode == .glazing { return }
         else if (centerHandle(wall,scale:scale)-point).horizontalLength < tolerance { handle = .body }
         else {
             let a=(wall.start-point).horizontalLength, b=(wall.effectiveEnd-point).horizontalLength
@@ -1136,7 +1216,8 @@ struct SurveyPlanEditor: View {
             else { return }
         }
         manipulation = .init(handle:handle,wall:wall,touch:point,door:door,
-            start:wall.start,end:wall.effectiveEnd,doorPosition:door?.positionOnWall.effectiveValue)
+            start:wall.start,end:wall.effectiveEnd,doorPosition:door?.positionOnWall.effectiveValue,
+            doorOpeningSide:door?.doorOpeningSide ?? .positive)
     }
     private func updateManipulation(to point: RoomPoint, tolerance: Double) {
         guard var move=manipulation else { return }
@@ -1163,6 +1244,10 @@ struct SurveyPlanEditor: View {
             if let door=move.door {
                 move.doorPosition=min(max(0,original.length.effectiveValue-door.width.effectiveValue),
                     max(0,door.positionOnWall.effectiveValue+delta.x*original.direction.x+delta.z*original.direction.z))
+                if door.kind == .door && door.isPocketDoor != true {
+                    move.doorOpeningSide=DoorPlanGeometry.openingSide(point:point,wall:original,
+                        previous:move.doorOpeningSide ?? .positive,deadZone:min(0.04,tolerance/3))
+                }
             }
         }
         manipulation=move
@@ -1179,8 +1264,10 @@ struct SurveyPlanEditor: View {
             return
         }
         if move.handle == .door, let door=move.door, let position=move.doorPosition {
-            guard abs(position-door.positionOnWall.effectiveValue) > 1e-6 else { return }
-            edit { try SurveyPlanEditing.movingDoor(document,id:door.id,position:position) }
+            let side=door.kind == .door ? move.doorOpeningSide : nil
+            guard abs(position-door.positionOnWall.effectiveValue) > 1e-6 ||
+                    (side != nil && side != (door.doorOpeningSide ?? .positive)) else { return }
+            edit { try SurveyPlanEditing.movingDoor(document,id:door.id,position:position,openingSide:side) }
         } else {
             guard (move.start-move.wall.start).horizontalLength > 1e-6 ||
                     (move.end-move.wall.effectiveEnd).horizontalLength > 1e-6 else { return }
@@ -1300,6 +1387,18 @@ struct SurveyPlanEditor: View {
                             at:CGPoint(x:p.x,y:p.y+22))
                     }
                 }
+                for column in (document.room.columns ?? []).filter({ $0.id != columnPreview?.id }) + (columnPreview.map { [$0] } ?? []) {
+                    let active = column.id == selectedColumn || column.id == columnPreview?.id
+                    var path = Path(); path.addLines(column.corners.map(screen)); path.closeSubpath()
+                    context.fill(path, with: .color(active ? Color.orange.opacity(0.5) : ArchitecturalPlanInk.wall.opacity(0.3)))
+                    context.stroke(path, with: .color(active ? .orange : ArchitecturalPlanInk.wall), lineWidth: 2)
+                    if active {
+                        for line in column.clearances(walls: displayWalls) {
+                            ArchitecturalPlanInk.dimension(context, a: screen(line.start), b: screen(line.end), meters: line.distance,
+                                center: screen(column.center), occupied: &occupied, important: true)
+                        }
+                    }
+                }
                 for door in document.room.openings {
                     guard let wall = displayWalls.first(where: { $0.id == door.wallID }) else { continue }
                     var position = manipulation?.handle == .door && manipulation?.door?.id == door.id
@@ -1310,7 +1409,14 @@ struct SurveyPlanEditor: View {
                     }
                     let a = wall.start+wall.direction*position
                     ArchitecturalPlanInk.opening(context,a:screen(a),b:screen(a+wall.direction*door.width.effectiveValue),
-                        window:door.kind == .window || door.kind == .glazedBay,selected:door.id==selectedDoor)
+                        window:door.kind == .window || door.kind == .glazedBay,selected:door.id==selectedDoor,
+                        handing:door.kind == .door && door.isPocketDoor != true ? door.doorHanding ?? .right : nil,
+                        openingSide:manipulation?.door?.id == door.id ? manipulation?.doorOpeningSide ?? .positive : door.doorOpeningSide ?? .positive)
+                    if door.id == selectedDoor {
+                        let b = a + wall.direction * door.width.effectiveValue
+                        ArchitecturalPlanInk.dimension(context,a:screen(wall.start),b:screen(a),meters:position,center:screen(center),occupied:&occupied,important:true)
+                        ArchitecturalPlanInk.dimension(context,a:screen(b),b:screen(wall.effectiveEnd),meters:wall.length.effectiveValue-position-door.width.effectiveValue,center:screen(center),occupied:&occupied,important:true)
+                    }
                 }
                 if let start = ceilingCut.start, let end = ceilingCut.end {
                     let a = screen(start), b = screen(end)
@@ -1358,11 +1464,11 @@ struct SurveyPlanEditor: View {
                             ArchitecturalPlanInk.dimension(context,a:screen(support.effectiveEnd-support.direction*right),b:screen(support.effectiveEnd),meters:right,center:screen(center),occupied:&occupied,important:true)
                         }
                     } else if placingDoor, let support=document.room.walls.first(where:{$0.id==pendingDoorWall}) {
-                        let a=support.start+support.direction*pendingDoorPosition, b=a+support.direction*doorWidth
-                        var slot=Path(); slot.move(to:screen(a)); slot.addLine(to:screen(b))
-                        context.stroke(slot,with:.color(.orange),lineWidth:9)
+                        let a=support.start+support.direction*pendingDoorPosition, b=a+support.direction*placementOpeningWidth
+                        ArchitecturalPlanInk.opening(context,a:screen(a),b:screen(b),window:mode == .glazing,selected:true,
+                            handing:mode == .openings && !pocketDoor ? doorHanding : nil,openingSide:doorOpeningSide)
                         ArchitecturalPlanInk.dimension(context,a:screen(support.start),b:screen(a),meters:pendingDoorPosition,center:screen(center),occupied:&occupied,important:true)
-                        ArchitecturalPlanInk.dimension(context,a:screen(b),b:screen(support.effectiveEnd),meters:support.length.effectiveValue-pendingDoorPosition-doorWidth,center:screen(center),occupied:&occupied,important:true)
+                        ArchitecturalPlanInk.dimension(context,a:screen(b),b:screen(support.effectiveEnd),meters:support.length.effectiveValue-pendingDoorPosition-placementOpeningWidth,center:screen(center),occupied:&occupied,important:true)
                     }
                 }
                 if let snapResult {
@@ -1379,9 +1485,35 @@ struct SurveyPlanEditor: View {
             .contentShape(Rectangle())
             .background(ArchitecturalPlanInk.paper)
             .overlay {
-                SurveyPlanGestureSurface(single: { phase,point,delta in
+                SurveyPlanGestureSurface(autoscrollEnabled: drawingPartition, single: { phase,point,delta in
                     if phase == .cancelled || phase == .failed {
-                        manipulation=nil; cursor=nil; snapResult=nil; ceilingCut.cancelGesture(); return
+                        manipulation=nil; cursor=nil; snapResult=nil; columnPreview=nil; columnDragStart=nil; ceilingCut.cancelGesture(); return
+                    }
+                    if mode == .columns {
+                        let target = placingColumn ? CGPoint(x:max(12,min(proxy.size.width-12,point.x-64)),
+                            y:max(12,min(proxy.size.height-12,point.y-18))) : point
+                        let point = world(target)
+                        if placingColumn {
+                            if phase == .ended { if columnPreview != nil { confirmingColumn = true }; return }
+                            let preview = PlaquistoColumn(center: point, sideA: columnA/100, sideB: columnB/100, angle: columnAngle,
+                                height: SurveyPlanEditing.suggestedHeight(in: document.room, at: point))
+                            if preview.isValid { columnPreview = preview }
+                        } else {
+                            if phase == .began {
+                                if let column = document.room.columns?.first(where: { $0.contains(point, tolerance: 22/scale) }) {
+                                    selectedColumn = column.id; columnDragStart = point
+                                    columnA = column.sideA*100; columnB = column.sideB*100; columnAngle = column.angle
+                                } else { selectedColumn = nil; columnDragStart = nil }
+                            }
+                            if phase == .changed, let start = columnDragStart, var column = document.room.columns?.first(where: { $0.id == selectedColumn }) {
+                                column.center = column.center + (point-start); columnPreview = column
+                            }
+                            if phase == .ended {
+                                if let columnPreview { edit { try SurveyPlanEditing.placingColumn(document, column: columnPreview) } }
+                                columnPreview = nil; columnDragStart = nil
+                            }
+                        }
+                        return
                     }
                     if let ceilingID = splittingCeiling {
                         if ceilingCut.preview != nil {
@@ -1406,21 +1538,37 @@ struct SurveyPlanEditor: View {
                         return
                     }
                     if drawingPartition || placingDoor {
+                        // Freeze the last preview: UIKit's touch-up coordinate can
+                        // drift as the finger lifts, just like a ceiling cut.
+                        if phase == .ended { finishPlacement(); return }
                         // Fixed screen-space separation remains legible at every zoom.
                         let target=CGPoint(x:max(12,min(proxy.size.width-12,point.x-64)),
                                            y:max(12,min(proxy.size.height-12,point.y-18)))
                         placement(world(target),tolerance:min(0.20,18/scale))
-                        if phase == .ended { finishPlacement() }
                     } else {
                         if phase == .began { beginManipulation(at:world(point),tolerance:22/scale,scale:scale) }
                         if manipulation != nil {
+                            if phase == .ended { finishManipulation(); return }
                             updateManipulation(to:world(point),tolerance:min(0.15,12/scale))
-                            if phase == .ended { finishManipulation() }
                         } else if phase == .ended { tap(world(point),tolerance:25/scale,scale:scale) }
                     }
+                }, autoScroll: { point, elapsed in
+                    guard drawingPartition, !confirmingPoint else { return }
+                    let delta = SurveyPlanEdgeScroll.delta(at: point, size: proxy.size, elapsed: elapsed)
+                    let next = CGSize(width: min(limitX, max(-limitX, baseDX + delta.width)),
+                                      height: min(limitY, max(-limitY, baseDY + delta.height)))
+                    guard next.width != baseDX || next.height != baseDY else { return }
+                    offset = next
+                    let target = CGPoint(x: max(12, min(proxy.size.width - 12, point.x - 64)),
+                                         y: max(12, min(proxy.size.height - 12, point.y - 18)))
+                    // Convert with the NEW camera offset in this same frame, so
+                    // scrolling never separates the guide from the finger.
+                    let p = RoomPoint(x: (target.x - proxy.size.width / 2 - next.width) / scale + center.x,
+                        y: center.y, z: (target.y - proxy.size.height / 2 - next.height) / scale + center.z)
+                    placement(SurveyPlanCamera.rotated(p, around: center, angle: -viewRotation), tolerance: min(0.20, 18 / scale))
                 }, navigate: { delta,factor,anchor in
                     ceilingCut.cancelGesture()
-                    manipulation=nil; cursor=nil; snapResult=nil
+                    manipulation=nil; cursor=nil; snapResult=nil; columnPreview=nil; columnDragStart=nil
                     let next=min(8,max(0.5,zoom*factor)), ratio=next/zoom
                     let ax=anchor.x-proxy.size.width/2, ay=anchor.y-proxy.size.height/2
                     let lx=max(0,proxy.size.width/2+halfWidth*scale*ratio-40)
@@ -1445,8 +1593,26 @@ struct SurveyPlanEditor: View {
 
 /// UIKit owns touch arbitration so a second finger cancels placement before
 /// panning/pinching. No delayed drag commits or competing SwiftUI gestures.
+enum SurveyPlanEdgeScroll {
+    static func delta(at point: CGPoint, size: CGSize, elapsed: Double) -> CGSize {
+        guard elapsed.isFinite, elapsed > 0, size.width > 0, size.height > 0 else { return .zero }
+        func speed(_ position: CGFloat, length: CGFloat) -> CGFloat {
+            let margin = length * 0.30
+            let penetration = position < margin ? (margin - position) / margin
+                : (position > length - margin ? -(position - (length - margin)) / margin : 0)
+            let bounded = max(-1, min(1, penetration))
+            return bounded * abs(bounded) * 150
+        }
+        let duration = min(elapsed, 0.05)
+        return .init(width: speed(point.x, length: size.width) * duration,
+                     height: speed(point.y, length: size.height) * duration)
+    }
+}
+
 private struct SurveyPlanGestureSurface: UIViewRepresentable {
+    var autoscrollEnabled: Bool
     var single: (UIGestureRecognizer.State,CGPoint,CGSize)->Void
+    var autoScroll: (CGPoint,Double)->Void
     var navigate: (CGSize,Double,CGPoint)->Void
     func makeCoordinator() -> Coordinator { Coordinator(self) }
     func makeUIView(context:Context) -> UIView {
@@ -1459,14 +1625,41 @@ private struct SurveyPlanGestureSurface: UIViewRepresentable {
         for gesture in [one,pan,pinch] { gesture.delegate=context.coordinator; view.addGestureRecognizer(gesture) }
         return view
     }
-    func updateUIView(_ view:UIView,context:Context) { context.coordinator.parent=self }
+    func updateUIView(_ view:UIView,context:Context) {
+        context.coordinator.parent=self
+        if !autoscrollEnabled { context.coordinator.stopScrolling() }
+    }
+    static func dismantleUIView(_ view: UIView, coordinator: Coordinator) { coordinator.stopScrolling() }
     final class Coordinator:NSObject,UIGestureRecognizerDelegate {
         var parent:SurveyPlanGestureSurface
         var last=CGPoint.zero
         var cancelled=false
+        private var displayLink: CADisplayLink?
+        private var previousTimestamp: CFTimeInterval = 0
         init(_ parent:SurveyPlanGestureSurface) { self.parent=parent }
-        func gestureRecognizer(_ gestureRecognizer:UIGestureRecognizer,shouldRecognizeSimultaneouslyWith otherGestureRecognizer:UIGestureRecognizer)->Bool { true }
+        func gestureRecognizer(_ gestureRecognizer:UIGestureRecognizer,shouldRecognizeSimultaneouslyWith otherGestureRecognizer:UIGestureRecognizer)->Bool {
+            gestureRecognizer.view === otherGestureRecognizer.view
+        }
+        func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldBeRequiredToFailBy other: UIGestureRecognizer) -> Bool {
+            // A vertical drawing gesture belongs to the canvas, never to an
+            // ancestor scroll view or the sheet's interactive dismissal.
+            gestureRecognizer is SurveyPlanContactRecognizer && other.view !== gestureRecognizer.view && other is UIPanGestureRecognizer
+        }
+        func stopScrolling() { displayLink?.invalidate(); displayLink = nil; previousTimestamp = 0 }
+        private func startScrolling() {
+            guard parent.autoscrollEnabled, displayLink == nil else { return }
+            let link = CADisplayLink(target: self, selector: #selector(scrollTick(_:)))
+            link.preferredFrameRateRange = .init(minimum: 30, maximum: 60, preferred: 60)
+            link.add(to: .main, forMode: .common); displayLink = link
+        }
+        @objc private func scrollTick(_ link: CADisplayLink) {
+            guard parent.autoscrollEnabled, !cancelled else { stopScrolling(); return }
+            let elapsed = previousTimestamp == 0 ? 1 / 60 : link.timestamp - previousTimestamp
+            previousTimestamp = link.timestamp
+            parent.autoScroll(last, elapsed)
+        }
         private func cancelSingle() {
+            stopScrolling()
             if !cancelled { cancelled=true; parent.single(.cancelled,last,.zero) }
         }
         @objc func one(_ gesture:SurveyPlanContactRecognizer) {
@@ -1474,6 +1667,7 @@ private struct SurveyPlanGestureSurface: UIViewRepresentable {
             if gesture.numberOfTouches>1 { cancelSingle(); return }
             if gesture.state == .began {
                 cancelled=false; last=gesture.initialPoint ?? p
+                startScrolling()
                 parent.single(.began,last,.zero)
                 if last != p {
                     parent.single(.changed,p,.init(width:p.x-last.x,height:p.y-last.y))
@@ -1482,6 +1676,7 @@ private struct SurveyPlanGestureSurface: UIViewRepresentable {
                 return
             }
             guard !cancelled else { return }
+            if gesture.state == .ended || gesture.state == .cancelled || gesture.state == .failed { stopScrolling() }
             let delta=CGSize(width:p.x-last.x,height:p.y-last.y); last=p
             parent.single(gesture.state,p,delta)
         }
@@ -1568,7 +1763,8 @@ enum ArchitecturalPlanInk {
             local.draw(label,at:.zero); return
         }
     }
-    static func opening(_ context:GraphicsContext, a:CGPoint, b:CGPoint, window:Bool, selected:Bool) {
+    static func opening(_ context:GraphicsContext, a:CGPoint, b:CGPoint, window:Bool, selected:Bool,
+                        handing:DoorHanding? = nil,openingSide:DoorOpeningSide = .positive) {
         let length=max(1,hypot(b.x-a.x,b.y-a.y)), nx = -(b.y-a.y)/length, ny=(b.x-a.x)/length
         var gap=Path(); gap.move(to:a); gap.addLine(to:b)
         context.stroke(gap,with:.color(paper),lineWidth:9)
@@ -1580,6 +1776,16 @@ enum ArchitecturalPlanInk {
             for d in [-2.0,2.0] {
                 lines.move(to:.init(x:a.x+nx*d,y:a.y+ny*d)); lines.addLine(to:.init(x:b.x+nx*d,y:b.y+ny*d))
             }
+        }
+        if let handing, !window {
+            let atStart=DoorPlanGeometry.hingeAtStart(handing:handing,side:openingSide)
+            let hinge=atStart ? a : b
+            let closed=atStart ? b : a
+            let sx=nx*openingSide.sign,sy=ny*openingSide.sign
+            let opened=CGPoint(x:hinge.x+sx*length,y:hinge.y+sy*length)
+            lines.move(to:hinge); lines.addLine(to:opened)
+            lines.move(to:closed)
+            lines.addQuadCurve(to:opened,control:.init(x:closed.x+sx*length,y:closed.y+sy*length))
         }
         context.stroke(lines,with:.color(selected ? .orange : wall),lineWidth:selected ? 2 : 0.9)
     }
@@ -1608,6 +1814,7 @@ struct CeilingZonePicker: View {
     let onMerge: (UUID, UUID) throws -> Void
     let onToggleHidden: (UUID) -> Void
     @State private var mergePair: [UUID] = []
+    @State private var selectedCeilings: Set<UUID> = []
     @State private var mergeError: String?
     var onClose: (() -> Void)? = nil
     var onSave: (() -> Void)? = nil
@@ -1615,52 +1822,59 @@ struct CeilingZonePicker: View {
     var body: some View {
         NavigationStack {
             List {
-                Section {
-                    Text("Choisissez la zone sur laquelle travailler. Chaque plafond conserve sa forme et ses hauteurs.")
-                }
-                Section("Ajouter un plafond") {
-                    let vacant = choices.filter { $0.ceilingID == nil }
-                    ForEach(vacant) { choice in
+                if choices.contains(where: { $0.ceilingID == nil }) {
+                    Section {
+                    ForEach(choices.filter { $0.ceilingID == nil }) { choice in
                         row(choice,title:"Créer un plafond",detail:"Dans la zone en orange")
                     }
-                    if vacant.isEmpty {
-                        Text("Les zones fermées ont déjà un plafond. Pour séparer une cuisine ouverte et un salon, utilisez « Découper » ci-dessous.")
-                            .font(.footnote).foregroundStyle(.secondary)
                     }
                 }
-                Section("Modifier un plafond") {
+                Section {
                     ForEach(choices.filter { $0.ceilingID != nil }) { choice in
                         if let ceiling = room.ceilings.first(where:{ $0.id == choice.ceilingID }) {
                             VStack(alignment:.leading,spacing:12) {
-                                row(choice,title:CeilingPlanNaming.title(ceiling,in:room,numbers:numbers),
-                                    detail:ceiling.isHidden == true ? "Masqué · conservé dans le relevé" : ceiling.estimateSettings?.shape.title ?? "Modifier la forme et les hauteurs")
+                                HStack {
+                                    Button {
+                                        if !selectedCeilings.insert(ceiling.id).inserted { selectedCeilings.remove(ceiling.id) }
+                                    } label: {
+                                        Image(systemName: selectedCeilings.contains(ceiling.id) ? "checkmark.circle.fill" : "circle")
+                                            .font(.title2).frame(width: 44, height: 64)
+                                    }.buttonStyle(.borderless).accessibilityLabel("Sélectionner \(CeilingPlanNaming.title(ceiling,in:room,numbers:numbers))")
+                                    row(choice,title:CeilingPlanNaming.title(ceiling,in:room,numbers:numbers),
+                                        detail:ceiling.isHidden == true ? "Masqué" : ceiling.estimateSettings?.shape.title ?? "Hauteur et pente",
+                                        onTap: { if !selectedCeilings.insert(ceiling.id).inserted { selectedCeilings.remove(ceiling.id) } })
+                                }
                                 HStack(spacing:18) {
+                                    Button { onChoose(choice) } label: { Label("Hauteur et pente", systemImage: "slider.horizontal.3") }
                                     Button { onSplit(ceiling.id) } label: { Label("Découper",systemImage:"scissors") }
                                         .disabled(ceiling.isHidden == true)
-                                    Menu {
-                                        let neighbours=room.ceilings.filter { other in
-                                            guard other.id != ceiling.id,
-                                                  let a=WallCeilingEstimate.footprint(of:ceiling,in:room),
-                                                  let b=WallCeilingEstimate.footprint(of:other,in:room) else { return false }
-                                            return CeilingZoneEditing.joinedBoundary(a,b) != nil
-                                        }
-                                        if neighbours.isEmpty { Text("Aucun plafond adjacent") }
-                                        ForEach(neighbours) { other in
-                                            Button(CeilingPlanNaming.title(other,in:room,numbers:numbers)) { mergePair=[ceiling.id,other.id] }
-                                        }
-                                    } label: { Label("Fusionner",systemImage:"square.on.square") }
-                                    Button { onToggleHidden(ceiling.id) } label: {
-                                        Label(ceiling.isHidden == true ? "Afficher" : "Masquer",systemImage:ceiling.isHidden == true ? "eye" : "eye.slash")
-                                    }
                                 }.font(.caption).buttonStyle(.borderless)
                             }
                         }
                     }
-                    Text("Cuisine ouverte et salon : séparez leur plafond en traçant une limite entre les deux espaces.")
-                        .font(.footnote).foregroundStyle(.secondary)
                 }
             }
             .navigationTitle("Choisir un plafond").navigationBarTitleDisplayMode(.inline)
+            .safeAreaInset(edge: .bottom) {
+                if !selectedCeilings.isEmpty {
+                    HStack {
+                        Button("Fusionner", systemImage: "square.on.square") {
+                            let ids = selectedCeilings.sorted { $0.uuidString < $1.uuidString }
+                            guard ids.count == 2 else { return }
+                            do { try onMerge(ids[0], ids[1]); selectedCeilings = [] }
+                            catch { mergeError = error.localizedDescription }
+                        }.disabled(selectedCeilings.count != 2)
+                        Spacer()
+                        let allHidden = room.ceilings.filter { selectedCeilings.contains($0.id) }.allSatisfy { $0.isHidden == true }
+                        Button(allHidden ? "Réafficher" : "Masquer", systemImage: allHidden ? "eye" : "eye.slash") {
+                            for ceiling in room.ceilings where selectedCeilings.contains(ceiling.id) && (ceiling.isHidden == true) == allHidden {
+                                onToggleHidden(ceiling.id)
+                            }
+                            selectedCeilings = []
+                        }
+                    }.buttonStyle(.borderedProminent).padding().background(.regularMaterial)
+                }
+            }
             .confirmationDialog("Fusionner ces deux plafonds ?",isPresented:Binding(get:{ mergePair.count == 2 },set:{ if !$0 { mergePair=[] } }),titleVisibility:.visible) {
                 Button("Fusionner") {
                     guard mergePair.count == 2 else { return }
@@ -1685,8 +1899,8 @@ struct CeilingZonePicker: View {
             }
         }
     }
-    private func row(_ choice: WallCeilingEstimate.Proposal, title: String, detail: String) -> some View {
-        Button { onChoose(choice) } label: {
+    private func row(_ choice: WallCeilingEstimate.Proposal, title: String, detail: String, onTap: (() -> Void)? = nil) -> some View {
+        Button { if let onTap { onTap() } else { onChoose(choice) } } label: {
             HStack(spacing:14) {
                 Canvas { context, size in
                     let points = room.walls.flatMap { [$0.start,$0.effectiveEnd] }+choice.boundary

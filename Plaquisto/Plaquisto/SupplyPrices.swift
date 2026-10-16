@@ -93,7 +93,7 @@ enum SupplyCostEstimator {
                 guard let d=value.object, let w=d["width_mm"]?.number, let h=d["length_mm"]?.number,
                       w.isFinite, h.isFinite, w>0, h>0, w<=100_000, h<=100_000 else { continue }
                 let label="\(record.title) · \(Int(w)) × \(Int(h)) mm"
-                guard name == label, unit == "plaques" || unit == "m²" else { continue }
+                guard name == SupplyListingConsolidator.canonicalName(label), unit == "plaques" || unit == "m²" else { continue }
                 matches.append(.init(key:.init(referenceId:record.id,variantKey:"\(Int(w))x\(Int(h))",unit:"m²"),quantity:supply.quantity*(unit == "plaques" ? w*h/1_000_000 : 1)))
             }
         }

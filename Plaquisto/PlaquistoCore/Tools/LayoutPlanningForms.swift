@@ -44,12 +44,18 @@ struct LayoutLivePreview: View {
 struct LayoutFurringForm: View {
     @Environment(\.dismiss) private var dismiss
     @EnvironmentObject private var catalogue: ToolTechnicalStore
+    @Environment(\.interfacePresentation) private var presentation
     let surface: Surface2D
     let onSave: (LayoutLayer)->Void
+    let allowsSimplifiedCeiling: Bool
     @State private var layer: LayoutLayer
     @State private var notice: String?
-    init(surface:Surface2D,layer:LayoutLayer,onSave:@escaping(LayoutLayer)->Void) {
+    private var simplifiedCeiling: Bool {
+        presentation == .contrastLab && allowsSimplifiedCeiling && layer.furring?.allowsCeilingSupportControls(on:surface) == true
+    }
+    init(surface:Surface2D,layer:LayoutLayer,allowsSimplifiedCeiling:Bool = true,onSave:@escaping(LayoutLayer)->Void) {
         self.surface = surface; self.onSave = onSave
+        self.allowsSimplifiedCeiling = allowsSimplifiedCeiling
         var copy = layer; if copy.furring == nil { copy.furring = .init() }
         copy.materializeFurringOrientation()
         copy = copy.forSupport(surface.kind)
@@ -71,6 +77,7 @@ struct LayoutFurringForm: View {
     var body: some View {
         NavigationStack {
             Form {
+                if !simplifiedCeiling {
                 Section { LayoutLivePreview(surface:surface,layer:layer).frame(height:220) }
                 if surface.kind == .ceiling { Section("Orientation des fourrures") {
                     Picker("Sens des fourrures", selection: Binding(
@@ -103,6 +110,7 @@ struct LayoutFurringForm: View {
                         Text("Une éclisse à chaque raccord de longueurs de 3 m, par tronçon continu.").font(.caption).foregroundStyle(.secondary)
                     }
                 }
+                }
                 Section(surface.kind == .wall ? "Entraxe de l’ossature" : "Entraxe des fourrures") {
                     Picker("Entraxe",selection:binding(\.spacing)) {
                         Text("40 cm").tag(400.0); Text("50 cm").tag(500.0); Text("60 cm").tag(600.0)
@@ -116,6 +124,27 @@ struct LayoutFurringForm: View {
                         if formats.isEmpty { Text("Aucun format compatible chargé. Modifiez le format dans Plaques.").font(.footnote) }
                     }
                 }
+                if simplifiedCeiling {
+                    Section("Périphérie") {
+                        Picker("Appui en périphérie",selection:Binding(
+                            get:{layer.furring?.resolvedCeilingPerimeterSupport ?? true},
+                            set:{layer.furring?.setCeilingPerimeterSupport($0)}
+                        )) {
+                            Text("Cornière périphérique").tag(true)
+                            Text("2 fourrures à 10 cm des bords").tag(false)
+                        }.pickerStyle(.inline).labelsHidden()
+                            .accessibilityIdentifier("layout.furring.periphery")
+                    }
+                    Section("Suspentes") {
+                        Stepper(value:Binding(
+                            get:{layer.furring?.resolvedCeilingSuspensionSpacing ?? 1200},
+                            set:{layer.furring?.ceilingSuspensionSpacing = $0}
+                        ),in:200...1200,step:100) {
+                            LabeledContent("Entraxe",value:layoutCM(layer.furring?.resolvedCeilingSuspensionSpacing ?? 1200))
+                        }.accessibilityLabel("Entraxe des suspentes")
+                            .accessibilityIdentifier("layout.furring.suspensionSpacing")
+                    }
+                } else {
                 Section("Calage sur les plaques") {
                     Button("Caler les fourrures sur le calepinage des plaques") { layer = LayoutPlanning.alignFurring(to:layer) }
                     Text(LayoutPlanning.aligned(layer) ? "Trames alignées." : "Trames décalées : les fourrures ne tombent pas toutes sur les joints attendus.").font(.footnote)
@@ -123,6 +152,7 @@ struct LayoutFurringForm: View {
                 Section {
                     Text("Compatibilité géométrique des joints uniquement. L’entraxe admissible selon le parement et l’isolant doit être vérifié dans les outils techniques.").font(.footnote).foregroundStyle(.secondary)
                     Button("Retirer les fourrures",role:.destructive) { layer.furring = nil; onSave(layer); dismiss() }
+                }
                 }
             }
             .scrollDismissesKeyboard(.interactively)

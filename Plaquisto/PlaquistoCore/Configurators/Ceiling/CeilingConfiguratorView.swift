@@ -434,6 +434,7 @@ struct CeilingConfiguratorView: View {
         .onChange(of: vaporBarrier) { _, _ in
             fixingSystemID = CeilingFixingDefaults.preferred(in: compatibleSystems, vaporBarrier: vaporBarrier)?.id ?? ""
         }
+        .configurationEntry(in:0...6) { step = $0; showingSavedResult = false }
         .tint(Color(red: 0.12, green: 0.38, blue: 0.29))
         .toolbar {
             if isEditing {

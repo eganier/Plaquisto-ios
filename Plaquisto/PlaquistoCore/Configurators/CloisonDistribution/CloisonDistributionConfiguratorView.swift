@@ -64,7 +64,7 @@ struct CloisonDistributionConfiguratorView: View {
         onClose: (() -> Void)? = nil,
         showsCloseButton: Bool = true
     ) {
-        let configuration = initialConfiguration ?? CloisonDistributionConfiguration()
+        let configuration = (initialConfiguration ?? CloisonDistributionConfiguration()).repairingStaleFacingAreas()
         self.onSave = onSave
         self.onClose = onClose
         self.showsCloseButton = showsCloseButton
@@ -220,21 +220,29 @@ struct CloisonDistributionConfiguratorView: View {
             }
         }
         .tint(green)
+        .configurationEntry(in:1...6) { step = $0 }
         .onChange(of: references.facings.count, initial: true) { _, _ in initializeSelections() }
+        .onChange(of: actualArea) { _, area in
+            faceAFirst=PartitionFacingArea.resized(faceAFirst,area:area)
+            faceBFirst=PartitionFacingArea.resized(faceBFirst,area:area)
+            faceASecond=PartitionFacingArea.resized(faceASecond,area:area)
+            faceBSecond=PartitionFacingArea.resized(faceBSecond,area:area)
+        }
         .onChange(of: references.systems.count, initial: true) { _, _ in normalizeSystem() }
         .onChange(of: references.insulations.count, initial: true) { _, _ in normalizeInsulation() }
         .onChange(of: skinCount) { _, _ in resetParementsForSkinCount(); normalizeSystem() }
         .onChange(of: governingFamily) { _, _ in normalizeSystem() }
-        .onChange(of: selectedFrame) { _, _ in normalizeSystem() }
+        .onChange(of: selectedFrame) { _, _ in normalizeSystem(); normalizeInsulationThickness(preferFrame: true) }
         .onChange(of: mounting) { _, _ in normalizeSystem() }
         .onChange(of: spacing) { _, _ in normalizeSystem() }
         .onChange(of: tiledArea) { _, enabled in if !enabled { tiledAreaSurface = 0 } }
         .onChange(of: systemID) { _, _ in normalizeInsulation() }
-        .onChange(of: insulationID) { _, _ in normalizeInsulationThickness() }
+        .onChange(of: insulationID) { old, _ in normalizeInsulationThickness(preferFrame: !old.isEmpty) }
         .toolbar {
             if isEditing, let onSave {
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Enregistrer") { onSave(configurationSnapshot()) }
+                        .disabled(!allRequiredLayersAreComplete || actualArea<=0)
                 }
             }
         }
@@ -307,6 +315,7 @@ struct CloisonDistributionConfiguratorView: View {
             } else if let onSave {
                 Button("Enregistrer") { onSave(configurationSnapshot()) }
                     .buttonStyle(.borderedProminent)
+                    .disabled(!allRequiredLayersAreComplete || actualArea<=0)
             } else {
                 Button("Recommencer") { reset() }
                     .buttonStyle(.borderedProminent)
@@ -739,7 +748,7 @@ struct CloisonDistributionConfiguratorView: View {
             return left < right
         }) {
             rows.append((
-                "Parement · \(group.facing.family) \(group.facing.functionTitle) · \(group.plateFormat.title)",
+                SupplyListingConsolidator.canonicalName("Parement · \(group.facing.family) \(group.facing.functionTitle) · \(group.plateFormat.title)"),
                 format(group.surface * factor, "m²")
             ))
         }
@@ -928,9 +937,9 @@ struct CloisonDistributionConfiguratorView: View {
         normalizeInsulationThickness()
     }
 
-    private func normalizeInsulationThickness() {
-        if !compatibleInsulationThicknesses.contains(insulationThicknessMM) {
-            insulationThicknessMM = compatibleInsulationThicknesses.first ?? 0
+    private func normalizeInsulationThickness(preferFrame: Bool = false) {
+        if preferFrame || !compatibleInsulationThicknesses.contains(insulationThicknessMM) {
+            insulationThicknessMM = selectedInsulation?.preferredThickness(frameWidthMM: selectedFrameWidthMM) ?? 0
         }
     }
 

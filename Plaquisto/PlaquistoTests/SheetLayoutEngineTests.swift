@@ -3,6 +3,158 @@ import SwiftUI
 @testable import Plaquisto
 
 final class SheetLayoutEngineTests: XCTestCase {
+    func testOpeningKeepsItsOwnDimensionsAndCenterInRotatedScan() throws {
+        let base = LayoutBounds(min: .zero, max: .init(x: 900, y: 1800)).polygon
+        for yaw in [0.0, 0.37, -0.83, Double.pi / 2] {
+            let polygon = base.map { LayoutOpeningFrame.rotate($0, by: yaw) + .init(x: 425, y: -391) }
+            let frame = LayoutOpeningFrame(contour: polygon)
+            XCTAssertEqual(frame.width, 900, accuracy: 0.001)
+            XCTAssertEqual(frame.height, 1800, accuracy: 0.001)
+            let restored = frame.contour(center: frame.center, width: frame.width, height: frame.height, angle: frame.angle)
+            for (a, b) in zip(polygon, restored) { XCTAssertLessThan((a - b).length, 0.001) }
+            let changed = frame.contour(center: frame.center, width: 1100, height: 2100, angle: yaw + .pi / 2)
+            let newFrame = LayoutOpeningFrame(contour: changed)
+            XCTAssertLessThan((newFrame.center - frame.center).length, 0.001)
+            XCTAssertEqual(newFrame.width, 1100, accuracy: 0.001)
+            XCTAssertEqual(newFrame.height, 2100, accuracy: 0.001)
+            let opening = LayoutOpening(kind: .stairwell, contour: changed)
+            XCTAssertEqual(try JSONDecoder().decode(LayoutOpening.self, from: JSONEncoder().encode(opening)), opening)
+        }
+    }
+
+    func testNewOpeningParallelToPlanReferenceAtEveryScanYaw() throws {
+        let rectangle = LayoutBounds(min: .zero, max: .init(x: 6700, y: 4100)).polygon
+        for yaw in [0.0, 0.27, -1.2, 2.7] {
+            let contour = rectangle.map { LayoutOpeningFrame.rotate($0, by: yaw) }
+            let alignment = try XCTUnwrap(LayoutViewport.initialCeilingAlignment(contour, referenceEdge: nil))
+            let angle = try XCTUnwrap(LayoutOpeningFrame.wallAngle(contour, edge: alignment.index))
+            XCTAssertEqual(sin(angle + alignment.angle), 0, accuracy: 0.00001)
+            for i in contour.indices {
+                let angle = try XCTUnwrap(LayoutOpeningFrame.wallAngle(contour, edge: i))
+                let direction = contour[(i + 1) % contour.count] - contour[i]
+                XCTAssertEqual(direction.x * sin(angle) - direction.y * cos(angle), 0, accuracy: 0.00001)
+            }
+        }
+    }
+
+    func testOpeningEditingPreservesNonRectangularCutout() {
+        let polygon: [LayoutPoint] = [.init(x: 0, y: 0), .init(x: 900, y: 0), .init(x: 900, y: 600), .init(x: 450, y: 1000), .init(x: 0, y: 1000)]
+        let frame = LayoutOpeningFrame(contour: polygon)
+        let result = frame.contour(center: frame.center, width: frame.width, height: frame.height, angle: frame.angle)
+        XCTAssertEqual(result.count, polygon.count)
+        for (a, b) in zip(polygon, result) { XCTAssertLessThan((a - b).length, 0.001) }
+    }
+    func testLabDimensionCycleSkipsEveryHiddenCombinationAndEndsOff() {
+        let elements=LayoutVisibilitySettings.Element.allCases
+        for mask in 0..<16 {
+            var settings=LayoutVisibilitySettings()
+            for (index,element) in elements.enumerated() where mask & (1 << index) != 0 { settings.toggleVisibility(element) }
+            let visible=elements.filter { settings[$0].isVisible }
+            for expected in visible {
+                settings.cycleDimensions()
+                XCTAssertEqual(settings.dimensionedElement,expected)
+                XCTAssertEqual(elements.filter { settings[$0].showsDimensions }.count,1)
+            }
+            settings.cycleDimensions()
+            XCTAssertNil(settings.dimensionedElement)
+            XCTAssertEqual(elements.filter { settings[$0].isVisible },visible)
+        }
+    }
+
+    func testLabHidingDimensionedLayerAdvancesWithoutEnablingHiddenLayers() {
+        var settings=LayoutVisibilitySettings()
+        settings.toggleVisibility(.framing)
+        settings.cycleDimensions()
+        XCTAssertEqual(settings.dimensionedElement,.sheets)
+        settings.toggleVisibility(.sheets)
+        XCTAssertEqual(settings.dimensionedElement,.openings)
+        XCTAssertEqual(settings.framing,.hidden)
+        settings.toggleVisibility(.electrical)
+        settings.toggleVisibility(.openings)
+        XCTAssertNil(settings.dimensionedElement)
+        settings.toggleVisibility(.sheets)
+        XCTAssertEqual(settings.sheets,.visible)
+        XCTAssertNil(settings.dimensionedElement)
+        XCTAssertFalse(settings.sheetNumbers)
+    }
+
+    func testPinchZoomKeepsAnchorThroughPanRotationMirroringAndLimits() {
+        for mirrored in [false,true] {
+            for angle in [0.0,0.73,Double.pi/2] {
+                let bounds=surface().bounds
+                let view=LayoutViewport(bounds:bounds,size:.init(width:390,height:430),zoom:1.4,
+                    pan:.init(width:37,height:-91),rotation:angle,pivot:bounds.center,
+                    fittingSize:.init(width:390,height:280),mirrored:mirrored)
+                for anchor in [CGPoint(x:34,y:63),CGPoint(x:280,y:330),CGPoint(x:195,y:215)] {
+                    let world=view.world(anchor)
+                    for target in [0.4,0.8,2.7,8.0] {
+                        let changed=view.zoomed(to:target,anchor:anchor)
+                        XCTAssertEqual(changed.screen(world).x,anchor.x,accuracy:0.00001)
+                        XCTAssertEqual(changed.screen(world).y,anchor.y,accuracy:0.00001)
+                        let restored=changed.zoomed(to:view.zoom,anchor:anchor)
+                        XCTAssertEqual(restored.pan.width,view.pan.width,accuracy:0.00001)
+                        XCTAssertEqual(restored.pan.height,view.pan.height,accuracy:0.00001)
+                    }
+                }
+                XCTAssertEqual(view.zoomed(to:0,anchor:.zero).zoom,view.zoom)
+            }
+        }
+    }
+
+    func testCeilingPlanSupportOverridesPersistAndLegacyStillFollowsForm() throws {
+        var layer=offcutLayer
+        var configuration=CeilingConfiguration(length:2.4,width:3.6)
+        configuration.perimeterSupport=false
+        XCTAssertEqual(WorkLayoutDefaults.resolvingSupport(layer,configuration:.ceiling(configuration)).furring?.peripheralInset,100)
+        layer.furring?.setCeilingPerimeterSupport(true)
+        layer.furring?.ceilingSuspensionSpacing=900
+        let restored=try JSONDecoder().decode(LayoutLayer.self,from:JSONEncoder().encode(layer))
+        let resolved=WorkLayoutDefaults.resolvingSupport(restored,configuration:.ceiling(configuration))
+        XCTAssertNil(resolved.furring?.peripheralInset)
+        XCTAssertEqual(resolved.furring?.resolvedCeilingSuspensionSpacing,900)
+        layer.furring?.setCeilingPerimeterSupport(false)
+        configuration.perimeterSupport=true
+        XCTAssertEqual(WorkLayoutDefaults.resolvingSupport(layer,configuration:.ceiling(configuration)).furring?.peripheralInset,100)
+        let legacy=try JSONDecoder().decode(LayoutFurringSettings.self,from:Data(#"{"parallelToBoards":false,"spacing":600,"offset":0}"#.utf8))
+        XCTAssertNil(legacy.ceilingPerimeterSupport)
+        XCTAssertEqual(legacy.resolvedCeilingSuspensionSpacing,1200)
+        XCTAssertTrue(legacy.allowsCeilingSupportControls(on:offcutCeiling()))
+        XCTAssertFalse(legacy.allowsCeilingSupportControls(on:surface()))
+        var studs=legacy; studs.isFurringSystem=false
+        XCTAssertFalse(studs.allowsCeilingSupportControls(on:offcutCeiling()))
+    }
+
+    func testCeilingSuspensionSpacingUpdatesEveryAssemblyComponentAndPeriphery() throws {
+        var work=quantityWork()
+        let base=try LayoutQuantityCalculator.make(work:work,formats:[])
+        work.components[0].framing?.ceilingSuspensionSpacing=600
+        work.components[0].plans[0].layers[0].furring?.ceilingSuspensionSpacing=600
+        let closer=try LayoutQuantityCalculator.make(work:work,formats:[])
+        XCTAssertGreaterThan(closer.hangers,base.hangers)
+        XCTAssertEqual(closer.framingMeters,base.framingMeters,accuracy:0.001)
+        var configuration=try XCTUnwrap(work.ceilingConfiguration)
+        configuration.fixingSystemID="test-system"
+        work.payload = .ceiling(configuration)
+        let components:[CeilingJSONValue] = ["Suspente", "Attache"].map { name in
+            .object(["name":.string(name),"quantity":.number(name == "Attache" ? 2 : 1),"unit":.string("unités"),"calculation":.string("unit")])
+        }
+        let catalogue=CeilingCataloguePayload(version:"test",ouvrage:nil,isolation:[],
+            systemesFixation:[.init(id:"test-system",kind:"systeme_fixation",title:"Test",summary:"",sourcePage:0,status:"active",data:["components":.array(components)])],
+            parements:[],quantitatifs:[],pareVapeur:[],regles:[])
+        work.layoutQuantityTakeoff=try LayoutQuantityCalculator.make(work:work,formats:[])
+        let total=CombinedQuantityCalculator.calculate(works:[work],catalogue:catalogue)
+        XCTAssertEqual(total.supplies.first { $0.name == "Suspente" }?.quantity,Double(closer.hangers))
+        XCTAssertEqual(total.supplies.first { $0.name == "Attache" }?.quantity,Double(closer.hangers)*2)
+        work.components[0].framing?.setCeilingPerimeterSupport(false)
+        work.components[0].plans[0].layers[0].furring?.setCeilingPerimeterSupport(false)
+        let noAngle=try LayoutQuantityCalculator.make(work:work,formats:[])
+        XCTAssertEqual(noAngle.perimeterMeters,0)
+        XCTAssertGreaterThan(noAngle.hangers,closer.hangers)
+        work.components[0].framing?.ceilingSuspensionSpacing=0
+        work.components[0].plans[0].layers[0].furring?.ceilingSuspensionSpacing=0
+        XCTAssertThrowsError(try LayoutQuantityCalculator.make(work:work,formats:[]))
+    }
+
     @MainActor func testPlanActionsRemainLargeAndFitNarrowScreens() throws {
         for width in [320.0,390.0] {
             for typeSize:DynamicTypeSize in [.large,.accessibility1] {
@@ -19,6 +171,46 @@ final class SheetLayoutEngineTests: XCTestCase {
             }
         }
     }
+    @MainActor func testLabAlignmentActionsKeepTheSameSizeAcrossToolsAndStates() throws {
+        for width in [296.0,366.0] {
+            for height in [44.0,60.0] {
+                for framingMode in [false,true] {
+                    for optimizing in [false,true] {
+                        let view = LayoutLabAlignmentActions(framingMode:framingMode,
+                            isOptimizing:optimizing,height:height,optimize:{},align:{})
+                            .frame(width:width)
+                        let image = try XCTUnwrap(ImageRenderer(content:view).uiImage)
+                        XCTAssertEqual(image.size.width,width,accuracy:0.1)
+                        XCTAssertEqual(image.size.height,height,accuracy:0.1)
+                    }
+                }
+            }
+        }
+    }
+
+    @MainActor func testLabOutlineIconsAndCompactActionsRender() throws {
+        let view = VStack(spacing:18) {
+            HStack {
+                ForEach(Array(LayoutLabVisibilityIcon.Kind.allCases.enumerated()),id:\.offset) { item in
+                    LayoutLabVisibilityIcon(kind:item.element,color:item.offset == 0 ? .gray : .blue)
+                        .frame(width:60,height:44)
+                }
+            }
+            ForEach([false,true],id:\.self) { framingMode in
+                LayoutLabAlignmentActions(framingMode:framingMode,optimize:{},align:{})
+            }
+        }.padding(12).frame(width:390).background(Color.white)
+        let renderer = ImageRenderer(content:view)
+        renderer.scale = 2
+        let image = try XCTUnwrap(renderer.uiImage)
+        XCTAssertEqual(image.size.width,390,accuracy:0.1)
+        let attachment = XCTAttachment(image:image)
+        attachment.name = "Lab — icônes et actions compactes"
+        attachment.lifetime = .keepAlways
+        add(attachment)
+        try image.pngData()?.write(to:URL(fileURLWithPath:"/tmp/plaquisto-lab-compact-controls.png"))
+    }
+
     func testLiningEndStudsStayFixedFollowSlopeAndAreCountedOnce() throws {
         let wall=Surface2D(name:"Doublage",kind:.wall,contour:[
             .init(x:0,y:0),.init(x:4000,y:0),.init(x:4000,y:4000),.init(x:0,y:2000)])
@@ -206,6 +398,30 @@ final class SheetLayoutEngineTests: XCTestCase {
         XCTAssertTrue(try AutomaticSurveyLayout.prepare(work,formats:[],catalogue:nil).components[0].plans.isEmpty)
     }
 
+    func testAutomaticBackfillCountsBothPreservedAndNewBoardPlans() throws {
+        let surface = Surface2D(name:"Mur",kind:.wall,contour:LayoutPreset.rectangle.contour(length:2600,height:2400,secondaryHeight:0))
+        var c = FurringLiningConfiguration()
+        c.firstSkin = [.init(facingID:"ba13",formatID:"1200x2400",surface:6.24)]
+        c.quantities = [.init(name:"BA13 · 1200 × 2400 mm",quantity:6.24,unit:"m²")]
+        var work = WorkItem(id:UUID(),projectID:UUID(),name:"Doublage",type:.peripheralLiningFurrings,payload:.furringLining(c),createdAt:Date(),updatedAt:Date())
+        var component = WorkComponentRecord(name:"Mur",surface:surface)
+        component.surveySource = .init(surveyID:UUID(),checkpointID:UUID(),surfaceID:UUID(),boundaryIndex:0,kind:.wall,capturedAt:Date())
+        work.components = [component]
+        let formats = [LayoutCatalogFormat(id:LayoutCatalogFormat.identifier(productID:"ba13",width:1200,length:2400),title:"BA13",width:1200,length:2400,productID:"ba13",fourTaperedEdges:false)]
+        let first = try AutomaticSurveyLayout.prepare(work,formats:formats,catalogue:nil)
+        let initial = try XCTUnwrap(first.record.minimumSupplies.first { $0.name.contains("BA13") })
+        XCTAssertGreaterThan(initial.quantity,0)
+        work.components = first.components
+        let unchanged = try AutomaticSurveyLayout.prepare(work,formats:formats,catalogue:nil)
+        XCTAssertEqual(unchanged.record.minimumSupplies.first { $0.name.contains("BA13") }?.quantity,initial.quantity)
+        component.id = UUID()
+        work.components.append(component)
+        let completed = try AutomaticSurveyLayout.prepare(work,formats:formats,catalogue:nil)
+        XCTAssertEqual(completed.components[0],first.components[0])
+        XCTAssertEqual(completed.components[1].plans.count,1)
+        XCTAssertGreaterThan(try XCTUnwrap(completed.record.minimumSupplies.first { $0.name.contains("BA13") }).quantity,initial.quantity)
+    }
+
     func testFixedLiningEdgesAndHorizontalRowsRespectFormAndRamp() throws {
         let wall=Surface2D(name:"Rampant",kind:.wall,contour:[
             .init(x:0,y:0),.init(x:4000,y:0),.init(x:4000,y:4000),.init(x:0,y:2000)])
@@ -299,16 +515,15 @@ final class SheetLayoutEngineTests: XCTestCase {
             contour:LayoutPreset.rectangle.contour(length:4000,height:2600,secondaryHeight:0),
             openings:[.init(kind:kind,contour:[.init(x:1000,y:kind == .window ? 800 : 0),.init(x:2000,y:kind == .window ? 800 : 0),.init(x:2000,y:2000),.init(x:1000,y:2000)])])
     }
-    func testFixedOpeningProfilesAtFiveCentimetresAndShortFurrings() throws {
+    func testFixedOpeningProfilesOnlyTwoFullHeightSidesAtFiveCentimetres() throws {
         let wall=openingWall()
         var c=FurringLiningConfiguration(); c.selectedSupportLines=2; c.furringSpacing=0.6
         var layer=WorkLayoutDefaults.document(surface:wall,configuration:.furringLining(c)).layers[0]
         let first=try LayoutFurringEngine.calculate(surface:wall,layer:layer)
-        XCTAssertEqual(first.openingProfiles.count,8)
+        XCTAssertEqual(first.openingProfiles.count,2)
         let sides=first.openingProfiles.filter { $0.role == .side }
         XCTAssertEqual(sides.map { $0.line.start.x }.sorted(),[950,2050])
-        XCTAssertEqual(first.openingProfiles.filter { $0.role == .horizontal }.map { $0.line.start.y }.sorted(),[750,2050])
-        XCTAssertEqual(Set(first.openingProfiles.filter { $0.role == .shortVertical }.map { $0.line.start.x }),[1050,1950])
+        XCTAssertTrue(first.openingProfiles.allSatisfy { $0.role == .side && abs(($0.line.end-$0.line.start).length-2600)<0.01 })
         XCTAssertFalse(first.supportPoints.isEmpty)
         layer.furring?.offset=123
         let moved=try LayoutFurringEngine.calculate(surface:wall,layer:layer)
@@ -319,10 +534,10 @@ final class SheetLayoutEngineTests: XCTestCase {
     }
     func testDoorHasNoSillAndStudsHaveNoExtraShortFurrings() {
         let f=LayoutOpeningFraming.profiles(surface:openingWall(.door),system:.furring)
-        XCTAssertEqual(f.filter { $0.role == .horizontal }.count,1)
-        XCTAssertEqual(f.filter { $0.role == .shortVertical }.count,2)
+        XCTAssertEqual(f.count,2)
+        XCTAssertTrue(f.allSatisfy { $0.role == .side })
         let studs=LayoutOpeningFraming.profiles(surface:openingWall(),system:.studs)
-        XCTAssertEqual(studs.count,4)
+        XCTAssertEqual(studs.count,2)
         XCTAssertTrue(studs.allSatisfy { $0.role != .shortVertical })
     }
     func testWindowOuterGridNeighborsAreRemovedButFixedFrameAndInsidePiecesRemain() throws {
@@ -338,11 +553,11 @@ final class SheetLayoutEngineTests: XCTestCase {
             XCTAssertFalse(result.supportPoints.contains { abs($0.x-x)<0.01 })
             XCTAssertFalse(result.contacts.contains { abs($0.point.x-x)<0.01 })
         }
-        XCTAssertEqual(result.openingProfiles.count,8)
+        XCTAssertEqual(result.openingProfiles.count,2)
         for profile in result.openingProfiles {
             XCTAssertEqual(result.lines.filter { LayoutOpeningFraming.same($0,profile.line) }.count,1)
         }
-        XCTAssertEqual(Set(result.openingProfiles.filter { $0.role == .shortVertical }.map { $0.line.start.x }),[1000,1800])
+        XCTAssertTrue(result.openingProfiles.allSatisfy { $0.role == .side })
         XCTAssertTrue(result.lines.contains { $0.start.x == 1400 && $0.end.x == 1400 })
         // Quantities consume these same physical lines, not an unfiltered grid.
         let removedLength=2*wall.bounds.height

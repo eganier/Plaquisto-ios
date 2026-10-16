@@ -638,7 +638,6 @@ private struct OpeningResultView: View {
                         LabeledContent("Profondeur de la tapée", value: format(depth * 100, unit: "cm"))
                     }
                 }
-                LabeledContent("Surface d’isolant à déduire", value: format(result.insulationAreaDeduction, unit: "m²"))
                 LabeledContent("Plaques déduites", value: "Non")
             }
 

@@ -1127,7 +1127,7 @@ struct NewWorkView: View {
             return
         }
         let draft = Draft(name: name, type: type)
-        let supported: Set<WorkType> = [.ceilingOnFurring, .ceilingOnRailsAndStuds, .peripheralLiningStuds, .peripheralLiningFurrings, .paintingBeta]
+        let supported: Set<WorkType> = [.ceilingOnFurring, .ceilingOnRailsAndStuds, .modularCeiling, .peripheralLiningStuds, .peripheralLiningFurrings, .paintingBeta]
         if supported.contains(type), !store.surveys(projectID: projectID).isEmpty { surveyChoice = draft }
         else { configurationDraft = draft }
     }

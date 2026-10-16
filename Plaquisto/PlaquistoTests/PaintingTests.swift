@@ -212,7 +212,7 @@ final class PaintingTests: XCTestCase {
         XCTAssertEqual(SupplyListingConsolidator.canonicalName("Enduit en poudre"),"Enduit à joints en poudre")
         XCTAssertEqual(SupplyListingConsolidator.canonicalName("Enduit en pâte"),"Enduit à joints en pâte")
     }
-    func testFurringSupportAliasesSumWithoutChangingOpeningCalculations() throws {
+    func testFurringSupportAliasesSumAndSimplifiedOpeningsDoNotAddRevealSupports() throws {
         let old = "Appuis intermédiaires pour doublage sur fourrure"
         let names = [old, old + " — verticaux", old + " — horizontaux", old + " — embrasure",
                      "Appuis intermédiaires pour fourrures"]
@@ -226,9 +226,9 @@ final class PaintingTests: XCTestCase {
         let result = OpeningQuantityCalculator.calculate(.init(kind: .window, width: 1.2, height: 1),
             context: .init(system: .furringLining, hsp: 2.5))
         let supports = result.quantities.filter { $0.name.hasPrefix("Appuis") }
-        XCTAssertEqual(supports.count, 1)
-        XCTAssertEqual(supports.first?.name, "Appuis intermédiaires pour fourrures")
-        XCTAssertEqual(supports.first?.quantity, 19) // 8 vertical + 6 horizontal + 5 reveal supports.
+        // Current wall-opening rule: only two full-height side profiles.
+        // General lining supports are counted by the lining, not added again here.
+        XCTAssertTrue(supports.isEmpty)
     }
     func testJointTapeAliasesConsolidateWithoutLosingQuantities() throws {
         let rows = SupplyListingConsolidator.rows([
@@ -322,14 +322,14 @@ final class PaintingTests: XCTestCase {
         XCTAssertEqual(row.measurements.first(where: { $0.unit == "unités" })?.quantity, 11)
         XCTAssertEqual(rows.last?.name, "Montants latéraux")
     }
-    func testOpeningCalculationsUseOneFurringReferenceWithoutChangingTakeoff() throws {
+    func testSimplifiedWallOpeningsUseTwoFullHeightFurringsAndPreserveRoofRules() throws {
         let window = OpeningQuantityCalculator.calculate(.init(kind: .window, width: 1.2, height: 1),
             context: .init(system: .furringLining, hsp: 2.5))
         XCTAssertTrue(window.isComplete)
         let profiles = window.quantities.filter { $0.name == "Fourrures F45/F47" }
-        XCTAssertEqual(profiles.count, 2)
-        XCTAssertEqual(profiles.first(where: { $0.unit == .unit })?.quantity, 11)
-        XCTAssertEqual(profiles.first(where: { $0.unit == .linearMeter })?.quantity, 12.5)
+        XCTAssertEqual(profiles.count, 1)
+        XCTAssertNil(profiles.first(where: { $0.unit == .unit }))
+        XCTAssertEqual(profiles.first(where: { $0.unit == .linearMeter })?.quantity, 5)
         let roof = OpeningQuantityCalculator.calculate(.init(kind: .roofWindow, width: 1.2, height: 0.8),
             context: .init(system: .furringCeiling, spacing: 0.60))
         XCTAssertTrue(roof.isComplete)
@@ -352,20 +352,21 @@ final class PaintingTests: XCTestCase {
         XCTAssertEqual(studs.count, 1)
         XCTAssertEqual(studs.first?.name, "Montants M48/35")
         XCTAssertEqual(studs.first?.unit, .linearMeter)
-        // 5 full-height reinforcing studs + 2 full-height sides + 4 across the opening.
-        XCTAssertEqual(try XCTUnwrap(studs.first).quantity, 5 * 2.5 + 2 * 2.5 + 4 * 1.2, accuracy: 1e-9)
+        // Two full-height sides only; no lintel, sill or short reveal pieces.
+        XCTAssertEqual(try XCTUnwrap(studs.first).quantity, 2 * 2.5, accuracy: 1e-9)
         XCTAssertEqual(context.railName, "Rails R48")
         XCTAssertEqual(OpeningContext.profileName(frame: "R48 + M48/50", rail: false), "Montants M48/50")
         XCTAssertEqual(OpeningContext().studName, "Montants — référence à préciser")
     }
-    func testDoorAndRoofStudsHaveNoPieceCountAndPocketDoorKeepsM70() throws {
+    func testDoorAndRoofStudsHaveNoPieceCountAndWallDoorsUseSelectedProfile() throws {
         let context = OpeningContext(system: .distributionPartition, hsp: 2.5, frame: "R48 + M48/35")
         let door = OpeningQuantityCalculator.calculate(.init(kind: .interiorDoor, width: 0.9, height: 2), context: context)
-        XCTAssertEqual(door.quantities.first(where: { $0.name == "Montants M48/35" })?.quantity, 12)
-        XCTAssertEqual(door.quantities.first(where: { $0.name == "Rails R48" })?.quantity, 0.9)
+        XCTAssertEqual(door.quantities.first(where: { $0.name == "Montants M48/35" })?.quantity, 5)
+        XCTAssertNil(door.quantities.first(where: { $0.name == "Rails R48" }))
         XCTAssertFalse(door.quantities.contains(where: { $0.name.hasPrefix("Montants") && $0.unit == .unit }))
         let pocket = OpeningQuantityCalculator.calculate(.init(kind: .pocketDoor, width: 0.9, height: 2), context: context)
-        XCTAssertEqual(pocket.quantities.first(where: { $0.name == "Montants M70" })?.quantity, 7)
+        XCTAssertEqual(pocket.quantities.first(where: { $0.name == "Montants M48/35" })?.quantity, 5)
+        XCTAssertEqual(pocket.quantities.count,1)
         let roof = OpeningQuantityCalculator.calculate(.init(kind: .roofWindow, width: 1.2, height: 1),
             context: .init(system: .railStudCeiling, ceilingLengthInStudDirection: 3, frame: "R90 + M90"))
         XCTAssertEqual(roof.quantities.first(where: { $0.name == "Montants M90" })?.quantity, 6)

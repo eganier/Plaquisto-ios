@@ -18,6 +18,8 @@ struct ContrastLabRoot: View {
                 .tabItem { Label("Scanner", systemImage: "viewfinder") }.tag(1)
             ToolsHomeView(onOpenAccount: { settings = true })
                 .tabItem { Label("Outils", systemImage: "wrench.and.screwdriver") }.tag(2)
+            StockHomeView()
+                .tabItem { Label("Stock", systemImage: "shippingbox") }.tag(3)
         }
         .onChange(of: store.projectNavigationRequest) { _, request in if request != nil { tab = 0 } }
         .sheet(isPresented: $settings) {
@@ -62,6 +64,45 @@ private struct LabPrimaryLabel: View {
     }
 }
 
+/// Swipe actions for cards hosted in ScrollView (SwiftUI swipeActions only
+/// works on List rows). Vertical scrolling remains simultaneous and unchanged.
+private struct LabSwipeActions: ViewModifier {
+    let rename: () -> Void
+    let duplicate: () -> Void
+    let delete: () -> Void
+    @State private var revealed = false
+    func body(content: Content) -> some View {
+        VStack(spacing: 0) {
+            content
+                .simultaneousGesture(DragGesture(minimumDistance: 24).onEnded { value in
+                    guard abs(value.translation.width) > abs(value.translation.height) * 1.5 else { return }
+                    withAnimation(.easeInOut(duration: 0.22)) { revealed = value.translation.width < -30 }
+                })
+            if revealed {
+                HStack(spacing: 8) {
+                    action("Renommer", "pencil", .orange, rename)
+                    action("Dupliquer", "doc.on.doc", .blue, duplicate)
+                    action("Supprimer", "trash", .red, delete)
+                }.padding(.top, 8).transition(.move(edge: .trailing).combined(with: .opacity))
+            }
+        }
+        .contextMenu {
+            Button("Renommer", systemImage: "pencil", action: rename)
+            Button("Dupliquer", systemImage: "doc.on.doc", action: duplicate)
+            Button("Supprimer", systemImage: "trash", role: .destructive, action: delete)
+        }
+        .accessibilityAction(named: "Renommer", rename)
+        .accessibilityAction(named: "Dupliquer", duplicate)
+        .accessibilityAction(named: "Supprimer", delete)
+    }
+    private func action(_ title: String, _ icon: String, _ tint: Color, _ operation: @escaping () -> Void) -> some View {
+        Button { operation(); withAnimation { revealed = false } } label: {
+            VStack(spacing: 4) { Image(systemName: icon); Text(title).font(.caption) }
+                .frame(maxWidth: .infinity, minHeight: 52)
+        }.buttonStyle(.bordered).tint(tint)
+    }
+}
+
 private struct LabProjectsView: View {
     @EnvironmentObject private var store: ProjectStore
     let onSettings: () -> Void
@@ -69,6 +110,8 @@ private struct LabProjectsView: View {
     @State private var path: [LabRoute] = []
     @State private var adding = false
     @State private var deleting: ProjectItem?
+    @State private var renaming: ProjectItem?
+    @State private var renameText = ""
     @State private var error: String?
     private var visible: [ProjectItem] {
         store.projects.filter { ProjectGalleryIndex.matches($0, surveys: store.surveys(projectID: $0.id), query: search) }
@@ -92,10 +135,8 @@ private struct LabProjectsView: View {
                             LabProjectCard(project: project, survey: store.surveys(projectID: project.id).max { $0.scanDate < $1.scanDate }) {
                                 path.append(.project(project.id))
                             }.accessibilityIdentifier("lab.project.\(project.id)")
-                            .contextMenu {
-                                Button("Dupliquer", systemImage: "plus.square.on.square") { perform { try store.duplicateProject(id: project.id) } }
-                                Button("Supprimer", systemImage: "trash", role: .destructive) { deleting = project }
-                            }
+                            .modifier(LabSwipeActions(rename: { renameText = project.name; renaming = project },
+                                duplicate: { perform { try store.duplicateProject(id: project.id) } }, delete: { deleting = project }))
                         }
                     }
                 }.padding(20)
@@ -114,6 +155,14 @@ private struct LabProjectsView: View {
                 if let request { path = [.project(request.projectID)] }
             }
             .sheet(isPresented: $adding) { ProjectFormView() }
+            .alert("Renommer le projet", isPresented: Binding(get: { renaming != nil }, set: { if !$0 { renaming = nil } })) {
+                TextField("Nom", text: $renameText)
+                Button("Enregistrer") {
+                    if let item = renaming { perform { try store.updateProject(id: item.id, name: renameText, client: item.client, address: item.address, notes: item.notes) } }
+                    renaming = nil
+                }.disabled(renameText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                Button("Annuler", role: .cancel) { renaming = nil }
+            }
             .task(id: store.surveys.map(\.id)) {
                 for survey in store.surveys where survey.captureAddress == nil && survey.captureLocation != nil {
                     guard !Task.isCancelled else { return }
@@ -193,6 +242,12 @@ private struct LabProjectView: View {
     @State private var editing = false
     @State private var deleting = false
     @State private var surveyToDelete: ProjectSurveyRecord?
+    @State private var collapsedSurveys: Set<UUID> = []
+    @State private var workToDelete: WorkItem?
+    @State private var renameID: UUID?
+    @State private var renameIsSurvey = false
+    @State private var renameText = ""
+    @State private var scanning = false
     @State private var error: String?
     private var project: ProjectItem? { store.project(id: projectID) }
     var body: some View {
@@ -202,10 +257,24 @@ private struct LabProjectView: View {
                     VStack(alignment: .leading, spacing: 22) {
                         let address = project.address.isEmpty ? (store.surveys(projectID: projectID).compactMap(\.captureAddress).first ?? "") : project.address
                         if !address.isEmpty { ProjectAddressMenu(address: address).font(.subheadline) }
+                        Button { scanning=true } label: {
+                            Label("Scanner dans ce projet",systemImage:"viewfinder")
+                                .font(.headline).frame(maxWidth:.infinity,minHeight:52)
+                        }.buttonStyle(.bordered).tint(ContrastPalette.blue)
                         if !store.surveys(projectID: projectID).isEmpty {
                             VStack(alignment: .leading, spacing: 12) {
                                 Text("Relevés 3D").font(.headline)
                                 ForEach(store.surveys(projectID: projectID)) { survey in
+                                    HStack(spacing: 4) {
+                                    Button {
+                                        withAnimation(.easeInOut(duration: 0.25)) {
+                                            if !collapsedSurveys.insert(survey.id).inserted { collapsedSurveys.remove(survey.id) }
+                                        }
+                                    } label: {
+                                        Image(systemName: "triangle.fill").font(.caption)
+                                            .rotationEffect(.degrees(collapsedSurveys.contains(survey.id) ? 90 : 180))
+                                            .frame(width: 32, height: 60)
+                                    }.accessibilityLabel(collapsedSurveys.contains(survey.id) ? "Déplier les ouvrages" : "Replier les ouvrages")
                                     NavigationLink(value: LabRoute.survey(survey.id)) {
                                         HStack(spacing: 14) {
                                             SurveyThumbnailView(survey: survey).frame(width: 100, height: 78).clipShape(RoundedRectangle(cornerRadius: 14))
@@ -216,31 +285,24 @@ private struct LabProjectView: View {
                                             }; Spacer(minLength: 0)
                                         }.padding(10).modifier(LabCard())
                                     }.buttonStyle(.plain)
-                                    .contextMenu { Button("Supprimer le relevé", systemImage: "trash", role: .destructive) { surveyToDelete = survey } }
+                                    }
+                                    .modifier(LabSwipeActions(rename: { beginRename(survey.id, name: survey.name, survey: true) },
+                                        duplicate: { perform { try store.duplicateSurvey(projectID: projectID, surveyID: survey.id) } }, delete: { surveyToDelete = survey }))
+                                    if !collapsedSurveys.contains(survey.id) {
+                                        ForEach(project.visibleWorks.filter { owningSurvey($0) == survey.id }) { work in
+                                            workCard(work).padding(.leading, 28).transition(.opacity.combined(with: .move(edge: .top)))
+                                        }
+                                    }
                                 }
                             }
                         }
                         VStack(alignment: .leading, spacing: 12) {
                             HStack {
-                                Text("Ouvrages").font(.headline); Spacer()
+                                Text(store.surveys(projectID: projectID).isEmpty ? "Ouvrages" : "Ouvrages sans relevé").font(.headline); Spacer()
                                 Button { adding = true } label: { Label("Ajouter", systemImage: "plus") }.frame(minHeight: 44)
                             }
                             if project.visibleWorks.isEmpty { Text("Ajoutez un ouvrage ou choisissez ses surfaces dans la maquette.").font(.subheadline).foregroundStyle(.secondary) }
-                            ForEach(project.visibleWorks) { work in
-                                NavigationLink(value: LabRoute.work(project: projectID, work: work.id)) {
-                                    HStack(spacing: 12) {
-                                        LabWorkPreview(work: work).frame(width: 104, height: 84).clipShape(RoundedRectangle(cornerRadius: 14))
-                                        VStack(alignment: .leading, spacing: 7) {
-                                            Text(work.name).font(.subheadline.weight(.semibold)).foregroundStyle(ContrastPalette.ink)
-                                            Text(work.type.title).font(.caption).foregroundStyle(.secondary).lineLimit(2)
-                                            Text("\(work.area.formatted(.number.precision(.fractionLength(0...1)))) m²").font(.subheadline.weight(.semibold)).foregroundStyle(ContrastPalette.blue)
-                                            if work.layoutNeedsRecalculation == true || work.surveySourceNeedsReview {
-                                                Label("À vérifier", systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(ContrastPalette.orange)
-                                            }
-                                        }; Spacer(minLength: 0)
-                                    }.padding(10).modifier(LabCard())
-                                }.buttonStyle(.plain).accessibilityIdentifier("lab.work.\(work.id)")
-                            }
+                            ForEach(project.visibleWorks.filter { owningSurvey($0) == nil }) { work in workCard(work) }
                         }
                         if !project.client.isEmpty || !project.notes.isEmpty {
                             DisclosureGroup("Informations du projet") {
@@ -267,6 +329,9 @@ private struct LabProjectView: View {
                     } label: { Image(systemName: "ellipsis") }.accessibilityLabel("Options du projet")
                 }
                 .sheet(isPresented: $editing) { ProjectFormView(project: project) }
+                .fullScreenCover(isPresented:$scanning) {
+                    ScannerDebugView(targetProjectID:projectID,onOpenAccount:{})
+                }
                 .sheet(isPresented: $adding) { NewWorkView(projectID: projectID) }
             } else { ContentUnavailableView("Projet introuvable", systemImage: "folder") }
         }
@@ -278,7 +343,42 @@ private struct LabProjectView: View {
                 if let surveyToDelete { perform { try store.deleteSurvey(projectID: projectID, surveyID: surveyToDelete.id) } }; surveyToDelete = nil
             }
         } message: { Text("Les ouvrages et calepinages restent conservés, sans lien avec ce relevé.") }
+        .confirmationDialog("Supprimer cet ouvrage ?", isPresented: Binding(get: { workToDelete != nil }, set: { if !$0 { workToDelete = nil } }), titleVisibility: .visible) {
+            Button("Supprimer", role: .destructive) {
+                if let workToDelete { perform { try store.deleteWork(projectID: projectID, workID: workToDelete.id) } }
+                workToDelete = nil
+            }
+        }
+        .alert("Renommer", isPresented: Binding(get: { renameID != nil }, set: { if !$0 { renameID = nil } })) {
+            TextField("Nom", text: $renameText)
+            Button("Enregistrer") {
+                if let id = renameID { perform {
+                    if renameIsSurvey { try store.renameSurvey(projectID: projectID, surveyID: id, name: renameText) }
+                    else { try store.renameWorkTitle(projectID: projectID, workID: id, title: renameText) }
+                } }; renameID = nil
+            }.disabled(renameText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            Button("Annuler", role: .cancel) { renameID = nil }
+        }
         .alert("Action impossible", isPresented: Binding(get: { error != nil }, set: { if !$0 { error = nil } })) { Button("OK") { error = nil } } message: { Text(error ?? "") }
+    }
+    private func owningSurvey(_ work: WorkItem) -> UUID? {
+        let ids = Set(work.components.compactMap { $0.surveySource?.surveyID })
+        return store.surveys(projectID: projectID).first { ids.contains($0.id) }?.id
+    }
+    private func beginRename(_ id: UUID, name: String, survey: Bool) { renameID = id; renameText = name; renameIsSurvey = survey }
+    private func workCard(_ work: WorkItem) -> some View {
+        NavigationLink(value: LabRoute.work(project: projectID, work: work.id)) {
+            HStack(spacing: 12) {
+                LabWorkPreview(work: work).frame(width: 104, height: 84).clipShape(RoundedRectangle(cornerRadius: 14))
+                VStack(alignment: .leading, spacing: 7) {
+                    Text(work.name).font(.subheadline.weight(.semibold)).foregroundStyle(ContrastPalette.ink)
+                    Text(work.type.title).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                    Text("\(work.area.formatted(.number.precision(.fractionLength(0...1)))) m²").font(.subheadline.weight(.semibold)).foregroundStyle(ContrastPalette.blue)
+                }; Spacer(minLength: 0)
+            }.padding(10).modifier(LabCard())
+        }.buttonStyle(.plain).accessibilityIdentifier("lab.work.\(work.id)")
+        .modifier(LabSwipeActions(rename: { beginRename(work.id, name: work.name, survey: false) },
+            duplicate: { perform { try store.duplicateWork(projectID: projectID, workID: work.id) } }, delete: { workToDelete = work }))
     }
     private func perform(_ operation: () throws -> Void) { do { try operation() } catch { self.error = error.localizedDescription } }
 }
@@ -307,13 +407,26 @@ private struct LabWorkView: View {
                         if work.layoutNeedsRecalculation == true {
                             Label("Le plan a changé. Vérifiez le quantitatif avant de commander.", systemImage: "exclamationmark.triangle").font(.subheadline).foregroundStyle(ContrastPalette.orange)
                         }
+                        VStack(alignment: .leading, spacing: 10) {
+                            Text("Configuration actuelle").font(.headline)
+                            Text(WorkTechnicalSummary.text(for: work, catalogue: references.workSummaryCatalogue))
+                                .font(.subheadline)
+                            let openings = WorkOpeningRelations.summary(for: work, allWorks: store.project(id: projectID)?.works ?? [])
+                            if !openings.isEmpty {
+                                Divider()
+                                Label("Ouvertures", systemImage: "door.left.hand.open").font(.subheadline.weight(.semibold))
+                                ForEach(Array(openings.enumerated()), id: \.offset) { _, title in
+                                    Text(title).font(.subheadline)
+                                }
+                            }
+                        }.frame(maxWidth: .infinity, alignment: .leading).padding(16).modifier(LabCard())
                         NavigationLink { CombinedQuantityView(works: [work], title: "Quantitatif") } label: {
                             LabPrimaryLabel(title: "Voir le quantitatif", symbol: "list.bullet.rectangle")
                         }
                         if work.type != .paintingBeta && work.type != .jointTreatment && (work.hasSavedLayout || !work.components.isEmpty || (work.type != .openings && !work.isPartition)) {
                             NavigationLink { WorkLayoutWorkbookView(projectID: projectID, workID: workID) } label: { action("Calepinage 2D", symbol: "square.grid.3x3") }
                         }
-                        NavigationLink { SavedWorkView(work: work, startsAtBeginning: true) } label: { action("Modifier la configuration", symbol: "slider.horizontal.3") }
+                        NavigationLink { LabWorkConfigurationView(projectID:projectID,workID:workID) } label: { action("Modifier la configuration", symbol: "slider.horizontal.3") }
                         if work.supportsAttachedOpenings {
                             NavigationLink { WorkOpeningsView(work: work) } label: { action("Ajouter / gérer les ouvertures", symbol: "door.left.hand.open") }
                         }
@@ -322,10 +435,6 @@ private struct LabWorkView: View {
                                 Label("Vérifier l’isolant et les tapées", systemImage: "exclamationmark.triangle.fill").foregroundStyle(ContrastPalette.orange)
                             }
                         }
-                        DisclosureGroup("Détails techniques") {
-                            Text(WorkTechnicalSummary.text(for: work, catalogue: references.workSummaryCatalogue))
-                                .font(.subheadline).frame(maxWidth: .infinity, alignment: .leading).padding(.top, 10)
-                        }.padding(16).modifier(LabCard())
                     }.padding(20)
                 }.background(ContrastPalette.paper)
                 .navigationTitle(work.name).navigationBarTitleDisplayMode(.inline)
@@ -354,13 +463,91 @@ private struct LabWorkView: View {
     private func perform(_ operation: () throws -> Void) { do { try operation() } catch { self.error = error.localizedDescription } }
 }
 
+private struct LabWorkConfigurationView: View {
+    @EnvironmentObject private var store: ProjectStore
+    @StateObject private var references = CeilingReferenceStore()
+    let projectID: UUID
+    let workID: UUID
+    @State private var editing: WorkConfigurationShortcut?
+    private var work: WorkItem? { store.project(id:projectID)?.works.first { $0.id == workID } }
+    private func shortcuts(_ work: WorkItem) -> [WorkConfigurationShortcut] {
+        WorkConfigurationShortcut.choices(for:work.type).filter {
+            // Support/plenum/suspension do not apply to a self-supporting ceiling.
+            !(work.railStudCeilingConfiguration?.frameMode == "selfSupporting" && [4,5,6].contains($0.step))
+        }
+    }
+    var body: some View {
+        Group {
+            if let work {
+                List {
+                    Section {
+                        Text(work.name).font(.headline)
+                        Text(work.type.title).font(.subheadline).foregroundStyle(.secondary)
+                        Text("\(work.area.formatted(.number.precision(.fractionLength(0...1)))) m²").foregroundStyle(ContrastPalette.blue)
+                    }
+                    Section("Modifier un réglage") {
+                        ForEach(shortcuts(work)) { shortcut in
+                            Button { editing = shortcut } label: {
+                                HStack { Text(shortcut.title); Spacer(); Image(systemName:"chevron.right").font(.caption) }
+                                    .frame(minHeight:44).contentShape(Rectangle())
+                            }.accessibilityIdentifier("lab.configuration.step.\(shortcut.step)")
+                        }
+                        NavigationLink("Ouvrir le formulaire complet") { SavedWorkView(work:work,startsAtBeginning:true) }
+                    }
+                    Section {
+                        DisclosureGroup("Configuration actuelle") {
+                            Text(WorkTechnicalSummary.text(for:work,catalogue:references.workSummaryCatalogue)).font(.subheadline)
+                        }
+                    }
+                }
+                .sheet(item:$editing) { shortcut in
+                    NavigationStack {
+                        SavedWorkView(work:work)
+                            .environment(\.configurationEntryStep,shortcut.step)
+                            .toolbar {
+                                ToolbarItem(placement:.cancellationAction) { Button("Fermer") { editing=nil } }
+                            }
+                    }.interactiveDismissDisabled()
+                }
+            } else { ContentUnavailableView("Ouvrage introuvable",systemImage:"square.stack") }
+        }
+        .navigationTitle("Configuration").navigationBarTitleDisplayMode(.inline)
+        .task { await references.load() }
+    }
+}
+
 private struct LabQuantitySelection: View {
     @EnvironmentObject private var store: ProjectStore
     let projectID: UUID
-    @State private var selected: Set<UUID> = []
-    @State private var initialized = false
+    @State private var selected: Set<UUID>?
+    @State private var filtering = false
     private var works: [WorkItem] { store.project(id: projectID)?.visibleWorks ?? [] }
-    private var chosen: [WorkItem] { works.filter { selected.contains($0.id) } }
+    private var chosen: [WorkItem] { works.filter { selected?.contains($0.id) ?? true } }
+    var body: some View {
+        CombinedQuantityView(works:chosen,title:selected == nil ? "Quantitatif du projet" : "Quantitatif sélectionné")
+            // Recreate the share document for each selection; never share an old total.
+            .id(chosen.map(\.id))
+            .toolbar {
+                Button { filtering=true } label: { Label("Filtrer",systemImage:"line.3.horizontal.decrease") }
+                    .accessibilityLabel("Filtrer les ouvrages inclus")
+                    .accessibilityValue("\(chosen.count) sur \(works.count)")
+            }
+            .sheet(isPresented:$filtering) {
+                NavigationStack {
+                    LabQuantityFilter(works:works,selected:Set(chosen.map(\.id))) { selection in
+                        selected = selection == Set(works.map(\.id)) ? nil : selection
+                        filtering=false
+                    }
+                }
+            }
+    }
+}
+
+private struct LabQuantityFilter: View {
+    @Environment(\.dismiss) private var dismiss
+    let works: [WorkItem]
+    @State var selected: Set<UUID>
+    let apply: (Set<UUID>) -> Void
     var body: some View {
         List {
             Section {
@@ -377,16 +564,18 @@ private struct LabQuantitySelection: View {
                 }
             } header: { Text("Ouvrages à inclure") }
         }.scrollContentBackground(.hidden).background(ContrastPalette.paper)
-            .navigationTitle("Quantitatifs").navigationBarTitleDisplayMode(.inline)
+            .navigationTitle("Ouvrages inclus").navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                Button(selected.count == works.count ? "Aucun" : "Tout") { selected = selected.count == works.count ? [] : Set(works.map(\.id)) }
-                    .accessibilityLabel(selected.count == works.count ? "Tout désélectionner" : "Tout sélectionner")
+                ToolbarItem(placement:.cancellationAction) { Button("Annuler") { dismiss() } }
+                ToolbarItem(placement:.primaryAction) {
+                    Button(selected.count == works.count ? "Aucun" : "Tout") { selected = selected.count == works.count ? [] : Set(works.map(\.id)) }
+                        .accessibilityLabel(selected.count == works.count ? "Tout désélectionner" : "Tout sélectionner")
+                }
             }
-            .onAppear { if !initialized { selected = Set(works.map(\.id)); initialized = true } }
             .safeAreaInset(edge: .bottom) {
-                NavigationLink { CombinedQuantityView(works: chosen, title: "Quantitatif du projet") } label: {
-                    LabPrimaryLabel(title: "Afficher · \(chosen.count) ouvrage(s)", symbol: "list.bullet.rectangle")
-                }.disabled(chosen.isEmpty).opacity(chosen.isEmpty ? 0.45 : 1).padding(20).background(.ultraThinMaterial)
+                Button { apply(selected) } label: {
+                    LabPrimaryLabel(title: "Appliquer · \(selected.count) ouvrage(s)", symbol: "checkmark")
+                }.padding(20).background(.ultraThinMaterial)
             }
     }
 }
