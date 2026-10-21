@@ -3,6 +3,54 @@ import SwiftUI
 @testable import Plaquisto
 
 final class SheetLayoutEngineTests: XCTestCase {
+    func testPlacementDimensionsMeasureActualConcaveBoundaryAndRotatedAxes() throws {
+        let contour: [LayoutPoint] = [.init(x:0,y:0), .init(x:4000,y:0), .init(x:4000,y:2000),
+            .init(x:2000,y:2000), .init(x:2000,y:4000), .init(x:0,y:4000)]
+        let center = LayoutPoint(x:1000,y:3000)
+        let dimensions = LayoutPlacementDimensions.dimensions(contour:contour,center:center,width:400,height:600)
+        XCTAssertEqual(dimensions.map(\.distance), [800,800,2700,700])
+        let angle = 0.71
+        let rotated = LayoutPlacementDimensions.dimensions(contour:contour.map { LayoutOpeningFrame.rotate($0,by:angle) },
+            center:LayoutOpeningFrame.rotate(center,by:angle),width:400,height:600,angle:angle)
+        for (a,b) in zip(dimensions,rotated) { XCTAssertEqual(a.distance,b.distance,accuracy:0.001) }
+        let right = try XCTUnwrap(dimensions.first { $0.id == 1 })
+        let moved = try XCTUnwrap(LayoutPlacementDimensions.movedCenter(center,dimension:right,distance:500))
+        XCTAssertEqual(moved.x,1300,accuracy:0.001)
+        XCTAssertEqual(moved.y,3000,accuracy:0.001)
+        XCTAssertNil(LayoutPlacementDimensions.movedCenter(center,dimension:right,distance:-1))
+        XCTAssertNil(LayoutPlacementDimensions.movedCenter(center,dimension:right,distance:.nan))
+    }
+
+    func testElectricalVerticalDimensionMovesOnlySelectedPointAndPreservesRows() throws {
+        let wall = surface(width:4000,height:3000)
+        var lights = LayoutLighting(count:2)
+        lights.positions = [.init(x:1000,y:1000), .init(x:2000,y:1000)]
+        lights.wallRowHeights = [1000]
+        let moved = try LayoutWallLighting.positioning(lights,index:0,point:.init(x:1000,y:1200),surface:wall)
+        XCTAssertEqual(moved.positions[0].y,1200)
+        XCTAssertEqual(moved.positions[1],lights.positions[1])
+        XCTAssertEqual(moved.wallRowHeights,[1000])
+        XCTAssertThrowsError(try LayoutWallLighting.positioning(lights,index:0,point:.init(x:-100,y:1200),surface:wall))
+    }
+
+    func testSuspensionSpacingConfigurationRemainsBackwardCompatible() throws {
+        let original = CeilingConfiguration()
+        let encoded = try JSONEncoder().encode(original)
+        var json = try XCTUnwrap(JSONSerialization.jsonObject(with:encoded) as? [String:Any])
+        json.removeValue(forKey:"suspensionSpacingMeters")
+        let legacy = try JSONDecoder().decode(CeilingConfiguration.self,from:JSONSerialization.data(withJSONObject:json))
+        XCTAssertNil(legacy.suspensionSpacingMeters)
+        var updated = legacy; updated.suspensionSpacingMeters = 0.8
+        let roundTrip = try JSONDecoder().decode(CeilingConfiguration.self,from:JSONEncoder().encode(updated))
+        XCTAssertEqual(roundTrip.suspensionSpacingMeters,0.8)
+        let support = surface(width:4000,height:3000)
+        let document = WorkLayoutDefaults.document(surface:support,configuration:.ceiling(updated))
+        XCTAssertEqual(document.layers.first?.furring?.ceilingSuspensionSpacing,800)
+        var custom = document.layers[0]
+        custom.furring?.ceilingSuspensionSpacing = 600
+        XCTAssertEqual(WorkLayoutDefaults.resolvingSupport(custom,configuration:.ceiling(updated)).furring?.ceilingSuspensionSpacing,600)
+    }
+
     private var snapContour: Surface2D {
         .init(name:"Contour",kind:.ceiling,contour:[.init(x:0,y:0),.init(x:2000,y:200),
             .init(x:4000,y:0),.init(x:4000,y:3000),.init(x:0,y:3000)])

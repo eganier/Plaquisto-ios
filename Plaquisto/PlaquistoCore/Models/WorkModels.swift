@@ -73,6 +73,8 @@ struct CeilingConfiguration: Codable, Equatable {
     // Optional so ceilings saved before the direction choice remain decodable.
     var furringDirection: String? = nil
     var perimeterSupport: Bool? = nil
+    // Optional to preserve archives created before the suspension-spacing control.
+    var suspensionSpacingMeters: Double? = nil
 }
 
 struct DoublageFacingSelection: Identifiable, Codable, Equatable, Hashable {

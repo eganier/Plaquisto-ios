@@ -3,6 +3,17 @@ import SwiftUI
 @testable import Plaquisto
 
 @MainActor final class StockTests:XCTestCase {
+    func testPartialPackagePercentConvertsToPhysicalUnitsWithoutRounding() {
+        XCTAssertEqual(StockQuantity.packed(complete:2,partial:0.35,size:100),235)
+        XCTAssertEqual(StockQuantity.packed(complete:0,partial:1,size:30),30)
+        XCTAssertEqual(StockQuantity.packed(complete:0,partial:0,size:30),0)
+        XCTAssertEqual(StockQuantity.packed(complete:1.5,partial:0,size:20),30)
+        XCTAssertNil(StockQuantity.packed(complete:-1,partial:0,size:20))
+        XCTAssertNil(StockQuantity.packed(complete:1,partial:1.01,size:20))
+        XCTAssertNil(StockQuantity.packed(complete:1,partial:0,size:0))
+        XCTAssertNil(StockQuantity.packed(complete:.infinity,partial:0,size:20))
+    }
+
     func testInlineShoppingSelectionUsesCurrentEditedValuesAndStableSourceIDs() {
         let a = StockProduct(name: "Appuis 100", unit: "unités")
         let b = StockProduct(name: "Appuis 120", unit: "unités")

@@ -44,8 +44,8 @@ struct LayoutSurfaceForm: View {
     }
     var body: some View {
         NavigationStack {
-            Form {
-                Section("Support") {
+            AtlantiqueForm {
+                AtlantiqueSection("Support") {
                     TextField("Pièce (facultatif)", text: $name)
                     Picker("Type", selection: $kind) { ForEach(LayoutSupportKind.allCases, id: \.self) { Text($0.rawValue) } }.pickerStyle(.segmented).disabled(requiredKind != nil)
                     Picker("Forme", selection: $preset) { ForEach(LayoutPreset.available(for: kind), id: \.self) { Text($0.rawValue) } }
@@ -57,7 +57,7 @@ struct LayoutSurfaceForm: View {
                             .font(.footnote).foregroundStyle(.secondary)
                     }
                 } else {
-                    Section("Dimensions") {
+                    AtlantiqueSection("Dimensions") {
                         if preset != .lShape || kind == .ceiling {
                             LayoutDimensionField(title: "Longueur", millimetres: $length, tint: .blue)
                         }
@@ -79,14 +79,14 @@ struct LayoutSurfaceForm: View {
                         }
                     }
                 }
-                Section("Aperçu du support") {
+                AtlantiqueSection("Aperçu du support") {
                     LayoutMeasuredPreview(contour: contour, tones: tones, corrections: generated.corrections) { selectedCorrection = $0 }
                         .frame(height: max(320,min(640,Double(contour.count)*32+120)))
                 }
                 Section { Text("Toutes les cotes sont en centimètres. Pour un rampant de plafond, renseignez les longueurs mesurées dans le plan incliné.").font(.footnote).foregroundStyle(.secondary) }
             }
             .scrollDismissesKeyboard(.interactively)
-            .navigationTitle("Créer le support").navigationBarTitleDisplayMode(.inline)
+            .navigationTitle("Créer le support").atlantiqueFormPage("Créer le support").navigationBarTitleDisplayMode(.inline)
             .onAppear { if let requiredKind { kind = requiredKind } }
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Annuler") { dismiss() } }
@@ -147,6 +147,10 @@ struct LayoutSurfaceForm: View {
 }
 
 struct LayoutOpeningForm: View {
+    @Environment(\.usesAtlantiqueDesign) private var atlantique
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var positioning = false
+    @State private var dimensionID = 0
     @Environment(\.dismiss) private var dismiss
     let support: LayoutSupportKind
     let existing: LayoutOpening?
@@ -178,14 +182,41 @@ struct LayoutOpeningForm: View {
     }
     var body: some View {
         NavigationStack {
-            Form {
-                Section("Ouverture") {
+            AtlantiqueForm {
+                if !atlantique || !positioning { AtlantiqueSection("Ouverture") {
                     Picker("Type", selection: $kind) { ForEach(LayoutOpeningKind.available(for: support), id: \.self) { Text($0.rawValue) } }
-                    LayoutDimensionField(title: "Largeur", millimetres: $width)
-                    LayoutDimensionField(title: support == .wall ? "Hauteur" : "Longueur", millimetres: $height)
+                    HStack {
+                        LayoutDimensionField(title: "Largeur", millimetres: $width)
+                        LayoutDimensionField(title: support == .wall ? "Hauteur" : "Longueur", millimetres: $height)
+                    }
                 }
-                if support == .ceiling, surfaceContour.count >= 3 {
-                    Section("Orientation") {
+                }
+                if atlantique, surfaceContour.count >= 3 {
+                    Section {
+                        if support == .ceiling {
+                            HStack {
+                                Button { changeWall(-1) } label: { Image(systemName: "chevron.left") }.accessibilityLabel("Mur précédent")
+                                Spacer()
+                                Text(referenceEdge < 0 ? "Orientation actuelle" : "Parallèle au mur \(referenceEdge + 1)").font(.headline)
+                                Spacer()
+                                Button { changeWall(1) } label: { Image(systemName: "chevron.right") }.accessibilityLabel("Mur suivant")
+                            }.buttonStyle(.borderless)
+                        }
+                        openingPreview.frame(height: positioning ? 310 : 220)
+                        Button { withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.25)) { positioning.toggle() } } label: {
+                            Label(positioning ? "Revenir aux dimensions" : "Disposition", systemImage: "move.3d")
+                        }.buttonStyle(.borderless)
+                    }
+                    if positioning {
+                        Section {
+                            Picker("Cote", selection: $dimensionID) { ForEach(placementDimensions) { Text($0.label).tag($0.id) } }.pickerStyle(.segmented)
+                            if placementDimensions.contains(where: { $0.id == dimensionID }) {
+                                LayoutDimensionField(title: "Distance " + ["A", "B", "C", "D"][dimensionID], millimetres: dimensionBinding)
+                            }
+                        }
+                    }
+                } else if support == .ceiling, surfaceContour.count >= 3 {
+                    AtlantiqueSection("Orientation") {
                         openingPreview.frame(height: 180)
                         Picker("Parallèle à", selection: $referenceEdge) {
                             Text(existing == nil ? "Vue du plan" : "Orientation actuelle").tag(-1)
@@ -199,19 +230,21 @@ struct LayoutOpeningForm: View {
                         }
                     }
                 }
-                Section(support == .ceiling ? "Position du centre" : "Position du coin inférieur gauche") {
+                if !atlantique || surfaceContour.count < 3 { Section(support == .ceiling ? "Position du centre" : "Position du coin inférieur gauche") {
                     LayoutDimensionField(title: "Depuis la gauche (X)", millimetres: $x, signed: true)
                     LayoutDimensionField(title: support == .wall ? "Depuis le sol (Y)" : "Depuis le bas (Y)", millimetres: $y, signed: true)
                     Text("La partie située dans le support sera retirée des plaques. Une porte peut toucher le sol ; les ouvertures qui se chevauchent ne sont déduites qu’une fois.").font(.footnote).foregroundStyle(.secondary)
+                }
                 }
                 if existing != nil, let onDelete { Section { Button("Supprimer l’ouverture", role: .destructive) { onDelete(); dismiss() } } }
             }
             .scrollDismissesKeyboard(.interactively)
             .navigationTitle(existing == nil ? "Nouvelle ouverture" : "Modifier l’ouverture").navigationBarTitleDisplayMode(.inline)
+            .atlantiqueFormPage(existing == nil ? "Nouvelle ouverture" : "Ouverture")
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Annuler") { dismiss() } }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Valider") {
+                    Button("Appliquer") {
                         let polygon = openingContour
                         onSave(.init(id: existing?.id ?? UUID(), kind: kind, contour: polygon,
                             doorHanding:kind == .door ? existing?.doorHanding : nil,
@@ -221,6 +254,25 @@ struct LayoutOpeningForm: View {
             }
             .onChange(of: kind) { _, value in if value == .door { y = 0 } }
         }
+    }
+    private var placementCenter: LayoutPoint {
+        support == .ceiling ? .init(x: x, y: y) : .init(x: x + width / 2, y: y + height / 2)
+    }
+    private var placementDimensions: [LayoutPlacementDimensions.Dimension] {
+        LayoutPlacementDimensions.dimensions(contour: surfaceContour, center: placementCenter, width: width, height: height, angle: support == .ceiling ? angle : 0)
+    }
+    private var dimensionBinding: Binding<Double> {
+        Binding(get: { placementDimensions.first { $0.id == dimensionID }?.distance ?? 0 }, set: { value in
+            guard let dimension = placementDimensions.first(where: { $0.id == dimensionID }),
+                  let center = LayoutPlacementDimensions.movedCenter(placementCenter, dimension: dimension, distance: value) else { return }
+            x = center.x - (support == .wall ? width / 2 : 0)
+            y = center.y - (support == .wall ? height / 2 : 0)
+        })
+    }
+    private func changeWall(_ delta: Int) {
+        guard !surfaceContour.isEmpty else { return }
+        referenceEdge = (max(0, referenceEdge) + delta + surfaceContour.count) % surfaceContour.count
+        angle = LayoutOpeningFrame.wallAngle(surfaceContour, edge: referenceEdge) ?? angle
     }
     private var openingContour: [LayoutPoint] {
         support == .ceiling ? frame.contour(center: .init(x: x, y: y), width: width, height: height, angle: angle)
@@ -250,6 +302,13 @@ struct LayoutOpeningForm: View {
                 }
                 context.draw(Text("\(i + 1)").font(.caption.bold()), at: screen((a + b) * 0.5))
             }
+            if atlantique && positioning {
+                for dimension in placementDimensions {
+                    var line = Path(); line.move(to: screen(dimension.start)); line.addLine(to: screen(dimension.end))
+                    context.stroke(line, with: .color(Atlantique.Palette.ink), lineWidth: 1)
+                    context.draw(Text("\(dimension.label) · \(layoutCM(dimension.distance))").font(.caption.bold()).foregroundStyle(Atlantique.Palette.ink), at: screen((dimension.start + dimension.end) * 0.5))
+                }
+            }
             context.fill(path(openingContour), with: .color(.orange.opacity(0.25)))
             context.stroke(path(openingContour), with: .color(.orange), lineWidth: 2)
         }
@@ -270,12 +329,12 @@ struct LayoutVertexForm: View {
     }
     var body: some View {
         NavigationStack {
-            Form {
-                Section("Sommet \(index + 1)") {
+            AtlantiqueForm {
+                AtlantiqueSection("Sommet \(index + 1)") {
                     LayoutDimensionField(title: "Depuis la gauche (X)", millimetres: $contour[index].x, signed: true)
                     LayoutDimensionField(title: "Depuis le bas (Y)", millimetres: $contour[index].y, signed: true)
                 }
-                Section("Côté vers le sommet \((index + 1) % contour.count + 1)") {
+                AtlantiqueSection("Côté vers le sommet \((index + 1) % contour.count + 1)") {
                     LayoutDimensionField(title: "Longueur du côté", millimetres: $sideLength)
                     Button("Appliquer cette longueur") {
                         let next = (index + 1) % contour.count, direction = contour[next] - contour[index]
@@ -296,7 +355,7 @@ struct LayoutVertexForm: View {
                 if let message { Section { Text(message).foregroundStyle(.red) } }
             }
             .scrollDismissesKeyboard(.interactively)
-            .navigationTitle("Modifier le contour").navigationBarTitleDisplayMode(.inline)
+            .navigationTitle("Modifier le contour").atlantiqueFormPage("Modifier le contour").navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Annuler") { dismiss() } }
                 ToolbarItem(placement: .confirmationAction) { Button("Valider") { save(contour) } }
@@ -340,8 +399,8 @@ struct LayoutSettingsForm: View {
     }
     var body: some View {
         NavigationStack {
-            Form {
-                Section("Format de plaque") {
+            AtlantiqueForm {
+                AtlantiqueSection("Format de plaque") {
                     Picker("Type de parement",selection:Binding(get:{selectedFormat?.family ?? ""},set:{ family in
                         select(catalogue.layoutFormats.first { $0.family == family && $0.width == layer.sheetWidth && $0.length == layer.sheetLength }
                             ?? catalogue.layoutFormats.first { $0.family == family })
@@ -366,7 +425,7 @@ struct LayoutSettingsForm: View {
                     if catalogue.layoutFormats.isEmpty { Text("Catalogue indisponible : le parement enregistré est conservé.").font(.footnote).foregroundStyle(.secondary) }
                     if let compatibilityMessage { Label(compatibilityMessage,systemImage:"exclamationmark.triangle.fill").foregroundStyle(.orange) }
                 }
-                if surface.kind == .wall { Section("Pose") {
+                if surface.kind == .wall { AtlantiqueSection("Pose") {
                     Toggle("Pose en quinconce",isOn:Binding(get:{layer.staggered == true},set:{ value in
                         layer.staggered=value; layer.staggerOffset=nil
                         if value { layer=LayoutPlanning.alignBoards(to:layer,support:surface.kind) }
@@ -384,7 +443,7 @@ struct LayoutSettingsForm: View {
             .onChange(of:layer.sheetLength) { _,_ in reconcileSpacing() }
             .onChange(of:layer.sheetWidth) { _,_ in reconcileSpacing() }
             .onChange(of:layer.orientation) { _,_ in reconcileSpacing() }
-            .navigationTitle("Plaques et pose").navigationBarTitleDisplayMode(.inline)
+            .navigationTitle("Plaques et pose").atlantiqueFormPage("Plaques et pose").navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Annuler") { dismiss() } }
                 ToolbarItem(placement: .confirmationAction) { Button("Appliquer") { onSave(layer); dismiss() }.disabled(layer.sheetWidth < 1 || layer.sheetLength < 1 || layer.sheetWidth > 100_000 || layer.sheetLength > 100_000 || (layer.furring != nil && LayoutPlanning.compatibleSpacings(layer).isEmpty)) }
@@ -473,7 +532,7 @@ struct LayoutCutDetail: View {
                 }.padding()
             }
             .background(Color(.systemGroupedBackground))
-            .navigationTitle("Plaque \(sheet.label(for:piece))").navigationBarTitleDisplayMode(.inline)
+            .navigationTitle("Plaque \(sheet.label(for:piece))").atlantiqueFormPage("Plaque \(sheet.label(for:piece))").navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Fermer") { dismiss() } } }
         }
     }
@@ -630,8 +689,8 @@ struct LayoutCorrectionDetail: View {
     let edgeCount: Int
     var body: some View {
         NavigationStack {
-            Form {
-                Section("Cote \(vertexName(correction.edgeIndex))–\(vertexName((correction.edgeIndex + 1) % max(1, edgeCount)))") {
+            AtlantiqueForm {
+                AtlantiqueSection("Cote \(vertexName(correction.edgeIndex))–\(vertexName((correction.edgeIndex + 1) % max(1, edgeCount)))") {
                     LabeledContent("Mesure saisie", value: layoutCM(correction.original))
                     LabeledContent("Mesure retenue", value: layoutCM(correction.corrected))
                     LabeledContent("Correction", value: "\(correction.correctionDelta >= 0 ? "+" : "")\(layoutCM(correction.correctionDelta))")
@@ -647,7 +706,7 @@ struct LayoutCorrectionDetail: View {
                     }
                 }
             }
-            .navigationTitle("Correction de mesure").navigationBarTitleDisplayMode(.inline)
+            .navigationTitle("Correction de mesure").atlantiqueFormPage("Correction de mesure").navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Fermer") { dismiss() } } }
         }
     }

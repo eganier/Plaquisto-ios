@@ -1,6 +1,7 @@
 import SwiftUI
 
 struct CloisonDistributionConfiguratorView: View {
+    @Environment(\.usesAtlantiqueDesign) private var atlantique
     @Environment(\.layoutCoveringAreaRatio) private var coveringAreaRatio
     enum GeometryMode: String, CaseIterable, Identifiable {
         case length = "Longueur"
@@ -92,7 +93,7 @@ struct CloisonDistributionConfiguratorView: View {
     }
 
     private let stepNames = ["Dimensions", "Ossature", "Parements", "Vérification", "Isolation", "Bandes à joint", "Résultat"]
-    private let green = Color(red: 0.12, green: 0.38, blue: 0.29)
+    private var green: Color { atlantique ? Atlantique.Palette.actionInk : Color(red: 0.12, green: 0.38, blue: 0.29) }
 
     private var actualLength: Double {
         geometryMode == .length ? enteredLength : (height > 0 ? enteredSurface / height : 0)
@@ -226,6 +227,7 @@ struct CloisonDistributionConfiguratorView: View {
             }
         }
         .tint(green)
+        .atlantiqueFormPage(stepNames[min(max(0, step - 1), stepNames.count - 1)])
         .configurationEntry(in:1...6) { step = $0 }
         .onChange(of: references.facings.count, initial: true) { _, _ in initializeSelections() }
         .onChange(of: actualArea) { _, area in
@@ -245,7 +247,7 @@ struct CloisonDistributionConfiguratorView: View {
         .onChange(of: systemID) { _, _ in normalizeInsulation() }
         .onChange(of: insulationID) { old, _ in normalizeInsulationThickness(preferFrame: !old.isEmpty) }
         .toolbar {
-            if isEditing, let onSave {
+            if (isEditing || atlantique), let onSave {
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Enregistrer") { onSave(configurationSnapshot()) }.disabled(!allStepsAreValid)
                         .disabled(!allRequiredLayersAreComplete || actualArea<=0)
@@ -280,7 +282,7 @@ struct CloisonDistributionConfiguratorView: View {
             }
             footer
         }
-        .background(Color(.systemGroupedBackground))
+        .background(atlantique ? Atlantique.Palette.blue : Color(.systemGroupedBackground))
     }
 
     private var header: some View {
@@ -291,15 +293,15 @@ struct CloisonDistributionConfiguratorView: View {
                 }
                 .buttonStyle(.bordered)
             }
-            Text("OUVRAGE").font(.caption.bold()).foregroundStyle(.secondary)
-            Text("Cloison de distribution").font(.title2.bold())
+            Text(atlantique ? "" : "OUVRAGE").font(.caption.bold()).foregroundStyle(atlantique ? Color.white.opacity(0.85) : .secondary)
+            Text("Cloison de distribution").font(atlantique ? Atlantique.Typography.caption : .title2.bold()).foregroundStyle(atlantique ? Color.white : .primary)
             Label("Données synchronisées avec Plaquisto Admin", systemImage: "checkmark.icloud")
             .font(.caption)
             .foregroundStyle(.green)
             ProgressView(value: Double(step), total: 7)
             Text("Étape \(step) sur 7 · \(stepNames[step - 1])")
                 .font(.caption)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(atlantique ? Color.white.opacity(0.85) : .secondary)
         }
         .padding(.horizontal, 20)
         .padding(.top, 12)

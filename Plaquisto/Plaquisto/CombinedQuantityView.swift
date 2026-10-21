@@ -866,7 +866,7 @@ enum CombinedQuantityCalculator {
             let prefix = configuration.layers == 1 ? "simple" : "double"
             let key = "\(prefix)_0\(Int((configuration.selectedSpacing * 100).rounded()))"
             let fixingRatio = catalogue.quantitatifs.first(where: { $0.id == "QTY-FIXATION" })?.data["values"]?.object?[key]?.number ?? 0
-            let estimatedFixings=fixingRatio*area+LayoutQuantityCalculator.estimatedAdditionalEndHangers(configuration)
+            let estimatedFixings=fixingRatio*area*(1.2 / max(0.01, configuration.suspensionSpacingMeters ?? 1.2))+LayoutQuantityCalculator.estimatedAdditionalEndHangers(configuration)
             let fixingCount = Double(takeoff?.hangers ?? 0) + estimatedFixings * remainingFraming
 
             for item in catalogue.quantitatifs where !["QTY-FIXATION", "QTY-PLAQUE"].contains(item.id) {

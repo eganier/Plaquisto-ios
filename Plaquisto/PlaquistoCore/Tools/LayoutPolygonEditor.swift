@@ -166,7 +166,7 @@ struct LayoutConstraintForm: View {
     private var isAngle: Bool { if case .angle = selection { return true }; return false }
     var body: some View {
         NavigationStack {
-            Form {
+            AtlantiqueForm {
                 Section(isAngle ? "Angle au sommet \(vertexName(selection.index))" : "Cote \(vertexName(selection.index))–\(vertexName((selection.index+1)%original.contour.count))") {
                     LayoutDimensionField(title:isAngle ? "Angle demandé" : "Mesure relevée", millimetres:$value, unit:isAngle ? "°" : "cm", displayScale:isAngle ? 1 : 0.1)
                     if isAngle {
@@ -177,12 +177,12 @@ struct LayoutConstraintForm: View {
                         Button("Libérer cette cote",systemImage:"lock.open") { releaseAngle() }
                     }
                 }
-                Section("Aperçu") {
+                AtlantiqueSection("Aperçu") {
                     LayoutContourPreview(contours:[preview.contour], numbered:true).frame(height:210)
                 }
                 if let error { Section { Text(error).foregroundStyle(.red) } }
                 if !preview.dimensionCorrections.isEmpty {
-                    Section("Mesures ajustées") {
+                    AtlantiqueSection("Mesures ajustées") {
                         ForEach(preview.dimensionCorrections) { correction in
                             VStack(alignment:.leading, spacing:4) {
                                 Label("\(vertexName(correction.edgeIndex))–\(vertexName((correction.edgeIndex+1)%preview.contour.count))", systemImage:correction.symbol).foregroundStyle(correctionColor(correction))
@@ -229,6 +229,7 @@ struct LayoutConstraintForm: View {
 }
 
 struct LayoutManualContourEditor: View {
+    @Environment(\.usesAtlantiqueDesign) private var atlantique
     @Environment(\.dismiss) private var dismiss
     let onSave: (Surface2D) -> Void
     let kind: LayoutSupportKind
@@ -285,12 +286,18 @@ struct LayoutManualContourEditor: View {
                     LayoutSketchPad(kind:kind) { points in accept(points) }.padding(12)
                 } else if let surface {
                     HStack(spacing:24) {
+                        if atlantique {
+                            Picker("Afficher", selection: Binding(get: { showAngles ? 1 : 0 }, set: { showAngles = $0 == 1; showDimensions = $0 == 0 })) {
+                                Text("Cotes").tag(0); Text("Angles").tag(1)
+                            }.pickerStyle(.segmented).padding(.horizontal)
+                        } else {
                         Button { showDimensions.toggle() } label: {
                             LayoutVisibilityIcon(kind:.sheet,state:showDimensions ? .dimensioned : .hidden).frame(width:52,height:42)
                         }.accessibilityLabel(showDimensions ? "Masquer les cotes" : "Afficher les cotes")
                         Button { showAngles.toggle() } label: {
                             LayoutVisibilityIcon(kind:.angle,state:showAngles ? .visible : .hidden).frame(width:52,height:42)
                         }.accessibilityLabel(showAngles ? "Masquer les angles" : "Afficher les angles")
+                        }
                         if allowsLayingOffset { Button { editTopology.toggle(); offsetEdges = [] } label: {
                             Image(systemName:"rectangle.inset.filled").font(.title2)
                                 .foregroundStyle(editTopology ? Color.secondary : .orange)
@@ -398,7 +405,7 @@ struct LayoutManualContourEditor: View {
                             }
                             confirmingTopology = topologyVertex != nil || topologyEdge != nil
                         })
-                        .overlay { LayoutPolygonAnnotations(surface:surface, viewport:viewport, showAngles:showAngles, showDimensions:showDimensions) { selection = $0 } }
+                        .overlay { LayoutPolygonAnnotations(surface:surface, viewport:viewport, showAngles:showAngles, showDimensions:atlantique ? !showAngles : showDimensions) { selection = $0 } }
                         .overlay {
                             if let vertex = dragVertex, let finger = dragLocation, surface.contour.indices.contains(vertex) {
                                 LayoutVertexLoupe(points: surface.contour.map { viewport.screen($0) },
@@ -449,7 +456,7 @@ struct LayoutManualContourEditor: View {
                         if let warning = surface.layingWarning { Text(warning).font(.caption).foregroundStyle(.orange) }
                     }.padding(.horizontal) }
                     HStack {
-                        Button("Redessiner", systemImage:"pencil.tip") { drawing = true }
+                        Button("Recommencer le dessin", systemImage:"pencil.tip") { drawing = true }
                         Spacer()
                         Button("Annuler la modification", systemImage:"arrow.uturn.backward") { if let previous = history.popLast() { self.surface = previous; resetScale() } }.disabled(history.isEmpty)
                     }.font(.subheadline).padding(.horizontal)
@@ -457,15 +464,12 @@ struct LayoutManualContourEditor: View {
                 // Validation messages must not resize the canvas during a drag.
                 if drawing, let error { Text(error).font(.footnote).foregroundStyle(.red).padding(.horizontal) }
             }
-            .padding(.bottom).background(Color(.systemGroupedBackground))
+            .padding(.bottom).background(atlantique ? Atlantique.Palette.paper : Color(.systemGroupedBackground))
             .navigationTitle(title ?? (kind == .wall ? "Dessiner le mur" : "Dessiner le plafond")).navigationBarTitleDisplayMode(.inline)
+            .atlantiqueFormPage(title ?? "Modifier le contour")
             .toolbar {
                 ToolbarItem(placement:.cancellationAction) { Button("Annuler") { dismiss() } }
                 ToolbarItem(placement:.confirmationAction) { Button("Utiliser") { if let surface { onSave(surface); dismiss() } }.disabled(surface == nil || drawing) }
-                ToolbarItem(placement:.primaryAction) {
-                    Menu {
-                    } label: { Image(systemName:"ellipsis.circle") }
-                }
             }
             .alert(topologyVertex != nil ? "Supprimer ce sommet ?" : "Ajouter un sommet ?",isPresented:$confirmingTopology) {
                 Button("Annuler",role:.cancel) {}

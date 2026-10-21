@@ -1,6 +1,7 @@
 import SwiftUI
 
 struct BondedLiningConfiguratorView: View {
+    @Environment(\.usesAtlantiqueDesign) private var atlantique
     private enum GeometryMode: String, CaseIterable, Identifiable { case length = "Longueur", surface = "Surface totale"; var id: Self { self } }
     private enum RevealMode: String, CaseIterable, Identifiable { case none = "Aucune tapée", required = "Tapée à respecter"; var id: Self { self } }
 
@@ -26,7 +27,7 @@ struct BondedLiningConfiguratorView: View {
     @State private var showPanelHeightWarning = false
     @State private var configurationExpanded = false
 
-    private let green = Color(red: 0.12, green: 0.38, blue: 0.29)
+    private var green: Color { atlantique ? Atlantique.Palette.actionInk : Color(red: 0.12, green: 0.38, blue: 0.29) }
     private let stepNames = ["Dimensions", "Parement", "Isolation et tapée", "Format", "Bandes à joint", "Résultat"]
 
     init(
@@ -94,6 +95,7 @@ struct BondedLiningConfiguratorView: View {
             } else { wizard }
         }
         .tint(green)
+        .atlantiqueFormPage(stepNames[min(max(0, step - 1), stepNames.count - 1)])
         .configurationEntry(in:1...5) { step = $0 }
         .onChange(of: references.references) { _, _ in normalizeAll() }
         .onChange(of: height) { _, _ in normalizeHeightForWork() }
@@ -109,7 +111,7 @@ struct BondedLiningConfiguratorView: View {
         }
         .onChange(of: selectedRevealMM) { _, _ in applyRecommendedThickness() }
         .toolbar {
-            if isEditing {
+            if isEditing || atlantique {
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Enregistrer") { onSave(configuration) }.disabled(!allStepsAreValid)
                 }
@@ -139,17 +141,17 @@ struct BondedLiningConfiguratorView: View {
                 }.padding(.horizontal, 20).padding(.vertical, 18)
             }
             footer
-        }.background(Color(.systemGroupedBackground))
+        }.background(atlantique ? Atlantique.Palette.blue : Color(.systemGroupedBackground))
     }
 
     private var header: some View {
         VStack(alignment: .leading, spacing: 10) {
             if showsCloseButton { Button("Fermer", action: onClose).buttonStyle(.bordered) }
-            Text("OUVRAGE").font(.caption.bold()).foregroundStyle(.secondary)
-            Text("Doublage périphérique en complexe collé").font(.title2.bold())
+            Text(atlantique ? "" : "OUVRAGE").font(.caption.bold()).foregroundStyle(atlantique ? Color.white.opacity(0.85) : .secondary)
+            Text("Doublage périphérique en complexe collé").font(atlantique ? Atlantique.Typography.caption : .title2.bold()).foregroundStyle(atlantique ? Color.white : .primary)
             Label("Données synchronisées avec Plaquisto Admin", systemImage: "icloud.and.arrow.down").font(.caption).foregroundStyle(.green)
             ProgressView(value: Double(step), total: 6)
-            Text("Étape \(step) sur 6 · \(stepNames[step - 1])").font(.caption).foregroundStyle(.secondary)
+            Text("Étape \(step) sur 6 · \(stepNames[step - 1])").font(.caption).foregroundStyle(atlantique ? Color.white.opacity(0.85) : .secondary)
         }.padding(.horizontal, 20).padding(.top, 12).padding(.bottom, 14).frame(maxWidth: .infinity, alignment: .leading).background(.background)
     }
 

@@ -1,6 +1,7 @@
 import SwiftUI
 
 struct FurringLiningConfiguratorView: View {
+    @Environment(\.usesAtlantiqueDesign) private var atlantique
     @Environment(\.layoutCoveringAreaRatio) private var coveringAreaRatio
     private enum GeometryMode: String, CaseIterable, Identifiable {
         case length = "Longueur"
@@ -40,7 +41,7 @@ struct FurringLiningConfiguratorView: View {
     private let showsCloseButton: Bool
     private let isEditing: Bool
     private let measuredWallRuns: [MeasuredWallRun]?
-    private let green = Color(red: 0.12, green: 0.38, blue: 0.29)
+    private var green: Color { atlantique ? Atlantique.Palette.actionInk : Color(red: 0.12, green: 0.38, blue: 0.29) }
 
     @State private var step = 1
     @State private var geometryMode = GeometryMode.length
@@ -243,6 +244,7 @@ struct FurringLiningConfiguratorView: View {
             }
         }
         .tint(green)
+        .atlantiqueFormPage(stepNames[min(max(0, step - 1), stepNames.count - 1)])
         .configurationEntry(in:1...5) { step = $0 }
         .onChange(of: facings.count, initial: true) { _, _ in initializeFacingsIfNeeded() }
         .onChange(of: insulationFamilies.count, initial: true) { _, _ in initializeInsulationIfNeeded() }
@@ -256,7 +258,7 @@ struct FurringLiningConfiguratorView: View {
         }
         .onChange(of: tiledArea) { _, enabled in if !enabled { tiledAreaSurface = 0 } }
         .toolbar {
-            if isEditing, let onSave {
+            if (isEditing || atlantique), let onSave {
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Enregistrer") { onSave(configurationSnapshot()) }.disabled(!allStepsAreValid)
                 }
@@ -296,18 +298,18 @@ struct FurringLiningConfiguratorView: View {
             }
             footer
         }
-        .background(Color(.systemGroupedBackground))
+        .background(atlantique ? Atlantique.Palette.blue : Color(.systemGroupedBackground))
     }
 
     private var header: some View {
         VStack(alignment: .leading, spacing: 10) {
             if showsCloseButton { Button("Fermer") { onClose?() }.buttonStyle(.bordered) }
-            Text("OUVRAGE").font(.caption.bold()).foregroundStyle(.secondary)
-            Text("Doublage périphérique sur lisses et fourrures").font(.title2.bold())
+            Text(atlantique ? "" : "OUVRAGE").font(.caption.bold()).foregroundStyle(atlantique ? Color.white.opacity(0.85) : .secondary)
+            Text("Doublage périphérique sur lisses et fourrures").font(atlantique ? Atlantique.Typography.caption : .title2.bold()).foregroundStyle(atlantique ? Color.white : .primary)
             Label("Données synchronisées avec Plaquisto Admin", systemImage: "checkmark.icloud")
                 .font(.caption).foregroundStyle(.green)
             ProgressView(value: Double(step), total: 6)
-            Text("Étape \(step) sur 6 · \(stepNames[step - 1])").font(.caption).foregroundStyle(.secondary)
+            Text("Étape \(step) sur 6 · \(stepNames[step - 1])").font(.caption).foregroundStyle(atlantique ? Color.white.opacity(0.85) : .secondary)
         }
         .padding(.horizontal, 20).padding(.top, 12).padding(.bottom, 14).background(.background)
     }

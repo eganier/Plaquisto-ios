@@ -42,6 +42,7 @@ struct LayoutLivePreview: View {
 }
 
 struct LayoutFurringForm: View {
+    @Environment(\.usesAtlantiqueDesign) private var atlantique
     @Environment(\.dismiss) private var dismiss
     @EnvironmentObject private var catalogue: ToolTechnicalStore
     @Environment(\.interfacePresentation) private var presentation
@@ -76,10 +77,10 @@ struct LayoutFurringForm: View {
     }
     var body: some View {
         NavigationStack {
-            Form {
+            AtlantiqueForm {
                 if !simplifiedCeiling {
                 Section { LayoutLivePreview(surface:surface,layer:layer).frame(height:220) }
-                if surface.kind == .ceiling { Section("Orientation des fourrures") {
+                if surface.kind == .ceiling { AtlantiqueSection("Orientation des fourrures") {
                     Picker("Sens des fourrures", selection: Binding(
                         get: { layer.resolvedFurringOrientation ?? .horizontal },
                         set: { layer.setFurringOrientation($0) }
@@ -89,7 +90,7 @@ struct LayoutFurringForm: View {
                     }.pickerStyle(.segmented)
                 } } else { Section { Label("Ossature verticale, perpendiculaire au sol",systemImage:"arrow.up") } }
                 if surface.kind == .wall, let system=layer.furring?.openingSystem {
-                    Section("Encadrements des ouvertures") {
+                    AtlantiqueSection("Encadrements des ouvertures") {
                         let geometry=LayoutPlanning.worldFurring(surface:surface,layer:layer)
                         Text("Renforts fixes à 5 cm des ouvertures (mesurés à l’axe). La trame mobile peut se caler et fusionner sur les renforts latéraux.").font(.footnote)
                         let horizontal=geometry.openingProfiles.filter { $0.role == .horizontal }.reduce(0.0) { $0+($1.line.end-$1.line.start).length/1000 }
@@ -105,7 +106,7 @@ struct LayoutFurringForm: View {
                     }
                 }
                 if layer.furring?.isFurringSystem != false && (surface.kind == .ceiling || layer.furring?.openingSystem == .furring) {
-                    Section("Raccords des fourrures") {
+                    AtlantiqueSection("Raccords des fourrures") {
                         LabeledContent("Éclisses sur le plan",value:"\(LayoutPlanning.worldFurring(surface:surface,layer:layer).furringSpliceCount)")
                         Text("Une éclisse à chaque raccord de longueurs de 3 m, par tronçon continu.").font(.caption).foregroundStyle(.secondary)
                     }
@@ -113,7 +114,9 @@ struct LayoutFurringForm: View {
                 }
                 Section(surface.kind == .wall ? "Entraxe de l’ossature" : "Entraxe des fourrures") {
                     Picker("Entraxe",selection:binding(\.spacing)) {
-                        Text("40 cm").tag(400.0); Text("50 cm").tag(500.0); Text("60 cm").tag(600.0)
+                        Text("40 cm").tag(400.0)
+                        if !atlantique || layer.furring?.spacing == 500 { Text("50 cm").tag(500.0) }
+                        Text("60 cm").tag(600.0)
                     }.pickerStyle(.segmented)
                     if let notice { Label(notice,systemImage:"exclamationmark.triangle.fill").foregroundStyle(.orange) }
                     if !compatible {
@@ -125,7 +128,7 @@ struct LayoutFurringForm: View {
                     }
                 }
                 if simplifiedCeiling {
-                    Section("Périphérie") {
+                    AtlantiqueSection("Périphérie") {
                         Picker("Appui en périphérie",selection:Binding(
                             get:{layer.furring?.resolvedCeilingPerimeterSupport ?? true},
                             set:{layer.furring?.setCeilingPerimeterSupport($0)}
@@ -135,17 +138,15 @@ struct LayoutFurringForm: View {
                         }.pickerStyle(.inline).labelsHidden()
                             .accessibilityIdentifier("layout.furring.periphery")
                     }
-                    Section("Suspentes") {
-                        Stepper(value:Binding(
+                    AtlantiqueSection("Suspentes") {
+                        LayoutDimensionField(title: "Entraxe des suspentes", millimetres: Binding(
                             get:{layer.furring?.resolvedCeilingSuspensionSpacing ?? 1200},
                             set:{layer.furring?.ceilingSuspensionSpacing = $0}
-                        ),in:200...1200,step:100) {
-                            LabeledContent("Entraxe",value:layoutCM(layer.furring?.resolvedCeilingSuspensionSpacing ?? 1200))
-                        }.accessibilityLabel("Entraxe des suspentes")
+                        )).accessibilityLabel("Entraxe des suspentes")
                             .accessibilityIdentifier("layout.furring.suspensionSpacing")
                     }
                 } else {
-                Section("Calage sur les plaques") {
+                AtlantiqueSection("Calage sur les plaques") {
                     Button("Caler les fourrures sur le calepinage des plaques") { layer = LayoutPlanning.alignFurring(to:layer) }
                     Text(LayoutPlanning.aligned(layer) ? "Trames alignées." : "Trames décalées : les fourrures ne tombent pas toutes sur les joints attendus.").font(.footnote)
                 }
@@ -157,6 +158,7 @@ struct LayoutFurringForm: View {
             }
             .scrollDismissesKeyboard(.interactively)
             .navigationTitle(surface.kind == .wall ? "Ossature" : "Fourrures").navigationBarTitleDisplayMode(.inline)
+            .atlantiqueFormPage("Ossature")
             .onAppear {
                 if !compatible, let spacing = LayoutPlanning.compatibleSpacings(layer).max() {
                     layer.furring?.spacing = spacing
@@ -171,7 +173,7 @@ struct LayoutFurringForm: View {
             }
             .toolbar {
                 ToolbarItem(placement:.cancellationAction) { Button("Annuler") { dismiss() } }
-                ToolbarItem(placement:.confirmationAction) { Button("Appliquer") { onSave(layer); dismiss() }.disabled(!compatible) }
+                ToolbarItem(placement:.confirmationAction) { Button("Appliquer") { onSave(layer); dismiss() }.disabled(!compatible || (simplifiedCeiling && !(200...1200).contains(layer.furring?.ceilingSuspensionSpacing ?? 1200))) }
             }
         }
     }
@@ -195,7 +197,7 @@ struct LayoutLightingSpacingForm: View {
     private var valid:Bool { LayoutPlanning.lightingFits(preview,surface:surface) }
     var body:some View {
         NavigationStack {
-            Form {
+            AtlantiqueForm {
                 Section {
                     ZStack {
                         LayoutLivePreview(surface:surface,layer:layer)
@@ -209,7 +211,7 @@ struct LayoutLightingSpacingForm: View {
                         }
                     }.frame(height:280)
                 }
-                Section("Écartement de \(selected.count) points") {
+                AtlantiqueSection("Écartement de \(selected.count) points") {
                     LabeledContent(surface.kind == .ceiling ? "Largeur" : "Écartement",value:"× \(factor.formatted(.number.precision(.fractionLength(2))))")
                     Slider(value:$factor,in:0.25...3).accessibilityLabel(surface.kind == .ceiling ? "Écartement en largeur" : "Multiplier l’écartement du groupe")
                     if surface.kind == .ceiling {
@@ -221,7 +223,7 @@ struct LayoutLightingSpacingForm: View {
                     Button("Revenir à l’écartement initial") { factor = 1; lengthFactor = 1 }
                 }
             }
-            .navigationTitle("Régler l’écartement").navigationBarTitleDisplayMode(.inline)
+            .navigationTitle("Régler l’écartement").atlantiqueFormPage("Régler l’écartement").navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement:.cancellationAction) { Button("Annuler") { dismiss() } }
                 ToolbarItem(placement:.confirmationAction) { Button("Appliquer") { onSave(preview); dismiss() }.disabled(!valid) }
@@ -245,7 +247,7 @@ struct LayoutWallElectricalForm: View {
     }
     var body:some View {
         NavigationStack {
-            Form {
+            AtlantiqueForm {
                 Section {
                     ZStack {
                         LayoutLivePreview(surface:surface,layer:layer)
@@ -269,7 +271,7 @@ struct LayoutWallElectricalForm: View {
                     Text("P : prise · L : lumière. Les hauteurs sont mesurées au centre du point depuis le bas du mur (sol).")
                         .font(.caption).foregroundStyle(.secondary)
                 }
-                Section("Ajouter une rangée") {
+                AtlantiqueSection("Ajouter une rangée") {
                     LayoutDimensionField(title:"Hauteur depuis le sol",millimetres:$height)
                     Button("Créer la rangée",systemImage:"plus.circle") {
                         do { lighting=try LayoutWallLighting.addingRow(lighting,height:height,surface:surface); error=nil }
@@ -277,7 +279,7 @@ struct LayoutWallElectricalForm: View {
                     }.disabled(height<=0)
                 }
                 if !LayoutWallLighting.heights(lighting,surface:surface).isEmpty {
-                    Section("Rangées") {
+                    AtlantiqueSection("Rangées") {
                         ForEach(LayoutWallLighting.heights(lighting,surface:surface),id:\.self) { row in
                             Button { height=row } label: {
                                 LabeledContent("Hauteur depuis le sol",value:layoutCM(row))
@@ -290,7 +292,7 @@ struct LayoutWallElectricalForm: View {
                         Text("Appliquez, puis ajoutez vos points sur le plan : ils s’aimantent à ces hauteurs.").font(.caption).foregroundStyle(.secondary)
                     }
                 }
-                Section("Répartir des points à cette hauteur") {
+                AtlantiqueSection("Répartir des points à cette hauteur") {
                     Picker("Équipement",selection:$kind) { ForEach(LayoutElectricalKind.allCases,id:\.self) { Text($0.rawValue) } }.pickerStyle(.segmented)
                     Stepper("\(count) point(s) aligné(s)",value:$count,in:1...min(64,max(1,64-(lighting?.count ?? 0))))
                     Button("Ajouter les points à \(layoutCM(height))",systemImage:"plus.circle") {
@@ -300,7 +302,7 @@ struct LayoutWallElectricalForm: View {
                     if let error { Text(error).font(.caption).foregroundStyle(.orange) }
                 }
                 if let lighting {
-                    Section("Implantation") {
+                    AtlantiqueSection("Implantation") {
                         LabeledContent("Points positionnés",value:"\(lighting.count)")
                         Text("Ajoutez une autre rangée à une autre hauteur, ou appliquez pour déplacer et aligner les points directement sur le plan.").font(.footnote)
                         Button("Effacer les points",role:.destructive) {
@@ -314,7 +316,7 @@ struct LayoutWallElectricalForm: View {
                 Section { Text("Plan géométrique d’implantation, sans validation des règles électriques ni des distances réglementaires.").font(.footnote).foregroundStyle(.secondary) }
             }
             .scrollDismissesKeyboard(.interactively)
-            .navigationTitle("Prises et lumières").navigationBarTitleDisplayMode(.inline)
+            .navigationTitle("Prises et lumières").atlantiqueFormPage("Prises et lumières").navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement:.cancellationAction) { Button("Annuler") { dismiss() } }
                 ToolbarItem(placement:.confirmationAction) { Button("Appliquer") { onSave(lighting); dismiss() } }
@@ -325,42 +327,96 @@ struct LayoutWallElectricalForm: View {
 
 struct LayoutWallPointForm: View {
     @Environment(\.dismiss) private var dismiss
-    let lighting:LayoutLighting
-    let index:Int
-    let surface:Surface2D
-    let onSave:(LayoutLighting)->Void
-    @State private var fromRight=false
-    @State private var distance:Double
-    @State private var error:String?
-    init(lighting:LayoutLighting,index:Int,surface:Surface2D,onSave:@escaping(LayoutLighting)->Void) {
-        self.lighting=lighting; self.index=index; self.surface=surface; self.onSave=onSave
-        let point=lighting.positions[index]
-        _distance=State(initialValue:point.x-(LayoutWallLighting.span(at:point,surface:surface)?.start.x ?? surface.bounds.min.x))
+    @Environment(\.usesAtlantiqueDesign) private var atlantique
+    let lighting: LayoutLighting
+    let index: Int
+    let surface: Surface2D
+    let onSave: (LayoutLighting)->Void
+    @State private var fromRight = false
+    @State private var distance: Double
+    @State private var point: LayoutPoint
+    @State private var dimensionID = 0
+    @State private var error: String?
+    init(lighting: LayoutLighting, index: Int, surface: Surface2D, onSave: @escaping(LayoutLighting)->Void) {
+        self.lighting = lighting; self.index = index; self.surface = surface; self.onSave = onSave
+        let point = lighting.positions[index]
+        _point = State(initialValue: point)
+        _distance = State(initialValue: point.x - (LayoutWallLighting.span(at: point, surface: surface)?.start.x ?? surface.bounds.min.x))
     }
-    var body:some View {
+    private var dimensions: [LayoutPlacementDimensions.Dimension] {
+        LayoutPlacementDimensions.dimensions(contour: surface.contour, center: point)
+    }
+    private var dimensionBinding: Binding<Double> {
+        Binding(get: { dimensions.first { $0.id == dimensionID }?.distance ?? 0 }, set: { value in
+            guard let dimension = dimensions.first(where: { $0.id == dimensionID }),
+                  let moved = LayoutPlacementDimensions.movedCenter(point, dimension: dimension, distance: value) else { return }
+            point = moved; error = nil
+        })
+    }
+    var body: some View {
         NavigationStack {
-            Form {
-                LabeledContent("Hauteur depuis le sol",value:layoutCM(lighting.positions[index].y-surface.bounds.min.y))
-                Picker("Mesurer depuis",selection:$fromRight) {
-                    Text("Bord gauche").tag(false); Text("Bord droit").tag(true)
-                }.pickerStyle(.segmented)
-                .onChange(of:fromRight) { _,_ in
-                    if let limits=LayoutWallLighting.span(at:lighting.positions[index],surface:surface) {
-                        distance=(limits.end.x-limits.start.x)-distance
+            AtlantiqueForm {
+                if atlantique {
+                    Section { preview.frame(height: 300) }
+                    Section {
+                        Picker("Cote", selection: $dimensionID) { ForEach(dimensions) { Text($0.label).tag($0.id) } }.pickerStyle(.segmented)
+                        if dimensions.contains(where: { $0.id == dimensionID }) {
+                            LayoutDimensionField(title: "Distance " + ["A", "B", "C", "D"][dimensionID], millimetres: dimensionBinding)
+                        }
                     }
+                } else {
+                    LabeledContent("Hauteur depuis le sol", value: layoutCM(lighting.positions[index].y - surface.bounds.min.y))
+                    Picker("Mesurer depuis", selection: $fromRight) {
+                        Text("Bord gauche").tag(false); Text("Bord droit").tag(true)
+                    }.pickerStyle(.segmented)
+                    .onChange(of: fromRight) { _, _ in
+                        if let limits = LayoutWallLighting.span(at: lighting.positions[index], surface: surface) {
+                            distance = (limits.end.x - limits.start.x) - distance
+                        }
+                    }
+                    LayoutDimensionField(title: fromRight ? "Distance depuis la droite" : "Distance depuis la gauche", millimetres: $distance)
                 }
-                LayoutDimensionField(title:fromRight ? "Distance depuis la droite" : "Distance depuis la gauche",millimetres:$distance)
                 if let error { Text(error).foregroundStyle(.orange) }
             }
-            .navigationTitle("Position de \(lighting.label(at:index,wall:true))").navigationBarTitleDisplayMode(.inline)
+            .navigationTitle("Position de \(lighting.label(at: index, wall: true))")
+            .atlantiqueFormPage("Électricité").navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement:.cancellationAction) { Button("Annuler") { dismiss() } }
-                ToolbarItem(placement:.confirmationAction) {
-                    Button("Valider") {
-                        do { onSave(try LayoutWallLighting.positioning(lighting,index:index,distance:distance,fromRight:fromRight,surface:surface)); dismiss() }
-                        catch { self.error=error.localizedDescription }
+                ToolbarItem(placement: .cancellationAction) { Button("Annuler") { dismiss() } }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Appliquer") {
+                        do {
+                            if atlantique {
+                                onSave(try LayoutWallLighting.positioning(lighting, index: index, point: point, surface: surface))
+                            } else {
+                                onSave(try LayoutWallLighting.positioning(lighting, index: index, distance: distance, fromRight: fromRight, surface: surface))
+                            }
+                            dismiss()
+                        } catch { self.error = error.localizedDescription }
                     }
                 }
+            }
+        }
+    }
+    private var preview: some View {
+        Canvas { context, size in
+            let bounds = surface.bounds
+            let scale = min((size.width - 40) / max(bounds.width, 1), (size.height - 40) / max(bounds.height, 1))
+            func screen(_ p: LayoutPoint) -> CGPoint { .init(x: size.width / 2 + (p.x - bounds.center.x) * scale, y: size.height / 2 - (p.y - bounds.center.y) * scale) }
+            var path = Path()
+            if let first = surface.contour.first {
+                path.move(to: screen(first))
+                for p in surface.contour.dropFirst() { path.addLine(to: screen(p)) }
+                path.closeSubpath()
+            }
+            context.stroke(path, with: .color(Atlantique.Palette.ink), lineWidth: 2)
+            for dimension in dimensions {
+                var line = Path(); line.move(to: screen(dimension.start)); line.addLine(to: screen(dimension.end))
+                context.stroke(line, with: .color(Atlantique.Palette.ink.opacity(0.5)), lineWidth: 1)
+                context.draw(Text("\(dimension.label) · \(layoutCM(dimension.distance))").font(.caption.bold()), at: screen((dimension.start + dimension.end) * 0.5))
+            }
+            for i in lighting.positions.indices {
+                let p = screen(i == index ? point : lighting.positions[i])
+                context.fill(Path(ellipseIn: CGRect(x: p.x - 5, y: p.y - 5, width: 10, height: 10)), with: .color(i == index ? Atlantique.Palette.actionInk : .gray))
             }
         }
     }
@@ -373,11 +429,11 @@ struct LayoutFurringDistanceForm: View {
     @State private var error:String?
     var body:some View {
         NavigationStack {
-            Form {
+            AtlantiqueForm {
                 LayoutDimensionField(title:"Distance mur / fourrure",millimetres:$value)
                 Text("La trame se déplace en conservant l’entraxe. Les fourrures périphériques à 10 cm restent fixes.").font(.footnote).foregroundStyle(.secondary)
                 if let error { Text(error).foregroundStyle(.red) }
-            }.navigationTitle("Positionner les fourrures").navigationBarTitleDisplayMode(.inline)
+            }.navigationTitle("Positionner les fourrures").atlantiqueFormPage("Positionner les fourrures").navigationBarTitleDisplayMode(.inline)
                 .toolbar {
                     ToolbarItem(placement:.cancellationAction) { Button("Annuler") { dismiss() } }
                     ToolbarItem(placement:.confirmationAction) {
@@ -447,8 +503,8 @@ struct LayoutLightingForm: View {
                         .clipShape(RoundedRectangle(cornerRadius:24)).padding(.horizontal)
                     Text("Glissez sur le dessin pour déplacer les spots.")
                         .font(.caption).foregroundStyle(.secondary)
-                Form {
-                Section("Répartition des spots") {
+                AtlantiqueForm {
+                AtlantiqueSection("Répartition des spots") {
                     LazyVGrid(columns:[GridItem(.adaptive(minimum:58))]) {
                         ForEach(LayoutPlanning.automaticSpotCounts,id:\.self) { count in
                             Button {
@@ -497,7 +553,7 @@ struct LayoutLightingForm: View {
                 }
                 }
             }.background(Color(.systemGroupedBackground))
-                .navigationTitle("Répartition automatique").navigationBarTitleDisplayMode(.inline)
+                .navigationTitle("Répartition automatique").atlantiqueFormPage("Répartition automatique").navigationBarTitleDisplayMode(.inline)
                 .scrollDismissesKeyboard(.interactively)
                 .task(id:PreviewKey(settings:settings,generation:regenerate)) {
                     let fresh = lastRegeneration != regenerate

@@ -88,7 +88,7 @@ struct OpeningLabView: View {
     }
 
     var body: some View {
-        Form {
+        AtlantiqueForm {
             workSection
             typesSection
             openingsSection
@@ -103,7 +103,7 @@ struct OpeningLabView: View {
             }
         }
         .animation(.easeOut(duration: 0.18), value: editorPresentation == nil)
-        .navigationTitle("Ouvertures")
+        .navigationTitle("Ouvertures").atlantiqueFormPage("Ouvertures")
         .tint(green)
         .toolbar {
             if let onSave {
@@ -197,14 +197,14 @@ struct OpeningLabView: View {
 
     @ViewBuilder
     private var workSection: some View {
-        Section("Système accueillant l’ouverture") {
+        AtlantiqueSection("Système accueillant l’ouverture") {
             Picker("Système accueillant l’ouverture", selection: $context.system) {
                 ForEach(OpeningWorkSystem.allCases) { Text($0.title).tag($0) }
             }.disabled(attachedToWork)
         }
 
         if !context.system.isCeiling {
-            Section("Hauteur sous plafond") {
+            AtlantiqueSection("Hauteur sous plafond") {
                 let options = heightOptions[context.system] ?? []
                 if !options.isEmpty {
                     Picker("Ouvrage de référence", selection: $selectedHeightSourceID) {
@@ -226,7 +226,7 @@ struct OpeningLabView: View {
             }
         }
 
-        Section("Configuration de l’ossature") {
+        AtlantiqueSection("Configuration de l’ossature") {
             if selectedHeightSourceID != nil, !context.system.isCeiling {
                 LabeledContent("Entraxe", value: "\(Int(context.spacing * 100)) cm")
                 if context.system == .railStudLining || context.system == .distributionPartition {
@@ -268,7 +268,7 @@ struct OpeningLabView: View {
     }
 
     private var typesSection: some View {
-        Section("Type d’ouverture") {
+        AtlantiqueSection("Type d’ouverture") {
             ForEach(context.system.availableOpeningKinds) { kind in
                 Button {
                     editorPresentation = .create(kind)
@@ -304,7 +304,7 @@ struct OpeningLabView: View {
                 )
             }
         } else {
-            Section("Détail par ouverture") {
+            AtlantiqueSection("Détail par ouverture") {
                 ForEach(Array(results.enumerated()), id: \.element.opening.id) { index, result in
                     NavigationLink {
                         OpeningResultView(
@@ -353,7 +353,7 @@ struct OpeningLabView: View {
     }
 
     private var totalsSection: some View {
-        Section("Total des ouvertures") {
+        AtlantiqueSection("Total des ouvertures") {
             ForEach(supplyRows(OpeningQuantityCalculator.totals(results))) { row in
                 LabeledContent(row.name, value: row.value)
             }
@@ -430,7 +430,7 @@ private struct OpeningEntryView: View {
     private var existingID: UUID? = nil
 
     var body: some View {
-        Form {
+        AtlantiqueForm {
             Section {
                 DecimalField(title: "Largeur", value: centimetersBinding($width), suffix: "cm")
                 DecimalField(title: "Hauteur", value: centimetersBinding($height), suffix: "cm")
@@ -444,7 +444,7 @@ private struct OpeningEntryView: View {
             }
 
             if kind.usesMountingMode && system.isPeripheralLining {
-                Section("Contour de l’ouverture") {
+                AtlantiqueSection("Contour de l’ouverture") {
                     Picker("Contour", selection: $mountingMode) {
                         Text("Sur tapée").tag(OpeningMountingMode.onJoineryLining)
                         Text("En embrasure").tag(OpeningMountingMode.inReveal)
@@ -475,7 +475,7 @@ private struct OpeningEntryView: View {
                 }
             }
         }
-        .navigationTitle("")
+        .navigationTitle("").atlantiqueFormPage("")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .cancellationAction) { Button("Annuler") { dismiss() } }
@@ -599,13 +599,13 @@ private struct RenameOpeningView: View {
     }
 
     var body: some View {
-        Form {
-            Section("Nom de l’ouverture") {
+        AtlantiqueForm {
+            AtlantiqueSection("Nom de l’ouverture") {
                 TextField("Exemple : Fenêtre cuisine", text: $name)
                     .textInputAutocapitalization(.sentences)
             }
         }
-        .navigationTitle("Renommer l’ouverture")
+        .navigationTitle("Renommer l’ouverture").atlantiqueFormPage("Renommer l’ouverture")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .cancellationAction) {
@@ -641,7 +641,7 @@ private struct OpeningResultView: View {
                 LabeledContent("Plaques déduites", value: "Non")
             }
 
-            Section("Renforts et fournitures") {
+            AtlantiqueSection("Renforts et fournitures") {
                 if result.quantities.isEmpty {
                     Text("Aucun quantitatif disponible.").foregroundStyle(.secondary)
                 } else {
@@ -652,7 +652,7 @@ private struct OpeningResultView: View {
             }
 
             if !result.notes.isEmpty {
-                Section("À savoir") {
+                AtlantiqueSection("À savoir") {
                     ForEach(result.notes, id: \.self) { Label($0, systemImage: "info.circle") }
                 }
             }

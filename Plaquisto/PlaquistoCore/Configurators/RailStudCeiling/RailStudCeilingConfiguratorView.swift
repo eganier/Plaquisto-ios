@@ -461,7 +461,7 @@ struct RailStudCeilingConfiguratorView: View {
                 VStack(spacing: 0) {
                     header
                     Divider()
-                    Form { stepContent }
+                    AtlantiqueForm { stepContent }
                     footer
                 }
             }
@@ -568,7 +568,7 @@ struct RailStudCeilingConfiguratorView: View {
             } footer: {
                 Text(lockScannedGeometry ? "La surface et les contours proviennent du relevé. Corrigez-les dans le plan ; les longueurs utilisées pour le quantitatif restent une estimation." : "Les dimensions calculent précisément les montants et le périmètre des rails.")
             }
-            Section("Surface de l’ouvrage") {
+            AtlantiqueSection("Surface de l’ouvrage") {
                 if dimensionsSpecified || lockScannedGeometry {
                     LabeledContent("Surface calculée", value: "\(format(area)) m²")
                 } else {
@@ -580,7 +580,7 @@ struct RailStudCeilingConfiguratorView: View {
 
     private var supportStep: some View {
         Group {
-            Section("Support du plafond") {
+            AtlantiqueSection("Support du plafond") {
                 Picker("Type de support", selection: $support) { ForEach(supports) { Text(references.supportTitle($0)).tag($0) } }
                     .onChange(of: support) { _, _ in normalizeInsulationLocations() }
                 if isWoodSupport && insulationEnabled {
@@ -615,7 +615,7 @@ struct RailStudCeilingConfiguratorView: View {
                     if insulationWeight > 15 { Label("Le poids dépasse les 15 kg/m² couverts par le tableau de portées.", systemImage: "exclamationmark.triangle.fill").foregroundStyle(.orange) }
                 }
             } header: { Text("Isolation") } footer: { Text(shape == .sloped ? "Le lambda 0,040 est exclu en rampant. La deuxième couche reprend par défaut la première mais reste modifiable." : "La deuxième couche reprend par défaut la première mais reste modifiable.") }
-            Section("Pare-vapeur") {
+            AtlantiqueSection("Pare-vapeur") {
                 Toggle("Prévoir la pose d’un pare-vapeur", isOn: $vaporBarrier)
                 if shape == .sloped && !vaporBarrier { Label("Pose fortement recommandée en rampant.", systemImage: "exclamationmark.triangle.fill").foregroundStyle(.orange) }
             }
@@ -732,7 +732,7 @@ struct RailStudCeilingConfiguratorView: View {
     private var suspensionStep: some View {
         Group {
             if frameMode == .suspended {
-                Section("Système de suspension") {
+                AtlantiqueSection("Système de suspension") {
                     LabeledContent("Suspente", value: suspensionName)
                     LabeledContent("Fixation au support", value: references.supportFixing(support))
                     LabeledContent("Liaison", value: "Tige filetée Ø 6 mm")
@@ -742,14 +742,14 @@ struct RailStudCeilingConfiguratorView: View {
                 }
                 Section { Text(assembly == .single ? "2 vis TRPF 13 superposées par suspente." : "1 vis TRPF 13 par suspente.").foregroundStyle(.secondary) }
             } else {
-                Section("Montage autoportant") { Label("Aucune suspente ni tige filetée n’est nécessaire.", systemImage: "checkmark.circle"); Text("Les montants portent entre les rails périphériques.").foregroundStyle(.secondary) }
+                AtlantiqueSection("Montage autoportant") { Label("Aucune suspente ni tige filetée n’est nécessaire.", systemImage: "checkmark.circle"); Text("Les montants portent entre les rails périphériques.").foregroundStyle(.secondary) }
             }
         }
     }
 
     private var jointsStep: some View {
         Group {
-            Section("Traitement des bandes à joint") {
+            AtlantiqueSection("Traitement des bandes à joint") {
                 Toggle("Prévoir le traitement des bandes", isOn: $jointTreatment)
                 if jointTreatment { Picker("Type d’enduit", selection: $compound) { Text("Enduit à joints en poudre").tag("powder"); Text("Enduit à joints en pâte").tag("paste") } }
             }
@@ -760,7 +760,7 @@ struct RailStudCeilingConfiguratorView: View {
     private var resultStep: some View {
         Group {
             Section { Label("Configuration compatible", systemImage: "checkmark.seal.fill").font(.headline).foregroundStyle(.green); Text("\(format(effectiveArea)) m² · \(shape.title.lowercased()) · \(stud.title) · \(assembly.title.lowercased())").foregroundStyle(.secondary) }
-            Section("Quantitatif") { ForEach(quantities) { LabeledContent($0.name, value: quantityTitle($0)) } }
+            AtlantiqueSection("Quantitatif") { ForEach(quantities) { LabeledContent($0.name, value: quantityTitle($0)) } }
             Section {
                 DisclosureGroup("Configuration retenue", isExpanded: $configurationExpanded) {
                     editableConfigurationRow("Dimensions", value: "\(format(length)) × \(format(width)) m", targetStep: 0)

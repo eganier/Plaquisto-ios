@@ -102,7 +102,7 @@ private struct SurveyRepairView: View {
                     }
                 }
             }
-            .navigationTitle("Réparer le relevé").navigationBarTitleDisplayMode(.inline)
+            .navigationTitle("Réparer le relevé").atlantiqueFormPage("Réparer le relevé").navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement:.cancellationAction) { Button("Annuler") { dismiss() } } }
             .alert("Réparation non enregistrée",isPresented:Binding(get:{saveError != nil},set:{if !$0 {saveError=nil}})) {
                 Button("OK",role:.cancel) { saveError=nil }
@@ -298,7 +298,7 @@ struct ScannerCampaignWorkspaceView: View {
         .sheet(item:$daeExport) { file in SurveyExportShareSheet(url:file.url) }
         .sheet(item: $diagnosticExport) { export in
             NavigationStack {
-                Form {
+                AtlantiqueForm {
                     Section {
                         Text(export.limited
                             ? "Ce scan contient un diagnostic partiel : les détails de détection n’ont pas été conservés à l’époque. Les données encore disponibles seront partagées."
@@ -312,7 +312,7 @@ struct ScannerCampaignWorkspaceView: View {
                         }
                     }
                 }
-                .navigationTitle("Diagnostic du scan").navigationBarTitleDisplayMode(.inline)
+                .navigationTitle("Diagnostic du scan").atlantiqueFormPage("Diagnostic du scan").navigationBarTitleDisplayMode(.inline)
                 .toolbar { ToolbarItem(placement: .cancellationAction) {
                     Button("Fermer") { diagnosticExport = nil }
                 } }
@@ -561,9 +561,9 @@ private struct SurveyWorkspaceCreationFlow: View {
     }
     var body: some View {
         NavigationStack {
-            Form {
+            AtlantiqueForm {
                 if survey == nil {
-                    Section("Destination du relevé") {
+                    AtlantiqueSection("Destination du relevé") {
                         if saveOnly { TextField("Nom du relevé",text:$surveyName) }
                         Picker("Projet", selection: $projectID) {
                             Text("Créer un nouveau projet").tag(UUID?.none)
@@ -571,7 +571,7 @@ private struct SurveyWorkspaceCreationFlow: View {
                         }
                     }
                     if projectID == nil {
-                        Section("Nouveau projet") {
+                        AtlantiqueSection("Nouveau projet") {
                             TextField("Nom du projet", text: $projectName)
                             TextField("Client (facultatif)", text: $client)
                             TextField("Adresse (facultative)",text:Binding(get:{ address },set:{ address=$0; addressEdited=true }))
@@ -585,10 +585,10 @@ private struct SurveyWorkspaceCreationFlow: View {
                             .disabled((projectID == nil && projectName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) || surveyName.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty)
                     }
                 } else {
-                    Section("Nom de l’ouvrage") {
+                    AtlantiqueSection("Nom de l’ouvrage") {
                         HStack { Image(systemName: "pencil").foregroundStyle(.secondary); TextField("Facultatif", text: $name) }
                     }
-                    Section("Catégorie") {
+                    AtlantiqueSection("Catégorie") {
                         LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())]) {
                             ForEach(WorkCategory.allCases.filter { item in types.contains { $0.category == item } }) { item in
                                 Button { category = item } label: {
@@ -605,7 +605,7 @@ private struct SurveyWorkspaceCreationFlow: View {
                         LabeledContent("Surfaces", value: "\(chosen.count) · \(SurveyWorkGeometry.totalArea(chosen).formatted(.number.precision(.fractionLength(2)))) m² nets")
                     }
                     if let category {
-                        Section("Type d’ouvrage") {
+                        AtlantiqueSection("Type d’ouvrage") {
                             ForEach(types.filter { $0.category == category }) { type in
                                 Button(type.title) { configure(type) }
                             }
@@ -691,7 +691,7 @@ struct ScannerCampaignReviewView: View {
     }
 
     var body: some View {
-        Form {
+        AtlantiqueForm {
             if store.surveys.contains(where: { $0.id == draft.id }) {
                 Section {
                     NavigationLink("Ouvrir le relevé et créer les ouvrages") {
@@ -701,7 +701,7 @@ struct ScannerCampaignReviewView: View {
                 }
             } else {
                 if !draft.includedChunks.isEmpty && draft.sharesWorldSpace {
-                    Section("Relevé complet") {
+                    AtlantiqueSection("Relevé complet") {
                         Picker("Vue du relevé", selection: $showPlan2D) {
                             Text("Maquette 3D").tag(false)
                             Text("Plan 2D").tag(true)
@@ -747,7 +747,7 @@ struct ScannerCampaignReviewView: View {
                                             }
                                             Text("Les plans sont cadrés séparément. Conservez les deux si leurs surfaces sont différentes ; écartez uniquement une capture redondante.")
                                                 .font(.footnote)
-                                        }.navigationTitle("Comparer les captures")
+                                        }.navigationTitle("Comparer les captures").atlantiqueFormPage("Comparer les captures")
                                     }
                                 }
                                 Picker("Cette capture", selection: $chunk.keepAfterReview) {
@@ -776,7 +776,7 @@ struct ScannerCampaignReviewView: View {
                 if !draft.isComplete {
                     Section { Label("Capture interrompue : la dernière géométrie sauvegardée reste disponible.", systemImage: "exclamationmark.triangle") }
                 }
-                Section("Enregistrer dans un projet") {
+                AtlantiqueSection("Enregistrer dans un projet") {
                     Picker("Projet", selection: $projectID) {
                         Text("Nouveau projet").tag(UUID?.none)
                         ForEach(store.projects) { Text($0.name).tag(Optional($0.id)) }
@@ -791,7 +791,7 @@ struct ScannerCampaignReviewView: View {
                 if let error { Section { Text(error).foregroundStyle(.red) } }
             }
         }
-        .navigationTitle("Détails du relevé")
+        .navigationTitle("Détails du relevé").atlantiqueFormPage("Détails du relevé")
         .navigationBarTitleDisplayMode(.inline)
         .onDisappear {
             // Names are local until project commit; don't lose them on Back.

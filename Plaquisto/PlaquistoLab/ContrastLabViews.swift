@@ -28,7 +28,7 @@ struct ContrastLabRoot: View {
                 .opacity(tab == 2 ? 1 : 0).allowsHitTesting(tab == 2).accessibilityHidden(tab != 2)
             }
             if visitedTabs.contains(3) {
-            StockHomeView()
+            StockHomeView().atlantiqueDesign()
                 .opacity(tab == 3 ? 1 : 0).allowsHitTesting(tab == 3).accessibilityHidden(tab != 3)
             }
         }

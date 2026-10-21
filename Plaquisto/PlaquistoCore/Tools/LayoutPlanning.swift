@@ -323,7 +323,7 @@ enum LayoutQuantityCalculator {
         let skins:Int, peripheral:Bool, supportSpacing:Double?, maxSpan:Double?, multiplier:Double
         switch work.payload {
         case .ceiling(let c):
-            skins=c.layers; peripheral=c.perimeterSupport ?? true; supportSpacing=1.2; maxSpan=nil; multiplier=1
+            skins=c.layers; peripheral=c.perimeterSupport ?? true; supportSpacing=c.suspensionSpacingMeters ?? 1.2; maxSpan=nil; multiplier=1
         case .railStudCeiling(let c):
             skins=c.facingLayers; peripheral=true; multiplier=c.assembly == "double" ? 2 : 1
             supportSpacing=c.frameMode == "suspended" ? c.suspensionSpacingMeters : nil
@@ -423,6 +423,7 @@ enum WorkLayoutDefaults {
             formats = value.firstSkin.map { ($0.dimensionID, $0.area) }
             spacing = value.selectedSpacing
             document.layers[0].furring?.peripheralInset = value.perimeterSupport == false ? 100 : nil
+            document.layers[0].furring?.ceilingSuspensionSpacing = value.suspensionSpacingMeters.map { $0 * 1000 }
         case .railStudCeiling(let value):
             formats = value.firstSkin.map { ($0.dimensionID, $0.area) }
             spacing = 0.6 // This configurator uses fixed 60 cm stud centres.
@@ -508,6 +509,9 @@ enum WorkLayoutDefaults {
             // Nil is the legacy/default furring system; do not rewrite otherwise
             // unchanged manual plans just to materialize this default.
             result.furring?.isFurringSystem = nil
+            if result.furring?.ceilingSuspensionSpacing == nil {
+                result.furring?.ceilingSuspensionSpacing = value.suspensionSpacingMeters.map { $0 * 1000 }
+            }
             let peripheral = result.furring?.ceilingPerimeterSupport ?? value.perimeterSupport ?? true
             result.furring?.peripheralInset = peripheral ? nil : 100
         }
@@ -660,6 +664,15 @@ enum LayoutLightingEditError: Error, LocalizedError {
 }
 
 enum LayoutWallLighting {
+    static func positioning(_ lighting: LayoutLighting, index: Int, point: LayoutPoint, surface: Surface2D) throws -> LayoutLighting {
+        guard lighting.positions.indices.contains(index), point.x.isFinite, point.y.isFinite else { throw LayoutLightingEditError.invalidPlacement }
+        var copy = lighting
+        // Keep the predefined rows and every other point unchanged.
+        copy.wallRowHeights = heights(lighting, surface: surface)
+        copy.positions[index] = point
+        guard LayoutPlanning.lightingFits(copy, surface: surface) else { throw LayoutLightingEditError.invalidPlacement }
+        return copy
+    }
     static func heights(_ lighting:LayoutLighting?,surface:Surface2D) -> [Double] {
         let values=lighting?.wallRowHeights ?? lighting?.positions.map { $0.y-surface.bounds.min.y } ?? []
         return Array(Set(values.filter { $0.isFinite && $0>0 && $0<surface.bounds.height })).sorted()

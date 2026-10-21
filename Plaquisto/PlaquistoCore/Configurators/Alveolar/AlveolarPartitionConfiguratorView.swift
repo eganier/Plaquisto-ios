@@ -1,6 +1,7 @@
 import SwiftUI
 
 struct AlveolarPartitionConfiguratorView: View {
+    @Environment(\.usesAtlantiqueDesign) private var atlantique
     typealias AlveolarPanelAllocation = AlveolarPanelSelection
 
     private enum GeometryMode: String, CaseIterable, Identifiable {
@@ -30,7 +31,7 @@ struct AlveolarPartitionConfiguratorView: View {
     @State private var compound = Compound.powder
     @State private var configurationExpanded = false
 
-    private let green = Color(red: 0.12, green: 0.38, blue: 0.29)
+    private var green: Color { atlantique ? Atlantique.Palette.actionInk : Color(red: 0.12, green: 0.38, blue: 0.29) }
     private let stepNames = ["Dimensions", "Panneaux", "Bandes à joint", "Résultat"]
 
     init(
@@ -111,11 +112,12 @@ struct AlveolarPartitionConfiguratorView: View {
             }
         }
         .tint(green)
+        .atlantiqueFormPage(stepNames[min(max(0, step - 1), stepNames.count - 1)])
         .configurationEntry(in:1...3) { step = $0 }
         .onChange(of: references.panels.count, initial: true) { _, _ in initializeAllocations() }
         .onChange(of: height) { _, _ in normalizeFormats() }
         .toolbar {
-            if isEditing, let onSave {
+            if (isEditing || atlantique), let onSave {
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Enregistrer") { onSave(configurationSnapshot()) }.disabled(!allStepsAreValid)
                 }
@@ -140,7 +142,7 @@ struct AlveolarPartitionConfiguratorView: View {
             }
             footer
         }
-        .background(Color(.systemGroupedBackground))
+        .background(atlantique ? Atlantique.Palette.blue : Color(.systemGroupedBackground))
     }
 
     private var header: some View {
@@ -151,9 +153,9 @@ struct AlveolarPartitionConfiguratorView: View {
                 }
                 .buttonStyle(.bordered)
             }
-            Text("OUVRAGE")
+            Text(atlantique ? "" : "OUVRAGE")
                 .font(.caption.bold())
-                .foregroundStyle(.secondary)
+                .foregroundStyle(atlantique ? Color.white.opacity(0.85) : .secondary)
             Text("Cloison de distribution alvéolaire")
                 .font(.title2.bold())
             Label("Données synchronisées avec Plaquisto Admin", systemImage: "checkmark.icloud")
@@ -162,7 +164,7 @@ struct AlveolarPartitionConfiguratorView: View {
             ProgressView(value: Double(step), total: 4)
             Text("Étape \(step) sur 4 · \(stepNames[step - 1])")
                 .font(.caption)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(atlantique ? Color.white.opacity(0.85) : .secondary)
         }
         .padding(.horizontal, 20)
         .padding(.top, 12)

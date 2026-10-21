@@ -41,8 +41,11 @@ private struct FacingDimension: Identifiable, Hashable {
 private typealias FacingAllocation = FacingSelection
 
 struct CeilingConfiguratorView: View {
+    @Environment(\.usesAtlantiqueDesign) private var atlantique
+    @State private var suspensionSpacingCM: Double
     @Environment(\.layoutCoveringAreaRatio) private var coveringAreaRatio
     @StateObject private var store = CeilingReferenceStore()
+    @StateObject private var prices = SupplyPriceStore()
     @State private var step: Int
     @State private var length: Double
     @State private var width: Double
@@ -80,8 +83,9 @@ struct CeilingConfiguratorView: View {
     private let preserveInitialSpacing: Bool
     private let lockScannedGeometry: Bool
 
-    private let stepNames = ["Dimensions", "Support", "Isolation", "Entraxe et plénum", "Fixation", "Parements", "Bandes à joint", "Résultat"]
-    private let spacingChoices = [0.4, 0.5, 0.6]
+    private var stepNames: [String] { ["Dimensions", "Support", "Isolation", atlantique ? "Ossature" : "Entraxe et plénum", "Fixations", "Parements", "Bandes à joint", "Résultat"] }
+    private var recommendedSelectableSpacing: Double { atlantique && (maximumSpacing ?? 0.4) < 0.6 ? 0.4 : (maximumSpacing ?? 0.4) }
+    private var spacingChoices: [Double] { atlantique ? Array(Set([0.4, 0.6] + (selectedSpacing == 0.5 ? [0.5] : []))).sorted() : [0.4, 0.5, 0.6] }
 
     init(
         initialConfiguration: CeilingConfiguration = CeilingConfiguration(),
@@ -91,6 +95,7 @@ struct CeilingConfiguratorView: View {
         onSave: @escaping (CeilingConfiguration) -> Void = { _ in }
     ) {
         self.lockScannedGeometry = lockScannedGeometry
+        _suspensionSpacingCM = State(initialValue: (initialConfiguration.suspensionSpacingMeters ?? 1.2) * 100)
         _step = State(initialValue: startsAtResult ? 7 : 0)
         _length = State(initialValue: initialConfiguration.length)
         _width = State(initialValue: initialConfiguration.width)
@@ -340,7 +345,7 @@ struct CeilingConfiguratorView: View {
     private var fixingSystemCount: Double {
         guard let row = quantityItems.first(where: { $0.id == "QTY-FIXATION" }),
               let ratio = row.data["values"]?.object?[quantityConfigurationKey]?.number else { return 0 }
-        return ratio * area + LayoutQuantityCalculator.estimatedAdditionalEndHangers(configuration)
+        return ratio * area * (1.2 / max(0.01, suspensionSpacingCM / 100)) + LayoutQuantityCalculator.estimatedAdditionalEndHangers(configuration)
     }
     private var otherSupplies: [Supply] {
         var result: [Supply] = []
@@ -420,6 +425,7 @@ struct CeilingConfiguratorView: View {
             trackedMinimumPlenum = minimumPlenum
             normalizeFacingAllocations()
         }
+        .task { if atlantique { await prices.load() } }
         .onChange(of: minimumPlenum) { _, newValue in
             guard let previousMinimum = trackedMinimumPlenum else {
                 plenum = max(plenum, newValue)
@@ -435,9 +441,10 @@ struct CeilingConfiguratorView: View {
             fixingSystemID = CeilingFixingDefaults.preferred(in: compatibleSystems, vaporBarrier: vaporBarrier)?.id ?? ""
         }
         .configurationEntry(in:0...6) { step = $0; showingSavedResult = false }
-        .tint(Color(red: 0.12, green: 0.38, blue: 0.29))
+        .atlantiqueFormPage(stepNames[step])
+        .tint(atlantique ? Atlantique.Palette.actionInk : Color(red: 0.12, green: 0.38, blue: 0.29))
         .toolbar {
-            if isEditing {
+            if isEditing || atlantique {
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Enregistrer") { onSave(configuration) }.disabled(!allStepsAreValid)
                 }
@@ -448,23 +455,23 @@ struct CeilingConfiguratorView: View {
     private var configurator: some View {
         VStack(spacing: 0) {
             VStack(alignment: .leading, spacing: 10) {
-                Text("OUVRAGE").font(.caption2.weight(.bold)).foregroundStyle(.secondary)
-                Text(workTitle).font(.title2.bold())
+                if !atlantique { Text("OUVRAGE").font(.caption2.weight(.bold)).foregroundStyle(.secondary) }
+                Text(workTitle).font(atlantique ? Atlantique.Typography.caption : .title2.bold()).foregroundStyle(atlantique ? Color.white : .primary)
                 if store.isUsingOfflineData {
                     Label("Mode hors connexion · dernières données synchronisées", systemImage: "icloud.slash")
                         .font(.caption).foregroundStyle(.orange)
-                } else {
+                } else if !atlantique {
                     Label("Données synchronisées avec Plaquisto Admin", systemImage: "checkmark.icloud")
                         .font(.caption).foregroundStyle(.green)
                 }
                 ProgressView(value: Double(step + 1), total: Double(stepNames.count))
                 Text("Étape \(step + 1) sur \(stepNames.count) · \(stepNames[step])")
-                    .font(.caption).foregroundStyle(.secondary)
+                    .font(.caption).foregroundStyle(atlantique ? Color.white : .secondary)
             }
             .padding()
 
             Divider()
-            Form { stepContent }
+            AtlantiqueForm { stepContent }
 
             HStack {
                 if step > 0 {
@@ -530,7 +537,7 @@ struct CeilingConfiguratorView: View {
     private var stepContent: some View {
         switch step {
         case 0:
-            Section("Type de plafond") {
+            AtlantiqueSection("Type de plafond") {
                 Picker("Type de plafond", selection: $ceilingShape) {
                     Text("Horizontal").tag("horizontal")
                     Text("Rampant").tag("rampant")
@@ -562,9 +569,9 @@ struct CeilingConfiguratorView: View {
                      : "La longueur et la largeur ne sont pas renseignées. Plaquisto estimera un ouvrage carré et le quantitatif sera légèrement moins précis.")
             }
             }
-            Section("Surface de l’ouvrage") {
+            AtlantiqueSection("Surface de l’ouvrage") {
                 if specifiesDimensions || lockScannedGeometry {
-                    LabeledContent("Surface calculée", value: "\(format(enteredArea)) m²")
+                    LabeledContent("Surface", value: "\(format(enteredArea)) m²")
                 } else {
                     MeasureField(label: "Surface", value: $enteredArea, unit: "m²")
                 }
@@ -575,7 +582,7 @@ struct CeilingConfiguratorView: View {
             }
 
         case 1:
-            Section("Support du plafond") {
+            AtlantiqueSection("Support du plafond") {
                 Picker("Type de support", selection: $support) {
                     Text("Sélectionner").tag("")
                     ForEach(supports, id: \.self) { Text(supportTitle($0)).tag($0) }
@@ -597,6 +604,7 @@ struct CeilingConfiguratorView: View {
             }
 
         case 2:
+            if atlantique { atlantiqueInsulation } else {
             Section {
                 Toggle("Prévoir une isolation", isOn: insulationEnabledBinding)
                 if !insulationID.isEmpty {
@@ -607,12 +615,13 @@ struct CeilingConfiguratorView: View {
                     .pickerStyle(.segmented)
                     .onChange(of: insulationLayers) { _, newValue in
                         if newValue == 2 { prepareSecondInsulationDefault(matchingFirstLayer: true) }
-                        selectedSpacing = maximumSpacing ?? 0.4
+                        selectedSpacing = recommendedSelectableSpacing
                         fixingSystemID = ""
                     }
 
-                    Text("Première couche")
+                    Text(atlantique ? "Couche 1" : "Première couche")
                         .font(.headline)
+                    Divider().padding(.bottom, 8)
                     if isWoodSupport {
                         Picker("Emplacement", selection: $firstInsulationLocation) {
                             Text(betweenStructureTitle).tag("between")
@@ -624,7 +633,7 @@ struct CeilingConfiguratorView: View {
                     }
                     .onChange(of: insulationID) { _, _ in
                         insulationThickness = preferredFirstInsulationThickness
-                        selectedSpacing = maximumSpacing ?? 0.4
+                        selectedSpacing = recommendedSelectableSpacing
                         fixingSystemID = ""
                     }
                     Picker("Lambda", selection: $insulationID) {
@@ -642,7 +651,7 @@ struct CeilingConfiguratorView: View {
                         }
                     }
                     .onChange(of: insulationThickness) { _, _ in
-                        selectedSpacing = maximumSpacing ?? 0.4
+                        selectedSpacing = recommendedSelectableSpacing
                         fixingSystemID = ""
                     }
                     if let insulationThermalResistance {
@@ -650,7 +659,7 @@ struct CeilingConfiguratorView: View {
                     }
 
                     if insulationLayers == 2 {
-                        Text("Deuxième couche")
+                        Text(atlantique ? "Couche 2" : "Deuxième couche")
                             .font(.headline)
                         if isWoodSupport {
                             Picker("Emplacement", selection: $secondInsulationLocation) {
@@ -663,7 +672,7 @@ struct CeilingConfiguratorView: View {
                         }
                         .onChange(of: secondInsulationID) { _, _ in
                             secondInsulationThickness = secondInsulationPoints.first?.thickness ?? 0
-                            selectedSpacing = maximumSpacing ?? 0.4
+                            selectedSpacing = recommendedSelectableSpacing
                             fixingSystemID = ""
                         }
                         Picker("Lambda", selection: $secondInsulationID) {
@@ -681,12 +690,12 @@ struct CeilingConfiguratorView: View {
                             }
                         }
                         .onChange(of: secondInsulationThickness) { _, _ in
-                            selectedSpacing = maximumSpacing ?? 0.4
+                            selectedSpacing = recommendedSelectableSpacing
                             fixingSystemID = ""
                         }
                     }
 
-                    LabeledContent("Poids maximal retenu", value: "\(format(insulationWeight)) kg/m²")
+                    if !atlantique { LabeledContent("Poids maximal retenu", value: "\(format(insulationWeight)) kg/m²") }
                     if insulationLayers == 2, let totalInsulationThermalResistance {
                         LabeledContent("Résistance thermique totale", value: "R = \(totalInsulationThermalResistance.formatted(.number.precision(.fractionLength(2)))) m²·K/W")
                     }
@@ -700,7 +709,8 @@ struct CeilingConfiguratorView: View {
                     Text("Pour une plage de poids, Plaquisto retient toujours la valeur la plus élevée.")
                 }
             }
-            Section("Pare-vapeur") {
+            }
+            AtlantiqueSection("Pare-vapeur") {
                 Toggle("Prévoir la pose d’un pare-vapeur", isOn: $vaporBarrier)
                 if isSlopedCeiling && !vaporBarrier {
                     Label("La pose d’un pare-vapeur est fortement recommandée pour un plafond rampant.", systemImage: "exclamationmark.triangle.fill")
@@ -709,15 +719,21 @@ struct CeilingConfiguratorView: View {
             }
 
         case 3:
-            Section("Entraxe des fourrures") {
+            AtlantiqueSection("Entraxe des fourrures") {
                 Picker("Entraxe", selection: $selectedSpacing) {
                     ForEach(spacingChoices, id: \.self) { spacing in Text("\(Int(spacing * 100)) cm").tag(spacing) }
                 }
                 .pickerStyle(.segmented)
                 LabeledContent("Maximum recommandé", value: maximumSpacing.map { "\(Int($0 * 100)) cm" } ?? "Non couvert")
-                Toggle("Fixer une cornière en périphérie",isOn:$perimeterSupport)
-                Text(perimeterSupport ? "Le comptage du calepinage utilise la périphérie comme appui aux extrémités." : "Sans cornière, prévoyez une suspente à chaque extrémité des fourrures. Leur nombre est estimé ici, puis affiné par le calepinage.")
-                    .font(.footnote).foregroundStyle(.secondary)
+                if atlantique {
+                    Picker("Périphérie", selection: $perimeterSupport) {
+                        Text("Cornière périphérique").tag(true)
+                        Text("2 fourrures à 10 cm des bords").tag(false)
+                    }
+                    MeasureField(label: "Entraxe des suspentes", value: $suspensionSpacingCM, unit: "cm")
+                } else { Toggle("Fixer une cornière en périphérie",isOn:$perimeterSupport) }
+                if !atlantique { Text(perimeterSupport ? "Le comptage du calepinage utilise la périphérie comme appui aux extrémités." : "Sans cornière, prévoyez une suspente à chaque extrémité des fourrures. Leur nombre est estimé ici, puis affiné par le calepinage.")
+                    .font(.footnote).foregroundStyle(.secondary) }
             }
             if spacingIsAboveRecommendation {
                 Section {
@@ -725,38 +741,11 @@ struct CeilingConfiguratorView: View {
                         .foregroundStyle(.orange)
                 }
             }
-            Section {
-                LabeledContent("Plénum minimal calculé", value: "\(format(minimumPlenum)) cm")
-                HStack {
-                    Text("Marge supplémentaire")
-                    Spacer()
-                    PlaquistoIntegerField(value: additionalPlenumMMBinding)
-                        .multilineTextAlignment(.trailing)
-                        .frame(width: 90)
-                    Text("mm").foregroundStyle(.secondary)
-                }
-                LabeledContent("Plénum retenu", value: "\(format(plenum)) cm")
-                if GalvanizedHangerSelection.wholeMillimeters(plenumCM: plenum) == nil {
-                    Text("Renseignez une marge en millimètres entiers pour actualiser le plénum.")
-                        .font(.footnote).foregroundStyle(.orange)
-                }
-            } header: {
-                Text(plenumSectionTitle)
-            }
-            Section {
-                if isWoodSupport {
-                    WoodCeilingPlenumDiagram(plenumCM: plenum)
-                        .listRowSeparator(.hidden)
-                } else {
-                    Label("Sur ce support, le plénum minimal intègre toute l’épaisseur d’isolant sélectionnée.",
-                          systemImage: "info.circle")
-                }
-                Text("Vous pouvez ajouter une marge pour le passage de gaines, de canalisations ou l’installation de spots.")
-                    .foregroundStyle(.secondary)
-            }
+            if !atlantique { plenumControls }
 
         case 4:
-            Section("Système de fixation") {
+            if atlantique { plenumControls }
+            AtlantiqueSection(atlantique ? "Type de suspente" : "Système de fixation") {
                 if compatibleSystems.isEmpty {
                     Label("Aucun système publié n’est compatible avec cette configuration.", systemImage: "exclamationmark.triangle.fill")
                         .foregroundStyle(.orange)
@@ -764,12 +753,17 @@ struct CeilingConfiguratorView: View {
                     Picker("Système", selection: $fixingSystemID) {
                         Text("Sélectionner").tag("")
                         ForEach(compatibleSystems) { system in
-                            Text(fixingSystemTitle(system)).tag(system.id)
+                            Text(atlantique ? system.title : fixingSystemTitle(system)).tag(system.id)
                         }
                     }
                 }
             }
             if let system = selectedFixingSystem {
+                if atlantique {
+                    AtlantiqueSection("Modèle recommandé") {
+                        Text(fixingSystemTitle(system)).font(Atlantique.Typography.button)
+                    }
+                } else {
                 Section {
                     ForEach(selectedComponents) { component in
                         LabeledContent(component.name, value: componentDescription(component))
@@ -778,6 +772,7 @@ struct CeilingConfiguratorView: View {
                     Text("Fournitures composant le système de fixation")
                 } footer: {
                     Text(system.summary)
+                }
                 }
             }
 
@@ -790,7 +785,7 @@ struct CeilingConfiguratorView: View {
             .listRowSeparator(.hidden)
 
         case 6:
-            Section("Traitement des bandes à joint") {
+            AtlantiqueSection("Traitement des bandes à joint") {
                 Toggle("Prévoir le traitement des bandes", isOn: $jointTreatment)
                 if jointTreatment {
                     Picker("Type d’enduit", selection: $compoundChoice) {
@@ -818,7 +813,9 @@ struct CeilingConfiguratorView: View {
                 }
                 .padding(.vertical, 5)
             }
-            Section {
+            if atlantique, let catalogue = store.catalogue {
+                SupplyCostSection(estimate: SupplyCostEstimator.estimate(CombinedQuantityCalculator.calculate(works: [WorkItem(id: UUID(), projectID: UUID(), name: "Plafond", type: .ceilingOnFurring, configuration: configuration, createdAt: Date(), updatedAt: Date())], catalogue: catalogue).supplies, prices: prices.catalogue, catalogue: catalogue, day: SupplyCostEstimator.day()), loading: prices.isLoading, message: prices.message)
+            } else { Section {
                 DisclosureGroup("Configuration retenue", isExpanded: $configurationExpanded) {
                     editableConfigurationRow("Type", value: isSlopedCeiling ? "Rampant" : "Horizontal", targetStep: 0)
                     editableConfigurationRow("Sens des fourrures", value: furringDirection == "length" ? "Dans la longueur" : "Dans la largeur", targetStep: 0)
@@ -836,11 +833,12 @@ struct CeilingConfiguratorView: View {
                     editableConfigurationRow("Plénum retenu", value: "\(format(plenum)) cm", targetStep: 3)
                 }
             }
-            Section("Système de fixation") {
+            }
+            AtlantiqueSection("Système de fixation") {
                 LabeledContent("Solution", value: selectedFixingSystem?.title ?? "—")
                 LabeledContent("Nombre de systèmes", value: String(Int(ceil(fixingSystemCount))))
             }
-            Section("Pare-vapeur") {
+            AtlantiqueSection("Pare-vapeur") {
                 editableConfigurationRow("Pose prévue", value: vaporBarrier ? "Oui" : "Non", targetStep: 2)
                 if vaporBarrier {
                     ForEach(vaporBarrierSupplies) { supply in
@@ -848,21 +846,151 @@ struct CeilingConfiguratorView: View {
                     }
                 }
             }
-            Section("Parements utilisés") {
+            AtlantiqueSection("Parements utilisés") {
                 ForEach(facingSupplies) { supply in
                     LabeledContent(supply.name, value: "\(Int(supply.quantity)) \(supply.unit)")
                 }
             }
-            Section("Traitement des joints") {
+            AtlantiqueSection("Traitement des joints") {
                 LabeledContent("Bandes à joint", value: jointTreatment ? "Oui" : "Non")
                 if jointTreatment { LabeledContent("Enduit retenu", value: compoundChoice == "poudre" ? "Enduit à joints en poudre" : "Enduit à joints en pâte") }
             }
-            Section("Autres fournitures indicatives") {
+            AtlantiqueSection("Autres fournitures indicatives") {
                 ForEach(otherSupplies) { supply in
                     LabeledContent(supply.name, value: "\(formattedQuantity(supply.quantity, unit: supply.unit)) \(supply.unit)")
                 }
             }
         }
+    }
+
+
+    @ViewBuilder private var atlantiqueInsulation: some View {
+        Section { Toggle("Prévoir une isolation", isOn: insulationEnabledBinding) }
+        if !insulationID.isEmpty {
+            Section {
+                    Text(atlantique ? "Couche 1" : "Première couche")
+                        .font(.headline)
+                    Divider().padding(.bottom, 8)
+                    if isWoodSupport {
+                        Picker("Emplacement", selection: $firstInsulationLocation) {
+                            Text(betweenStructureTitle).tag("between")
+                            Text(belowStructureTitle).tag("below")
+                        }
+                    }
+                    Picker("Type d’isolant", selection: insulationTypeBinding) {
+                        ForEach(insulationTypes, id: \.self) { Text($0).tag($0) }
+                    }
+                    .onChange(of: insulationID) { _, _ in
+                        insulationThickness = preferredFirstInsulationThickness
+                        selectedSpacing = recommendedSelectableSpacing
+                        fixingSystemID = ""
+                    }
+                    Picker("Lambda", selection: $insulationID) {
+                        ForEach(insulationOptions(for: selectedInsulationType)) { option in
+                            Text(insulationLambdaTitle(option)).tag(option.id)
+                        }
+                    }
+                    Picker("Épaisseur", selection: $insulationThickness) {
+                        ForEach(insulationPoints) { point in
+                            if let lambda = insulationLambda, lambda > 0 {
+                                Text("\(Int(point.thickness)) mm — R = \(((point.thickness / 1000) / lambda).formatted(.number.precision(.fractionLength(2))))").tag(point.thickness)
+                            } else {
+                                Text("\(Int(point.thickness)) mm").tag(point.thickness)
+                            }
+                        }
+                    }
+                    .onChange(of: insulationThickness) { _, _ in
+                        selectedSpacing = recommendedSelectableSpacing
+                        fixingSystemID = ""
+                    }
+                    if let insulationThermalResistance {
+                        LabeledContent("Résistance thermique", value: "R = \(insulationThermalResistance.formatted(.number.precision(.fractionLength(2)))) m²·K/W")
+                    }
+
+
+            }
+            if insulationLayers == 2 {
+                Section {
+                        Text(atlantique ? "Couche 2" : "Deuxième couche")
+                            .font(.headline)
+                        if isWoodSupport {
+                            Picker("Emplacement", selection: $secondInsulationLocation) {
+                                Text(betweenStructureTitle).tag("between")
+                                Text(belowStructureTitle).tag("below")
+                            }
+                        }
+                        Picker("Type d’isolant", selection: secondInsulationTypeBinding) {
+                            ForEach(insulationTypes, id: \.self) { Text($0).tag($0) }
+                        }
+                        .onChange(of: secondInsulationID) { _, _ in
+                            secondInsulationThickness = secondInsulationPoints.first?.thickness ?? 0
+                            selectedSpacing = recommendedSelectableSpacing
+                            fixingSystemID = ""
+                        }
+                        Picker("Lambda", selection: $secondInsulationID) {
+                            ForEach(insulationOptions(for: selectedSecondInsulationType)) { option in
+                                Text(insulationLambdaTitle(option)).tag(option.id)
+                            }
+                        }
+                        Picker("Épaisseur", selection: $secondInsulationThickness) {
+                            ForEach(secondInsulationPoints) { point in
+                                if let lambda = secondInsulationLambda, lambda > 0 {
+                                    Text("\(Int(point.thickness)) mm — R = \(((point.thickness / 1000) / lambda).formatted(.number.precision(.fractionLength(2))))").tag(point.thickness)
+                                } else {
+                                    Text("\(Int(point.thickness)) mm").tag(point.thickness)
+                                }
+                            }
+                        }
+                        .onChange(of: secondInsulationThickness) { _, _ in
+                            selectedSpacing = recommendedSelectableSpacing
+                            fixingSystemID = ""
+                        }
+                    Button("Retirer la deuxième couche", role: .destructive) { insulationLayers = 1; fixingSystemID = "" }
+                }
+            } else {
+                Section {
+                    Button { insulationLayers = 2; prepareSecondInsulationDefault(matchingFirstLayer: true); selectedSpacing = recommendedSelectableSpacing; fixingSystemID = "" } label: {
+                        HStack {
+                            VStack(alignment: .leading, spacing: 5) { Text("Couche 2").font(.headline); Text("Ajouter une deuxième couche").font(.subheadline) }
+                            Spacer(); Image(systemName: "plus").foregroundStyle(Atlantique.Palette.actionInk)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder private var plenumControls: some View {
+            Section {
+                LabeledContent("Plénum minimal", value: "\(format(minimumPlenum * 10)) mm")
+                HStack {
+                    Text("Plénum supplémentaire")
+                    Spacer()
+                    PlaquistoIntegerField(value: additionalPlenumMMBinding)
+                        .multilineTextAlignment(.trailing)
+                        .frame(width: 90)
+                    Text("mm").foregroundStyle(.secondary)
+                }
+                LabeledContent("Plénum retenu", value: "\(format(plenum * 10)) mm")
+                if GalvanizedHangerSelection.wholeMillimeters(plenumCM: plenum) == nil {
+                    Text("Renseignez une marge en millimètres entiers pour actualiser le plénum.")
+                        .font(.footnote).foregroundStyle(.orange)
+                }
+            } header: {
+                Text(plenumSectionTitle)
+            }
+            Section {
+                if isWoodSupport {
+                    WoodCeilingPlenumDiagram(plenumCM: plenum)
+                        .listRowSeparator(.hidden)
+                } else {
+                    Label("Sur ce support, le plénum minimal intègre toute l’épaisseur d’isolant sélectionnée.",
+                          systemImage: "info.circle")
+                }
+                Text("Vous pouvez ajouter une marge pour le passage de gaines, de canalisations ou l’installation de spots.")
+                    .foregroundStyle(.secondary)
+            }
+
     }
 
     private func editableConfigurationRow(_ title: String, value: String, targetStep: Int) -> some View {
@@ -885,7 +1013,7 @@ struct CeilingConfiguratorView: View {
 
     private var ceilingFacingsStep: some View {
         VStack(alignment: .leading, spacing: 14) {
-            facingSectionTitle("Nombre de peaux")
+            if !atlantique { facingSectionTitle("Nombre de peaux")
             facingCard {
                 Picker("Nombre de parements", selection: $layers) {
                     Text("Simple peau").tag(1)
@@ -894,21 +1022,24 @@ struct CeilingConfiguratorView: View {
                 .pickerStyle(.segmented)
                 .onChange(of: layers) { _, _ in ensureFacingAllocations() }
             }
-            facingSectionTitle("Première peau")
+            }
+            facingSectionTitle(atlantique ? "Parement 1" : "Première peau")
             ForEach(firstSkin.indices, id: \.self) { index in
                 facingAllocationCard(allocation: $firstSkin[index], allocations: $firstSkin)
             }
             facingAddButton(allocations: $firstSkin)
             facingAllocationStatus(firstSkin)
             if layers == 2 {
-                facingSectionTitle("Deuxième peau")
+                facingSectionTitle(atlantique ? "Parement 2" : "Deuxième peau")
                 ForEach(secondSkin.indices, id: \.self) { index in
                     facingAllocationCard(allocation: $secondSkin[index], allocations: $secondSkin)
                 }
                 facingAddButton(allocations: $secondSkin)
                 facingAllocationStatus(secondSkin)
-                Text("L’ordre des deux parements n’a aucune incidence.")
-                    .font(.footnote).foregroundStyle(.secondary).padding(.horizontal, 12)
+                if atlantique { Button("Retirer le deuxième parement", role: .destructive) { layers = 1 } }
+                else { Text("L’ordre des deux parements n’a aucune incidence.").font(.footnote).foregroundStyle(.secondary).padding(.horizontal, 12) }
+            } else if atlantique {
+                facingCard { Button { layers = 2; ensureFacingAllocations() } label: { HStack { VStack(alignment: .leading) { Text("Parement 2").font(.headline); Text("Ajouter une deuxième peau").font(.subheadline) }; Spacer(); Image(systemName: "plus").foregroundStyle(Atlantique.Palette.actionInk) } } }
             }
         }
         .padding(.vertical, 6)
@@ -934,8 +1065,10 @@ struct CeilingConfiguratorView: View {
                     Text(dimension.label).tag(dimension.id)
                 }
             }
-            Divider()
-            MeasureField(label: "Surface attribuée", value: allocation.area, unit: "m²")
+            if !atlantique || allocations.wrappedValue.count > 1 {
+                Divider()
+                MeasureField(label: "Surface attribuée", value: allocation.area, unit: "m²")
+            }
             if allocations.wrappedValue.count > 1 {
                 Divider()
                 Button("Supprimer ce type", role: .destructive) {
@@ -987,8 +1120,8 @@ struct CeilingConfiguratorView: View {
         case 2:
             let secondLayerIsValid = insulationID.isEmpty || insulationLayers == 1 || (selectedSecondInsulation != nil && selectedSecondInsulationPoint != nil)
             return (insulationID.isEmpty || selectedInsulationPoint != nil) && secondLayerIsValid
-        case 3: return plenum >= minimumPlenum && GalvanizedHangerSelection.wholeMillimeters(plenumCM: plenum) != nil && maximumSpacing != nil && spacingChoices.contains(selectedSpacing)
-        case 4: return selectedFixingSystem != nil
+        case 3: return suspensionSpacingCM.isFinite && suspensionSpacingCM >= 20 && suspensionSpacingCM <= 120 && (atlantique || plenum >= minimumPlenum) && GalvanizedHangerSelection.wholeMillimeters(plenumCM: plenum) != nil && maximumSpacing != nil && spacingChoices.contains(selectedSpacing)
+        case 4: return selectedFixingSystem != nil && plenum >= minimumPlenum && GalvanizedHangerSelection.wholeMillimeters(plenumCM: plenum) != nil
         case 5: return allocationsAreValid(firstSkin) && (layers == 1 || allocationsAreValid(secondSkin))
         case 6: return !jointTreatment || ["poudre", "pate"].contains(compoundChoice)
         default: return true
@@ -1042,7 +1175,7 @@ struct CeilingConfiguratorView: View {
         if insulationLayers == 2 { prepareSecondInsulationDefault() }
         normalizeInsulationLocations()
         if !preservingSpacing || !spacingChoices.contains(selectedSpacing) {
-            selectedSpacing = maximumSpacing ?? 0.4
+            selectedSpacing = recommendedSelectableSpacing
         }
     }
 
@@ -1186,7 +1319,8 @@ struct CeilingConfiguratorView: View {
             firstInsulationLocation: firstInsulationLocation,
             secondInsulationLocation: secondInsulationLocation,
             furringDirection: furringDirection,
-            perimeterSupport: perimeterSupport
+            perimeterSupport: perimeterSupport,
+            suspensionSpacingMeters: suspensionSpacingCM / 100
         )
     }
 

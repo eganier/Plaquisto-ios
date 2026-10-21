@@ -65,6 +65,9 @@ extension EnvironmentValues {
 }
 
 extension View {
+    func atlantiqueFormSurface() -> some View { modifier(AtlantiqueFormSurfaceModifier()) }
+    /// Keep the caller's cancellation/save actions; only theme its navigation chrome.
+    func atlantiqueFormPage(_ title: String) -> some View { modifier(AtlantiqueFormPageModifier(title: title)) }
     func atlantiquePage(_ title: String, root: Bool = false) -> some View {
         modifier(AtlantiquePageModifier(title: title, root: root))
     }
@@ -75,6 +78,55 @@ extension View {
             .tint(Atlantique.Palette.actionInk)
             .foregroundStyle(Atlantique.Palette.ink)
             .preferredColorScheme(.light)
+    }
+}
+
+struct AtlantiqueForm<Content: View>: View {
+    private let content: Content
+    init(@ViewBuilder content: () -> Content) { self.content = content() }
+    var body: some View { Form { content }.atlantiqueFormSurface() }
+}
+
+struct AtlantiqueSection<Content: View>: View {
+    let title: String
+    private let content: Content
+    @Environment(\.usesAtlantiqueDesign) private var enabled
+    init(_ title: String, @ViewBuilder content: () -> Content) { self.title = title; self.content = content() }
+    var body: some View {
+        Section { content } header: {
+            Text(title).foregroundStyle(enabled ? Color.white : .secondary)
+                .font(enabled ? Atlantique.Typography.caption : .caption)
+        }
+    }
+}
+
+private struct AtlantiqueFormSurfaceModifier: ViewModifier {
+    @Environment(\.usesAtlantiqueDesign) private var enabled
+    func body(content: Content) -> some View {
+        if enabled {
+            content.scrollContentBackground(.hidden)
+                .background(Atlantique.Palette.blue.ignoresSafeArea())
+                .font(Atlantique.Typography.body).tint(Atlantique.Palette.actionInk)
+                .foregroundStyle(Atlantique.Palette.ink)
+        } else { content }
+    }
+}
+
+private struct AtlantiqueFormPageModifier: ViewModifier {
+    let title: String
+    @Environment(\.usesAtlantiqueDesign) private var enabled
+    func body(content: Content) -> some View {
+        if enabled {
+            content.navigationTitle(title).navigationBarTitleDisplayMode(.inline)
+                .toolbarBackground(Atlantique.Palette.blue, for: .navigationBar)
+                .toolbarBackground(.visible, for: .navigationBar)
+                .toolbarColorScheme(.dark, for: .navigationBar)
+                .background(Atlantique.Palette.blue.ignoresSafeArea())
+                .toolbar { ToolbarItem(placement: .principal) {
+                    Text(title).font(Atlantique.Typography.heading).foregroundStyle(.white)
+                        .lineLimit(1).minimumScaleFactor(0.65)
+                } }
+        } else { content }
     }
 }
 

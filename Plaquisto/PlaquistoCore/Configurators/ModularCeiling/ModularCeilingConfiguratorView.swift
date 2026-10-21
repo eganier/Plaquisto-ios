@@ -285,7 +285,7 @@ struct ModularCeilingConfiguratorView: View {
             .padding(.horizontal, 20)
             .padding(.vertical, 12)
 
-            Form { currentStepContent }
+            AtlantiqueForm { currentStepContent }
         }
         .configurationEntry(in:0...2) { step = $0 }
         .safeAreaInset(edge: .bottom) {
@@ -307,7 +307,7 @@ struct ModularCeilingConfiguratorView: View {
             .padding(.vertical, 12)
             .background(.bar)
         }
-        .navigationTitle("Plafond modulaire (bêta)")
+        .navigationTitle("Plafond modulaire (bêta)").atlantiqueFormPage("Plafond modulaire (bêta)")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             if isEditing {
