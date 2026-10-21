@@ -12,6 +12,7 @@ extension EnvironmentValues {
 }
 
 struct BeforeAfterHomeView: View {
+    @Environment(\.usesAtlantiqueDesign) private var atlantique
     @Environment(\.beforeAfterAccount) private var account
     @State private var projects: [BeforeAfterProject] = []
     @State private var photo: PhotosPickerItem?
@@ -54,6 +55,7 @@ struct BeforeAfterHomeView: View {
             footer: { Text("Photos locales, sans synchronisation cloud ni rattachement à un projet. Export sans coordonnées GPS.") }
         }
         .navigationTitle("Montage avant / après").navigationBarTitleDisplayMode(.inline)
+        .atlantiqueFormSurface().atlantiqueFormPage("Avant / Après")
         .navigationDestination(isPresented:$opening) {
             if let selected { BeforeAfterEditorView(project:selected,onSaved:{ Task { await reload() } }) }
         }
@@ -209,6 +211,7 @@ final class BeforeAfterEditorModel: ObservableObject {
 }
 
 private struct BeforeAfterEditorView: View {
+    @Environment(\.usesAtlantiqueDesign) private var atlantique
     @StateObject private var model: BeforeAfterEditorModel
     @Environment(\.beforeAfterAccount) private var account
     @Environment(\.dismiss) private var dismiss
@@ -228,9 +231,12 @@ private struct BeforeAfterEditorView: View {
                 if let pair = model.pair {
                     Text("Ajuster le comparatif").font(.headline)
                     BeforeAfterComparisonView(project:$model.project,pair:pair,account:account)
-                    Picker("Mode de comparaison",selection:$model.project.mode) {
+                    Picker("Séparation",selection:$model.project.mode) {
                         ForEach(BeforeAfterMode.allCases) { Text($0.title).tag($0) }
                     }.pickerStyle(.menu)
+                    if atlantique && model.project.mode != .sideBySide {
+                        Slider(value: $model.project.divider, in: 0...1).accessibilityLabel("Position de la séparation")
+                    }
                     // The gesture modifies only the mask, never the image registration.
                     if let alignment = model.project.alignment {
                         Label(alignment.message,systemImage:alignment.isUsable ? "checkmark.circle" : "exclamationmark.triangle")
@@ -259,10 +265,11 @@ private struct BeforeAfterEditorView: View {
                     }.buttonStyle(.bordered)
                 }
                 if model.saved { Label("Projet enregistré sur cet iPhone",systemImage:"checkmark.circle").font(.caption).foregroundStyle(.secondary) }
-            }.padding()
+            }.padding().background(atlantique ? Color.white : Color.clear, in: RoundedRectangle(cornerRadius:17)).padding(atlantique ? 16 : 0)
             .disabled(model.busy)
         }
-        .background(Color(.systemGroupedBackground))
+        .background(atlantique ? Atlantique.Palette.blue : Color(.systemGroupedBackground))
+        .atlantiqueFormPage("Avant / Après")
         .navigationTitle(model.project.name).navigationBarTitleDisplayMode(.inline)
         .navigationBarBackButtonHidden()
         .toolbar {

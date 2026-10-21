@@ -407,7 +407,7 @@ struct CeilingConfiguratorView: View {
                 ContentUnavailableView("Référentiel indisponible", systemImage: "wifi.exclamationmark", description: Text(error))
                     .overlay(alignment: .bottom) {
                         Button("Réessayer") { Task { await store.load() } }
-                            .buttonStyle(.borderedProminent)
+                            .atlantiqueActionStyle()
                             .padding(.bottom, 80)
                     }
             } else {
@@ -446,7 +446,7 @@ struct CeilingConfiguratorView: View {
         .toolbar {
             if isEditing || atlantique {
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Enregistrer") { onSave(configuration) }.disabled(!allStepsAreValid)
+                    Button("Enregistrer") { onSave(configuration) }.atlantiqueToolbarAction().disabled(!allStepsAreValid)
                 }
             }
         }
@@ -475,7 +475,7 @@ struct CeilingConfiguratorView: View {
 
             HStack {
                 if step > 0 {
-                    Button("Retour") { withAnimation { step -= 1 } }.buttonStyle(.bordered)
+                    Button("Retour") { withAnimation { step -= 1 } }.atlantiqueActionStyle(.secondary)
                         .formStepMenu(titles: stepNames, selection: $step, canShowResult: allStepsAreValid) {
                             prepareDefaults()
                             showingSavedResult = false
@@ -484,7 +484,7 @@ struct CeilingConfiguratorView: View {
                 Spacer()
                 if step < stepNames.count - 1 {
                     Button("Continuer") { advance() }
-                        .buttonStyle(.borderedProminent)
+                        .atlantiqueActionStyle()
                         .disabled(!canContinue)
                 } else {
                     if showingSavedResult {
@@ -492,13 +492,13 @@ struct CeilingConfiguratorView: View {
                             showingSavedResult = false
                             withAnimation { step = 0 }
                         }
-                        .buttonStyle(.borderedProminent)
+                        .atlantiqueActionStyle()
                     } else {
                         Button("Enregistrer l’ouvrage") {
                             onSave(configuration)
                             showingSavedResult = true
                         }
-                        .buttonStyle(.borderedProminent)
+                        .atlantiqueActionStyle()
                         .disabled(!allStepsAreValid)
                     }
                 }
@@ -719,6 +719,18 @@ struct CeilingConfiguratorView: View {
             }
 
         case 3:
+            if atlantique {
+                AtlantiqueSection("Entraxe des fourrures") {
+                    AtlantiqueChoice(title: "Entraxe", options: spacingChoices.map { (value: $0, title: "\(Int($0 * 100)) cm") }, selection: $selectedSpacing)
+                }
+                AtlantiqueSection("Périphérie") {
+                    Picker("Appui en périphérie", selection: $perimeterSupport) {
+                        Text("Cornière périphérique").tag(true)
+                        Text("2 fourrures à 10 cm des bords").tag(false)
+                    }.pickerStyle(.inline).labelsHidden()
+                }
+                Section { MeasureField(label: "Entraxe des suspentes", value: $suspensionSpacingCM, unit: "cm") }
+            } else {
             AtlantiqueSection("Entraxe des fourrures") {
                 Picker("Entraxe", selection: $selectedSpacing) {
                     ForEach(spacingChoices, id: \.self) { spacing in Text("\(Int(spacing * 100)) cm").tag(spacing) }
@@ -734,6 +746,7 @@ struct CeilingConfiguratorView: View {
                 } else { Toggle("Fixer une cornière en périphérie",isOn:$perimeterSupport) }
                 if !atlantique { Text(perimeterSupport ? "Le comptage du calepinage utilise la périphérie comme appui aux extrémités." : "Sans cornière, prévoyez une suspente à chaque extrémité des fourrures. Leur nombre est estimé ici, puis affiné par le calepinage.")
                     .font(.footnote).foregroundStyle(.secondary) }
+            }
             }
             if spacingIsAboveRecommendation {
                 Section {

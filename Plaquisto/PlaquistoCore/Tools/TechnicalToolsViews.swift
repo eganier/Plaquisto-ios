@@ -7,6 +7,7 @@ private enum TechnicalSearchMode: String, CaseIterable, Identifiable {
 }
 
 struct CeilingSpanToolView: View {
+    @Environment(\.usesAtlantiqueDesign) private var atlantique
     @EnvironmentObject private var store: ToolTechnicalStore
     @State private var mode = TechnicalSearchMode.verify
     @State private var requestedSpan = 0.0
@@ -48,6 +49,7 @@ struct CeilingSpanToolView: View {
     private var compatible: [CeilingSpanOption] {
         options.filter { option in
             span(option) >= requestedSpan
+                && (!atlantique || option.facing == facing)
                 && (findAssembly.doubled == nil || findAssembly.doubled == (option.assembly == "double"))
         }
         .sorted { lhs, rhs in
@@ -59,9 +61,9 @@ struct CeilingSpanToolView: View {
 
     var body: some View {
         TechnicalToolForm(title: "Plafond autoportant", store: store) {
-            Section { Picker("Mode", selection: $mode) { ForEach(TechnicalSearchMode.allCases) { Text($0.rawValue).tag($0) } }.pickerStyle(.segmented) }
-            Section("Portée") { ToolNumberField(title: "Portée à franchir", unit: "m", value: $requestedSpan) }
-            Section("Isolant") {
+            if !atlantique { Section { Picker("Mode", selection: $mode) { ForEach(TechnicalSearchMode.allCases) { Text($0.rawValue).tag($0) } }.pickerStyle(.segmented) } }
+            AtlantiqueSection("Portée") { ToolNumberField(title: "Portée à franchir", unit: "m", value: $requestedSpan) }
+            AtlantiqueSection("Isolant") {
                 Picker("Type d’isolant", selection: $material) {
                     ForEach(materials, id: \.self) { Text($0).tag($0) }
                 }
@@ -74,8 +76,8 @@ struct CeilingSpanToolView: View {
                     ForEach(thicknesses, id: \.self) { Text("\($0) mm").tag($0) }
                 }
             }
-            if mode == .verify {
-                Section("Configuration") {
+            if mode == .verify && !atlantique {
+                AtlantiqueSection("Configuration") {
                     Picker("Système rail / montant", selection: $stud) {
                         ForEach(studs, id: \.self) { value in
                             compatibilityPickerLabel("R\(value) + M\(value)", compatible: ceilingCompatible(stud: value))
@@ -106,13 +108,17 @@ struct CeilingSpanToolView: View {
                 if let selected, loadBand != nil {
                     compatibility(maximum: span(selected), requested: requestedSpan)
                 } else if insulation != nil {
-                    Section("Résultat") {
+                    AtlantiqueSection("Résultat") {
                         Label("Aucune portée n’est publiée pour cette configuration.", systemImage: "exclamationmark.triangle.fill")
                             .foregroundStyle(.orange)
                     }
                 }
             } else {
                 Section {
+                    if atlantique {
+                        Picker("Type de parement", selection: $facing) { ForEach(availableFacings, id: \.self) { Text(ceilingFacingLabel($0, options: options)).tag($0) } }
+                        Picker("Configuration", selection: $layers) { ForEach(availableLayers, id: \.self) { Text(liningLayerTitle($0)).tag($0) } }.pickerStyle(.segmented)
+                    }
                     selectorTitle("Configuration des montants") {
                         Picker("Configuration des montants", selection: $findAssembly) {
                             ForEach(PartitionAssemblyFilter.allCases) { Text($0.rawValue).tag($0) }
@@ -121,7 +127,7 @@ struct CeilingSpanToolView: View {
                         .pickerStyle(.segmented)
                     }
                 }
-                Section("Configurations compatibles") {
+                AtlantiqueSection("Configurations compatibles") {
                     if requestedSpan <= 0 { Text("Renseignez la portée à franchir.").foregroundStyle(.secondary) }
                     else if loadBand == nil { Text("Sélectionnez un isolant compatible avec les données publiées.").foregroundStyle(.orange) }
                     else if compatible.isEmpty { Text("Aucune configuration publiée ne couvre cette portée.").foregroundStyle(.orange) }
@@ -189,6 +195,7 @@ struct CeilingSpanToolView: View {
 }
 
 struct PartitionHeightToolView: View {
+    @Environment(\.usesAtlantiqueDesign) private var atlantique
     @EnvironmentObject private var store: ToolTechnicalStore
     @State private var mode = TechnicalSearchMode.verify
     @State private var height = 0.0
@@ -244,8 +251,9 @@ struct PartitionHeightToolView: View {
 
     var body: some View {
         TechnicalToolForm(title: "Hauteur de cloison", store: store) {
-            Section { Picker("Mode", selection: $mode) { ForEach(TechnicalSearchMode.allCases) { Text($0.rawValue).tag($0) } }.pickerStyle(.segmented) }
-            if mode == .verify {
+            if !atlantique { Section { Picker("Mode", selection: $mode) { ForEach(TechnicalSearchMode.allCases) { Text($0.rawValue).tag($0) } }.pickerStyle(.segmented) } }
+            if atlantique { atlantiqueContent }
+            else if mode == .verify {
                 verifyContent
             } else {
                 findContent
@@ -258,9 +266,29 @@ struct PartitionHeightToolView: View {
         .onChange(of: layers) { _, _ in normalizeFacing() }
     }
 
+
+    private var atlantiqueContent: some View {
+        Group {
+            AtlantiqueSection("Hauteur") { ToolNumberField(title: "Hauteur sous plafond", unit: "m", value: $height) }
+            AtlantiqueSection("Système rail / montant") {
+                Picker("Système", selection: $selectedFrame) { ForEach(frames, id: \.self) { Text($0).tag($0) } }
+            }
+            AtlantiqueSection("Montants") {
+                Picker("Configuration des montants", selection: $doubled) { Text("Simples").tag(false); Text("Doublés").tag(true) }.pickerStyle(.segmented)
+                Picker("Entraxe des montants", selection: $spacing) { Text("40 cm").tag(0.4); Text("60 cm").tag(0.6) }.pickerStyle(.segmented)
+            }
+            AtlantiqueSection("Parement") {
+                Picker("Type de parement", selection: $facing) { ForEach(verifyFacings, id: \.self) { Text($0).tag($0) } }
+                Picker("Configuration", selection: $layers) { ForEach(verifyLayers, id: \.self) { Text(layerTitle($0)).tag($0) } }.pickerStyle(.segmented)
+            }
+            compatibility(maximum: selectedMaximum, requested: height)
+            Section { Button("Réinitialiser") { height = 0; spacing = 0.4; doubled = false; selectedFrame = frames.first ?? ""; layers = 1; normalizeSelections() } }
+        }
+    }
+
     private var verifyContent: some View {
         Group {
-            Section("Configuration") {
+            AtlantiqueSection("Configuration") {
                 Picker("Système rail / montant", selection: $selectedFrame) {
                     ForEach(frames, id: \.self) { value in
                         compatibilityPickerLabel(value, compatible: partitionCompatible(frame: value))
@@ -304,7 +332,7 @@ struct PartitionHeightToolView: View {
 
     private var findContent: some View {
         Group {
-            Section("Besoin") {
+            AtlantiqueSection("Besoin") {
                 ToolNumberField(title: "Hauteur sous plafond", unit: "m", value: $height)
                 Picker("Parements", selection: $layers) {
                     ForEach(findLayers, id: \.self) { Text(layerTitle($0)).tag($0) }
@@ -331,7 +359,7 @@ struct PartitionHeightToolView: View {
                     .pickerStyle(.segmented)
                 }
             }
-            Section("Configurations compatibles") {
+            AtlantiqueSection("Configurations compatibles") {
                 if height <= 0 {
                     Text("Renseignez la hauteur sous plafond.").foregroundStyle(.secondary)
                 } else if compatible.isEmpty {
@@ -488,6 +516,7 @@ private func candidateOrder(_ lhs: PartitionHeightCandidate, _ rhs: PartitionHei
 }
 
 struct LiningHeightToolView: View {
+    @Environment(\.usesAtlantiqueDesign) private var atlantique
     @EnvironmentObject private var store: ToolTechnicalStore
     @State private var mode = TechnicalSearchMode.verify
     @State private var system = 0
@@ -540,12 +569,13 @@ struct LiningHeightToolView: View {
 
     var body: some View {
         TechnicalToolForm(title: "Hauteur de doublage", store: store) {
-            Section { Picker("Mode", selection: $mode) { ForEach(TechnicalSearchMode.allCases) { Text($0.rawValue).tag($0) } }.pickerStyle(.segmented) }
-            Section("Système") {
+            if !atlantique { Section { Picker("Mode", selection: $mode) { ForEach(TechnicalSearchMode.allCases) { Text($0.rawValue).tag($0) } }.pickerStyle(.segmented) } }
+            if atlantique { atlantiqueContent } else {
+            AtlantiqueSection("Système") {
                 Picker("Ossature", selection: $system) { Text("Lisses / fourrures").tag(0); Text("Rails / montants").tag(1) }.pickerStyle(.segmented)
                 ToolNumberField(title: "Hauteur sous plafond", unit: "m", value: $height)
             }
-            Section("Parement") {
+            AtlantiqueSection("Parement") {
                 Picker("Nombre de couches", selection: $layers) {
                     ForEach(availableLayers, id: \.self) { value in
                         compatibilityPickerLabel(
@@ -566,6 +596,7 @@ struct LiningHeightToolView: View {
                 }
             }
             if system == 0 { furringContent } else { liningContent }
+            }
         }
         .onAppear { selectFirstOptionsIfNeeded() }
         .onChange(of: store.liningHeights) { _, _ in normalizeFacingSelection() }
@@ -578,6 +609,30 @@ struct LiningHeightToolView: View {
         .onChange(of: facing) { _, _ in normalizeFacingSelection() }
         .onChange(of: liningFrame) { _, _ in normalizeLiningConfiguration() }
         .onChange(of: liningDoubled) { _, _ in normalizeLiningConfiguration() }
+    }
+
+
+    private var atlantiqueContent: some View {
+        Group {
+            AtlantiqueSection("Hauteur") { ToolNumberField(title: "Hauteur de doublage", unit: "m", value: $height) }
+            AtlantiqueSection("Système") {
+                Picker("Ossature", selection: $system) { Text("Lisses / fourrures").tag(0); Text("Rails / montants").tag(1) }.pickerStyle(.segmented)
+                if system == 1 { Picker("Système rail / montant", selection: $liningFrame) { ForEach(liningFrames, id: \.self) { Text($0).tag($0) } } }
+            }
+            if system == 1 {
+                AtlantiqueSection("Montants") {
+                    Picker("Configuration des montants", selection: $liningDoubled) { Text("Simples").tag(false); Text("Doublés").tag(true) }.pickerStyle(.segmented)
+                    Picker("Entraxe des montants", selection: $liningSpacing) { ForEach(liningSpacings, id: \.self) { Text("\(Int($0 * 100)) cm").tag($0) } }.pickerStyle(.segmented)
+                }
+            }
+            AtlantiqueSection("Parement") {
+                Picker("Type de parement", selection: $facing) { ForEach(availableFacings, id: \.self) { Text($0).tag($0) } }
+                Picker("Configuration", selection: $layers) { ForEach(availableLayers, id: \.self) { Text(liningLayerTitle($0)).tag($0) } }.pickerStyle(.segmented)
+            }
+            if system == 0 { furringContent }
+            else { compatibility(maximum: selectedLining?.maximumHeight ?? 0, requested: height) }
+            Section { Button("Réinitialiser") { height = 0; layers = 1; liningDoubled = false; selectFirstOptionsIfNeeded() } }
+        }
     }
 
     private func selectFirstOptionsIfNeeded() {
@@ -603,7 +658,7 @@ struct LiningHeightToolView: View {
         if mode == .verify {
             if let rule = selectedFurring {
                 compatibility(maximum: rule.maximumHeight, requested: height)
-                Section("Lignes d’appuis") {
+                AtlantiqueSection("Lignes d’appuis") {
                     let count = height > 0 ? max(1, Int(ceil(height / rule.maximumSupportSpacing)) - 1) : 0
                     LabeledContent("Nombre recommandé", value: "\(count)")
                     LabeledContent("Écart maximal", value: meters(rule.maximumSupportSpacing))
@@ -611,7 +666,7 @@ struct LiningHeightToolView: View {
                 }
             }
         } else {
-            Section("Configurations compatibles") {
+            AtlantiqueSection("Configurations compatibles") {
                 let values = filteredFurring.filter { $0.maximumHeight >= height }.sorted { $0.maximumHeight < $1.maximumHeight }
                 if height <= 0 { Text("Renseignez la hauteur sous plafond.").foregroundStyle(.secondary) }
                 else if values.isEmpty { Text("Aucun montage sur fourrures publié n’est compatible.").foregroundStyle(.orange) }
@@ -622,7 +677,7 @@ struct LiningHeightToolView: View {
 
     @ViewBuilder private var liningContent: some View {
         if mode == .verify {
-            Section("Configuration de l’ossature") {
+            AtlantiqueSection("Configuration de l’ossature") {
                 Picker("Système rail / montant", selection: $liningFrame) {
                     ForEach(liningFrames, id: \.self) { value in
                         compatibilityPickerLabel(value, compatible: liningFrameCompatible(value))
@@ -650,7 +705,7 @@ struct LiningHeightToolView: View {
             if let selectedLining {
                 compatibility(maximum: selectedLining.maximumHeight, requested: height)
             } else {
-                Section("Résultat") {
+                AtlantiqueSection("Résultat") {
                     Label("Aucune hauteur n’est publiée pour cette configuration.", systemImage: "exclamationmark.triangle.fill")
                         .foregroundStyle(.orange)
                 }
@@ -672,7 +727,7 @@ struct LiningHeightToolView: View {
                     .pickerStyle(.segmented)
                 }
             }
-            Section("Configurations compatibles") {
+            AtlantiqueSection("Configurations compatibles") {
                 if height <= 0 { Text("Renseignez la hauteur sous plafond.").foregroundStyle(.secondary) }
                 else if compatibleLining.isEmpty { Text("Aucun montage rails / montants publié n’est compatible.").foregroundStyle(.orange) }
                 else { ForEach(compatibleLining.prefix(20)) { option in resultRow(option.title, maximum: option.maximumHeight, requested: height) } }
@@ -757,7 +812,7 @@ struct FurringSpacingToolView: View {
 
     var body: some View {
         TechnicalToolForm(title: "Entraxe des fourrures", store: store) {
-            Section("Isolant") {
+            AtlantiqueSection("Isolant") {
                 Picker("Type d’isolant", selection: $material) {
                     ForEach(materials, id: \.self) { Text($0).tag($0) }
                 }
@@ -770,7 +825,7 @@ struct FurringSpacingToolView: View {
                     ForEach(thicknesses, id: \.self) { Text("\($0) mm").tag($0) }
                 }
             }
-            Section("Sens de pose des plaques") {
+            AtlantiqueSection("Sens de pose des plaques") {
                 HStack(spacing: 3) {
                     ForEach(SheetDirection.allCases) { direction in
                         Button {
@@ -792,7 +847,7 @@ struct FurringSpacingToolView: View {
                 .padding(3)
                 .background(Color(.secondarySystemFill), in: RoundedRectangle(cornerRadius: 13, style: .continuous))
             }
-            Section("Résultat") {
+            AtlantiqueSection("Résultat") {
                 if let recommendedSpacing {
                     LabeledContent("Entraxe recommandé", value: "\(Int(recommendedSpacing * 100)) cm")
                         .font(.headline)
@@ -859,18 +914,18 @@ private struct TechnicalToolForm<Content: View>: View {
     }
 
     var body: some View {
-        Form {
+        AtlantiqueForm {
             if store.isLoading { Section { HStack { ProgressView(); Text("Chargement du référentiel…") } } }
             if let error = store.error { Section { Label(error, systemImage: "exclamationmark.triangle.fill").foregroundStyle(.orange) } }
             if store.isOffline { Section { Label("Référentiel local hors connexion", systemImage: "arrow.triangle.2.circlepath").foregroundStyle(.secondary) } }
             content
         }
-        .navigationTitle(title)
+        .navigationTitle(title).atlantiqueFormPage(title)
     }
 }
 
 @ViewBuilder private func compatibility(maximum: Double, requested: Double) -> some View {
-    Section("Résultat") {
+    AtlantiqueSection("Résultat") {
         if requested <= 0 { Text("Renseignez la dimension à vérifier.").foregroundStyle(.secondary) }
         else if maximum <= 0 { Label("Aucune valeur publiée pour cette configuration.", systemImage: "exclamationmark.triangle.fill").foregroundStyle(.orange) }
         else {

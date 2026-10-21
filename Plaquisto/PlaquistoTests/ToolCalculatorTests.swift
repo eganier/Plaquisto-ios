@@ -3,6 +3,30 @@ import SwiftUI
 @testable import Plaquisto
 
 final class ToolCalculatorTests: XCTestCase {
+    func testAdjustableArchUsesSymmetricCentreBasedMeasurements() throws {
+        let points = ArchCalculator.adjustable(width:120,rise:60,amplitude:0.5,spacing:20)
+        XCTAssertEqual(points.map(\.x),[0,20,40,60,80,100,120])
+        XCTAssertEqual(points.first?.y,0)
+        XCTAssertEqual(points.last?.y,0)
+        XCTAssertEqual(points[3].y,60,accuracy:0.0001)
+        XCTAssertEqual(points[4].y,sqrt(3200),accuracy:0.0001)
+        for i in points.indices { XCTAssertEqual(points[i].y,points[points.count-1-i].y,accuracy:0.0001) }
+        let narrow = ArchCalculator.adjustable(width:120,rise:60,amplitude:0,spacing:20)
+        let wide = ArchCalculator.adjustable(width:120,rise:60,amplitude:1,spacing:20)
+        XCTAssertLessThan(narrow[4].y,points[4].y)
+        XCTAssertGreaterThan(wide[4].y,points[4].y)
+        let uneven = ArchCalculator.adjustable(width:125,rise:40,amplitude:0.5,spacing:20)
+        XCTAssertEqual(uneven.filter { $0.x >= 62.5 }.map { $0.x-62.5 },[0,20,40,60,62.5])
+    }
+
+    func testAdjustableArchRejectsInvalidAndBoundsSampling() {
+        XCTAssertTrue(ArchCalculator.adjustable(width:0,rise:50,amplitude:0.5,spacing:10).isEmpty)
+        XCTAssertTrue(ArchCalculator.adjustable(width:120,rise:.nan,amplitude:0.5,spacing:10).isEmpty)
+        XCTAssertTrue(ArchCalculator.adjustable(width:120,rise:50,amplitude:2,spacing:10).isEmpty)
+        XCTAssertTrue(ArchCalculator.adjustable(width:120,rise:50,amplitude:0.5,spacing:0).isEmpty)
+        XCTAssertLessThanOrEqual(ArchCalculator.adjustable(width:120,rise:50,amplitude:0.5,spacing:0.000001).count,2003)
+    }
+
     func testAtlantiqueIsOptInAndPreservesStandardPresentation() {
         let environment = EnvironmentValues()
         XCTAssertFalse(environment.usesAtlantiqueDesign)

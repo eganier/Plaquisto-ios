@@ -358,9 +358,9 @@ private struct StockProductPicker: View {
                     if choices.count > limit { Button("Afficher la suite") { limit += 30 } }
                 }
                 if kind == .entry { Button("Référence absente ? Ajouter un produit") { custom = true }.frame(minHeight:48) }
-            }.navigationTitle(kind.rawValue).searchable(text:$search,prompt:"Nom, dimensions, modèle…")
+            }.navigationTitle(kind.rawValue).atlantiqueFormPage(kind.rawValue).searchable(text:$search,prompt:"Nom, dimensions, modèle…")
                 .onChange(of:search) { _,value in limit = 30; if !value.isEmpty { family = nil; subcategory = "" } }
-                .toolbar { ToolbarItem(placement:.cancellationAction) { Button("Fermer") { dismiss() } } }
+                .toolbar { ToolbarItem(placement:.cancellationAction) { Button("Fermer") { dismiss() }.atlantiqueToolbarAction() } }
                 .sheet(item:$selected) { product in StockMovementView(kind:kind,product:product) { dismiss() } }
                 .sheet(isPresented:$custom) { StockCustomProductView { product in custom = false; selected = product } }
         }
@@ -388,6 +388,7 @@ private struct StockCustomProductView: View {
 }
 
 private struct StockDetailView: View {
+    @Environment(\.usesAtlantiqueDesign) private var atlantique
     var product:StockProduct
     var prices:SupplyPriceCatalogue?
     @ObservedObject private var stock = StockStore.shared
@@ -399,7 +400,9 @@ private struct StockDetailView: View {
                 VStack(alignment:.leading,spacing:20) {
                     Text(product.name).font(.title2.bold())
                     Text("\(StockQuantity.text(stock.entry(product.id)?.quantity ?? 0)) \(product.unit) en stock").font(.largeTitle.bold())
-                    Text("\(StockQuantity.text(stock.reserved(product.id))) réservés · \(StockQuantity.text(stock.available(product.id))) disponibles").foregroundStyle(.orange)
+                    if !atlantique || stock.reserved(product.id) > 0 {
+                        Text("\(StockQuantity.text(stock.reserved(product.id))) réservés · \(StockQuantity.text(stock.available(product.id))) disponibles").foregroundStyle(.orange)
+                    }
                     if let price = StockValuation.unitPrice(product,prices:prices) { Text("Valeur estimée : \(SupplyCostEstimator.money(price*(stock.entry(product.id)?.quantity ?? 0))) HT") }
                     else { Text("Prix non renseigné ou non validé").foregroundStyle(.secondary) }
                     ForEach(stock.reservations.filter { $0.productID == product.id }) { r in
@@ -407,7 +410,7 @@ private struct StockDetailView: View {
                     }
                 }.frame(maxWidth:.infinity,alignment:.leading).padding()
             }.navigationTitle("Fourniture").atlantiqueFormPage("Fourniture").navigationBarTitleDisplayMode(.inline)
-                .toolbar { ToolbarItem(placement:.confirmationAction) { Button("Fermer") { dismiss() } } }
+                .toolbar { ToolbarItem(placement:.confirmationAction) { Button("Fermer") { dismiss() }.atlantiqueToolbarAction() } }
                 .safeAreaInset(edge:.bottom) {
                     VStack(spacing:10) { ForEach(StockMovement.allCases) { action in Button { movement = action } label: { StockActionLabel(title:action.rawValue,symbol:action.symbol) } } }.padding().background(.regularMaterial)
                 }
@@ -445,7 +448,7 @@ private struct StockMovementView: View {
         _quantity = State(initialValue:kind == .inventory ? StockQuantity.input((entry?.quantity ?? 0)/((entry?.usesPack == true) ? (entry?.packSize ?? 1) : 1)) : "")
     }
     private var amount:Double? {
-        guard let q = StockQuantity.parse(quantity) else { return nil }
+        guard let q = StockQuantity.parse(quantity.isEmpty && atlantique && usesPack ? "0" : quantity) else { return nil }
         guard usesPack else { return q }
         guard let size = StockQuantity.parse(packSize), size > 0 else { return nil }
         return StockQuantity.packed(complete: q, partial: atlantique ? partialPack : 0, size: size)
@@ -457,7 +460,7 @@ private struct StockMovementView: View {
                     Text(product.name).font(.headline)
                     Text("Actuellement : \(StockQuantity.text(stock.entry(product.id)?.quantity ?? 0)) \(product.unit)").foregroundStyle(.secondary)
                 }
-                Section(kind == .inventory ? "Quantité réellement présente" : "Quantité à \(kind == .entry ? "ajouter" : "sortir")") {
+                AtlantiqueSection(kind == .inventory ? "Quantité réellement présente" : "Quantité à \(kind == .entry ? "ajouter" : "sortir")") {
                     Picker("Saisie",selection:$usesPack) { Text(product.unit).tag(false); Text("Conditionnement").tag(true) }.pickerStyle(.segmented)
                         .onChange(of:usesPack) { _,_ in quantity = atlantique && usesPack ? "0" : ""; partialPack = 0 }
                     HStack {
@@ -505,6 +508,7 @@ private struct StockMovementView: View {
                 if let error { Section { Text(error).foregroundStyle(.red) } }
             }.navigationTitle(kind.rawValue).atlantiqueFormPage(kind.rawValue).navigationBarTitleDisplayMode(.inline)
                 .onAppear {
+                    if atlantique && packName == "barre" { packName = "unité" }
                     if atlantique && usesPack && !initializedPack, let value = StockQuantity.parse(quantity) {
                         partialPack = value - floor(value); quantity = StockQuantity.input(floor(value))
                     }

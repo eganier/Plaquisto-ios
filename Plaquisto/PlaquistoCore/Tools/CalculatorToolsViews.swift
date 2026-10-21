@@ -1,12 +1,13 @@
 import SwiftUI
 
 struct WallAngleToolView: View {
+    @Environment(\.usesAtlantiqueDesign) private var atlantique
     var kind: WallAngleKind = .interior
     @State private var equalSide = 100.0
     @State private var oppositeSide = 0.0
     private var result: Result<WallAngleResult,Error> { Result { try WallAngleCalculator.calculate(equalSide:equalSide,oppositeSide:oppositeSide) } }
     var body: some View {
-        Form {
+        AtlantiqueForm {
             Section {
                 WallAngleDiagram(kind:kind,angle:(try? result.get().interiorDegrees) ?? 90)
                     .frame(height:260)
@@ -31,7 +32,7 @@ struct WallAngleToolView: View {
                      ? "Mesurez la ligne droite entre les deux repères, pas le long des murs."
                      : "Mesurez entre les deux repères dans la zone libre : cette ligne ne traverse aucun mur.")
             }
-            Section("Résultat") {
+            AtlantiqueSection("Résultat") {
                 switch result {
                 case .success(let angle):
                     VStack(spacing:6) {
@@ -39,7 +40,7 @@ struct WallAngleToolView: View {
                         Text(WallAngleCalculator.formattedDegrees(angle.degrees(for:kind)))
                             .font(.system(size:34,weight:.bold,design:.rounded)).monospacedDigit()
                     }
-                    .foregroundStyle(.teal).frame(maxWidth:.infinity).padding(.vertical,8)
+                    .foregroundStyle(atlantique ? Atlantique.Palette.success : .teal).frame(maxWidth:.infinity).padding(.vertical,8)
                     .listRowBackground(Color.teal.opacity(0.08))
                 case .failure(let error):
                     if oppositeSide == 0 && equalSide > 0 {
@@ -57,7 +58,7 @@ struct WallAngleToolView: View {
                 }
             }
         }
-        .navigationTitle(kind.title).navigationBarTitleDisplayMode(.inline)
+        .navigationTitle(kind.title).navigationBarTitleDisplayMode(.inline).atlantiqueFormPage(kind.title)
         .scrollDismissesKeyboard(.interactively)
     }
 }
@@ -280,7 +281,7 @@ struct ThermalToolView: View {
     }
 
     var body: some View {
-        Form {
+        AtlantiqueForm {
             Section {
                 thermalRow(.thickness)
                 thermalRow(.lambda)
@@ -291,7 +292,7 @@ struct ThermalToolView: View {
                 Text("Renseignez deux valeurs : la troisième est calculée automatiquement.")
             }
         }
-        .navigationTitle("Résistance thermique")
+        .navigationTitle("Résistance thermique").atlantiqueFormPage("Résistance thermique")
         .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("Réinitialiser") { reset() } } }
     }
 
@@ -348,11 +349,11 @@ struct VATToolView: View {
     }
 
     var body: some View {
-        Form {
+        AtlantiqueForm {
             Section {
                 Picker("Sens", selection: $direction) { ForEach(VATDirection.allCases) { Text($0.rawValue).tag($0) } }.pickerStyle(.segmented)
             }
-            Section("Montant") {
+            AtlantiqueSection("Montant") {
                 ToolNumberField(title: direction == .netToGross ? "Montant HT" : "Montant TTC", unit: "€", value: $amount)
                 Picker("Taux de TVA", selection: $rate) {
                     Text("5,5 %").tag(5.5); Text("10 %").tag(10.0); Text("20 %").tag(20.0)
@@ -360,14 +361,14 @@ struct VATToolView: View {
                 .pickerStyle(.segmented)
             }
             if let result {
-                Section("Résultat") {
+                AtlantiqueSection("Résultat") {
                     LabeledContent("Montant HT", value: currency(result.net))
                     LabeledContent("TVA", value: currency(result.tax))
                     LabeledContent("Montant TTC", value: currency(result.gross)).font(.headline)
                 }
             }
         }
-        .navigationTitle("Calcul de TVA")
+        .navigationTitle("Calcul de TVA").atlantiqueFormPage("Calcul de TVA")
         .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("Réinitialiser") { amount = 0; rate = 20; direction = .netToGross } } }
     }
 
@@ -378,18 +379,21 @@ struct VATToolView: View {
 }
 
 struct ArchTemplateToolView: View {
+    @Environment(\.usesAtlantiqueDesign) private var atlantique
+    @State private var amplitude = 0.5
     @State private var kind = ArchKind.rounded
     @State private var width = 120.0
     @State private var rise = 40.0
     @State private var spacing = 10.0
     @State private var xFromCenter = false
 
-    private var effectiveRise: Double { kind == .semicircle ? width / 2 : rise }
-    private var points: [ArchPoint] { ArchCalculator.points(kind: kind, width: width, rise: rise, spacing: spacing) }
+    private var effectiveRise: Double { !atlantique && kind == .semicircle ? width / 2 : rise }
+    private var points: [ArchPoint] { atlantique ? ArchCalculator.adjustable(width: width, rise: rise, amplitude: amplitude, spacing: spacing) : ArchCalculator.points(kind: kind, width: width, rise: rise, spacing: spacing) }
 
     var body: some View {
-        Form {
-            Section("Forme") {
+        AtlantiqueForm {
+            if atlantique { atlantiqueControls } else {
+            AtlantiqueSection("Forme") {
                 Picker("Type d’arche", selection: $kind) { ForEach(ArchKind.allCases) { Text($0.rawValue).tag($0) } }
                 ToolNumberField(title: "Largeur", unit: "cm", value: $width)
                 ToolNumberField(title: "Flèche", unit: "cm", value: $rise).disabled(kind == .semicircle)
@@ -398,19 +402,53 @@ struct ArchTemplateToolView: View {
                     ForEach([5.0, 10, 15, 20], id: \.self) { Text("\(Int($0)) cm").tag($0) }
                 }
             }
-            Section("Aperçu") {
+            AtlantiqueSection("Aperçu") {
                 ArchDiagram(points: points, width: width, rise: effectiveRise).frame(height: 190)
             }
             Section {
                 Toggle("Abscisse depuis le centre", isOn: $xFromCenter)
             }
-            Section("Table de traçage") {
+            AtlantiqueSection("Table de traçage") {
                 ForEach(points) { point in
                     LabeledContent("x = \(format(xFromCenter ? point.x - width / 2 : point.x)) cm", value: "y = \(format(point.y)) cm")
                 }
             }
+            }
         }
-        .navigationTitle("Gabarit d’arche")
+        .navigationTitle("Gabarit d’arche").atlantiqueFormPage("Gabarit d’arche")
+    }
+
+    private var atlantiqueControls: some View {
+        Group {
+            Section {
+                ArchDiagram(points: points, width: width, rise: rise, curve: ArchCalculator.adjustable(width: width, rise: rise, amplitude: amplitude, spacing: max(0.1, width / 160)))
+                    .frame(height: 320)
+            }
+            Section {
+                LabeledContent("Hauteur de l’arche", value: format(rise) + " cm")
+                Slider(value: $rise, in: 1...max(200, width * 2)).accessibilityLabel("Hauteur de l’arche")
+                LabeledContent("Ampleur sur les côtés", value: "\(Int(amplitude * 100)) %")
+                Slider(value: $amplitude, in: 0...1).accessibilityLabel("Ampleur sur les côtés")
+            }
+            Section {
+                HStack {
+                    ToolNumberField(title: "Largeur", unit: "cm", value: $width)
+                    ToolNumberField(title: "Pas depuis le centre", unit: "cm", value: $spacing)
+                }
+            }
+            Section {
+                NavigationLink("Table de traçage") {
+                    AtlantiqueForm {
+                        Section { ArchDiagram(points: points, width: width, rise: rise, curve: ArchCalculator.adjustable(width: width, rise: rise, amplitude: amplitude, spacing: max(0.1, width / 160))).frame(height: 320) }
+                        AtlantiqueSection("Distance du centre · Hauteur") {
+                            ForEach(points.filter { $0.x >= width / 2 }) { point in
+                                LabeledContent(format(point.x - width / 2) + " cm", value: format(point.y) + " cm")
+                            }
+                        }
+                    }.atlantiqueFormPage("Table de traçage")
+                }.disabled(points.isEmpty)
+            }
+        }
     }
 
     private func format(_ value: Double) -> String { value.formatted(.number.locale(Locale(identifier: "fr_FR")).precision(.fractionLength(0...1))) }
@@ -420,19 +458,22 @@ private struct ArchDiagram: View {
     let points: [ArchPoint]
     let width: Double
     let rise: Double
+    var curve: [ArchPoint]? = nil
 
     var body: some View {
         GeometryReader { proxy in
             Canvas { context, size in
                 guard points.count > 1, width > 0, rise > 0 else { return }
                 let pad = 18.0, usableWidth = size.width - pad * 2, usableHeight = size.height - pad * 2
+                let scale = min(usableWidth / width, usableHeight / rise)
+                let left = (size.width - width * scale) / 2, bottom = (size.height + rise * scale) / 2
                 func mapped(_ point: ArchPoint) -> CGPoint {
-                    CGPoint(x: pad + point.x / width * usableWidth, y: size.height - pad - point.y / rise * usableHeight)
+                    CGPoint(x: left + point.x * scale, y: bottom - point.y * scale)
                 }
                 var curve = Path(); curve.move(to: mapped(points[0]))
-                points.dropFirst().forEach { curve.addLine(to: mapped($0)) }
+                (self.curve ?? points).dropFirst().forEach { curve.addLine(to: mapped($0)) }
                 context.stroke(curve, with: .color(.accentColor), lineWidth: 3)
-                var baseline = Path(); baseline.move(to: CGPoint(x: pad, y: size.height - pad)); baseline.addLine(to: CGPoint(x: size.width - pad, y: size.height - pad))
+                var baseline = Path(); baseline.move(to: mapped(.init(x: 0, y: 0))); baseline.addLine(to: mapped(.init(x: width, y: 0)))
                 context.stroke(baseline, with: .color(.secondary), style: .init(lineWidth: 1, dash: [5]))
                 for point in points { context.fill(Path(ellipseIn: CGRect(x: mapped(point).x - 3, y: mapped(point).y - 3, width: 6, height: 6)), with: .color(.orange)) }
             }

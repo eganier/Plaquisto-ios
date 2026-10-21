@@ -249,7 +249,7 @@ struct CloisonDistributionConfiguratorView: View {
         .toolbar {
             if (isEditing || atlantique), let onSave {
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Enregistrer") { onSave(configurationSnapshot()) }.disabled(!allStepsAreValid)
+                    Button("Enregistrer") { onSave(configurationSnapshot()) }.atlantiqueToolbarAction().disabled(!allStepsAreValid)
                         .disabled(!allRequiredLayersAreComplete || actualArea<=0)
                 }
             }
@@ -291,7 +291,7 @@ struct CloisonDistributionConfiguratorView: View {
                 Button("Fermer") {
                     if let onClose { onClose() } else { reset() }
                 }
-                .buttonStyle(.bordered)
+                .atlantiqueActionStyle(.secondary)
             }
             Text(atlantique ? "" : "OUVRAGE").font(.caption.bold()).foregroundStyle(atlantique ? Color.white.opacity(0.85) : .secondary)
             Text("Cloison de distribution").font(atlantique ? Atlantique.Typography.caption : .title2.bold()).foregroundStyle(atlantique ? Color.white : .primary)
@@ -313,7 +313,7 @@ struct CloisonDistributionConfiguratorView: View {
         HStack {
             if step > 1 {
                 Button("Retour") { step -= 1 }
-                    .buttonStyle(.bordered)
+                    .atlantiqueActionStyle(.secondary)
                     .formStepMenu(titles: stepNames, selection: $step, firstStep: 1, canShowResult: allStepsAreValid) {
                         if step == 1 { populateSurfacesIfNeeded(); normalizeSystem() }
                     }
@@ -321,15 +321,15 @@ struct CloisonDistributionConfiguratorView: View {
             Spacer()
             if step < 7 {
                 Button("Continuer") { advance() }
-                    .buttonStyle(.borderedProminent)
+                    .atlantiqueActionStyle()
                     .disabled(!canContinue)
             } else if let onSave {
-                Button("Enregistrer") { onSave(configurationSnapshot()) }.disabled(!allStepsAreValid)
-                    .buttonStyle(.borderedProminent)
+                Button("Enregistrer") { onSave(configurationSnapshot()) }.atlantiqueToolbarAction().disabled(!allStepsAreValid)
+                    .atlantiqueActionStyle()
                     .disabled(!allRequiredLayersAreComplete || actualArea<=0)
             } else {
                 Button("Recommencer") { reset() }
-                    .buttonStyle(.borderedProminent)
+                    .atlantiqueActionStyle()
             }
         }
         .padding(.horizontal, 20)

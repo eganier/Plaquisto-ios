@@ -533,7 +533,7 @@ struct LayoutCutDetail: View {
             }
             .background(Color(.systemGroupedBackground))
             .navigationTitle("Plaque \(sheet.label(for:piece))").atlantiqueFormPage("Plaque \(sheet.label(for:piece))").navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Fermer") { dismiss() } } }
+            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Fermer") { dismiss() }.atlantiqueToolbarAction() } }
         }
     }
     private func draw(context:inout GraphicsContext,size:CGSize) {
@@ -707,7 +707,7 @@ struct LayoutCorrectionDetail: View {
                 }
             }
             .navigationTitle("Correction de mesure").atlantiqueFormPage("Correction de mesure").navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Fermer") { dismiss() } } }
+            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Fermer") { dismiss() }.atlantiqueToolbarAction() } }
         }
     }
 }

@@ -221,6 +221,7 @@ enum ModularCeilingCalculator {
 }
 
 struct ModularCeilingConfiguratorView: View {
+    @Environment(\.usesAtlantiqueDesign) private var atlantique
     @State private var configuration: ModularCeilingConfiguration
     @State private var step: Int
     @State private var showsConfiguration = false
@@ -274,11 +275,11 @@ struct ModularCeilingConfiguratorView: View {
                 HStack {
                     Text("Étape \(step + 1) sur 4")
                         .font(.caption.weight(.semibold))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(atlantique ? Color.white : .secondary)
                     Spacer()
                     Text(stepTitle)
                         .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(atlantique ? Color.white : .secondary)
                 }
                 ProgressView(value: Double(step + 1), total: 4)
             }
@@ -292,7 +293,7 @@ struct ModularCeilingConfiguratorView: View {
             HStack(spacing: 12) {
                 if step > 0 {
                     Button("Précédent") { step -= 1 }
-                        .buttonStyle(.bordered)
+                        .atlantiqueActionStyle(.secondary)
                         .formStepMenu(titles: ["Dimensions", "Dalles et trame", "Plénum et suspension", "Résultat"], selection: $step, canShowResult: canSave)
                 }
                 Spacer()
@@ -300,7 +301,7 @@ struct ModularCeilingConfiguratorView: View {
                     if step == 3 { attemptSave() }
                     else { step += 1 }
                 }
-                .buttonStyle(.borderedProminent)
+                .atlantiqueActionStyle()
                 .disabled(!canContinue)
             }
             .padding(.horizontal, 20)
@@ -310,9 +311,9 @@ struct ModularCeilingConfiguratorView: View {
         .navigationTitle("Plafond modulaire (bêta)").atlantiqueFormPage("Plafond modulaire (bêta)")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
-            if isEditing {
+            if isEditing || atlantique {
                 ToolbarItem(placement: .confirmationAction) {
-                Button("Enregistrer", action: attemptSave)
+                Button("Enregistrer", action: attemptSave).atlantiqueToolbarAction()
                     .disabled(!canSave)
                 }
             }

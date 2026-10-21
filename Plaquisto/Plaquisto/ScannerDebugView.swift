@@ -2,6 +2,7 @@ import SceneKit
 import SwiftUI
 
 struct ScannerDebugView: View {
+    @Environment(\.usesAtlantiqueDesign) private var atlantique
     var quickLayout = false
     var targetProjectID: UUID? = nil
     @Environment(\.dismiss) private var dismiss
@@ -23,7 +24,8 @@ struct ScannerDebugView: View {
                 if !quickLayout {
                     Section {
                         VStack(alignment: .leading, spacing: 14) {
-                            Image(uiImage: ModelingIcon.image).resizable().scaledToFit().frame(width: 70, height: 70).foregroundStyle(.blue)
+                            if atlantique { AtlantiqueSymbol(icon: .model, size: 70).frame(width: 70, height: 70).foregroundStyle(Atlantique.Palette.actionInk) }
+                            else { Image(uiImage: ModelingIcon.image).resizable().scaledToFit().frame(width: 70, height: 70).foregroundStyle(.blue) }
                             Text("Donnez forme à votre projet").font(.title2.bold())
                             Text("Scannez votre pièce avec un téléphone compatible, ou dessinez-la à partir de vos mesures. Retrouvez votre modèle en 3D pour préparer vos travaux.")
                                 .foregroundStyle(.secondary)
@@ -185,12 +187,15 @@ struct ScannerDebugView: View {
 
             }
             .navigationTitle(quickLayout ? "Scanner" : "Modéliser")
+            .atlantiqueFormSurface()
+            .atlantiquePage(quickLayout ? "Scanner" : "Modéliser", root: true)
             .onAppear { reloadDrafts() }
             .toolbar {
                 if quickLayout || targetProjectID != nil {
                     ToolbarItem(placement: .cancellationAction) { Button("Fermer") { dismiss() } }
                 } else {
-                    AccountToolbarButton(action: onOpenAccount)
+                    if atlantique { ToolbarItem(placement: .topBarTrailing) { Button(action: onOpenAccount) { AtlantiqueToolbarGlyph(symbol: "gearshape") }.accessibilityLabel("Réglages") } }
+                    else { AccountToolbarButton(action: onOpenAccount) }
                 }
             }
             .navigationDestination(isPresented: $showingWorkspace) {
@@ -201,12 +206,12 @@ struct ScannerDebugView: View {
             }
             .sheet(isPresented: $showingCompatibility) {
                 NavigationStack {
-                    Form {
+                    AtlantiqueForm {
                         Label(model.roomPlanSupported ? "Ce téléphone prend en charge le scan 3D." : "Le scan 3D n’est pas disponible sur cet appareil.",
                               systemImage: model.roomPlanSupported ? "checkmark.circle" : "info.circle")
                         Text("Le scanner utilise RoomPlan et nécessite un appareil équipé de LiDAR. La compatibilité est vérifiée directement sur votre appareil.")
                         Text("Sans scanner compatible, « Dessiner ma pièce » donne accès au même modèle 3D à partir de vos mesures.")
-                    }.navigationTitle("Compatibilité")
+                    }.navigationTitle("Compatibilité").atlantiqueFormPage("Compatibilité")
                         .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Fermer") { showingCompatibility = false } } }
                 }.presentationDetents([.medium, .large])
             }

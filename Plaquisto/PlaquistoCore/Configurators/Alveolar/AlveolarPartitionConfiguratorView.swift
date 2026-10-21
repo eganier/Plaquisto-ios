@@ -105,7 +105,7 @@ struct AlveolarPartitionConfiguratorView: View {
                         description: Text(error)
                     )
                     Button("Réessayer") { Task { await references.load() } }
-                        .buttonStyle(.borderedProminent)
+                        .atlantiqueActionStyle()
                 }
             } else {
                 wizard
@@ -119,7 +119,7 @@ struct AlveolarPartitionConfiguratorView: View {
         .toolbar {
             if (isEditing || atlantique), let onSave {
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Enregistrer") { onSave(configurationSnapshot()) }.disabled(!allStepsAreValid)
+                    Button("Enregistrer") { onSave(configurationSnapshot()) }.atlantiqueToolbarAction().disabled(!allStepsAreValid)
                 }
             }
         }
@@ -151,7 +151,7 @@ struct AlveolarPartitionConfiguratorView: View {
                 Button("Fermer") {
                     if let onClose { onClose() } else { reset() }
                 }
-                .buttonStyle(.bordered)
+                .atlantiqueActionStyle(.secondary)
             }
             Text(atlantique ? "" : "OUVRAGE")
                 .font(.caption.bold())
@@ -176,7 +176,7 @@ struct AlveolarPartitionConfiguratorView: View {
         HStack {
             if step > 1 {
                 Button("Retour") { step -= 1 }
-                    .buttonStyle(.borderedProminent)
+                    .atlantiqueActionStyle()
                     .tint(green.opacity(0.18))
                     .foregroundStyle(green)
                     .formStepMenu(titles: stepNames, selection: $step, firstStep: 1, canShowResult: allStepsAreValid)
@@ -184,14 +184,14 @@ struct AlveolarPartitionConfiguratorView: View {
             Spacer()
             if step < 4 {
                 Button("Continuer") { continueForm() }
-                    .buttonStyle(.borderedProminent)
+                    .atlantiqueActionStyle()
                     .disabled(!canContinue)
             } else if let onSave {
-                Button("Enregistrer") { onSave(configurationSnapshot()) }.disabled(!allStepsAreValid)
-                    .buttonStyle(.borderedProminent)
+                Button("Enregistrer") { onSave(configurationSnapshot()) }.atlantiqueToolbarAction().disabled(!allStepsAreValid)
+                    .atlantiqueActionStyle()
             } else {
                 Button("Recommencer") { reset() }
-                    .buttonStyle(.borderedProminent)
+                    .atlantiqueActionStyle()
             }
         }
         .padding(20)

@@ -87,13 +87,13 @@ private struct PaintingStepsView: View {
             }
             HStack {
                 if step > 0 {
-                    Button("Retour") { step -= 1 }.buttonStyle(.bordered)
+                    Button("Retour") { step -= 1 }.atlantiqueActionStyle(.secondary)
                         .formStepMenu(titles: titles, selection: $step, canShowResult: validation == nil)
                 }
                 Spacer()
                 Button(currentStep == "Quantitatif" ? "Enregistrer" : currentStep == "Ratissage" ? "Terminer" : "Continuer") {
                     if currentStep == "Quantitatif" { onSave() } else { step += 1 }
-                }.buttonStyle(.borderedProminent)
+                }.atlantiqueActionStyle()
                     .disabled(step == 0 ? !area.isFinite || area <= 0 || !(treatment.skimEnabled || treatment.includesPrimer || treatment.paintEnabled) : validation != nil)
             }.padding().background(.bar)
         }

@@ -1375,7 +1375,7 @@ struct WorkConfiguratorContainer: View {
                     }
                 }
             }
-            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Fermer") { dismiss() } } }
+            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Fermer") { dismiss() }.atlantiqueToolbarAction() } }
         }
         .environment(\.layoutCoveringAreaRatio, LayoutWorkGeometry.coveringAreaRatio(layoutDocument))
         .alert("Enregistrement impossible", isPresented: Binding(get: { !errorMessage.isEmpty }, set: { if !$0 { errorMessage = "" } })) { Button("OK") {} } message: { Text(errorMessage) }

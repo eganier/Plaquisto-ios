@@ -89,8 +89,8 @@ final class ToolTechnicalStore: ObservableObject {
     private let endpoint = URL(string: "https://plaquisto-admin.vercel.app/api/ios/catalogue")!
     private let cacheKey = "plaquisto.tools.catalogue.v1"
 
-    func load() async {
-        guard ceilingSpans.isEmpty else { return }
+    func load(force: Bool = false) async {
+        guard !isLoading, force || ceilingSpans.isEmpty else { return }
         isLoading = true
         error = nil
         do {

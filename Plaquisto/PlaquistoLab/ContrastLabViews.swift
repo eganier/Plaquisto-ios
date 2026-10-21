@@ -24,7 +24,7 @@ struct ContrastLabRoot: View {
                 .opacity(tab == 1 ? 1 : 0).allowsHitTesting(tab == 1).accessibilityHidden(tab != 1)
             }
             if visitedTabs.contains(2) {
-            ToolsHomeView(onOpenAccount: { settings = true })
+            ToolsHomeView(onOpenAccount: { settings = true }).atlantiqueDesign()
                 .opacity(tab == 2 ? 1 : 0).allowsHitTesting(tab == 2).accessibilityHidden(tab != 2)
             }
             if visitedTabs.contains(3) {
@@ -40,31 +40,7 @@ struct ContrastLabRoot: View {
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in keyboardVisible = true }
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in keyboardVisible = false }
         .onChange(of: store.projectNavigationRequest) { _, request in if request != nil { tab = 0 } }
-        .sheet(isPresented: $settings) {
-            NavigationStack {
-                List {
-                    Section {
-                        Label("Plaquisto Lab · Contraste", systemImage: "sparkles")
-                        Text("Vos projets de test sont séparés de ceux de Plaquisto.").font(Atlantique.Typography.font(15, relativeTo: .subheadline)).foregroundStyle(.secondary)
-                    }
-                    Section {
-                        NavigationLink("Composants Atlantique") {
-                            AtlantiqueGallery()
-                        }
-                        NavigationLink("Ouvrir l’interface actuelle") {
-                            ProjectsHomeView().environment(\.interfacePresentation, .standard).environment(\.usesAtlantiqueDesign, false)
-                        }
-                    } header: { Text("Comparer") } footer: {
-                        Text("Les deux présentations utilisent ici les mêmes données du Lab. Les calculs et fonctions métier sont conservés.")
-                    }
-                    MaquetteRenderingSettingsSection()
-                    Section("Application") {
-                        LabeledContent("Version", value: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "—")
-                    }
-                }.navigationTitle("Réglages")
-                    .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Fermer") { settings = false } } }
-            }
-        }
+        .sheet(isPresented: $settings) { AtlantiqueSettingsView().atlantiqueDesign() }
     }
 }
 
@@ -650,7 +626,7 @@ private struct LabWorkConfigurationView: View {
                         Text(work.type.title).font(Atlantique.Typography.font(15, relativeTo: .subheadline)).foregroundStyle(.secondary)
                         Text("\(work.area.formatted(.number.precision(.fractionLength(0...1)))) m²").foregroundStyle(ContrastPalette.blue)
                     }
-                    Section("Modifier un réglage") {
+                    AtlantiqueSection("Modifier un réglage") {
                         ForEach(shortcuts(work)) { shortcut in
                             Button { editing = shortcut } label: {
                                 HStack { Text(shortcut.title); Spacer(); Image(systemName:"chevron.right").font(Atlantique.Typography.caption) }
@@ -670,13 +646,13 @@ private struct LabWorkConfigurationView: View {
                         SavedWorkView(work:work)
                             .environment(\.configurationEntryStep,shortcut.step)
                             .toolbar {
-                                ToolbarItem(placement:.cancellationAction) { Button("Fermer") { editing=nil } }
+                                ToolbarItem(placement:.cancellationAction) { Button("Fermer") { editing=nil }.atlantiqueToolbarAction() }
                             }
                     }.interactiveDismissDisabled()
                 }
             } else { ContentUnavailableView("Ouvrage introuvable",systemImage:"square.stack") }
         }
-        .navigationTitle("Configuration").navigationBarTitleDisplayMode(.inline)
+        .navigationTitle("Configuration").navigationBarTitleDisplayMode(.inline).atlantiqueFormSurface().atlantiqueFormPage("Configuration")
         .task { await references.load() }
     }
 }
@@ -744,5 +720,93 @@ private struct LabQuantityFilter: View {
                     LabPrimaryLabel(title: "Appliquer · \(selected.count) ouvrage(s)", symbol: "checkmark")
                 }.padding(20).background(.ultraThinMaterial)
             }
+    }
+}
+
+private struct AtlantiqueSettingsView: View {
+    @Environment(\.dismiss) private var dismiss
+    var body: some View {
+        NavigationStack {
+            AtlantiqueForm {
+                AtlantiqueSection("Application") {
+                    NavigationLink("Graphisme 3D") {
+                        AtlantiqueForm { MaquetteRenderingSettingsSection() }.atlantiqueFormPage("Graphisme 3D")
+                    }
+                    NavigationLink("Données métier") { AtlantiqueCatalogueSettings() }
+                    NavigationLink("À propos de Plaquisto") { AtlantiqueAboutView() }
+                }
+                AtlantiqueSection("Plaquisto Lab uniquement") {
+                    NavigationLink("Composants Atlantique") { AtlantiqueGallery() }
+                    NavigationLink("Ouvrir l’interface actuelle") {
+                        ProjectsHomeView().environment(\.interfacePresentation, .standard).environment(\.usesAtlantiqueDesign, false)
+                    }
+                    Text("Les deux présentations utilisent les mêmes données du Lab, séparées de celles de Plaquisto.").font(.footnote).foregroundStyle(.secondary)
+                }
+            }.atlantiqueFormPage("Réglages")
+                .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Fermer") { dismiss() }.atlantiqueToolbarAction() } }
+        }
+    }
+}
+
+private struct AtlantiqueCatalogueSettings: View {
+    @StateObject private var references = CeilingReferenceStore()
+    @StateObject private var prices = SupplyPriceStore()
+    @StateObject private var technical = ToolTechnicalStore()
+    @State private var refreshing = false
+    @State private var attempted = false
+    @AppStorage("plaquisto.catalogue.v3.lastSuccess") private var catalogueTimestamp = 0.0
+    var body: some View {
+        AtlantiqueForm {
+            AtlantiqueSection("Source") {
+                LabeledContent("Catalogue", value: "Plaquisto Admin")
+                LabeledContent("Dernière réception réussie", value: catalogueTimestamp > 0
+                    ? Date(timeIntervalSince1970: catalogueTimestamp).formatted(date: .abbreviated, time: .shortened) : "Date non enregistrée")
+                if UserDefaults.standard.data(forKey: "plaquisto.catalogue.v3") != nil {
+                    Label("Dernier catalogue disponible hors ligne", systemImage: "internaldrive")
+                }
+            }
+            Section {
+                Button {
+                    guard !refreshing else { return }
+                    refreshing = true
+                    Task {
+                        async let catalogue: Void = references.load()
+                        async let tariffs: Void = prices.load()
+                        async let tools: Void = technical.load(force: true)
+                        _ = await (catalogue, tariffs, tools)
+                        attempted = true; refreshing = false
+                    }
+                } label: {
+                    HStack { if refreshing { ProgressView() }; Text(refreshing ? "Actualisation…" : "Actualiser les données") }
+                        .frame(minHeight: 44)
+                }.disabled(refreshing)
+                Text("Actualise les références et les tarifs, pas la version de l’application. Les projets enregistrés ne sont pas modifiés.").font(.footnote).foregroundStyle(.secondary)
+            }
+            if attempted {
+                Section {
+                    if let error = references.error { Label(error, systemImage: "exclamationmark.triangle").foregroundStyle(.orange) }
+                    else { Label(references.isUsingOfflineData ? "Catalogue conservé hors ligne : non actualisé." : "Catalogue actualisé.", systemImage: references.isUsingOfflineData ? "wifi.slash" : "checkmark.circle") }
+                    if let message = prices.message { Text(message).font(.footnote) }
+                    if let error = technical.error { Text(error).font(.footnote) }
+                    if technical.isOffline { Text("Outils techniques : cache conservé hors ligne.").font(.footnote) }
+                }
+            }
+        }.atlantiqueFormPage("Données métier")
+    }
+}
+
+private struct AtlantiqueAboutView: View {
+    var body: some View {
+        AtlantiqueForm {
+            AtlantiqueSection("Plaquisto Lab") {
+                LabeledContent("Version", value: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "—")
+                LabeledContent("Compilation", value: Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "—")
+                Text("Version de test locale. La vérification des mises à jour App Store n’est pas disponible pour cette distribution.").font(.footnote).foregroundStyle(.secondary)
+            }
+            AtlantiqueSection("Vos données") {
+                Text("Les projets et le stock sont enregistrés sur cet appareil. Aucune synchronisation de compte n’est active.")
+                Text("Le catalogue métier et les tarifs proviennent de Plaquisto Admin. Les exports sont partagés uniquement à votre demande.").font(.footnote).foregroundStyle(.secondary)
+            }
+        }.atlantiqueFormPage("À propos de Plaquisto")
     }
 }

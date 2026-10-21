@@ -18,6 +18,7 @@ enum ModelingIcon {
 }
 
 struct ManualModelingView: View {
+    @Environment(\.usesAtlantiqueDesign) private var atlantique
     let targetProjectID: UUID?
     @EnvironmentObject private var store: ProjectStore
     @Environment(\.dismiss) private var dismiss
@@ -56,7 +57,7 @@ struct ManualModelingView: View {
     }
     var body: some View {
         NavigationStack {
-            Form {
+            AtlantiqueForm {
                 Section {
                     Text("Étape \(step+1) sur 3 · \(["Dessiner le sol", "Définir les hauteurs", "Enregistrer le modèle"][step])")
                         .font(.subheadline).foregroundStyle(.secondary)
@@ -68,12 +69,13 @@ struct ManualModelingView: View {
                 Section {
                     Button(step == 2 ? "Enregistrer et ouvrir en 3D" : "Continuer") { advance() }
                         .font(.headline).frame(maxWidth: .infinity, minHeight: 44)
-                        .buttonStyle(.borderedProminent)
+                        .atlantiqueActionStyle()
                         .disabled(savedDraft != nil || contour == nil || plane == nil || (step == 2 && (name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || (projectID == nil && projectName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty))))
                 }.listRowBackground(Color.clear)
             }
             .navigationTitle(["Dessiner ma pièce", "Hauteurs", "Mon modèle 3D"][step])
             .navigationBarTitleDisplayMode(.inline)
+            .atlantiqueFormPage(["Dessiner le sol", "Hauteurs", "Enregistrer le modèle"][step])
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button(step == 0 ? "Fermer" : "Retour") {
@@ -103,7 +105,7 @@ struct ManualModelingView: View {
                         var next = heights; target.indices.forEach { next.removeValue(forKey: $0) }; accept(next)
                     }
                 }
-            } message: { Text("Hauteur sous plafond en centimètres. Un segment règle ses deux extrémités.") }
+            } message: { Text("Hauteur sous plafond en centimètres.") }
             .navigationDestination(isPresented: $openingWorkspace) {
                 if let savedDraft {
                     ScannerCampaignWorkspaceView(draft: savedDraft)
@@ -136,12 +138,12 @@ struct ManualModelingView: View {
     }
     @ViewBuilder private var heightSection: some View {
         Section {
-            HStack {
+            if !differentHeights { HStack {
                 Text("Hauteur commune")
                 Spacer()
                 TextField("250", value: $commonHeightCM, format: .number).keyboardType(.decimalPad).multilineTextAlignment(.trailing).frame(width: 90)
                 Text("cm").foregroundStyle(.secondary)
-            }.disabled(differentHeights && !heights.isEmpty)
+            } }
             Toggle("Hauteurs différentes", isOn: $differentHeights)
                 .onChange(of: differentHeights) { _, _ in error = nil }
         }
@@ -149,13 +151,13 @@ struct ManualModelingView: View {
             Section {
                 ManualHeightPlan(contour: contour.contour, plane: plane, constraints: effectiveHeights, interactive: differentHeights,
                     onVertex: { i in choose(.init(indices: [i], label: "Angle \(vertexName(i))")) },
-                    onEdge: { i in choose(.init(indices: [i, (i+1)%contour.contour.count], label: "Mur \(i+1) · deux extrémités")) })
+                    onEdge: { i in choose(.init(indices: [i, (i+1)%contour.contour.count], label: "Mur \(i+1)")) })
                     .frame(height: 340)
                 if differentHeights {
                     Text("Touchez un angle ou un mur. Deux hauteurs différentes créent un rampant ; les autres hauteurs suivent le même plan.")
                         .font(.footnote).foregroundStyle(.secondary)
                     if !heights.isEmpty { Button("Réinitialiser les hauteurs") { heights = [:]; error = nil } }
-                } else { Text("Un plafond horizontal, à la même hauteur partout.").font(.footnote).foregroundStyle(.secondary) }
+                }
             }
         }
         if plane == nil { Text("Vérifiez les hauteurs saisies (20 à 2 000 cm).").foregroundStyle(.red) }
@@ -169,8 +171,8 @@ struct ManualModelingView: View {
                     .font(.footnote).foregroundStyle(.secondary)
             }
         }
-        Section("Nom du relevé") { TextField("Nom", text: $name) }
-        Section("Projet de destination") {
+        AtlantiqueSection("Nom du relevé") { TextField("Nom", text: $name) }
+        AtlantiqueSection("Projet de destination") {
             Picker("Projet", selection: $projectID) {
                 Text("Nouveau projet").tag(UUID?.none)
                 ForEach(store.projects) { Text($0.name).tag(Optional($0.id)) }

@@ -230,6 +230,7 @@ final class CeilingReferenceStore: ObservableObject {
             catalogue = decoded
             workSummaryCatalogue = (try? WorkSummaryCatalogue(data: data)) ?? .init()
             UserDefaults.standard.set(data, forKey: cacheKey)
+            UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: cacheKey + ".lastSuccess")
             isUsingOfflineData = false
         } catch {
             if let cachedData = UserDefaults.standard.data(forKey: cacheKey),

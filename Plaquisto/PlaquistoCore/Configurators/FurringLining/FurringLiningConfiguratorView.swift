@@ -260,7 +260,7 @@ struct FurringLiningConfiguratorView: View {
         .toolbar {
             if (isEditing || atlantique), let onSave {
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Enregistrer") { onSave(configurationSnapshot()) }.disabled(!allStepsAreValid)
+                    Button("Enregistrer") { onSave(configurationSnapshot()) }.atlantiqueToolbarAction().disabled(!allStepsAreValid)
                 }
             }
         }
@@ -303,7 +303,7 @@ struct FurringLiningConfiguratorView: View {
 
     private var header: some View {
         VStack(alignment: .leading, spacing: 10) {
-            if showsCloseButton { Button("Fermer") { onClose?() }.buttonStyle(.bordered) }
+            if showsCloseButton { Button("Fermer") { onClose?() }.atlantiqueActionStyle(.secondary) }
             Text(atlantique ? "" : "OUVRAGE").font(.caption.bold()).foregroundStyle(atlantique ? Color.white.opacity(0.85) : .secondary)
             Text("Doublage périphérique sur lisses et fourrures").font(atlantique ? Atlantique.Typography.caption : .title2.bold()).foregroundStyle(atlantique ? Color.white : .primary)
             Label("Données synchronisées avec Plaquisto Admin", systemImage: "checkmark.icloud")
@@ -317,18 +317,18 @@ struct FurringLiningConfiguratorView: View {
     private var footer: some View {
         HStack {
             if step > 1 {
-                Button("Retour") { step -= 1 }.buttonStyle(.bordered)
+                Button("Retour") { step -= 1 }.atlantiqueActionStyle(.secondary)
                     .formStepMenu(titles: stepNames, selection: $step, firstStep: 1, canShowResult: allStepsAreValid) {
                         if step == 1 { initializeLayerSurfaces() }
                     }
             }
             Spacer()
             if step < 6 {
-                Button("Continuer") { advance() }.buttonStyle(.borderedProminent).disabled(!canContinue)
+                Button("Continuer") { advance() }.atlantiqueActionStyle().disabled(!canContinue)
             } else if let onSave {
-                Button("Enregistrer") { onSave(configurationSnapshot()) }.disabled(!allStepsAreValid).buttonStyle(.borderedProminent)
+                Button("Enregistrer") { onSave(configurationSnapshot()) }.atlantiqueToolbarAction().disabled(!allStepsAreValid).atlantiqueActionStyle()
             } else {
-                Button("Recommencer") { reset() }.buttonStyle(.borderedProminent)
+                Button("Recommencer") { reset() }.atlantiqueActionStyle()
             }
         }
         .padding(.horizontal, 20).padding(.vertical, 12).background(.background)

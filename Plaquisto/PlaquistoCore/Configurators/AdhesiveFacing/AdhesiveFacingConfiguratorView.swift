@@ -175,7 +175,7 @@ struct AdhesiveFacingConfiguratorView: View {
 
     private var header: some View {
         VStack(alignment: .leading, spacing: 10) {
-            if showsCloseButton { Button("Fermer", action: onClose).buttonStyle(.bordered) }
+            if showsCloseButton { Button("Fermer", action: onClose).atlantiqueActionStyle(.secondary) }
             Text(atlantique ? "" : "OUVRAGE").font(.caption.bold()).foregroundStyle(atlantique ? Color.white.opacity(0.85) : .secondary)
             Text("Doublage périphérique en parement collé").font(atlantique ? Atlantique.Typography.caption : .title2.bold()).foregroundStyle(atlantique ? Color.white : .primary)
             Label("Données synchronisées avec Plaquisto Admin", systemImage: "icloud.and.arrow.down")
@@ -192,18 +192,18 @@ struct AdhesiveFacingConfiguratorView: View {
         HStack {
             if step > 1 {
                 Button("Retour") { step -= 1 }
-                    .buttonStyle(.borderedProminent).tint(green.opacity(0.18)).foregroundStyle(green)
+                    .atlantiqueActionStyle().tint(green.opacity(0.18)).foregroundStyle(green)
                     .formStepMenu(titles: stepNames, selection: $step, firstStep: 1, canShowResult: allStepsAreValid)
             }
             Spacer()
             if step < 5 {
-                Button("Continuer") { continueForm() }.buttonStyle(.borderedProminent).disabled(!canContinue)
+                Button("Continuer") { continueForm() }.atlantiqueActionStyle().disabled(!canContinue)
             } else {
                 Button(onSave == nil ? "Terminer" : "Enregistrer") {
                     if let onSave {
                         if let configuration { onSave(configuration) }
                     } else { step = 1 }
-                }.buttonStyle(.borderedProminent).disabled(configuration == nil || !allStepsAreValid)
+                }.atlantiqueActionStyle().disabled(configuration == nil || !allStepsAreValid)
             }
         }
         .padding(20).background(.background)

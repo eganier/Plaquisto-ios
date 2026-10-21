@@ -160,7 +160,7 @@ struct DoublageConfiguratorView: View {
         .toolbar {
             if (isEditing || atlantique), let onSave {
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Enregistrer") { onSave(configurationSnapshot()) }.disabled(!allStepsAreValid)
+                    Button("Enregistrer") { onSave(configurationSnapshot()) }.atlantiqueToolbarAction().disabled(!allStepsAreValid)
                 }
             }
         }
@@ -201,7 +201,7 @@ struct DoublageConfiguratorView: View {
                 Button("Fermer") {
                     if let onClose { onClose() } else { reset() }
                 }
-                .buttonStyle(.bordered).tint(.green)
+                .atlantiqueActionStyle(.secondary).tint(.green)
             }
             Text(atlantique ? "" : "OUVRAGE").font(.caption.bold()).foregroundStyle(atlantique ? Color.white.opacity(0.85) : .secondary)
             Text("Doublage périphérique").font(atlantique ? Atlantique.Typography.caption : .title2.bold()).foregroundStyle(atlantique ? Color.white : .primary)
@@ -217,15 +217,15 @@ struct DoublageConfiguratorView: View {
     private var footer: some View {
         HStack {
             if step > 1 {
-                Button("Retour") { step -= 1 }.buttonStyle(.bordered).tint(.green)
+                Button("Retour") { step -= 1 }.atlantiqueActionStyle(.secondary).tint(.green)
                     .formStepMenu(titles: stepNames, selection: $step, firstStep: 1, canShowResult: allStepsAreValid)
             }
             Spacer()
-            if step < 6 { Button("Continuer") { advance() }.buttonStyle(.borderedProminent).tint(.green).disabled(!canContinue) }
+            if step < 6 { Button("Continuer") { advance() }.atlantiqueActionStyle().tint(.green).disabled(!canContinue) }
             else if let onSave {
-                Button("Enregistrer") { onSave(configurationSnapshot()) }.disabled(!allStepsAreValid).buttonStyle(.borderedProminent).tint(.green)
+                Button("Enregistrer") { onSave(configurationSnapshot()) }.atlantiqueToolbarAction().disabled(!allStepsAreValid).atlantiqueActionStyle().tint(.green)
             } else {
-                Button("Recommencer") { reset() }.buttonStyle(.borderedProminent).tint(.green)
+                Button("Recommencer") { reset() }.atlantiqueActionStyle().tint(.green)
             }
         }
         .padding(.horizontal, 20).padding(.vertical, 12).background(.background)

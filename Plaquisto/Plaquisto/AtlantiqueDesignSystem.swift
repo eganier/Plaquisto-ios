@@ -65,6 +65,8 @@ extension EnvironmentValues {
 }
 
 extension View {
+    func atlantiqueToolbarAction() -> some View { modifier(AtlantiqueToolbarActionModifier()) }
+    func atlantiqueActionStyle(_ kind: AtlantiqueButtonKind = .primary) -> some View { modifier(AtlantiqueActionModifier(kind: kind)) }
     func atlantiqueFormSurface() -> some View { modifier(AtlantiqueFormSurfaceModifier()) }
     /// Keep the caller's cancellation/save actions; only theme its navigation chrome.
     func atlantiqueFormPage(_ title: String) -> some View { modifier(AtlantiqueFormPageModifier(title: title)) }
@@ -78,6 +80,33 @@ extension View {
             .tint(Atlantique.Palette.actionInk)
             .foregroundStyle(Atlantique.Palette.ink)
             .preferredColorScheme(.light)
+    }
+}
+
+private struct AtlantiqueToolbarActionModifier: ViewModifier {
+    @Environment(\.usesAtlantiqueDesign) private var enabled
+    func body(content: Content) -> some View {
+        if enabled { content.buttonStyle(AtlantiqueToolbarTextStyle()) } else { content }
+    }
+}
+private struct AtlantiqueToolbarTextStyle: ButtonStyle {
+    @Environment(\.isEnabled) private var enabled
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label.font(Atlantique.Typography.font(15, weight: .demi))
+            .foregroundStyle(enabled ? Atlantique.Palette.actionInk : Atlantique.Palette.muted)
+            .padding(.horizontal, 12).frame(minHeight: 44)
+            .background(enabled ? Atlantique.Palette.surface : Atlantique.Palette.disabled, in: RoundedRectangle(cornerRadius: 12))
+            .opacity(configuration.isPressed ? 0.8 : 1)
+    }
+}
+
+private struct AtlantiqueActionModifier: ViewModifier {
+    let kind: AtlantiqueButtonKind
+    @Environment(\.usesAtlantiqueDesign) private var enabled
+    func body(content: Content) -> some View {
+        if enabled { content.buttonStyle(AtlantiqueButtonStyle(kind: kind)) }
+        else if kind == .secondary { content.buttonStyle(.bordered) }
+        else { content.buttonStyle(.borderedProminent) }
     }
 }
 
@@ -428,7 +457,7 @@ struct AtlantiqueSearchField: View {
     var body: some View {
         HStack(spacing: 10) {
             Image(systemName: "magnifyingglass").foregroundStyle(Atlantique.Palette.muted).accessibilityHidden(true)
-            TextField(prompt, text: $text).font(Atlantique.Typography.body).accessibilityLabel(prompt)
+            TextField("", text: $text, prompt: Text(prompt).foregroundStyle(Atlantique.Palette.muted)).font(Atlantique.Typography.body).accessibilityLabel(prompt)
             if !text.isEmpty {
                 Button { text = "" } label: { Image(systemName: "xmark.circle.fill").frame(width: 44, height: 44) }
                     .foregroundStyle(Atlantique.Palette.actionInk).accessibilityLabel("Effacer la recherche")

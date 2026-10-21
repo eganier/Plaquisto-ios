@@ -1,6 +1,7 @@
 import SwiftUI
 
 struct ToolsHomeView: View {
+    @Environment(\.usesAtlantiqueDesign) private var atlantique
     var onOpenAccount: (() -> Void)?
     @StateObject private var technicalStore = ToolTechnicalStore()
     @State private var query = ""
@@ -11,6 +12,7 @@ struct ToolsHomeView: View {
         NavigationStack {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 22) {
+                    if atlantique { AtlantiqueSearchField(prompt: "Rechercher un outil", text: $query) }
                     ForEach(ToolCategory.allCases) { category in
                         let tools = results.filter { $0.category == category }
                         if !tools.isEmpty { section(category.rawValue, tools: tools) }
@@ -18,17 +20,17 @@ struct ToolsHomeView: View {
                 }
                 .padding()
             }
-            .background(Color(.systemGroupedBackground))
-            .navigationTitle("Outils")
-            .searchable(text: $query, prompt: "Rechercher un outil")
+            .background(atlantique ? Atlantique.Palette.blue : Color(.systemGroupedBackground))
+            .navigationTitle("Outils").atlantiquePage("Outils", root: true)
+            .modifier(ToolSearchModifier(text: $query, native: !atlantique))
             .navigationDestination(for: ToolDestination.self) { destination in
                 ToolDestinationView(destination: destination)
             }
             .toolbar {
                 if let onOpenAccount {
                     ToolbarItem(placement: .topBarTrailing) {
-                        Button(action: onOpenAccount) { Image(systemName: "person.crop.circle") }
-                            .accessibilityLabel("Compte et réglages")
+                        Button(action: onOpenAccount) { if atlantique { AtlantiqueToolbarGlyph(symbol: "gearshape") } else { Image(systemName: "person.crop.circle") } }
+                            .accessibilityLabel("Réglages")
                     }
                 }
             }
@@ -40,7 +42,7 @@ struct ToolsHomeView: View {
     @ViewBuilder
     private func section(_ title: String, tools: [ToolDefinition]) -> some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text(title).font(.title3.bold()).foregroundStyle(.secondary)
+            Text(title).font(Atlantique.Typography.heading).foregroundStyle(atlantique ? .white : .secondary)
             ForEach(tools) { tool in
                 let isAvailable = tool.isAvailable
                 NavigationLink(value: tool.destination) {
@@ -54,6 +56,7 @@ struct ToolsHomeView: View {
 }
 
 private struct ToolCard: View {
+    @Environment(\.usesAtlantiqueDesign) private var atlantique
     let tool: ToolDefinition
     let isAvailable: Bool
 
@@ -63,8 +66,10 @@ private struct ToolCard: View {
                 if tool.destination == .wallAngle || tool.destination == .exteriorWallAngle {
                     WallAngleIcon(kind: tool.destination == .wallAngle ? .interior : .exterior)
                         .padding(4)
+                } else if tool.destination == .arch && atlantique {
+                    ArchToolIcon().stroke(style: StrokeStyle(lineWidth: 2, lineCap: .round)).padding(6)
                 } else {
-                    Image(systemName: tool.icon)
+                    Image(systemName: tool.destination == .liningHeight ? "rectangle.split.3x1" : tool.destination == .vat ? "calculator" : tool.icon)
                 }
             }
                 .font(.title2)
@@ -81,7 +86,8 @@ private struct ToolCard: View {
             if isAvailable { Image(systemName: "chevron.right").font(.caption.bold()).foregroundStyle(.tertiary) }
         }
         .padding(14)
-        .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 18))
+        .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: atlantique ? 17 : 18))
+        .shadow(color: .black.opacity(atlantique ? 0.10 : 0), radius: 6, y: 4)
     }
 }
 
@@ -139,5 +145,26 @@ struct ToolResultCard<Content: View>: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding()
             .background(Color.accentColor.opacity(0.10), in: RoundedRectangle(cornerRadius: 18))
+    }
+}
+
+private struct ToolSearchModifier: ViewModifier {
+    @Binding var text: String
+    let native: Bool
+    func body(content: Content) -> some View {
+        if native { content.searchable(text: $text, prompt: "Rechercher un outil") } else { content }
+    }
+}
+
+private struct ArchToolIcon: Shape {
+    func path(in rect: CGRect) -> Path {
+        var path = Path()
+        path.move(to: .init(x: rect.minX, y: rect.maxY))
+        path.addLine(to: .init(x: rect.minX, y: rect.midY))
+        path.addCurve(to: .init(x: rect.maxX, y: rect.midY),
+                      control1: .init(x: rect.minX, y: rect.minY - rect.height * 0.15),
+                      control2: .init(x: rect.maxX, y: rect.minY - rect.height * 0.15))
+        path.addLine(to: .init(x: rect.maxX, y: rect.maxY))
+        return path
     }
 }

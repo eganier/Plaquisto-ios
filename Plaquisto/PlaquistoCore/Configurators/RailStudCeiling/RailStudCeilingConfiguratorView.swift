@@ -317,6 +317,7 @@ private final class RailStudCeilingReferenceStore: ObservableObject {
 }
 
 struct RailStudCeilingConfiguratorView: View {
+    @Environment(\.usesAtlantiqueDesign) private var atlantique
     @Environment(\.layoutCoveringAreaRatio) private var coveringAreaRatio
     @StateObject private var references = RailStudCeilingReferenceStore()
     @State private var step = 0
@@ -468,11 +469,12 @@ struct RailStudCeilingConfiguratorView: View {
         }
         .navigationBarBackButtonHidden()
         .configurationEntry(in:0...7) { step = visibleStepIndices.contains($0) ? $0 : 3; showingResult = false }
-        .tint(Color(red: 0.12, green: 0.38, blue: 0.29))
+        .tint(atlantique ? Atlantique.Palette.actionInk : Color(red: 0.12, green: 0.38, blue: 0.29))
+        .atlantiqueFormPage("Plafond sur rails et montants")
         .toolbar {
-            if isEditing, let onSave {
+            if (isEditing || atlantique), let onSave {
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Enregistrer") { onSave(configurationSnapshot()) }.disabled(!allStepsAreValid)
+                    Button("Enregistrer") { onSave(configurationSnapshot()) }.atlantiqueToolbarAction().disabled(!allStepsAreValid)
                 }
             }
         }
@@ -510,7 +512,7 @@ struct RailStudCeilingConfiguratorView: View {
     private var footer: some View {
         HStack {
             if step > 0 {
-                Button("Retour") { goBack() }.buttonStyle(.bordered)
+                Button("Retour") { goBack() }.atlantiqueActionStyle(.secondary)
                     .formStepMenu(titles: steps, selection: $step, visibleSteps: visibleStepIndices, canShowResult: allStepsAreValid) {
                         if step == 1 { ensureFacings() }
                         if step == 2 { prepareFrameDefault() }
@@ -519,13 +521,13 @@ struct RailStudCeilingConfiguratorView: View {
             }
             Spacer()
             if step < steps.count - 1 {
-                Button("Continuer") { advance() }.buttonStyle(.borderedProminent).disabled(!canContinue)
+                Button("Continuer") { advance() }.atlantiqueActionStyle().disabled(!canContinue)
             } else if let onSave {
-                Button("Enregistrer") { onSave(configurationSnapshot()) }.disabled(!allStepsAreValid).buttonStyle(.borderedProminent)
+                Button("Enregistrer") { onSave(configurationSnapshot()) }.atlantiqueToolbarAction().disabled(!allStepsAreValid).atlantiqueActionStyle()
             } else if showingResult {
-                Button("Recommencer") { reset() }.buttonStyle(.borderedProminent)
+                Button("Recommencer") { reset() }.atlantiqueActionStyle()
             } else {
-                Button("Valider la configuration") { showingResult = true }.buttonStyle(.borderedProminent)
+                Button("Valider la configuration") { showingResult = true }.atlantiqueActionStyle()
             }
         }.padding().background(.bar)
     }
