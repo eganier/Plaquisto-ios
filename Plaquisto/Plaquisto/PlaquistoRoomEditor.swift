@@ -116,10 +116,10 @@ struct PlaquistoRoomEditor: View {
                 Text("\(document.room.openings.count) ouverture(s) enregistrée(s) · \(document.room.slopes.count) pan(s) de plafond").font(.caption)
                 if !document.room.slopes.isEmpty {
                     Label(document.room.slopes.contains(where: { $0.provenance.source == .estimated })
-                          ? "Plafond estimé à partir des murs" : "Plafond reconnu", systemImage: "info.circle")
+                          ? "Plafond estimé à partir des murs" : document.room.metadata.source == .manual ? "Plafond défini à partir de vos mesures" : "Plafond reconnu", systemImage: "info.circle")
                         .font(.caption).foregroundStyle(.secondary)
                 }
-                if document.room.slopes.isEmpty || document.room.ceilings.contains(where: { $0.provenance.source == .estimated }) {
+                if document.room.slopes.isEmpty || document.room.ceilings.contains(where: \.canConfigureShape) {
                     Menu {
                         ForEach(Array(((try? WallCeilingEstimate.manualProposals(in: document.room)) ?? []).enumerated()), id: \.element.id) { index, value in
                             Button(value.ceilingID.flatMap { id in document.room.ceilings.first { $0.id==id } }.map {
@@ -486,6 +486,7 @@ struct SurveyPlanEditor: View {
     @State private var alignedWall: UUID?
     @State private var fullscreen = false
     @State private var canvasFitSize: CGSize?
+    @State private var viewportInteracted = false
     @State private var recenterToken = 0
     init(document: PlaquistoRoomDocument, ceilingNumbers:[String:Int]=[:], initiallyConfigureCeilings: Bool = false,
          liningDepths: [UUID: Double] = [:], resumePartitions: Bool = false, onRequestLining: (() -> Void)? = nil,
@@ -1288,11 +1289,11 @@ struct SurveyPlanEditor: View {
             let minX = points.map(\.x).min() ?? 0, maxX = points.map(\.x).max() ?? 4
             let minZ = points.map(\.z).min() ?? 0, maxZ = points.map(\.z).max() ?? 4
             let fitSize=canvasFitSize ?? proxy.size
-            let scale = max(1, min((fitSize.width-116)/max(1,maxX-minX), (fitSize.height-116)/max(1,maxZ-minZ))) * zoom * pinch
             let center = RoomPoint(x: (minX+maxX)/2, y: document.room.walls.first?.start.y ?? 0, z: (minZ+maxZ)/2)
             let rotatedPoints=points.map { SurveyPlanCamera.rotated($0,around:center,angle:viewRotation) }
             let halfWidth=rotatedPoints.map { abs($0.x-center.x) }.max() ?? 2
             let halfHeight=rotatedPoints.map { abs($0.z-center.z) }.max() ?? 2
+            let scale = max(1, min((fitSize.width-116)/max(0.1,halfWidth*2), (fitSize.height-116)/max(0.1,halfHeight*2))) * zoom * pinch
             let limitX = max(0, proxy.size.width/2 + halfWidth*scale - 40)
             let limitY = max(0, proxy.size.height/2 + halfHeight*scale - 40)
             let baseDX = min(limitX, max(-limitX, offset.width))
@@ -1486,6 +1487,7 @@ struct SurveyPlanEditor: View {
             .background(ArchitecturalPlanInk.paper)
             .overlay {
                 SurveyPlanGestureSurface(autoscrollEnabled: drawingPartition, single: { phase,point,delta in
+                    if phase == .began { viewportInteracted=true }
                     if phase == .cancelled || phase == .failed {
                         manipulation=nil; cursor=nil; snapResult=nil; columnPreview=nil; columnDragStart=nil; ceilingCut.cancelGesture(); return
                     }
@@ -1567,6 +1569,7 @@ struct SurveyPlanEditor: View {
                         y: center.y, z: (target.y - proxy.size.height / 2 - next.height) / scale + center.z)
                     placement(SurveyPlanCamera.rotated(p, around: center, angle: -viewRotation), tolerance: min(0.20, 18 / scale))
                 }, navigate: { delta,factor,anchor in
+                    viewportInteracted=true
                     ceilingCut.cancelGesture()
                     manipulation=nil; cursor=nil; snapResult=nil; columnPreview=nil; columnDragStart=nil
                     let next=min(8,max(0.5,zoom*factor)), ratio=next/zoom
@@ -1583,7 +1586,9 @@ struct SurveyPlanEditor: View {
                 if canvasFitSize == nil, proxy.size.width>116, proxy.size.height>116 { canvasFitSize=proxy.size }
             }
             .onChange(of:proxy.size) { _,size in
-                if canvasFitSize == nil, size.width>116, size.height>116 { canvasFitSize=size }
+                // Sheet presentation first reports a compressed canvas. Follow its
+                // expansion until interaction, then keep a stable drawing scale.
+                if !viewportInteracted, size.width>116, size.height>116 { canvasFitSize=size }
             }
             .onChange(of:recenterToken) { _,_ in canvasFitSize=proxy.size }
             .clipped()
@@ -1944,6 +1949,7 @@ struct WallCeilingEstimateView: View {
     @State private var settings: CeilingEstimateSettings
     @State private var lowText: String
     @State private var highText: String
+    @State private var heightSliderUpper: Double
     @State private var selected: UUID?
     @State private var error: String?
     @State private var topView = false
@@ -1975,6 +1981,7 @@ struct WallCeilingEstimateView: View {
         rounded.highHeight=settings.shape == .flat ? rounded.lowHeight : (settings.highHeight*100).rounded()/100
         unchangedInput=rounded
         _settings = State(initialValue: settings)
+        _heightSliderUpper = State(initialValue:max(5,ceil(max(settings.lowHeight,settings.highHeight)+1)))
         _lowText = State(initialValue: settings.lowHeight.formatted(.number.precision(.fractionLength(2))))
         _highText = State(initialValue: settings.highHeight.formatted(.number.precision(.fractionLength(2))))
     }
@@ -1984,6 +1991,7 @@ struct WallCeilingEstimateView: View {
     private func restore(_ value: SettingsSnapshot) {
         settings = value.settings; lowText = value.low; highText = value.high
         estimatedRise = value.estimatedRise
+        heightSliderUpper=max(heightSliderUpper,ceil(max(value.settings.lowHeight,value.settings.highHeight)+1))
     }
     private func changeShape(to shape: CeilingEstimateSettings.Shape) {
         guard shape != settings.shape else { return }
@@ -2016,6 +2024,7 @@ struct WallCeilingEstimateView: View {
         guard let low = number(lowText), let high = number(highText) else { return nil }
         var value = settings
         value.lowHeight = low; value.highHeight = settings.shape == .flat ? low : high
+        value.extendsWalls = true
         return value.isValid ? value : nil
     }
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
@@ -2058,10 +2067,6 @@ struct WallCeilingEstimateView: View {
                             }
                             heightSlider(settings.shape == .flat ? "Hauteur sous plafond" : "Hauteur minimale",isLow:true)
                             if settings.shape != .flat { heightSlider("Hauteur maximale",isLow:false) }
-                            DisclosureGroup("Saisie précise des hauteurs") {
-                                heightField(settings.shape == .flat ? "Hauteur sous plafond" : "Hauteur minimale",text:$lowText)
-                                if settings.shape != .flat { heightField("Hauteur maximale",text:$highText) }
-                            }
                             Button("Ajuster aux murs",systemImage:"wand.and.stars") { adjust(to:settings.shape) }
                                 .accessibilityIdentifier("ceiling.fitWalls")
                             if previousSettings != nil {
@@ -2107,7 +2112,7 @@ struct WallCeilingEstimateView: View {
                                     .font(.footnote).foregroundStyle(.secondary)
                             }
                             DisclosureGroup("À propos des mesures") {
-                                Text("Les hauteurs préremplies sont des estimations, pas des mesures du plafond. Hauteurs mesurées depuis le sol ; cette création ne modifie jamais le contour des murs.")
+                                Text("Les hauteurs préremplies sont des estimations, pas des mesures du plafond. Les murs sont prolongés jusqu’au plafond si nécessaire, sans modifier leur position ni les mesures originales du scan.")
                                 if proposal.maximumCornerAdjustment > 0.005 {
                                     Text("Raccord estimé des angles : jusqu’à \((proposal.maximumCornerAdjustment*100).formatted(.number.precision(.fractionLength(1)))) cm.")
                                 }
@@ -2148,7 +2153,7 @@ struct WallCeilingEstimateView: View {
                 if let previewDocument {
                     RoomDomainScene(room:previewDocument.room,selected:.constant(selected),ceilingMode:2,
                         showFloor:true,topView:topView,cameraReset:cameraReset,
-                        ceilingGaps:input.map { fitting.gaps(settings:$0) } ?? [])
+                        ceilingGaps:input.map { CeilingAutoFit(room:previewDocument.room,proposal:proposal,includeWallExtensions:true).gaps(settings:$0) } ?? [])
                 } else {
                     ContentUnavailableView("Aperçu du plafond",systemImage:"cube.transparent",
                         description:Text("Renseignez les hauteurs pour afficher le plafond."))
@@ -2174,42 +2179,45 @@ struct WallCeilingEstimateView: View {
                 Text("\(pans.reduce(0) { $0+PlaquistoSurfaceGeometry.area(of:$1) }.formatted(.number.precision(.fractionLength(2)))) m² · Hauteurs estimées, à vérifier")
                     .font(.caption).foregroundStyle(.secondary)
             }
-            if previewIssue == nil, let input, let gap = fitting.gaps(settings:input).first {
+            if previewIssue == nil, let input, let previewDocument,
+               let gap = CeilingAutoFit(room:previewDocument.room,proposal:proposal,includeWallExtensions:true).gaps(settings:input).first {
                 Text("Repères orange : écart avec les murs jusqu’à \((abs(gap.wall.y-gap.ceiling.y)*100).formatted(.number.precision(.fractionLength(0)))) cm")
                     .font(.caption).foregroundStyle(.orange)
             }
         }.padding(.horizontal,16).padding(.vertical,8)
     }
-    private func heightField(_ title: String, text: Binding<String>) -> some View {
-        HStack {
-            Text(title).fixedSize(horizontal:false,vertical:true)
-            Spacer()
-            PlaquistoNumericField(placeholder: "0", text: text)
-                .frame(minWidth:65,maxWidth:100)
-                .multilineTextAlignment(.trailing).accessibilityLabel(title)
-            Text("m").foregroundStyle(.secondary)
-        }
-    }
     private func heightSlider(_ title:String,isLow:Bool) -> some View {
         let low=Double(lowText.replacingOccurrences(of:",",with:".")) ?? settings.lowHeight
         let high=Double(highText.replacingOccurrences(of:",",with:".")) ?? settings.highHeight
         // Stable range while dragging. Taller existing roofs retain their full editable range.
-        let upper=max(5,ceil(max(unchangedInput.lowHeight,unchangedInput.highHeight)+1))
-        let value=Binding<Double>(get:{ min(upper,max(0.1,isLow ? low : high)) },set:{ next in
-            let formatted=next.formatted(.number.precision(.fractionLength(2)))
-            if isLow {
-                lowText=formatted
-                if high < next { highText=formatted }
-            } else {
-                highText=formatted
-                if low > next { lowText=formatted }
-            }
+        let upper=heightSliderUpper
+        let lower=isLow ? 0.1 : min(upper,max(0.1,low))
+        let value=Binding<Double>(get:{ min(upper,max(lower,isLow ? low : high)) },set:{ next in
+            var updated=settings
+            updated.lowHeight=low; updated.highHeight=high
+            updated.setSliderHeight(next,isMinimum:isLow)
+            lowText=updated.lowHeight.formatted(.number.precision(.fractionLength(2)))
+            highText=updated.highHeight.formatted(.number.precision(.fractionLength(2)))
             estimatedRise=false
         })
         return VStack(alignment:.leading,spacing:8) {
-            LabeledContent(title,value:"\((isLow ? low : high).formatted(.number.precision(.fractionLength(2)))) m")
-                .monospacedDigit()
-            Slider(value:value,in:0.1...upper,step:0.01)
+            LabeledContent(title) {
+                HStack(spacing:4) {
+                    PlaquistoNumericField(placeholder:"0",text:isLow ? $lowText : $highText,
+                        onEditingChanged:{ editing in
+                            guard !editing, let input else { return }
+                            heightSliderUpper=max(heightSliderUpper,ceil(max(input.lowHeight,input.highHeight)+1))
+                            estimatedRise=false
+                        })
+                        .frame(width:85).frame(minHeight:44).multilineTextAlignment(.trailing)
+                        .foregroundStyle(Color.accentColor).monospacedDigit()
+                        .accessibilityLabel(title)
+                        .accessibilityHint("Saisir une hauteur précise en mètres")
+                        .accessibilityIdentifier(isLow ? "ceiling.height.low.input" : "ceiling.height.high.input")
+                    Text("m").foregroundStyle(.secondary)
+                }
+            }
+            Slider(value:value,in:lower...upper,step:0.01)
                 .accessibilityLabel(title).accessibilityIdentifier(isLow ? "ceiling.height.low" : "ceiling.height.high")
         }
     }
@@ -2245,7 +2253,9 @@ struct RoomDomainScene: UIViewRepresentable {
         let rebuild=coordinator.lastRoom != room
         let rebuildShell = coordinator.content == nil || coordinator.lastRoom?.id != room.id ||
             coordinator.lastRoom?.walls != room.walls || coordinator.lastRoom?.openings != room.openings ||
-            coordinator.lastRoom?.floors != room.floors
+            coordinator.lastRoom?.floors != room.floors ||
+            (rebuild && (room.ceilings.contains { $0.estimateSettings?.extendsWalls == true } ||
+                coordinator.lastRoom?.ceilings.contains { $0.estimateSettings?.extendsWalls == true } == true))
         coordinator.parent=self
         coordinator.lastRoom=room
         let root=view.scene!.rootNode

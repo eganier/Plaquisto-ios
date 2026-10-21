@@ -60,6 +60,17 @@ final class ProjectStore: ObservableObject {
     }
 
     func project(id: UUID) -> ProjectItem? { projects.first { $0.id == id } }
+    func saveShoppingList(projectID: UUID, scope: String, edits: ShoppingListEdits) throws {
+        guard let index = projects.firstIndex(where: { $0.id == projectID }), !scope.isEmpty,
+              edits.edits.values.allSatisfy({ $0.quantity.map { $0.isFinite && $0 >= 0 } ?? true }),
+              edits.products.allSatisfy({ !$0.name.trimmed.isEmpty && $0.quantity.isFinite && $0.quantity >= 0 })
+        else { throw StoreError.invalidStructure }
+        var next = projects
+        if next[index].shoppingLists == nil { next[index].shoppingLists = [:] }
+        next[index].shoppingLists?[scope] = edits
+        // A shopping edit does not change geometry, source quantities or stock.
+        try commit(next)
+    }
     func surveys(projectID: UUID) -> [ProjectSurveyRecord] {
         surveys.filter { $0.projectID == projectID }.sorted { $0.updatedAt > $1.updatedAt }
     }
@@ -582,6 +593,11 @@ final class ProjectStore: ObservableObject {
         if !work.isPartition && (work.components.count == 1 || work.components.contains(where: { $0.surveySource != nil })) {
             next[i].works[j].layoutNeedsRecalculation = true
         }
+        if component.surveySource != nil, work.components[k].surface?.openings != surface.openings {
+            // The support is shared by both faces of a partition. A new door or
+            // hatch reduces its net area once, then both facing quantities follow.
+            next[i].works[j].layoutNeedsRecalculation = true
+        }
         let resized = SurveyWorkGeometry.workForRecalculation(next[i].works[j])
         if resized.payload != next[i].works[j].payload {
             next[i].works[j] = SurveyWorkGeometry.updatingStoredQuantities(resized, from: work)
@@ -595,7 +611,22 @@ final class ProjectStore: ObservableObject {
         }
         next[i].works[j].updatedAt = Date()
         next[i].updatedAt = Date()
-        try commit(next)
+        var nextSurveys=surveys
+        if let source=component.surveySource,source.kind == .wall,
+           let previous=work.components[k].surface,
+           previous.openings != surface.openings {
+            guard let s=nextSurveys.firstIndex(where:{$0.id == source.surveyID}),
+                  let c=nextSurveys[s].checkpoints.firstIndex(where:{$0.id == source.checkpointID}) else { throw StoreError.staleGeometry }
+            let before=nextSurveys[s]
+            nextSurveys[s].checkpoints[c].document = try SurveyLayoutOpeningSync.apply(
+                before:previous,after:surface,wallID:source.surfaceID,document:before.checkpoints[c].document)
+            let now=Date()
+            nextSurveys[s].checkpoints[c].updatedAt=now
+            nextSurveys[s].updatedAt=now
+            synchronizeSurveyWorks(&next,before:before,after:nextSurveys[s],checkpointID:source.checkpointID,
+                                   now:now,preservingComponentID:component.id)
+        }
+        try commit(next,surveys:nextSurveys)
     }
 
     func saveLayoutQuantityTakeoff(projectID:UUID,workID:UUID,takeoff:LayoutQuantityTakeoff) throws {
@@ -710,7 +741,7 @@ final class ProjectStore: ObservableObject {
                 work.furringLiningConfiguration?.height
             case .peripheralLiningAdhesiveFacing:
                 work.adhesiveFacingConfiguration?.height
-            case .ceilingOnFurring, .ceilingOnRailsAndStuds, .modularCeiling, .openings, .paintingBeta, .jointTreatment:
+            case .ceilingOnFurring, .ceilingOnRailsAndStuds, .modularCeiling, .frenchCeiling, .openings, .paintingBeta, .jointTreatment:
                 nil
             }
         }
@@ -894,6 +925,16 @@ final class ProjectStore: ObservableObject {
             return copy
         }
         var copy = ProjectItem(id: projectID, name: copyName, client: source.client, address: source.address, notes: source.notes, works: copiedWorks, createdAt: now, updatedAt: now)
+        if let lists=source.shoppingLists {
+            copy.shoppingLists=[:]
+            for (scope,edits) in lists {
+                let oldIDs=scope.split(separator:":").compactMap { UUID(uuidString:String($0)) }
+                let newIDs=oldIDs.compactMap { copiedIDs[$0]?.uuidString }
+                if !newIDs.isEmpty,newIDs.count == oldIDs.count {
+                    copy.shoppingLists?[newIDs.sorted().joined(separator:":")]=edits
+                }
+            }
+        }
         copy.rooms = source.rooms.map { ProjectRoomRecord(id: roomIDs[$0.id]!, name: $0.name, floorAreaM2: $0.floorAreaM2) }
         copy.ceilingWallLinks = try source.ceilingWallLinks?.map { link in
             var result = link
@@ -1623,7 +1664,7 @@ final class ProjectStore: ObservableObject {
     /// the same transaction. A deleted source removes its linked component only.
     private func synchronizeSurveyWorks(_ projects: inout [ProjectItem], before: ProjectSurveyRecord,
                                         after: ProjectSurveyRecord, checkpointID: UUID, now: Date,
-                                        forceWorkIDs: Set<UUID> = []) {
+                                        forceWorkIDs: Set<UUID> = [], preservingComponentID: UUID? = nil) {
         guard let p = projects.firstIndex(where: { $0.id == after.projectID }) else { return }
         let fresh = SurveyWorkGeometry.surfaces(in: after)
         let old = SurveyWorkGeometry.surfaces(in: before)
@@ -1635,6 +1676,7 @@ final class ProjectStore: ObservableObject {
             }) else { continue }
             var work = original
             work.components = original.components.compactMap { component in
+                if component.id == preservingComponentID { return component }
                 guard let source = component.surveySource, source.surveyID == after.id,
                       source.checkpointID == checkpointID else { return component }
                 guard let selected = fresh.first(where: { SurveyWorkGeometry.hasSameSource($0.source, source) }) else {
@@ -1790,6 +1832,7 @@ final class ProjectStore: ObservableObject {
             }
             for work in project.works {
                 try claim(work.id)
+                guard work.type != .frenchCeiling else { throw StoreError.configurationComingSoon }
                 if let source = work.openingConfiguration?.sourceWorkID {
                     guard source != work.id, workIDs.contains(source) else { throw StoreError.invalidStructure }
                 }
@@ -1864,9 +1907,11 @@ final class ProjectStore: ObservableObject {
     }
 
     private enum StoreError: Error, LocalizedError {
+        case configurationComingSoon
         case projectNotFound, workNotFound, invalidWorkName, duplicateWorkName, invalidStructure, staleGeometry, adjacencyConfirmationRequired, staleAdjacency, scanReplacementRequiresConfirmation, scanCheckpointRequiresValidation
         var errorDescription: String? {
             switch self {
+            case .configurationComingSoon: "La configuration du plafond à la française est à venir. Aucun ouvrage n’a été enregistré."
             case .scanCheckpointRequiresValidation: "La géométrie du relevé doit être corrigée avant de créer cet ouvrage."
             case .scanReplacementRequiresConfirmation: "Cette pièce possède déjà un scan dans ce relevé. Confirmez son remplacement pour continuer."
             case .adjacencyConfirmationRequired: "Des murs sont reliés à ce plafond. Confirmez leurs nouvelles longueurs depuis le plan du composant, ou choisissez de conserver les murs."

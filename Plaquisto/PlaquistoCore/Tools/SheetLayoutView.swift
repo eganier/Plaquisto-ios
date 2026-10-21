@@ -348,9 +348,17 @@ struct LayoutOrientationIcon: View {
     }
 }
 
-private enum LayoutInteraction: String, CaseIterable {
+enum LayoutInteraction: String, CaseIterable {
     case openings = "Ouvertures", contour = "Contour", framing = "Ossatures", grid = "Plaques", lighting = "Électricité", move = "Vue"
     static var allCases: [Self] { [.move,.grid,.framing,.openings,.lighting] }
+    static func tool(for element:LayoutVisibilitySettings.Element) -> Self {
+        switch element {
+        case .sheets: .grid
+        case .framing: .framing
+        case .openings: .openings
+        case .electrical: .lighting
+        }
+    }
     var hint: String {
         switch self {
         case .openings: return "Touchez une ouverture pour la modifier, glissez-la pour la déplacer."
@@ -360,6 +368,66 @@ private enum LayoutInteraction: String, CaseIterable {
         case .lighting: return "Touchez les spots à sélectionner, puis glissez-en un pour déplacer la sélection. Touchez le vide pour désélectionner."
         case .move: return "Touchez une plaque pour ses cotes et découpes. Glissez pour déplacer la vue ; pincez pour zoomer."
         }
+    }
+}
+
+/// One row selects what the finger moves. Visibility and dimension cycling
+/// remain independent: selecting a tool never hides its content.
+struct LayoutLabToolBar: View {
+    @Binding var mode: LayoutInteraction
+    @Binding var visibility: LayoutVisibilitySettings
+
+    func select(_ tool:LayoutInteraction) { mode = tool }
+
+    var body: some View {
+        HStack(spacing:12) {
+            HStack(spacing:2) {
+            Button { visibility.cycleDimensions() } label: {
+                VStack(spacing:0) {
+                    LayoutLabVisibilityIcon(kind:.ruler,color:visibility.dimensionedElement == nil ? Color.secondary.opacity(0.55) : .orange).frame(height:40)
+                    Text("Cotes").font(.caption2)
+                }.foregroundStyle(visibility.dimensionedElement == nil ? Color.secondary.opacity(0.55) : .orange)
+                    .frame(maxWidth:.infinity).frame(height:58).contentShape(Rectangle())
+            }.buttonStyle(.plain).accessibilityLabel("Cotes")
+                .accessibilityValue(visibility.dimensionedElement?.title ?? "Masquées")
+                .accessibilityIdentifier("layout.dimensions.cycle")
+            ForEach(LayoutVisibilitySettings.Element.allCases,id:\.self) { element in
+                let tool = LayoutInteraction.tool(for:element)
+                let active = mode == tool
+                let kind:LayoutLabVisibilityIcon.Kind = switch element {
+                case .sheets: .sheet
+                case .framing: .framing
+                case .openings: .opening
+                case .electrical: .electrical
+                }
+                Button { select(tool) } label: {
+                    VStack(spacing:0) {
+                        LayoutLabVisibilityIcon(kind:kind,color:active ? .orange : .blue).frame(height:40)
+                        Text(element.title).font(.caption2).lineLimit(1).minimumScaleFactor(0.7)
+                            .foregroundStyle(active ? Color.orange : .blue)
+                    }.frame(maxWidth:.infinity).frame(height:58).contentShape(Rectangle())
+                        .overlay(alignment:.bottom) {
+                            Capsule().fill(visibility[element].showsDimensions ? Color.orange : .clear).frame(width:26,height:3).offset(y:4)
+                        }
+                }.buttonStyle(.plain).accessibilityLabel("Déplacer : \(element.title)")
+                    .accessibilityValue(active ? "Outil actif" : "Outil inactif")
+                    .accessibilityAddTraits(active ? .isSelected : [])
+                    .accessibilityIdentifier("layout.tool.\(tool)")
+            }
+            }.frame(maxWidth:.infinity)
+            Button { select(.move) } label: {
+                Image(systemName:"arrow.up.and.down.and.arrow.left.and.right")
+                    .font(.system(size:28,weight:.regular))
+                    .foregroundStyle(mode == .move ? Color.orange : .blue)
+                    .frame(width:48,height:58)
+                    .background(Color.white,in:RoundedRectangle(cornerRadius:18,style:.continuous))
+                    .contentShape(RoundedRectangle(cornerRadius:18,style:.continuous))
+            }.buttonStyle(.plain).accessibilityLabel("Déplacer le plan")
+                .accessibilityHint("Déplace la vue sans déplacer les plaques, les ossatures, les ouvertures ou l’électricité")
+                .accessibilityValue(mode == .move ? "Outil actif" : "Outil inactif")
+                .accessibilityAddTraits(mode == .move ? .isSelected : [])
+                .accessibilityIdentifier("layout.tool.move")
+        }.padding(.horizontal,12).padding(.bottom,4)
     }
 }
 struct LayoutPlanActionStyle: ButtonStyle {
@@ -376,7 +444,7 @@ struct LayoutPlanActionStyle: ButtonStyle {
 }
 
 private enum LayoutEditorSheet: Identifiable {
-    case newSurface, settings, furring, lighting, lightingSpacing(Set<Int>), wallPoint(Int), export, opening(UUID?), vertex(Int), correction(Int), cut(LayoutCutSelection), pieces, furringDimensions, parts, framingDistance(LayoutWallDimension)
+    case newSurface, settings, furring, lighting, lightingSpacing(Set<Int>), wallPoint(Int), opening(UUID?), vertex(Int), correction(Int), cut(LayoutCutSelection), pieces, furringDimensions, parts, framingDistance(LayoutWallDimension)
     var id: String {
         switch self {
         case .newSurface: return "new"
@@ -385,7 +453,6 @@ private enum LayoutEditorSheet: Identifiable {
         case .lighting: return "lighting"
         case .lightingSpacing: return "lightingSpacing"
         case .wallPoint(let i): return "wallPoint-\(i)"
-        case .export: return "export"
         case .opening(let id): return "opening-\(id?.uuidString ?? "new")"
         case .vertex(let i): return "vertex-\(i)"
         case .correction(let i): return "correction-\(i)"
@@ -612,7 +679,6 @@ struct SheetLayoutView: View {
                         if !simplifiedInterface {
                             Button("Liste des découpes", systemImage: "list.number") { sheet = .pieces }.disabled(model.result == nil)
                         }
-                        Button("Exporter vers un ouvrage",systemImage:"square.and.arrow.up") { sheet = .export }
                         if !simplifiedInterface {
                             Button("Modifier le contour et l’échelle",systemImage:"pencil.and.outline") { editingShape = true }
                             Button("Recentrer le plan",systemImage:"scope") { recenterToken += 1 }
@@ -856,57 +922,7 @@ struct SheetLayoutView: View {
     }
 
     private var labVisibilityBar: some View {
-        HStack(spacing:2) {
-            Button { visibility.cycleDimensions() } label: {
-                VStack(spacing:0) {
-                    LayoutLabVisibilityIcon(kind:.ruler,color:visibility.dimensionedElement == nil ? Color.secondary.opacity(0.55) : .orange).frame(height:40)
-                    Text("Cotes").font(.caption2)
-                }.foregroundStyle(visibility.dimensionedElement == nil ? Color.secondary.opacity(0.55) : .orange)
-                    .frame(maxWidth:.infinity).frame(height:58)
-            }.buttonStyle(.plain).accessibilityLabel("Cotes")
-                .accessibilityValue(visibility.dimensionedElement?.title ?? "Masquées")
-                .accessibilityIdentifier("layout.dimensions.cycle")
-            ForEach(LayoutVisibilitySettings.Element.allCases,id:\.self) { element in
-                let kind:LayoutLabVisibilityIcon.Kind = switch element {
-                case .sheets: .sheet
-                case .framing: .framing
-                case .openings: .opening
-                case .electrical: .electrical
-                }
-                Button { visibility.toggleVisibility(element) } label: {
-                    VStack(spacing:0) {
-                        LayoutLabVisibilityIcon(kind:kind,color:visibility[element].isVisible ? .blue : .secondary.opacity(0.55)).frame(height:40)
-                        Text(element.title).font(.caption2).lineLimit(1).minimumScaleFactor(0.8)
-                            .foregroundStyle(visibility[element].isVisible ? Color.blue : Color.secondary.opacity(0.55))
-                    }.frame(maxWidth:.infinity).frame(height:58)
-                        .overlay(alignment:.bottom) {
-                            Capsule().fill(visibility[element].showsDimensions ? Color.orange : .clear).frame(width:26,height:3).offset(y:4)
-                        }
-                }.buttonStyle(.plain).accessibilityLabel(element.title)
-                    .accessibilityValue(visibility[element].isVisible ? (visibility[element].showsDimensions ? "Visible avec cotes" : "Visible") : "Masqué")
-                    .accessibilityIdentifier("layout.visibility.\(element.rawValue)")
-            }
-        }.padding(.horizontal,12).padding(.bottom,4).disabled(drag != nil || pinching)
-    }
-
-    private var displacementToolbar: some View {
-        HStack(spacing:2) {
-            Image(systemName:"arrow.up.and.down.and.arrow.left.and.right")
-                .font(.system(size:16,weight:.medium)).foregroundStyle(.secondary)
-                .frame(width:24).accessibilityHidden(true)
-            ForEach(LayoutInteraction.allCases,id:\.self) { item in
-                let title = item == .move ? "Plan" : item == .framing ? "Ossature" : item.rawValue
-                Button { mode = item } label: {
-                    Text(title).font(.system(size:12,weight:mode == item ? .semibold : .medium))
-                        .lineLimit(1).minimumScaleFactor(0.75)
-                        .frame(minWidth:0,maxWidth:.infinity).frame(minHeight:44)
-                        .foregroundStyle(mode == item ? Color.blue : .secondary)
-                        .background(mode == item ? Color.blue.opacity(0.12) : .clear,in:Capsule())
-                }.buttonStyle(.plain).accessibilityLabel("Déplacer : \(title)")
-                    .accessibilityAddTraits(mode == item ? .isSelected : [])
-                    .accessibilityIdentifier("layout.tool.\(item)")
-            }
-        }.padding(5).background(.regularMaterial,in:Capsule()).padding(.horizontal,8)
+        LayoutLabToolBar(mode:$mode,visibility:$visibility)
             .disabled(drag != nil || pinching)
     }
 
@@ -970,7 +986,6 @@ struct SheetLayoutView: View {
                     Color.clear.accessibilityHidden(true)
                 }
             }.frame(height:toolActionsHeight).padding(.horizontal,12)
-            displacementToolbar
         }.padding(.bottom,6)
     }
 
@@ -2065,8 +2080,6 @@ struct SheetLayoutView: View {
                     var copy = document; copy.lighting = value; model.apply(copy)
                 }
             }
-        case .export:
-            if let document = model.document { LayoutExportForm(document:document) }
         case .opening(let id):
             if let document = model.document {
                 LayoutOpeningForm(support: document.surface.kind, existing: document.surface.openings.first { $0.id == id }, surfaceContour: document.surface.contour, alignedEdge: viewAlignedEdge, displayRotation: rotation) { opening in

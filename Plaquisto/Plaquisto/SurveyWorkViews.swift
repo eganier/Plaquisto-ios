@@ -190,7 +190,8 @@ struct SurveyWorkSelectionView: View {
                                 selected: chosenIDs, blocked: blockedIDs, onTap: toggle)
                         } else {
                             SurveySurfaceScene(survey: survey, surfaces: candidates, kind: kind,
-                                selected: chosenIDs, claimed: blockedIDs, onTap: toggle)
+                                selected: chosenIDs, claimed: blockedIDs, onTap: toggle,
+                                onRestoreSelection: { selectionsByMode[selectionMode] = $0 })
                         }
                     }
                         .frame(height: 310)
@@ -268,6 +269,7 @@ struct SurveyWorkSelectionView: View {
                         Text("Fourrures").tag(WorkType.ceilingOnFurring)
                         Text("Rails et montants").tag(WorkType.ceilingOnRailsAndStuds)
                         Text("Plafond modulaire").tag(WorkType.modularCeiling)
+                        Text(WorkType.frenchCeiling.title).tag(WorkType.frenchCeiling)
                     }
                 }
                 TextField("Nom de l’ouvrage (facultatif)", text: $workName)
@@ -367,6 +369,8 @@ struct SurveyWorkForm: View {
         NavigationStack {
             Group {
                 switch draft.type {
+                case .frenchCeiling:
+                    FrenchCeilingBetaView()
                 case .distributionPartition:
                     CloisonDistributionConfiguratorView(initialConfiguration: SurveyWorkGeometry.partition(draft.selections),
                         onSave: { save(.distributionPartition($0)) }, onClose: { dismiss() }, showsCloseButton: false)
@@ -810,6 +814,7 @@ struct SurveySurfaceScene: UIViewRepresentable {
     var resetToken = 0
     var previewWorks: [WorkItem] = []
     var showsWorkJoints = true
+    var onRestoreSelection: ((Set<String>) -> Void)? = nil
 
     func makeCoordinator() -> Coordinator { Coordinator(onTap:onTap) }
     func makeUIView(context: Context) -> SCNView {
@@ -817,9 +822,12 @@ struct SurveySurfaceScene: UIViewRepresentable {
         view.backgroundColor = SurveySceneRenderer.background
         view.allowsCameraControl = true
         MaquetteStyle.configure(view,quality:.current)
-        let tap = UITapGestureRecognizer(target:context.coordinator,action:#selector(Coordinator.tap(_:)))
+        let tap = SurveySelectionTapRecognizer(target:context.coordinator,action:#selector(Coordinator.tap(_:)))
         let reset = UITapGestureRecognizer(target:context.coordinator,action:#selector(Coordinator.recenter(_:)))
-        reset.numberOfTapsRequired = 2; tap.require(toFail: reset)
+        // Selection must not wait for the double-tap timeout. The second tap is
+        // ignored by selection; recenter rolls back the first tap instead.
+        reset.numberOfTapsRequired = 2
+        tap.delegate = context.coordinator; reset.delegate = context.coordinator
         view.addGestureRecognizer(tap); view.addGestureRecognizer(reset)
         return view
     }
@@ -830,6 +838,8 @@ struct SurveySurfaceScene: UIViewRepresentable {
     }
     func update(_ view:SCNView,coordinator:Coordinator) {
         coordinator.onTap = onTap
+        coordinator.selected = selected
+        coordinator.onRestoreSelection = onRestoreSelection
         coordinator.selectableIDs = Set(surfaces.filter { $0.source.kind == kind }.map(\.id))
         let key = GeometryKey(checkpoints:survey.checkpoints,surfaces:surfaces.map { .init(id:$0.id,kind:$0.source.kind,triangles:$0.triangles) })
         if coordinator.geometryKey != key {
@@ -917,7 +927,7 @@ struct SurveySurfaceScene: UIViewRepresentable {
         let checkpoints:[ProjectRoomScanCheckpoint]
         let surfaces:[Mesh]
     }
-    final class Coordinator: NSObject {
+    final class Coordinator: NSObject, UIGestureRecognizerDelegate {
         var onTap: (String) -> Void
         var geometryKey:GeometryKey?
         var geometryBuildCount=0
@@ -927,9 +937,25 @@ struct SurveySurfaceScene: UIViewRepresentable {
         var selectableIDs = Set<String>()
         var previewWorks: [WorkItem]?
         var showsWorkJoints = true
+        var selected = Set<String>()
+        var selectionBeforeTap: Set<String>?
+        var onRestoreSelection: ((Set<String>) -> Void)?
+        func select(_ id: String?, tapCount: Int) {
+            guard tapCount == 1 else { return }
+            selectionBeforeTap = selected
+            if let id { onTap(id) }
+        }
+        func restoreSelection() {
+            if let selectionBeforeTap { onRestoreSelection?(selectionBeforeTap) }
+            selectionBeforeTap = nil
+        }
+        func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer) -> Bool {
+            gestureRecognizer is UITapGestureRecognizer && otherGestureRecognizer is UITapGestureRecognizer
+        }
         init(onTap: @escaping (String) -> Void) { self.onTap = onTap }
         @MainActor @objc func recenter(_ gesture: UITapGestureRecognizer) {
             guard let view = gesture.view as? SCNView, let scene = view.scene else { return }
+            restoreSelection()
             SurveySceneRenderer.frame(scene, aspect: Double(max(1, view.bounds.width) / max(1, view.bounds.height)))
             if let camera = scene.rootNode.childNode(withName: "camera", recursively: false) { view.pointOfView = camera }
             let boxes = scene.rootNode.childNodes.filter { $0.geometry != nil }.map(\.boundingBox)
@@ -939,9 +965,21 @@ struct SurveySurfaceScene: UIViewRepresentable {
                 ((boxes.map { $0.min.z }.min() ?? 0)+(boxes.map { $0.max.z }.max() ?? 0))/2)
         }
         @objc func tap(_ gesture: UITapGestureRecognizer) {
+            guard (gesture as? SurveySelectionTapRecognizer)?.touchTapCount == 1 else { return }
             guard let view = gesture.view as? SCNView else { return }
             let hits = view.hitTest(gesture.location(in:view),options:[.searchMode:SCNHitTestSearchMode.all.rawValue])
-            if let id = hits.compactMap({ $0.node.isHidden ? nil : $0.node.name }).first(where:selectableIDs.contains) { onTap(id) }
+            let id = hits.compactMap({ $0.node.isHidden ? nil : $0.node.name }).first(where:selectableIDs.contains)
+            select(id, tapCount: (gesture as? SurveySelectionTapRecognizer)?.touchTapCount ?? 1)
         }
+    }
+}
+
+/// UIKit supplies the tap count before recognizer actions run. Keeping it avoids
+/// guessing the system double-tap timing or delaying a normal selection.
+final class SurveySelectionTapRecognizer: UITapGestureRecognizer {
+    private(set) var touchTapCount = 0
+    override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent) {
+        touchTapCount = touches.first?.tapCount ?? 0
+        super.touchesEnded(touches, with: event)
     }
 }

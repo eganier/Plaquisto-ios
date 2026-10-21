@@ -1172,6 +1172,8 @@ struct SavedWorkView: View {
     var body: some View {
         Group {
             switch currentWork.type {
+            case .frenchCeiling:
+                FrenchCeilingBetaView()
             case .jointTreatment:
                 JointTreatmentConfiguratorView(projectID: currentWork.projectID, initial: currentWork.jointTreatmentConfiguration ?? .init()) { configuration in
                     do { try store.updateWork(currentWork, jointTreatmentConfiguration: configuration); dismiss() }
@@ -1331,6 +1333,8 @@ struct WorkConfiguratorContainer: View {
         NavigationStack {
             Group {
                 switch workType {
+                case .frenchCeiling:
+                    FrenchCeilingBetaView()
                 case .jointTreatment:
                     JointTreatmentConfiguratorView(projectID: projectID) { savePayload(.jointTreatment($0)) }
                 case .ceilingOnFurring:

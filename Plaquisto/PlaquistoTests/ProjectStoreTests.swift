@@ -286,6 +286,29 @@ final class WoodCeilingPlenumDiagramTests: XCTestCase {
 
 @MainActor
 final class ProjectStoreTests: XCTestCase {
+    func testFrenchCeilingBetaIsListedWithoutInventingAConfiguration() throws {
+        let type = WorkType.frenchCeiling
+        XCTAssertTrue(WorkType.allCases.contains(type))
+        XCTAssertEqual(type.category,.ceilings)
+        XCTAssertEqual(type.title,"Plafond à la française (bêta)")
+        XCTAssertEqual(type.generatedName(roomName:"Salon"),"Salon - Plafond à la française")
+        XCTAssertTrue(WorkConfigurationShortcut.choices(for:type).isEmpty)
+        XCTAssertEqual(try JSONDecoder().decode(WorkType.self,from:JSONEncoder().encode(type)),type)
+    }
+
+    func testFrenchCeilingBetaCannotSaveAnotherCeilingCalculator() throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID()).json")
+        defer { try? FileManager.default.removeItem(at:url) }
+        let store = ProjectStore(fileURL:url)
+        let id = try store.createProject(name:"Plafond français",client:"",address:"",notes:"")
+        let before = try Data(contentsOf:url)
+        XCTAssertThrowsError(try store.createConfiguredWork(projectID:id,name:"Salon",type:.frenchCeiling,
+            payload:.ceiling(.init()),roomID:nil,newRoomName:nil))
+        XCTAssertThrowsError(try store.createWork(projectID:id,name:"Salon",type:.frenchCeiling,configuration:.init()))
+        XCTAssertTrue(try XCTUnwrap(store.project(id:id)).works.isEmpty)
+        XCTAssertEqual(try Data(contentsOf:url),before)
+    }
+
     func testModularCeilingFromScanIsSavedAndTracksCeilingChanges() throws {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID()).json")
         defer { try? FileManager.default.removeItem(at: url) }
@@ -302,6 +325,10 @@ final class ProjectStoreTests: XCTestCase {
         let survey = try XCTUnwrap(store.surveys.first)
         let selected = SurveyWorkGeometry.surfaces(in: survey).filter { $0.source.kind == .ceiling }
         XCTAssertTrue(SurveyWorkGeometry.availableWorkTypes(for: selected).contains(.modularCeiling))
+        XCTAssertTrue(SurveyWorkGeometry.availableWorkTypes(for: selected).contains(.frenchCeiling))
+        XCTAssertFalse(SurveyWorkGeometry.availableWorkTypes(for:SurveyWorkGeometry.surfaces(in:survey).filter { $0.source.kind == .wall }).contains(.frenchCeiling))
+        XCTAssertThrowsError(try store.createSurveyWork(surveyID:survey.id,selections:selected,name:"Français",
+            type:.frenchCeiling,payload:.ceiling(.init()),roomID:nil))
         var configuration = SurveyWorkGeometry.modularCeiling(selected)
         configuration.plenumCM = 20
         XCTAssertEqual(configuration.area, 12, accuracy: 0.001)
@@ -3549,6 +3576,103 @@ final class ProjectStoreTests: XCTestCase {
         XCTAssertEqual(refreshed.doublageConfiguration?.measuredWallRuns?.map(\.length), [6,4])
         XCTAssertEqual(refreshed.components.count, 2)
         XCTAssertEqual(try XCTUnwrap(store.project(id: saved.projectID)?.works.first?.doublageConfiguration?.area), 25, accuracy: 0.00001) // saving the plan applies its geometry immediately
+    }
+
+    func testLayoutWallHatchSynchronizesSurveyAndQuantitiesExactlyOnce() throws {
+        let url=FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID()).json")
+        defer { try? FileManager.default.removeItem(at:url) }
+        let store=ProjectStore(fileURL:url)
+        let saved=try store.saveScannedRoom(projectID:nil,newProjectName:"Trappes",surveyID:nil,
+            surveyName:"Scan",roomID:nil,roomName:"Pièce",document:scanDocument(name:"Pièce"))
+        let survey=try XCTUnwrap(store.surveys.first)
+        let surfaces=SurveyWorkGeometry.surfaces(in:survey)
+        let workID=try store.createSurveyWork(surveyID:saved.surveyID,selections:surfaces,name:"Doublage",
+            type:.peripheralLiningFurrings,payload:.furringLining(SurveyWorkGeometry.furring(surfaces)),roomID:nil)
+        var component=try XCTUnwrap(store.project(id:saved.projectID)?.works.first?.components.first)
+        var layout=try XCTUnwrap(component.initialDocument(sideRoomID:nil,configuration:nil))
+        let opening=LayoutOpening(kind:.hatch,contour:[.init(x:1000,y:1000),.init(x:1600,y:1000),.init(x:1600,y:1600),.init(x:1000,y:1600)])
+        layout.surface.openings.append(opening)
+        try store.saveComponentPlan(projectID:saved.projectID,workID:workID,componentID:component.id,sideRoomID:nil,
+            document:layout,expectedGeometryRevision:component.geometryRevision)
+        var actual=try XCTUnwrap(store.surveys.first?.checkpoints.first?.document)
+        XCTAssertEqual(actual.initialRoom,survey.checkpoints[0].document.initialRoom)
+        XCTAssertEqual(actual.room.openings.count,1)
+        XCTAssertEqual(actual.room.openings[0].id,opening.id)
+        XCTAssertEqual(actual.room.openings[0].layoutKind,.hatch)
+        XCTAssertEqual(actual.room.openings[0].width.effectiveValue,0.6,accuracy:1e-8)
+        XCTAssertEqual(try XCTUnwrap(store.project(id:saved.projectID)?.works.first?.area),9.64,accuracy:1e-8)
+        XCTAssertEqual(SurveyWorkGeometry.surfaces(in:store.surveys[0])[0].surface.openings[0].kind,.hatch)
+        component=try XCTUnwrap(store.project(id:saved.projectID)?.works.first?.components.first)
+        try store.saveComponentPlan(projectID:saved.projectID,workID:workID,componentID:component.id,sideRoomID:nil,
+            document:layout,expectedGeometryRevision:component.geometryRevision)
+        XCTAssertEqual(store.surveys[0].checkpoints[0].document.room.openings.count,1)
+        XCTAssertEqual(try XCTUnwrap(store.project(id:saved.projectID)?.works.first?.area),9.64,accuracy:1e-8)
+        // A stale open editor cannot reintroduce an opening after another edit.
+        let staleRevision=component.geometryRevision
+        layout.surface.openings[0].contour=layout.surface.openings[0].contour.map { .init(x:$0.x+300,y:$0.y) }
+        try store.saveComponentPlan(projectID:saved.projectID,workID:workID,componentID:component.id,sideRoomID:nil,
+            document:layout,expectedGeometryRevision:staleRevision)
+        XCTAssertEqual(store.surveys[0].checkpoints[0].document.room.openings[0].positionOnWall.effectiveValue,1.3,accuracy:1e-8)
+        XCTAssertThrowsError(try store.saveComponentPlan(projectID:saved.projectID,workID:workID,componentID:component.id,sideRoomID:nil,
+            document:layout,expectedGeometryRevision:staleRevision))
+        component=try XCTUnwrap(store.project(id:saved.projectID)?.works.first?.components.first)
+        layout.surface.openings=[]
+        try store.saveComponentPlan(projectID:saved.projectID,workID:workID,componentID:component.id,sideRoomID:nil,
+            document:layout,expectedGeometryRevision:component.geometryRevision)
+        actual=try XCTUnwrap(ProjectStore(fileURL:url).surveys.first?.checkpoints.first?.document)
+        XCTAssertTrue(actual.room.openings.isEmpty)
+        XCTAssertTrue(actual.room.walls[0].openingIDs.isEmpty)
+        XCTAssertEqual(try XCTUnwrap(store.project(id:saved.projectID)?.works.first?.area),10,accuracy:1e-8)
+    }
+
+    func testLayoutOpeningSyncUsesLocalFrameAndPreservesOtherOpenings() throws {
+        var document=scanDocument(name:"Mur tourné")
+        let source=document.room.walls[0].provenance
+        document.room.walls[0].start = .init(x:5,y:1,z:2)
+        document.room.walls[0].end = .init(x:5,y:1,z:6)
+        let id=document.room.walls[0].id
+        document=try SurveyPlanEditing.addingDoor(document,wallID:id,width:0.8,height:2,position:0.2)
+        let preserved=document.room.openings[0]
+        let before=Surface2D(name:"Mur",kind:.wall,contour:[.init(x:0,y:0),.init(x:4000,y:0),.init(x:4000,y:2500),.init(x:0,y:2500)],
+            localFrame:.init(origin:.init(x:5,y:1,z:2),axisX:.init(x:0,y:0,z:1),axisY:.init(x:0,y:1,z:0)))
+        var after=before
+        after.openings=[.init(kind:.window,contour:[.init(x:2000,y:1000),.init(x:3000,y:1000),.init(x:3000,y:2000),.init(x:2000,y:2000)])]
+        let result=try SurveyLayoutOpeningSync.apply(before:before,after:after,wallID:id,document:document)
+        XCTAssertEqual(result.room.openings[0],preserved)
+        XCTAssertEqual(result.room.openings[1].center,.init(x:5,y:2.5,z:4.5))
+        XCTAssertEqual(result.room.openings[1].provenance.source,.manual)
+        XCTAssertEqual(source.source,.roomPlan)
+        after.openings[0].contour=after.openings[0].contour.map { .init(x:$0.x-1800,y:$0.y) }
+        XCTAssertThrowsError(try SurveyLayoutOpeningSync.apply(before:before,after:after,wallID:id,document:document))
+    }
+
+    func testOppositePartitionLayoutHatchUpdatesBothFacesWithoutMirroringTheScan() throws {
+        let url=FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID()).json")
+        defer { try? FileManager.default.removeItem(at:url) }
+        let store=ProjectStore(fileURL:url)
+        var document=scanDocument(name:"Cloison")
+        document.wallWorkIntents=[.init(wallID:document.room.walls[0].id,use:.partition)]
+        let saved=try store.saveScannedRoom(projectID:nil,newProjectName:"Cloison",surveyID:nil,
+            surveyName:"Scan",roomID:nil,roomName:"Pièce",document:document)
+        let surfaces=SurveyWorkGeometry.surfaces(in:store.surveys[0])
+        var configuration=SurveyWorkGeometry.partition(surfaces)
+        configuration.faceAFirst=[.init(facingID:"ba13",formatID:"1200x2400",surface:10)]
+        configuration.faceBFirst=configuration.faceAFirst
+        let workID=try store.createSurveyWork(surveyID:saved.surveyID,selections:surfaces,name:"Cloison",
+            type:.distributionPartition,payload:.distributionPartition(configuration),roomID:nil)
+        let component=try XCTUnwrap(store.project(id:saved.projectID)?.works.first?.components.first)
+        let opposite=try XCTUnwrap(component.plans.first { component.isOppositeSide($0.sideRoomID) })
+        var layout=try XCTUnwrap(component.document(for:opposite))
+        var surface=try XCTUnwrap(component.surface)
+        surface.openings=[.init(kind:.hatch,contour:[.init(x:1000,y:1000),.init(x:1600,y:1000),.init(x:1600,y:1600),.init(x:1000,y:1600)])]
+        layout.surface=surface.mirroredComponentSide()
+        try store.saveComponentPlan(projectID:saved.projectID,workID:workID,componentID:component.id,sideRoomID:opposite.sideRoomID,
+            document:layout,expectedGeometryRevision:component.geometryRevision)
+        let updated=try XCTUnwrap(store.project(id:saved.projectID)?.works.first?.cloisonDistributionConfiguration)
+        XCTAssertEqual(updated.area,9.64,accuracy:1e-8)
+        XCTAssertEqual(updated.faceAFirst[0].surface,9.64,accuracy:1e-8)
+        XCTAssertEqual(updated.faceBFirst[0].surface,9.64,accuracy:1e-8)
+        XCTAssertEqual(store.surveys[0].checkpoints[0].document.room.openings[0].positionOnWall.effectiveValue,1,accuracy:1e-8)
     }
 
     private func validateAllCheckpoints(in store: ProjectStore, surveyID: UUID) throws {

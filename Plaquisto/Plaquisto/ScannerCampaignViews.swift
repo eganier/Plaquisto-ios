@@ -233,7 +233,13 @@ struct ScannerCampaignWorkspaceView: View {
                 } else {
                     SurveySurfaceScene(survey: survey, surfaces: surfaces, kind: kind, selected: chosenIDs,
                         claimed: [], onTap: toggle, showsCeilings: showsCeilings, resetToken: cameraReset,
-                        previewWorks: showsWorks ? linkedWorks : [], showsWorkJoints: showsWorkJoints)
+                        previewWorks: showsWorks ? linkedWorks : [], showsWorkJoints: showsWorkJoints,
+                        onRestoreSelection: { ids in
+                            let currentKind = surfaces.filter { $0.source.kind == kind }
+                            selectedKeys.subtract(currentKind.map(Self.key))
+                            selectedKeys.formUnion(currentKind.filter { ids.contains($0.id) }.map(Self.key))
+                            inspectedSurface = nil
+                        })
                 }
             }.overlay(alignment: .bottomLeading) {
                 VStack(alignment: .leading, spacing: 8) {

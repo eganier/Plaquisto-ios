@@ -244,6 +244,7 @@ struct LayoutManualContourEditor: View {
     @State private var dragOriginal: Surface2D?
     @State private var dragVertex: Int?
     @State private var dragLocation: CGPoint?
+    @State private var dragSnap: LayoutContourSnap?
     @State private var error: String?
     @State private var history: [Surface2D] = []
     @State private var scaleReference: Surface2D?
@@ -315,13 +316,18 @@ struct LayoutManualContourEditor: View {
                                 context.fill(Path(ellipseIn:CGRect(x:point.x-7,y:point.y-7,width:14,height:14)),with:.color(.teal))
                                 context.draw(Text(vertexName(i)).font(.caption.bold()),at:.init(x:point.x-10,y:point.y-12))
                             }
+                            if let snap = dragSnap, let vertex = dragVertex {
+                                drawSnap(snap, vertex:vertex, points:surface.contour, viewport:viewport, context:&context)
+                            }
                         }
                         .contentShape(Rectangle())
                         .gesture(DragGesture(minimumDistance:3).onChanged { value in
                             guard !pinching else { return }
                             if dragOriginal == nil {
                                 dragOriginal = surface
+                                viewBounds = viewport.bounds
                                 dragPanOrigin = viewPan
+                                dragSnap = nil
                                 dragVertex = surface.contour.indices.min { a,b in
                                     let pa = viewport.screen(surface.contour[a]), pb = viewport.screen(surface.contour[b])
                                     return hypot(pa.x-value.startLocation.x,pa.y-value.startLocation.y) < hypot(pb.x-value.startLocation.x,pb.y-value.startLocation.y)
@@ -330,7 +336,18 @@ struct LayoutManualContourEditor: View {
                             if let original = dragOriginal, let i = dragVertex {
                                 dragLocation = value.location
                                 let delta = viewport.world(value.location) - viewport.world(value.startLocation)
-                                var copy = original; copy.contour[i] = original.contour[i] + delta; self.surface = copy
+                                do {
+                                    let preview = try LayoutContourSnapping.preview(original:original,vertex:i,
+                                        candidate:original.contour[i]+delta,screenScale:viewport.scale,latched:dragSnap)
+                                    if preview.snap != nil, preview.snap != dragSnap {
+                                        UIImpactFeedbackGenerator(style:.light).impactOccurred()
+                                    }
+                                    self.surface = preview.surface; dragSnap = preview.snap; error = nil
+                                } catch {
+                                    // Keep the last valid preview, rather than display a contour
+                                    // that would jump back only after the finger is released.
+                                    dragSnap = nil; self.error = error.localizedDescription
+                                }
                             } else {
                                 viewPan = viewport.constrainedPan(.init(width:dragPanOrigin.width+value.translation.width,height:dragPanOrigin.height+value.translation.height),contour:surface.contour)
                             }
@@ -340,7 +357,7 @@ struct LayoutManualContourEditor: View {
                                 if !pinching {
                                     pinching = true; viewBounds = viewport.bounds
                                     if let original = dragOriginal { self.surface = original; viewPan = dragPanOrigin }
-                                    dragOriginal = nil; dragVertex = nil; dragLocation = nil
+                                    dragOriginal = nil; dragVertex = nil; dragLocation = nil; dragSnap = nil
                                 }
                             }.onEnded { value in
                                 viewZoom = min(8,max(0.4,viewZoom*value.magnification))
@@ -393,6 +410,13 @@ struct LayoutManualContourEditor: View {
                             Text(layoutArea(abs(LayoutGeometry.area(surface.contour)))).font(.subheadline.bold()).padding(9)
                                 .background(.regularMaterial,in:Capsule()).padding(8).allowsHitTesting(false)
                         }
+                        .overlay(alignment:.top) {
+                            if let error {
+                                Text(error).font(.footnote).foregroundStyle(.red).padding(8)
+                                    .background(.regularMaterial,in:RoundedRectangle(cornerRadius:10))
+                                    .padding(8).allowsHitTesting(false)
+                            }
+                        }
                     }.padding(8)
                     scaleControls(surface)
                     if !editTopology { VStack(alignment:.leading,spacing:6) {
@@ -430,7 +454,8 @@ struct LayoutManualContourEditor: View {
                         Button("Annuler la modification", systemImage:"arrow.uturn.backward") { if let previous = history.popLast() { self.surface = previous; resetScale() } }.disabled(history.isEmpty)
                     }.font(.subheadline).padding(.horizontal)
                 }
-                if let error { Text(error).font(.footnote).foregroundStyle(.red).padding(.horizontal) }
+                // Validation messages must not resize the canvas during a drag.
+                if drawing, let error { Text(error).font(.footnote).foregroundStyle(.red).padding(.horizontal) }
             }
             .padding(.bottom).background(Color(.systemGroupedBackground))
             .navigationTitle(title ?? (kind == .wall ? "Dessiner le mur" : "Dessiner le plafond")).navigationBarTitleDisplayMode(.inline)
@@ -468,7 +493,9 @@ struct LayoutManualContourEditor: View {
     private func planViewport(surface:Surface2D, size:CGSize) -> LayoutViewport {
         let b = surface.bounds, margin = max(b.width,b.height)*0.25
         let viewport = LayoutViewport(bounds:viewBounds ?? .init(min:b.min - .init(x:margin,y:margin), max:b.max + .init(x:margin,y:margin)),size:size,zoom:min(8,max(0.4,viewZoom*magnification)),pan:viewPan)
-        return LayoutViewport(bounds:viewport.bounds,size:size,zoom:viewport.zoom,pan:viewport.constrainedPan(viewPan,contour:surface.contour))
+        // Geometry changes must not silently recenter the canvas on finger-up.
+        // Explicit pan/pinch gestures constrain their own pan values above.
+        return viewport
     }
     @ViewBuilder private func scaleControls(_ surface:Surface2D) -> some View {
         if surface.provenance == "manual", surface.contourIntent != nil {
@@ -529,11 +556,33 @@ struct LayoutManualContourEditor: View {
         withAnimation(.easeOut(duration:0.18)) { drawing = false }
     }
     private func finishDrag() {
-        defer { dragOriginal = nil; dragVertex = nil; dragLocation = nil }
+        defer { dragOriginal = nil; dragVertex = nil; dragLocation = nil; dragSnap = nil }
         guard let original = dragOriginal, let i = dragVertex, let moved = surface else { return }
-        guard moved.contour.indices.contains(i) else { return }
-        do { let copy = try original.movingVertices(to:moved.contour); history.append(original); surface = copy; error = nil; resetScale() }
-        catch { surface = original; self.error = error.localizedDescription }
+        guard moved.contour.indices.contains(i), moved != original else { return }
+        // The preview already includes constraint resolution. Commit it verbatim.
+        history.append(original); resetScale()
+    }
+    private func drawSnap(_ snap:LayoutContourSnap, vertex:Int, points:[LayoutPoint],
+                          viewport:LayoutViewport, context:inout GraphicsContext) {
+        var path = Path()
+        switch snap {
+        case .straight:
+            path.move(to:viewport.screen(points[(vertex+points.count-1)%points.count]))
+            path.addLine(to:viewport.screen(points[(vertex+1)%points.count]))
+            context.stroke(path,with:.color(.orange),style:.init(lineWidth:3,dash:[6,4]))
+        case .rightAngle(let corner):
+            let p = viewport.screen(points[corner])
+            let a = viewport.screen(points[(corner+points.count-1)%points.count])
+            let b = viewport.screen(points[(corner+1)%points.count])
+            let la = max(0.001,hypot(a.x-p.x,a.y-p.y)), lb = max(0.001,hypot(b.x-p.x,b.y-p.y))
+            let size = min(14,min(la,lb)*0.3)
+            let u = CGSize(width:(a.x-p.x)/la*size,height:(a.y-p.y)/la*size)
+            let v = CGSize(width:(b.x-p.x)/lb*size,height:(b.y-p.y)/lb*size)
+            path.move(to:.init(x:p.x+u.width,y:p.y+u.height))
+            path.addLine(to:.init(x:p.x+u.width+v.width,y:p.y+u.height+v.height))
+            path.addLine(to:.init(x:p.x+v.width,y:p.y+v.height))
+            context.stroke(path,with:.color(.orange),lineWidth:3)
+        }
     }
     private func resetScale() { scaleReference = nil; scaleValue = 1; scaleStart = nil; offsetEdges.removeAll() }
 }

@@ -439,7 +439,7 @@ struct CeilingConfiguratorView: View {
         .toolbar {
             if isEditing {
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Enregistrer") { onSave(configuration) }
+                    Button("Enregistrer") { onSave(configuration) }.disabled(!allStepsAreValid)
                 }
             }
         }
@@ -467,7 +467,13 @@ struct CeilingConfiguratorView: View {
             Form { stepContent }
 
             HStack {
-                if step > 0 { Button("Retour") { withAnimation { step -= 1 } }.buttonStyle(.bordered) }
+                if step > 0 {
+                    Button("Retour") { withAnimation { step -= 1 } }.buttonStyle(.bordered)
+                        .formStepMenu(titles: stepNames, selection: $step, canShowResult: allStepsAreValid) {
+                            prepareDefaults()
+                            showingSavedResult = false
+                        }
+                }
                 Spacer()
                 if step < stepNames.count - 1 {
                     Button("Continuer") { advance() }
@@ -486,6 +492,7 @@ struct CeilingConfiguratorView: View {
                             showingSavedResult = true
                         }
                         .buttonStyle(.borderedProminent)
+                        .disabled(!allStepsAreValid)
                     }
                 }
             }
@@ -968,6 +975,12 @@ struct CeilingConfiguratorView: View {
     }
 
     private var canContinue: Bool {
+        isStepValid(step) && (step != stepNames.count - 2 || allStepsAreValid)
+    }
+
+    private var allStepsAreValid: Bool { (0..<stepNames.count - 1).allSatisfy(isStepValid) }
+
+    private func isStepValid(_ step: Int) -> Bool {
         switch step {
         case 0: return enteredArea > 0
         case 1: return !support.isEmpty

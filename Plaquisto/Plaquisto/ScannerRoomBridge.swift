@@ -556,13 +556,14 @@ enum WallCeilingEstimate {
     static func manualProposals(in room: PlaquistoRoomModel) throws -> [Proposal] {
         var support = room
         let heights = room.walls.map { $0.height.effectiveValue }.filter { $0.isFinite && $0 > 0 }.sorted()
-        guard !heights.isEmpty else { throw Failure.invalidHeight }
-        let height = heights[heights.count/2]
+        // An existing footprint remains editable even when all supporting walls
+        // are absent. Missing walls only prevent discovering a NEW closed zone.
+        let height = heights.isEmpty ? 2.5 : heights[heights.count/2]
         for i in support.walls.indices {
             support.walls[i].height = .init(rawValue:height,provenance:.init(source:.estimated))
         }
         let existing = room.ceilings.compactMap { ceiling -> Proposal? in
-            guard ceiling.provenance.source == .estimated, let boundary = footprint(of:ceiling,in:room) else { return nil }
+            guard ceiling.canConfigureShape, let boundary = footprint(of:ceiling,in:room) else { return nil }
             let settings = ceiling.estimateSettings ?? .init(lowHeight:height,highHeight:height)
             let vertices=room.slopes.filter { ceiling.slopeIDs.contains($0.id) }.flatMap { $0.boundaries.flatMap { $0 } }
             let base = ceiling.floorElevation ?? ((vertices.map(\.y).min() ?? settings.lowHeight)-settings.lowHeight)
@@ -607,8 +608,12 @@ enum WallCeilingEstimate {
             var part = document
             part.room.ceilings = []; part.room.slopes = []
             var local = proposal; local.ceilingID = nil
-            guard target.provenance.source == .estimated else { throw Failure.existingCeiling }
+            guard target.canConfigureShape else { throw Failure.existingCeiling }
             var generated = try applying(to: part, proposal: local, settings: settings, manuallyEdited: manuallyEdited)
+            if target.provenance.source == .manual {
+                generated.room.ceilings[0].provenance = target.provenance
+                for index in generated.room.slopes.indices { generated.room.slopes[index].provenance = target.provenance }
+            }
             generated.room.ceilings[0].id = target.id
             generated.room.ceilings[0].planNumber = target.planNumber
             generated.room.ceilings[0].isHidden = target.isHidden
@@ -721,7 +726,7 @@ enum WallCeilingEstimate {
     static func split(_ document:PlaquistoRoomDocument, ceilingID:UUID,
                       from start:RoomPoint, to end:RoomPoint) throws -> PlaquistoRoomDocument {
         guard let target=document.room.ceilings.first(where:{$0.id==ceilingID}),
-              target.provenance.source == .estimated,
+              target.canConfigureShape,
               let outline=footprint(of:target,in:document.room),
               hypot(end.x-start.x,end.z-start.z) > 0.1 else { throw Failure.invalidSplit }
         let a=start.z-end.z, b=end.x-start.x, c = -a*start.x-b*start.z

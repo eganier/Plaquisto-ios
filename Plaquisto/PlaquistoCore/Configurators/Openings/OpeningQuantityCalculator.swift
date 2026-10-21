@@ -91,16 +91,13 @@ enum OpeningQuantityCalculator {
                     return invalidContext(opening, "L’entraxe du plafond en fourrures doit être de 40 ou 60 cm.")
                 }
                 let roundedHeight = ceil(opening.height / context.spacing - 1e-9) * context.spacing
-                add("Cornières", 2, .unit)
-                add("Cornières — longueur", 2 * (roundedHeight + 0.30), .linearMeter)
-                add("Fourrures transversales", 2, .unit)
-                add("Fourrures transversales — longueur", 2 * (opening.width + 0.30), .linearMeter)
+                add("Cornière", 2 * (roundedHeight + 0.30), .linearMeter)
+                add("Fourrures F45/F47", 2 * (opening.width + 0.30), .linearMeter)
             } else if context.system == .railStudCeiling {
                 guard let length = context.ceilingLengthInStudDirection, length > 0 else {
                     return invalidContext(opening, "La longueur du plafond dans le sens des montants doit être renseignée.")
                 }
                 add(context.studName, 2 * length, .linearMeter)
-                add(context.railName, 2, .unit)
                 add(context.railName, 2 * (opening.width + 0.30), .linearMeter)
             }
 

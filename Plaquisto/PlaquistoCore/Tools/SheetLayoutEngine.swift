@@ -15,9 +15,9 @@ enum LayoutSupportKind: String, Codable, CaseIterable { case wall = "Mur", ceili
 enum LayoutOrientation: String, Codable, CaseIterable { case vertical = "Vertical", horizontal = "Horizontal" }
 enum LayoutOpeningKind: String, Codable, CaseIterable {
     case door = "Porte", window = "Fenêtre", bay = "Porte-fenêtre / baie", passage = "Ouverture libre"
-    case stairwell = "Trémie", roofWindow = "Fenêtre de toit", other = "Autre ouverture"
+    case stairwell = "Trémie", roofWindow = "Fenêtre de toit", hatch = "Trappe", other = "Autre ouverture"
     static func available(for kind: LayoutSupportKind) -> [Self] {
-        kind == .wall ? [.door, .window, .bay, .passage] : [.stairwell, .roofWindow, .other]
+        kind == .wall ? [.door, .window, .bay, .passage, .hatch] : [.stairwell, .roofWindow, .hatch, .other]
     }
 }
 struct LayoutOpening: Codable, Equatable, Identifiable {
@@ -332,20 +332,21 @@ enum LayoutOpeningFraming {
         ((a.start-b.start).length < 0.5 && (a.end-b.end).length < 0.5) ||
         ((a.start-b.end).length < 0.5 && (a.end-b.start).length < 0.5)
     }
-    /// The fixed window jamb replaces a regular furring immediately outside it
-    /// (up to 100 mm axis-to-axis). Only subtract the height actually covered by
+    /// The fixed jamb replaces a nearby regular member outside it. A half-grid
+    /// spacing avoids a redundant pair, without deleting the next full bay.
+    /// Only subtract the height actually covered by
     /// that jamb: sloping/stepped walls can leave a useful segment above it.
     /// Called on the regular grid only, never on the opening/perimeter profiles.
-    static func subtractWindowNeighbors(_ line: LayoutJoint, openings: [LayoutOpening],
-                                        profiles: [LayoutOpeningProfile]) -> [LayoutJoint] {
+    static func subtractOpeningNeighbors(_ line: LayoutJoint, openings: [LayoutOpening],
+                                         profiles: [LayoutOpeningProfile], spacing: Double) -> [LayoutJoint] {
         guard abs(line.start.x-line.end.x)<0.5 else { return [line] }
         let x=line.start.x
         var replacements: [LayoutJoint] = []
-        for opening in openings where opening.kind == .window || opening.kind == .roofWindow {
+        for opening in openings {
             let left=opening.bounds.min.x-50, right=opening.bounds.max.x+50
             for side in [left,right] {
                 let outsideDistance=side == left ? side-x : x-side
-                guard outsideDistance >= -0.001, outsideDistance <= 100.001 else { continue }
+                guard outsideDistance >= -0.001, outsideDistance <= max(100,spacing/2)+0.001 else { continue }
                 replacements += profiles.filter { $0.role == .side && abs($0.line.start.x-side)<0.5 }
                     .map { .init(start:.init(x:x,y:$0.line.start.y),end:.init(x:x,y:$0.line.end.y)) }
             }
@@ -596,14 +597,14 @@ enum LayoutFurringEngine {
                 segments.contains { (contact.point-$0.start).length < 0.01 || (contact.point-$0.end).length < 0.01 }
             })
         }
-        if surface.kind == .wall, settings.openingSystem == .furring {
+        if surface.kind == .wall, settings.openingSystem != nil {
             result.lines = result.lines.flatMap {
-                LayoutOpeningFraming.subtractWindowNeighbors($0,openings:surface.openings,profiles:result.openingProfiles)
+                LayoutOpeningFraming.subtractOpeningNeighbors($0,openings:surface.openings,profiles:result.openingProfiles,spacing:settings.spacing)
             }
         }
         result.lines = result.lines.flatMap { LayoutOpeningFraming.subtractFixed($0, fixed: result.fixedLines) }
         result.lines += result.fixedLines
-        if surface.kind == .wall, settings.openingSystem == .furring {
+        if surface.kind == .wall, settings.openingSystem != nil {
             result.contacts = result.contacts.filter { contact in
                 result.lines.contains { LayoutGeometry.distance(contact.point,to:$0.start,$0.end)<0.01 }
             }

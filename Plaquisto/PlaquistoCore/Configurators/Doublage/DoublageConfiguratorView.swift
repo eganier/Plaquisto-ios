@@ -127,6 +127,12 @@ struct DoublageConfiguratorView: View {
     private var isExceeded: Bool { maxHeight > 0 && height > maxHeight }
     private var frameIsAccepted: Bool { maxHeight >= height || (intermediateSupports && maxHeight > 0) }
     private var canContinue: Bool {
+        isStepValid(step) && (step != 5 || allStepsAreValid)
+    }
+
+    private var allStepsAreValid: Bool { (1...5).allSatisfy(isStepValid) }
+
+    private func isStepValid(_ step: Int) -> Bool {
         switch step {
         case 1: return finishedDepthMM.isFinite && (0...1000).contains(finishedDepthMM) && height > 0 && (!specifiesWallCount || wallCount > 0) && (geometryMode == .length ? enteredLength > 0 : enteredSurface > 0)
         case 2: return allocationsAreComplete && !performanceGroupIDs.isEmpty && tiledAreaSurfaceIsValid
@@ -153,7 +159,7 @@ struct DoublageConfiguratorView: View {
         .toolbar {
             if isEditing, let onSave {
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Enregistrer") { onSave(configurationSnapshot()) }
+                    Button("Enregistrer") { onSave(configurationSnapshot()) }.disabled(!allStepsAreValid)
                 }
             }
         }
@@ -209,11 +215,14 @@ struct DoublageConfiguratorView: View {
 
     private var footer: some View {
         HStack {
-            if step > 1 { Button("Retour") { step -= 1 }.buttonStyle(.bordered).tint(.green) }
+            if step > 1 {
+                Button("Retour") { step -= 1 }.buttonStyle(.bordered).tint(.green)
+                    .formStepMenu(titles: stepNames, selection: $step, firstStep: 1, canShowResult: allStepsAreValid)
+            }
             Spacer()
             if step < 6 { Button("Continuer") { advance() }.buttonStyle(.borderedProminent).tint(.green).disabled(!canContinue) }
             else if let onSave {
-                Button("Enregistrer") { onSave(configurationSnapshot()) }.buttonStyle(.borderedProminent).tint(.green)
+                Button("Enregistrer") { onSave(configurationSnapshot()) }.disabled(!allStepsAreValid).buttonStyle(.borderedProminent).tint(.green)
             } else {
                 Button("Recommencer") { reset() }.buttonStyle(.borderedProminent).tint(.green)
             }

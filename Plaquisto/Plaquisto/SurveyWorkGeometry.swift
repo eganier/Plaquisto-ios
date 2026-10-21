@@ -65,16 +65,36 @@ enum SurveyWorkPreview {
                 let offset = normal * max(0.003, depth)
                 let originalTriangles = SurveyWorkGeometry.ceilingTriangles(surface)
                 guard !originalTriangles.isEmpty else { continue }
+                let wall = room.walls.first { $0.id == selection.source.surfaceID }
+                let back = min(0.4, max(0.04, wall?.thickness?.effectiveValue ?? 0.08)) / 2
                 let triangles: [RoomPoint]
                 if !ceiling {
-                    let wall = room.walls.first { $0.id == selection.source.surfaceID }
-                    let back = min(0.4, max(0.04, wall?.thickness?.effectiveValue ?? 0.08)) / 2
                     let front = max(0.003, depth)
                     triangles = SurveySceneRenderer.wallSolid(originalTriangles.map { $0 + normal * ((front - back) / 2) }, normal: normal, thickness: front + back)
                 } else { triangles = originalTriangles.map { $0 + offset } }
                 var joints: [RoomPoint] = []
-                if showJoints, let plan = component.plans.first(where: { !component.isOppositeSide($0.sideRoomID) }),
-                   let document = component.document(for: plan), let rawLayer = document.layers.last {
+                var faces: [(LayoutDocument, RoomPoint)] = []
+                if showJoints {
+                    let front = component.plans.first { !component.isOppositeSide($0.sideRoomID) }
+                    if let front, let document = component.document(for: front) {
+                        faces.append((document, offset + normal * 0.002))
+                    }
+                    if !ceiling, work.isPartition {
+                        if let rear = component.plans.first(where: { component.isOppositeSide($0.sideRoomID) }),
+                           let document = component.document(for: rear) {
+                            faces.append((document, normal * (-back - 0.002)))
+                        } else if let front, var document = component.document(for: front) {
+                            // Legacy partitions may only have a saved front plan.
+                            // Mirror its pattern for display, without creating a plan
+                            // or changing quantities. A saved rear plan always wins.
+                            document.surface = document.surface.mirroredComponentSide()
+                            faces.append((document, normal * (-back - 0.002)))
+                        }
+                    }
+                }
+                for (document, faceOffset) in faces {
+                    guard let rawLayer = document.layers.last,
+                          let faceFrame = document.surface.localFrame else { continue }
                     let layer = rawLayer.forSurface(document.surface)
                     let grid = LayoutGridFrame.make(surface: document.surface, layer: layer)
                     var local = document.surface
@@ -85,11 +105,11 @@ enum SurveyWorkPreview {
                         let lines = LayoutBoardGrid.joints(sheets.flatMap(\.pieces))
                         func world(_ p: LayoutPoint) -> RoomPoint {
                             let p = grid.world(p)
-                            return RoomPoint(x: frame.origin.x + (frame.axisX.x*p.x + frame.axisY.x*p.y)/1000,
-                                y: frame.origin.y + (frame.axisX.y*p.x + frame.axisY.y*p.y)/1000,
-                                z: frame.origin.z + (frame.axisX.z*p.x + frame.axisY.z*p.y)/1000) + offset + normal * 0.002
+                            return RoomPoint(x: faceFrame.origin.x + (faceFrame.axisX.x*p.x + faceFrame.axisY.x*p.y)/1000,
+                                y: faceFrame.origin.y + (faceFrame.axisX.y*p.x + faceFrame.axisY.y*p.y)/1000,
+                                z: faceFrame.origin.z + (faceFrame.axisX.z*p.x + faceFrame.axisY.z*p.y)/1000) + faceOffset
                         }
-                        joints = lines.flatMap { [world($0.start), world($0.end)] }
+                        joints += lines.flatMap { [world($0.start), world($0.end)] }
                     }
                 }
                 result.append(.init(surfaceID: selection.id, kind: selection.source.kind, triangles: triangles.map(transform), joints: joints.map(transform)))
@@ -303,6 +323,61 @@ enum SurveyWorkError: Error, LocalizedError {
     }
 }
 
+/// Applies only the opening delta from a saved wall layout. The raw capture,
+/// unrelated openings and edited wall contours are never overwritten.
+enum SurveyLayoutOpeningSync {
+    static func apply(before:Surface2D,after:Surface2D,wallID:UUID,
+                      document:PlaquistoRoomDocument) throws -> PlaquistoRoomDocument {
+        guard let frame=after.localFrame,
+              let wall=document.room.walls.first(where:{$0.id == wallID}) else { throw RoomModelError.invalidGeometry }
+        let old=Dictionary(uniqueKeysWithValues:before.openings.map { ($0.id,$0) })
+        let newIDs=Set(after.openings.map(\.id))
+        let changed=after.openings.filter { old[$0.id] != $0 }
+        let removed=Set(old.keys).subtracting(newIDs).union(changed.map(\.id))
+        var result=document
+        result.room.openings.removeAll { $0.wallID == wallID && removed.contains($0.id) }
+        for i in result.room.walls.indices { result.room.walls[i].openingIDs.removeAll { removed.contains($0) } }
+        for opening in changed {
+            let local:[LayoutPoint]=opening.contour.map { point in
+                let origin=RoomPoint(x:frame.origin.x,y:frame.origin.y,z:frame.origin.z)
+                let x=RoomPoint(x:frame.axisX.x,y:frame.axisX.y,z:frame.axisX.z) * (point.x/1000)
+                let y=RoomPoint(x:frame.axisY.x,y:frame.axisY.y,z:frame.axisY.z) * (point.y/1000)
+                let delta=origin+x+y-wall.start
+                return .init(x:delta.x*wall.direction.x+delta.z*wall.direction.z,y:delta.y)
+            }
+            let bounds=LayoutBounds(points:local)
+            // The portable wall model represents rectangular openings. Refuse an
+            // oblique/free-form replacement rather than silently enlarge the hole.
+            let rectangular=local.allSatisfy { p in
+                let onX=min(abs(p.x-bounds.min.x),abs(p.x-bounds.max.x)) < 0.00001
+                let onY=min(abs(p.y-bounds.min.y),abs(p.y-bounds.max.y)) < 0.00001
+                return onX && onY
+            }
+            guard local.count == 4,rectangular,bounds.min.x >= -0.000001,bounds.min.y >= -0.000001 else { throw RoomModelError.invalidGeometry }
+            let kind:RoomOpeningKind = switch opening.kind {
+            case .door: .door
+            case .window: .window
+            case .bay: .glazedBay
+            case .passage: .passage
+            default: .other
+            }
+            let existing=document.room.openings.first { $0.id == opening.id }
+            result = try SurveyPlanEditing.addingDoor(result,wallID:wallID,width:bounds.width,height:bounds.height,
+                position:max(0,bounds.min.x),handing:opening.doorHanding,openingSide:opening.doorOpeningSide,
+                kind:kind,sill:max(0,bounds.min.y),pocket:existing?.isPocketDoor == true)
+            let index=result.room.openings.count-1
+            let generated=result.room.openings[index].id
+            result.room.openings[index].id=opening.id
+            result.room.openings[index].layoutKind=opening.kind
+            for i in result.room.walls.indices {
+                result.room.walls[i].openingIDs=result.room.walls[i].openingIDs.map { $0 == generated ? opening.id : $0 }
+            }
+        }
+        try result.validate()
+        return result
+    }
+}
+
 enum SurveyWorkGeometry {
     /// Projection is repeatable: rebuilding a selection must not manufacture new
     /// identities and make a prepared calepinage appear to have changed geometry.
@@ -425,7 +500,7 @@ enum SurveyWorkGeometry {
 
     static func availableWorkTypes(for surfaces:[SurveyWorkSurface]) -> [WorkType] {
         guard !surfaces.isEmpty else { return [] }
-        if surfaces.allSatisfy({$0.source.kind == .ceiling}) { return [.ceilingOnFurring,.ceilingOnRailsAndStuds,.modularCeiling,.paintingBeta] }
+        if surfaces.allSatisfy({$0.source.kind == .ceiling}) { return [.ceilingOnFurring,.ceilingOnRailsAndStuds,.modularCeiling,.frenchCeiling,.paintingBeta] }
         if surfaces.allSatisfy(isDesignedPartition) { return [.distributionPartition,.paintingBeta] }
         if surfaces.contains(where:isDesignedPartition) { return [.paintingBeta] }
         return [.peripheralLiningStuds,.peripheralLiningFurrings,.paintingBeta]
@@ -461,7 +536,7 @@ enum SurveyWorkGeometry {
                 let analysis = PlaquistoWallGeometry.analyze(wall: wall, room: room)
                 guard !analysis.strips.isEmpty else { continue }
                 let name = "Mur \(index + 1)"
-                let contour = wall.effectiveOutline.map { LayoutPoint(x:$0.x*1000,y:$0.y*1000) }
+                let contour = PlaquistoWallGeometry.outline(wall:wall,room:room).map { LayoutPoint(x:$0.x*1000,y:$0.y*1000) }
                 guard (try? LayoutGeometry.validate(contour)) != nil else { continue }
                 let openings = room.openings.filter { $0.wallID == wall.id }.map { opening in
                     let x = opening.positionOnWall.effectiveValue * 1000, y = opening.sillHeight.effectiveValue * 1000
@@ -473,7 +548,7 @@ enum SurveyWorkGeometry {
                     case .passage: .passage
                     case .other: .other
                     }
-                    return LayoutOpening(id: opening.id, kind: kind, contour: [
+                    return LayoutOpening(id: opening.id, kind: opening.layoutKind ?? kind, contour: [
                         .init(x: x, y: y), .init(x: x + width, y: y),
                         .init(x: x + width, y: y + height), .init(x: x, y: y + height)],
                         doorHanding:opening.doorHanding,doorOpeningSide:opening.doorOpeningSide)

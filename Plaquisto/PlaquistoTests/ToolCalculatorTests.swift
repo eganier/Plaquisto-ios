@@ -3,6 +3,72 @@ import SwiftUI
 @testable import Plaquisto
 
 final class ToolCalculatorTests: XCTestCase {
+    func testFormMenuPreservesZeroBasedStepNumbersAndExcludesResult() {
+        let choices = FormStepNavigation.choices(titles: ["Dimensions", "Isolation", "Parements", "Résultat"])
+        XCTAssertEqual(choices.map(\.step), [0, 1, 2])
+        XCTAssertEqual(choices.map(\.title), ["Dimensions", "Isolation", "Parements"])
+    }
+
+    func testFormMenuPreservesOneBasedStepNumbers() {
+        let choices = FormStepNavigation.choices(titles: ["Dimensions", "Parements", "Bandes", "Résultat"], firstStep: 1)
+        XCTAssertEqual(choices.map(\.step), [1, 2, 3])
+        XCTAssertEqual(choices.last?.title, "Bandes")
+    }
+
+    func testFormMenuHidesSuspensionStepsForSelfSupportingCeiling() {
+        let titles = ["Dimensions", "Isolation", "Parements", "Ossature", "Support", "Plénum", "Suspension", "Bandes", "Résultat"]
+        let choices = FormStepNavigation.choices(titles: titles, visibleSteps: [0, 1, 2, 3, 7, 8])
+        XCTAssertEqual(choices.map(\.step), [0, 1, 2, 3, 7])
+        XCTAssertFalse(choices.contains { ["Support", "Plénum", "Suspension", "Résultat"].contains($0.title) })
+    }
+
+    func testFormMenuDoesNotInventEntriesForEmptyOrResultOnlyForms() {
+        XCTAssertTrue(FormStepNavigation.choices(titles: []).isEmpty)
+        XCTAssertTrue(FormStepNavigation.choices(titles: ["Résultat"]).isEmpty)
+        XCTAssertTrue(FormStepNavigation.choices(titles: ["Dimensions", "Résultat"], visibleSteps: []).isEmpty)
+    }
+
+    func testFormMenuReflectsConditionalPaintingSteps() {
+        let withoutPrimer = FormStepNavigation.choices(titles: ["Traitements", "Finition", "Quantitatif"])
+        let withPrimer = FormStepNavigation.choices(titles: ["Traitements", "Impression", "Finition", "Quantitatif"])
+        XCTAssertEqual(withoutPrimer.map(\.title), ["Traitements", "Finition"])
+        XCTAssertEqual(withPrimer.map(\.title), ["Traitements", "Impression", "Finition"])
+        XCTAssertEqual(withPrimer.last?.step, 2)
+    }
+
+    func testFormMenuOffersResultOnlyWhenConfigurationIsComplete() {
+        let titles = ["Dimensions", "Parements", "Résultat"]
+        XCTAssertEqual(FormStepNavigation.choices(titles: titles, includeResult: false).map(\.step), [0, 1])
+        XCTAssertEqual(FormStepNavigation.choices(titles: titles, includeResult: true).map(\.step), [0, 1, 2])
+        XCTAssertEqual(FormStepNavigation.choices(titles: titles, firstStep: 1, includeResult: true).last?.step, 3)
+    }
+
+    func testRoofWindowProfilesAreCountedOnlyInLinearMeters() {
+        let opening=OpeningInput(kind:.roofWindow,width:0.78,height:1.30)
+        let result=OpeningQuantityCalculator.calculate(opening,context:.init(system:.furringCeiling,hsp:0,spacing:0.4))
+        XCTAssertTrue(result.isComplete)
+        XCTAssertEqual(result.quantities.first { $0.name == "Cornière" }?.quantity ?? 0,3.8,accuracy:1e-8)
+        XCTAssertEqual(result.quantities.first { $0.name == "Fourrures F45/F47" }?.quantity ?? 0,2.16,accuracy:1e-8)
+        XCTAssertTrue(result.quantities.allSatisfy { $0.unit == .linearMeter })
+        let studs=OpeningQuantityCalculator.calculate(opening,context:.init(system:.railStudCeiling,hsp:0,spacing:0.6,ceilingLengthInStudDirection:4.2))
+        XCTAssertTrue(studs.quantities.allSatisfy { $0.unit == .linearMeter })
+    }
+    func testSupplyUnitAliasesConsolidateWithoutInventingBarLengths() {
+        let rows=SupplyListingConsolidator.rows([
+            .init(name:"Cornière",quantity:3,unit:" ml "),.init(name:"Cornières",quantity:5,unit:"m.l."),
+            .init(name:"Appuis 100",quantity:2,unit:"unité(s)"),.init(name:"Appuis 100",quantity:3,unit:"unités"),
+            .init(name:"Cornière inconnue",quantity:2,unit:"unité"),.init(name:"Cornière inconnue",quantity:6,unit:"ml")])
+        XCTAssertEqual(rows.first { $0.name == "Cornière" }?.measurements.count,1)
+        XCTAssertEqual(rows.first { $0.name == "Cornière" }?.measurements.first?.quantity,8)
+        XCTAssertEqual(rows.first { $0.name == "Appuis 100" }?.measurements.first?.quantity,5)
+        XCTAssertEqual(rows.first { $0.name == "Cornière inconnue" }?.measurements.count,2)
+    }
+    func testHatchAvailableForWallsAndCeilingsAndSurvivesEncoding() throws {
+        XCTAssertTrue(LayoutOpeningKind.available(for:.wall).contains(.hatch))
+        XCTAssertTrue(LayoutOpeningKind.available(for:.ceiling).contains(.hatch))
+        let hatch=LayoutOpening(kind:.hatch,contour:[.init(x:0,y:0),.init(x:600,y:0),.init(x:600,y:600),.init(x:0,y:600)])
+        XCTAssertEqual(try JSONDecoder().decode(LayoutOpening.self,from:JSONEncoder().encode(hatch)),hatch)
+    }
     @MainActor func testDecimalFieldPreservesPrecisionUntilUserActuallyEdits() async throws {
         var value=2.537842
         let host=UIHostingController(rootView:ZeroEmptyDecimalTextField(value:Binding(get:{ value },set:{ value=$0 })))

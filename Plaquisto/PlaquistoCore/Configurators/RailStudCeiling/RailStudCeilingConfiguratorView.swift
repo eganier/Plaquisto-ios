@@ -472,7 +472,7 @@ struct RailStudCeilingConfiguratorView: View {
         .toolbar {
             if isEditing, let onSave {
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Enregistrer") { onSave(configurationSnapshot()) }
+                    Button("Enregistrer") { onSave(configurationSnapshot()) }.disabled(!allStepsAreValid)
                 }
             }
         }
@@ -509,12 +509,19 @@ struct RailStudCeilingConfiguratorView: View {
 
     private var footer: some View {
         HStack {
-            if step > 0 { Button("Retour") { goBack() }.buttonStyle(.bordered) }
+            if step > 0 {
+                Button("Retour") { goBack() }.buttonStyle(.bordered)
+                    .formStepMenu(titles: steps, selection: $step, visibleSteps: visibleStepIndices, canShowResult: allStepsAreValid) {
+                        if step == 1 { ensureFacings() }
+                        if step == 2 { prepareFrameDefault() }
+                        showingResult = false
+                    }
+            }
             Spacer()
             if step < steps.count - 1 {
                 Button("Continuer") { advance() }.buttonStyle(.borderedProminent).disabled(!canContinue)
             } else if let onSave {
-                Button("Enregistrer") { onSave(configurationSnapshot()) }.buttonStyle(.borderedProminent)
+                Button("Enregistrer") { onSave(configurationSnapshot()) }.disabled(!allStepsAreValid).buttonStyle(.borderedProminent)
             } else if showingResult {
                 Button("Recommencer") { reset() }.buttonStyle(.borderedProminent)
             } else {
@@ -791,6 +798,12 @@ struct RailStudCeilingConfiguratorView: View {
     }
 
     private var canContinue: Bool {
+        isStepValid(step) && (step != steps.count - 2 || allStepsAreValid)
+    }
+
+    private var allStepsAreValid: Bool { visibleStepIndices.dropLast().allSatisfy(isStepValid) }
+
+    private func isStepValid(_ step: Int) -> Bool {
         switch step {
         case 0: return dimensionsSpecified ? length > 0 && width > 0 : area > 0
         case 1:

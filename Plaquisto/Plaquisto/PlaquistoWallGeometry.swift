@@ -23,13 +23,114 @@ enum PlaquistoWallGeometry {
         }
         return inside
     }
-    static func analyze(wall: PlaquistoWall, room: PlaquistoRoomModel) -> Result {
+    /// Reversible envelope for explicitly configured ceilings. Lower edges,
+    /// openings and the recorded wall remain untouched. Never extrapolate a pan
+    /// beyond its footprint or borrow a roof from another storey.
+    static func outline(wall: PlaquistoWall, room: PlaquistoRoomModel) -> [RoomPoint] {
+        let original = wall.effectiveOutline
+        let ids = Set(room.ceilings.filter {
+            $0.estimateSettings?.extendsWalls == true &&
+            $0.floorElevation.map { abs($0-wall.start.y) < 0.20 } == true
+        }.flatMap(\.slopeIDs))
+        let pans = room.slopes.filter { ids.contains($0.id) && $0.accepted }
+        guard !pans.isEmpty else { return original }
+        let direction = wall.direction
+        func along(_ p: RoomPoint) -> Double {
+            let d = p-wall.start
+            return d.x*direction.x+d.z*direction.z
+        }
+        func across(_ p: RoomPoint) -> Double {
+            let d = p-wall.start
+            return d.x*direction.z-d.z*direction.x
+        }
+        func line(_ pan: PlaquistoSlope) -> (gradient: Double, intercept: Double) {
+            (pan.plane.a*direction.x+pan.plane.b*direction.z,
+             pan.plane.height(x:wall.start.x,z:wall.start.z)-wall.start.y)
+        }
+        let lines = pans.map(line)
+        var cuts = original.map(\.x)
+        for pan in pans {
+            for ring in pan.boundaries {
+                for i in ring.indices {
+                    let a = ring[i], b = ring[(i+1)%ring.count]
+                    let da = across(a), db = across(b)
+                    if abs(da) < 1e-7 { cuts.append(along(a)) }
+                    if abs(db-da) > 1e-9 {
+                        let t = -da/(db-da)
+                        if t >= 0 && t <= 1 { cuts.append(along(a+(b-a)*t)) }
+                    }
+                }
+            }
+        }
+        for i in lines.indices {
+            for j in lines.indices where j > i {
+                let d = lines[i].gradient-lines[j].gradient
+                if abs(d) > 1e-9 { cuts.append((lines[j].intercept-lines[i].intercept)/d) }
+            }
+        }
+        func rawTop(_ x: Double) -> Double {
+            original.indices.compactMap { i -> Double? in
+                let a = original[i], b = original[(i+1)%original.count]
+                guard min(a.x,b.x) < x, x < max(a.x,b.x) else { return nil }
+                return a.y+(b.y-a.y)*(x-a.x)/(b.x-a.x)
+            }.max() ?? 0
+        }
+        var output: [RoomPoint] = []
+        func append(_ p: RoomPoint) {
+            if output.last.map({ ($0-p).length > 1e-8 }) ?? true { output.append(p) }
+        }
+        for i in original.indices {
+            let a = original[i], b = original[(i+1)%original.count]
+            guard abs(b.x-a.x) > 1e-9 else { append(a); append(b); continue }
+            let gradient = (b.y-a.y)/(b.x-a.x), intercept = a.y-gradient*a.x
+            var local = cuts + [a.x,b.x]
+            for line in lines where abs(line.gradient-gradient) > 1e-9 {
+                local.append((intercept-line.intercept)/(line.gradient-gradient))
+            }
+            local = Array(Set(local.filter { $0 >= min(a.x,b.x) && $0 <= max(a.x,b.x) })).sorted()
+            if b.x < a.x { local.reverse() }
+            for j in 1..<local.count {
+                let x0 = local[j-1], x1 = local[j], mid = (x0+x1)/2
+                guard abs(x1-x0) > 1e-8 else { continue }
+                let raw = gradient*mid+intercept
+                let point = wall.start+direction*mid
+                let eligible = pans.indices.filter { k in
+                    // Even/odd loops also preserve holes in the ceiling.
+                    pans[k].boundaries.filter { contains(point,polygon:$0,tolerance:1e-7) }.count % 2 == 1
+                }
+                let roof = eligible.min { lines[$0].gradient*mid+lines[$0].intercept < lines[$1].gradient*mid+lines[$1].intercept }
+                let raised = roof.flatMap { k -> Int? in
+                    abs(raw-rawTop(mid)) < 1e-7 && lines[k].gradient*mid+lines[k].intercept > raw+1e-8 ? k : nil
+                }
+                for x in [x0,x1] {
+                    let y = raised.map { lines[$0].gradient*x+lines[$0].intercept } ?? (gradient*x+intercept)
+                    append(.init(x:x,y:y,z:0))
+                }
+            }
+        }
+        if let first = output.first, let last = output.last, (first-last).length < 1e-8 { output.removeLast() }
+        // Remove collinear intermediate points, including old wall-top corners
+        // now lying on the extended vertical edge.
+        var changed = true
+        while changed && output.count > 3 {
+            changed = false
+            for i in output.indices {
+                let a = output[(i+output.count-1)%output.count], b = output[i], c = output[(i+1)%output.count]
+                let u = b-a, v = c-b
+                if abs(u.x*v.y-u.y*v.x) < 1e-9 {
+                    output.remove(at:i); changed = true; break
+                }
+            }
+        }
+        return output
+    }
+
+    static func analyze(wall: PlaquistoWall, room: PlaquistoRoomModel, includeCeilingExtensions: Bool = true) -> Result {
         let length = wall.length.effectiveValue
         guard length > 0 else { return .init(strips: [], gross: 0, net: 0, openingArea: 0) }
-        // Wall geometry is authoritative. Creating/editing any ceiling must
-        // never reshape it. Vertical slicing preserves concave scanned profiles
-        // and non-horizontal lower edges, not just their bounding rectangle.
-        let polygon = wall.effectiveOutline
+        // Vertical slicing preserves concave profiles and sloping lower edges.
+        let polygon = includeCeilingExtensions ? outline(wall:wall,room:room) : wall.effectiveOutline
+        let extended = polygon != wall.effectiveOutline
         let breaks = Array(Set(polygon.map(\.x))).sorted()
         var strips: [Strip] = []
         guard breaks.count >= 2 else { return .init(strips:[],gross:0,net:0,openingArea:0) }
@@ -48,7 +149,8 @@ enum PlaquistoWallGeometry {
             for j in stride(from:0,to:ordered.count-1,by:2) {
                 let lower=ordered[j], upper=ordered[j+1]
                 strips.append(.init(x0:lo,x1:hi,h0:y(upper,lo),h1:y(upper,hi),
-                    heightSource:wall.height.effectiveSource,manuallyValidated:wall.height.manuallyValidated,
+                    heightSource:extended ? .estimated : wall.height.effectiveSource,
+                    manuallyValidated:extended ? false : wall.height.manuallyValidated,
                     b0:y(lower,lo),b1:y(lower,hi)))
             }
         }

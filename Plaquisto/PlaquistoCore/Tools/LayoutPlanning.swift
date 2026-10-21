@@ -1199,20 +1199,49 @@ enum LayoutPlanning {
         var copy = settings; copy.positions = best; return copy
     }
 
+    /// Prefer an actual joint over/under the opening, away from its jambs.
+    /// Work in the calculated grid frame, so mirrored partition faces use the
+    /// same rule. A line hidden inside the opening is not a board joint.
+    static func openingJointQuality(surface: Surface2D, result: SheetLayoutResult) -> (misses: Double, centering: Double) {
+        guard surface.kind == .wall else { return (0, 0) }
+        let local = localSurface(surface, frame: result.frame)
+        let vertical = result.joints.filter { abs($0.start.x - $0.end.x) < 0.01 }
+        var misses = 0.0, centering = 0.0
+        for opening in local.openings {
+            let b = opening.bounds
+            let margin = min(150.0, b.width / 2)
+            let adjacent = vertical.filter { joint in
+                let low = min(joint.start.y, joint.end.y), high = max(joint.start.y, joint.end.y)
+                return (low <= b.max.y + 0.1 && high > b.max.y + 0.1)
+                    || (low < b.min.y - 0.1 && high >= b.min.y - 0.1)
+            }
+            let safe = adjacent.filter { $0.start.x >= b.min.x + margin - 0.1 && $0.start.x <= b.max.x - margin + 0.1 }
+            if let distance = safe.map({ abs($0.start.x - b.center.x) }).min() {
+                centering += distance
+            } else { misses += 1 }
+            // A second joint at a corner must not be excused by a centered one.
+            misses += Double(adjacent.filter {
+                min(abs($0.start.x - b.min.x), abs($0.start.x - b.max.x)) < margin - 0.1
+            }.count)
+        }
+        return (misses, centering)
+    }
+
     // Bounded deterministic offset search, not an assertion of global optimality.
     // Once aligned, moving either grid keeps the shared joint phase aligned.
     static func optimize(surface:Surface2D, layer:LayoutLayer, furring:Bool, alignFraming:Bool = false, lockFraming:Bool = false) throws -> LayoutLayer {
         let layer = alignFraming ? alignFurring(to: layer.forSurface(surface)) : layer.forSurface(surface)
         var best = layer
         let initial = try SheetLayoutEngine.calculate(surface:surface,layer:layer)
-        func score(_ result:SheetLayoutResult) -> (Double,Double,Double) {
-            if furring { return (0,result.furring.lines.reduce(0){$0+($1.end-$1.start).length},Double(result.furring.lines.count)) }
-            return (Double(LayoutCutQuality.smallPieces(result).count),Double(result.purchasedSheetCount),result.wasteArea)
+        func score(_ result:SheetLayoutResult) -> [Double] {
+            if furring { return [0,result.furring.lines.reduce(0){$0+($1.end-$1.start).length},Double(result.furring.lines.count)] }
+            let opening = openingJointQuality(surface: surface, result: result)
+            return [Double(LayoutCutQuality.smallPieces(result).count), opening.misses, opening.centering,
+                    Double(result.purchasedSheetCount),result.wasteArea]
         }
-        func better(_ a:(Double,Double,Double), than b:(Double,Double,Double)) -> Bool {
-            if abs(a.0-b.0)>0.01 { return a.0<b.0 }
-            if abs(a.1-b.1)>0.01 { return a.1<b.1 }
-            return a.2+0.01<b.2
+        func better(_ a:[Double], than b:[Double]) -> Bool {
+            for (x,y) in zip(a,b) where abs(x-y)>0.01 { return x<y }
+            return false
         }
         var bestScore = score(initial)
         if furring, let settings=layer.furring {
@@ -1235,7 +1264,10 @@ enum LayoutPlanning {
         let b = localSurface(surface,frame:.make(surface:surface,layer:layer)).bounds
         // Include exact wall-aligned starts in addition to uniform samples.
         let xs = [layer.offset.x,b.min.x,b.max.x,(b.min.x+b.max.x-layer.cellWidth)/2,b.min.x+300,b.max.x-300] + (0..<9).map{Double($0)*layer.cellWidth/9}
-        let ys = [layer.offset.y,b.min.y,b.max.y,(b.min.y+b.max.y-layer.cellHeight)/2,b.min.y+300,b.max.y-300] + (0..<9).map{Double($0)*layer.cellHeight/9}
+        // Single-height wall boards are always seated at the floor by forSurface;
+        // do not calculate the same candidate fifteen times.
+        let ys = surface.kind == .wall && b.height <= layer.cellHeight + 0.001 ? [b.min.y] :
+            [layer.offset.y,b.min.y,b.max.y,(b.min.y+b.max.y-layer.cellHeight)/2,b.min.y+300,b.max.y-300] + (0..<9).map{Double($0)*layer.cellHeight/9}
         for x in xs { for y in ys {
             try Task.checkCancellation()
             var candidate = layer; candidate.offset = .init(x:x,y:y)
@@ -1245,6 +1277,31 @@ enum LayoutPlanning {
             let value = score(result)
             if better(value,than:bestScore) { best = candidate; bestScore = value }
         } }
+        // Exact opening-centered phases are easily missed by uniform sampling.
+        // Search them at the best vertical phase, keeping runtime bounded even
+        // with many openings; every candidate still goes through framing locks.
+        if surface.kind == .wall {
+            let openings = localSurface(surface,frame:.make(surface:surface,layer:layer)).openings
+            var phases: [Double] = []
+            for opening in openings {
+                let b = opening.bounds, margin = min(150.0,b.width/2)
+                for x in [b.center.x,b.min.x+margin,b.max.x-margin] {
+                    let period = layer.cellWidth
+                    let phase = (x.truncatingRemainder(dividingBy:period)+period).truncatingRemainder(dividingBy:period)
+                    if !phases.contains(where:{abs($0-phase)<0.01}) { phases.append(phase) }
+                }
+            }
+            let base = best
+            for x in phases.prefix(96) {
+                try Task.checkCancellation()
+                var candidate=base; candidate.offset.x=x
+                if lockFraming { candidate=alignBoards(to:candidate,support:surface.kind) }
+                if layer.furring != nil && (alignFraming || layer.furring?.usesOwnReference != true) { candidate=alignFurring(to:candidate) }
+                guard let result=try? SheetLayoutEngine.calculate(surface:surface,layer:candidate) else { continue }
+                let value=score(result)
+                if better(value,than:bestScore) { best=candidate; bestScore=value }
+            }
+        }
         // Refine the stagger after the bounded offset search. Test only shifts
         // compatible with the frame, without multiplying the entire search.
         if !furring, layer.staggered == true {

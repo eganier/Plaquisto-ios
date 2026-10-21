@@ -293,6 +293,7 @@ struct ModularCeilingConfiguratorView: View {
                 if step > 0 {
                     Button("Précédent") { step -= 1 }
                         .buttonStyle(.bordered)
+                        .formStepMenu(titles: ["Dimensions", "Dalles et trame", "Plénum et suspension", "Résultat"], selection: $step, canShowResult: canSave)
                 }
                 Spacer()
                 Button(step == 3 ? "Enregistrer l’ouvrage" : "Suivant") {

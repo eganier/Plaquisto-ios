@@ -334,7 +334,7 @@ final class PaintingTests: XCTestCase {
             context: .init(system: .furringCeiling, spacing: 0.60))
         XCTAssertTrue(roof.isComplete)
         XCTAssertEqual(roof.quantities.first(where: { $0.name == "Fourrures F45/F47" && $0.unit == .linearMeter })?.quantity, 3)
-        XCTAssertEqual(roof.quantities.first(where: { $0.name == "Fourrures F45/F47" && $0.unit == .unit })?.quantity, 2)
+        XCTAssertNil(roof.quantities.first(where: { $0.name == "Fourrures F45/F47" && $0.unit == .unit }), "The two pieces are already counted by their total length")
     }
     func testRailPluralAndFacingScrewAliasesPreserveDifferentProducts() {
         XCTAssertEqual(SupplyListingConsolidator.canonicalName("Rail R48"), "Rails R48")

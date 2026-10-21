@@ -2,6 +2,16 @@ import SwiftUI
 
 /// Presentation only; never select a different calculator or storage engine.
 enum InterfacePresentation: Equatable { case standard, contrastLab }
+
+/// Visible beta entry only. No substitute configurator or quantity calculation
+/// until the construction rules for this ceiling have been specified.
+struct FrenchCeilingBetaView: View {
+    var body: some View {
+        ContentUnavailableView("Plafond à la française · Bêta", systemImage:"rectangle.split.3x1",
+            description:Text("Configuration à venir. Ce type de plafond ne génère pas encore de quantitatif."))
+            .accessibilityIdentifier("work.frenchCeiling.comingSoon")
+    }
+}
 private struct InterfacePresentationKey: EnvironmentKey {
     static let defaultValue: InterfacePresentation = .standard
 }
@@ -95,5 +105,44 @@ private struct ConfigurationEntryModifier: ViewModifier {
 extension View {
     func configurationEntry(in range: ClosedRange<Int>, perform: @escaping (Int) -> Void) -> some View {
         modifier(ConfigurationEntryModifier(range:range,action:perform))
+    }
+
+    /// A normal tap still goes back; the system context menu handles the long press.
+    func formStepMenu(titles: [String], selection: Binding<Int>, firstStep: Int = 0,
+                      visibleSteps: [Int]? = nil, canShowResult: Bool = false,
+                      prepare: @escaping () -> Void = {}) -> some View {
+        contextMenu {
+            Section("Étapes du formulaire") {
+                ForEach(FormStepNavigation.choices(titles: titles, firstStep: firstStep, visibleSteps: visibleSteps, includeResult: canShowResult)) { entry in
+                    Button {
+                        guard entry.step != selection.wrappedValue else { return }
+                        prepare()
+                        withAnimation { selection.wrappedValue = entry.step }
+                    } label: {
+                        if selection.wrappedValue == entry.step {
+                            Label(entry.title, systemImage: "checkmark")
+                        } else {
+                            Text(entry.title)
+                        }
+                    }
+                    .accessibilityIdentifier("form.step.\(entry.step)")
+                }
+            }
+        }
+        .accessibilityHint("Maintenez pour choisir une étape du formulaire")
+        .accessibilityIdentifier("form.back")
+    }
+}
+
+enum FormStepNavigation {
+    /// Only expose the result when the whole configuration is valid.
+    static func choices(titles: [String], firstStep: Int = 0, visibleSteps: [Int]? = nil,
+                        includeResult: Bool = false) -> [WorkConfigurationShortcut] {
+        let availableTitles = includeResult ? titles[...] : titles.dropLast()
+        return availableTitles.enumerated().compactMap { offset, title in
+            let step = firstStep + offset
+            guard visibleSteps?.contains(step) ?? true else { return nil }
+            return WorkConfigurationShortcut(title: title, step: step)
+        }
     }
 }

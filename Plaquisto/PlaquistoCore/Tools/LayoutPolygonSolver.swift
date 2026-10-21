@@ -1,5 +1,95 @@
 import Foundation
 
+/// Transient gesture constraints, never persisted as angle or vertex locks.
+enum LayoutContourSnap: Equatable {
+    case straight
+    case rightAngle(Int)
+
+    func isSatisfied(in points: [LayoutPoint], moving index: Int) -> Bool {
+        let vertex: Int
+        switch self { case .straight: vertex = index; case .rightAngle(let i): vertex = i }
+        guard points.indices.contains(vertex) else { return false }
+        let a = points[(vertex + points.count - 1) % points.count] - points[vertex]
+        let b = points[(vertex + 1) % points.count] - points[vertex]
+        guard a.length >= 10, b.length >= 10 else { return false }
+        switch self {
+        case .straight:
+            return LayoutGeometry.dot(a,b) < 0 && abs(LayoutGeometry.cross(a,b)) / max(a.length,b.length) < 0.1
+        case .rightAngle:
+            return abs(LayoutGeometry.dot(a,b)) / (a.length*b.length) < 0.0001
+        }
+    }
+}
+
+enum LayoutContourSnapping {
+    struct Preview {
+        var surface: Surface2D
+        var snap: LayoutContourSnap?
+    }
+
+    /// Tolerances are screen points, so snapping feels the same at every zoom.
+    /// A wider release radius prevents flicker without trapping the pointer.
+    static func preview(original: Surface2D, vertex: Int, candidate: LayoutPoint,
+                        screenScale: Double, latched: LayoutContourSnap? = nil) throws -> Preview {
+        let points = original.contour, n = points.count
+        guard n >= 3, points.indices.contains(vertex), candidate.finite,
+              screenScale.isFinite, screenScale > 0 else { throw LayoutGeometryError.invalidContour }
+        let previous = (vertex+n-1)%n, next = (vertex+1)%n
+        let a = points[previous], b = points[next], ab = b-a
+        var targets: [(LayoutPoint, LayoutContourSnap)] = []
+        if ab.length > 20 {
+            let t = LayoutGeometry.dot(candidate-a,ab) / LayoutGeometry.dot(ab,ab)
+            if t > 0, t < 1 { targets.append((a+ab*t,.straight)) }
+            // Thales' circle: the angle at the moving vertex is exactly 90°.
+            let center = (a+b)*0.5, radius = ab.length*0.5, radial = candidate-center
+            if radial.length > 0.001 {
+                let p = center+radial*(radius/radial.length)
+                var proposed = points; proposed[vertex] = p
+                // Do not turn a concave (270°) corner into an advertised right angle.
+                if abs(LayoutPolygonSolver.interiorAngle(at:vertex,in:proposed)-90) < 0.01 {
+                    targets.append((p,.rightAngle(vertex)))
+                }
+            }
+        }
+        // Also catch the right angle at either fixed neighbour (rotated walls too).
+        for (corner, other) in [(previous,(previous+n-1)%n),(next,(next+1)%n)] {
+            let origin = points[corner], edge = points[other]-origin
+            if edge.length > 0.001 {
+                let direction = LayoutPoint(x:-edge.y,y:edge.x)
+                let p = origin+direction*(LayoutGeometry.dot(candidate-origin,direction)/LayoutGeometry.dot(direction,direction))
+                var proposed = points; proposed[vertex] = p
+                if abs(LayoutPolygonSolver.interiorAngle(at:corner,in:proposed)-90) < 0.01 {
+                    targets.append((p,.rightAngle(corner)))
+                }
+            }
+        }
+        targets = targets.filter { ($0.0-candidate).length*screenScale <= ($0.1 == latched ? 16 : 10) }
+        targets.sort {
+            if ($0.1 == latched) != ($1.1 == latched) { return $0.1 == latched }
+            // Equivalent projections must choose the same guide after rotation;
+            // ignore sub-pixel floating-point noise and prefer straight alignment.
+            let left = (($0.0-candidate).length*screenScale*1000).rounded()
+            let right = (($1.0-candidate).length*screenScale*1000).rounded()
+            if left != right { return left < right }
+            if $0.1 == .straight { return $1.1 != .straight }
+            if $1.1 == .straight { return false }
+            return false
+        }
+        for (point,snap) in targets {
+            guard (point-a).length >= 10, (point-b).length >= 10 else { continue }
+            var proposed = points; proposed[vertex] = point
+            // Reject intersections and conflicting locks; never advertise a false snap.
+            if let surface = try? original.movingVertices(to:proposed),
+               (surface.contour[vertex]-point).length < 0.1,
+               snap.isSatisfied(in:surface.contour,moving:vertex) {
+                return .init(surface:surface,snap:snap)
+            }
+        }
+        var proposed = points; proposed[vertex] = candidate
+        return .init(surface:try original.movingVertices(to:proposed),snap:nil)
+    }
+}
+
 extension Surface2D {
     /// A drag edits the sketch, not a permanently pinned vertex on the old sketch.
     /// Only visible angle/length locks may move neighbouring vertices.

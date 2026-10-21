@@ -3,6 +3,72 @@ import SwiftUI
 @testable import Plaquisto
 
 @MainActor final class StockTests:XCTestCase {
+    func testShoppingStockOnlyChangesPurchasesAndUsesAllAvailableAfterOverride() throws {
+        let stock=StockStore(fileURL:location())
+        try add(stock,rail,quantity:10)
+        let encoder=JSONEncoder(); encoder.outputFormatting = .sortedKeys
+        let events=try encoder.encode(stock.events), entries=try encoder.encode(stock.entries)
+        let lines=StockTakeoffLine.make([.init(name:rail.name,quantity:4,unit:rail.unit)],stock:stock,projectID:nil)
+        var edits=ShoppingListEdits()
+        edits.edits[rail.id] = .init(name:"Rails chantier",quantity:15,deductStock:true)
+        let row=try XCTUnwrap(ShoppingSupplyRow.make(lines:lines,edits:edits,available:[rail.id:10]).first)
+        XCTAssertEqual(row.quantity,5)
+        XCTAssertEqual(row.originalQuantity,4)
+        XCTAssertEqual(row.name,"Rails chantier")
+        XCTAssertEqual(try encoder.encode(stock.events),events); XCTAssertEqual(try encoder.encode(stock.entries),entries)
+        edits.edits[rail.id]?.deductStock=false
+        XCTAssertEqual(ShoppingSupplyRow.make(lines:lines,edits:edits).first?.quantity,15)
+        edits.reset(rail.id)
+        XCTAssertEqual(ShoppingSupplyRow.make(lines:lines,edits:edits).first?.quantity,4)
+    }
+    func testShoppingMergeIsReversibleFromEitherSideAndRecalculatesSources() throws {
+        let a=StockProduct(name:"Appuis 100",unit:"unités"),b=StockProduct(name:"Appuis 120",unit:"unités")
+        func lines(_ value:Double) -> [StockTakeoffLine] { [
+            .init(product:a,required:value,fromStock:0),.init(product:b,required:8,fromStock:3)] }
+        var edits=ShoppingListEdits()
+        edits.edits[a.id] = .init(name:"À remplacer")
+        edits.edits[b.id] = .init(deductStock:true)
+        edits.merge(a.id,into:b.id)
+        let rows=ShoppingSupplyRow.make(lines:lines(5),edits:edits)
+        XCTAssertEqual(rows.map(\.quantity),[0,10])
+        XCTAssertEqual(rows[0].originalQuantity,5)
+        XCTAssertTrue(rows[0].replaced)
+        XCTAssertEqual(ShoppingSupplyRow.make(lines:lines(10),edits:edits)[1].quantity,15)
+        for id in [a.id,b.id] {
+            var reset=edits; reset.reset(id)
+            XCTAssertEqual(reset,ShoppingListEdits())
+            XCTAssertEqual(ShoppingSupplyRow.make(lines:lines(5),edits:reset).map(\.quantity),[5,8])
+        }
+        // Losing a destination must not hide the source's purchase requirement.
+        XCTAssertEqual(ShoppingSupplyRow.make(lines:[lines(5)[0]],edits:edits)[0].quantity,5)
+    }
+    func testShoppingMergeChainFlattensAndDoesNotMixUnits() {
+        var edits=ShoppingListEdits()
+        edits.merge("a",into:"b"); edits.merge("b",into:"c")
+        XCTAssertEqual(edits.replacements,["a":"c","b":"c"])
+        edits.merge("c",into:"a")
+        XCTAssertEqual(edits.replacements,["a":"c","b":"c"])
+        edits.reset("b"); XCTAssertTrue(edits.replacements.isEmpty)
+        let a=StockProduct(name:"Cornière",unit:"ml"),b=StockProduct(name:"Cornière 3m",unit:"unités")
+        edits.merge(a.id,into:b.id)
+        let rows=ShoppingSupplyRow.make(lines:[.init(product:a,required:6,fromStock:0),.init(product:b,required:2,fromStock:0)],edits:edits)
+        XCTAssertEqual(rows.map(\.quantity),[6,2])
+    }
+    func testShoppingEditsPersistPerSelectionWithoutChangingWorks() throws {
+        let url=location(),store=ProjectStore(fileURL:url)
+        let project=try store.createProject(name:"Maison",client:"",address:"",notes:"")
+        var edits=ShoppingListEdits()
+        edits.products=[.init(name:"Produit manuel",quantity:2.5,unit:"ml")]
+        edits.edits[rail.id] = .init(name:"Rails",quantity:12,deductStock:true)
+        try store.saveShoppingList(projectID:project,scope:"selection",edits:edits)
+        let loaded=try XCTUnwrap(ProjectStore(fileURL:url).project(id:project))
+        XCTAssertEqual(loaded.shoppingLists?["selection"],edits)
+        XCTAssertNil(loaded.shoppingLists?["autre"])
+        XCTAssertTrue(loaded.works.isEmpty)
+        var invalid=edits; invalid.products[0].quantity = .nan
+        XCTAssertThrowsError(try store.saveShoppingList(projectID:project,scope:"selection",edits:invalid))
+        XCTAssertEqual(store.project(id:project)?.shoppingLists?["selection"],edits)
+    }
     private let rail = StockProduct(name:"Rails R48",unit:"ml",family:.frames)
     private func location() -> URL { FileManager.default.temporaryDirectory.appendingPathComponent("stock-tests-\(UUID())/stock.json") }
     private func add(_ stock:StockStore,_ product:StockProduct,quantity:Double) throws {

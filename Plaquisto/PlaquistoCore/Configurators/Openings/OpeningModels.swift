@@ -53,7 +53,7 @@ enum SupplyListingConsolidator {
     /// Legacy assembly stored as one unit: preserve its count for EACH component.
     static func components(_ entry: SupplyListingEntry) -> [SupplyListingEntry] {
         guard entry.name.trimmingCharacters(in: .whitespacesAndNewlines) == "Cheville et piton",
-              ["unité", "unités", "unité(s)"].contains(entry.unit) else { return [entry] }
+              canonicalUnit(entry.unit) == "unités" else { return [entry] }
         return ["Cheville crampon 8 mm", "Piton de suspension 8 mm"].map {
             .init(name: $0, quantity: entry.quantity, unit: "unités")
         }
@@ -190,10 +190,14 @@ enum SupplyListingConsolidator {
     }
 
     static func canonicalUnit(_ rawUnit: String) -> String {
-        switch rawUnit.lowercased() {
-        case "unité", "unités": "unités"
-        case "plaque", "plaques", "plaque(s)": "plaques"
-        default: rawUnit
+        switch rawUnit.trimmingCharacters(in:.whitespacesAndNewlines).lowercased() {
+        case "unité", "unités", "unité(s)", "unite", "unites", "u", "u.", "pièce", "pièces": return "unités"
+        case "plaque", "plaques", "plaque(s)": return "plaques"
+        case "ml", "m.l.", "mètre linéaire", "mètres linéaires": return "ml"
+        case "m2", "m²", "mètre carré", "mètres carrés": return "m²"
+        case "kg", "kilogramme", "kilogrammes": return "kg"
+        case "l", "litre", "litres": return "l"
+        default: return rawUnit.trimmingCharacters(in:.whitespacesAndNewlines)
         }
     }
 

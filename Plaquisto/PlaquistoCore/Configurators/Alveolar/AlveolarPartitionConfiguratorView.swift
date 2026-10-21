@@ -72,6 +72,12 @@ struct AlveolarPartitionConfiguratorView: View {
     }
 
     private var canContinue: Bool {
+        isStepValid(step) && (step != 3 || allStepsAreValid)
+    }
+
+    private var allStepsAreValid: Bool { (1...3).allSatisfy(isStepValid) }
+
+    private func isStepValid(_ step: Int) -> Bool {
         switch step {
         case 1:
             height > 0 && height <= references.maximumHeight &&
@@ -111,7 +117,7 @@ struct AlveolarPartitionConfiguratorView: View {
         .toolbar {
             if isEditing, let onSave {
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Enregistrer") { onSave(configurationSnapshot()) }
+                    Button("Enregistrer") { onSave(configurationSnapshot()) }.disabled(!allStepsAreValid)
                 }
             }
         }
@@ -171,6 +177,7 @@ struct AlveolarPartitionConfiguratorView: View {
                     .buttonStyle(.borderedProminent)
                     .tint(green.opacity(0.18))
                     .foregroundStyle(green)
+                    .formStepMenu(titles: stepNames, selection: $step, firstStep: 1, canShowResult: allStepsAreValid)
             }
             Spacer()
             if step < 4 {
@@ -178,7 +185,7 @@ struct AlveolarPartitionConfiguratorView: View {
                     .buttonStyle(.borderedProminent)
                     .disabled(!canContinue)
             } else if let onSave {
-                Button("Enregistrer") { onSave(configurationSnapshot()) }
+                Button("Enregistrer") { onSave(configurationSnapshot()) }.disabled(!allStepsAreValid)
                     .buttonStyle(.borderedProminent)
             } else {
                 Button("Recommencer") { reset() }

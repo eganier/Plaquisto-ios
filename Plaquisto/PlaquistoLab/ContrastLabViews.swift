@@ -15,7 +15,7 @@ struct ContrastLabRoot: View {
             LabProjectsView(onSettings: { settings = true })
                 .tabItem { Label("Projets", systemImage: "folder") }.tag(0)
             ScannerDebugView(onOpenAccount: { settings = true })
-                .tabItem { Label("Scanner", systemImage: "viewfinder") }.tag(1)
+                .tabItem { Label { Text("Modéliser") } icon: { Image(uiImage: ModelingIcon.image) } }.tag(1)
             ToolsHomeView(onOpenAccount: { settings = true })
                 .tabItem { Label("Outils", systemImage: "wrench.and.screwdriver") }.tag(2)
             StockHomeView()
@@ -65,27 +65,34 @@ private struct LabPrimaryLabel: View {
 }
 
 /// Swipe actions for cards hosted in ScrollView (SwiftUI swipeActions only
-/// works on List rows). Vertical scrolling remains simultaneous and unchanged.
+/// works on List rows). Vertical gestures remain available to the scroll view.
 private struct LabSwipeActions: ViewModifier {
     let rename: () -> Void
     let duplicate: () -> Void
     let delete: () -> Void
     @State private var revealed = false
+    @State private var drag: CGFloat = 0
+    private let revealWidth: CGFloat = 116
     func body(content: Content) -> some View {
-        VStack(spacing: 0) {
+        ZStack(alignment: .trailing) {
+            VStack(spacing: 2) {
+                action("Renommer", "pencil", .orange, rename)
+                action("Dupliquer", "doc.on.doc", .blue, duplicate)
+                action("Supprimer", "trash", .red, delete)
+            }.frame(width: revealWidth - 8)
+                .opacity(revealed || drag < 0 ? 1 : 0)
+                .allowsHitTesting(revealed)
             content
-                .simultaneousGesture(DragGesture(minimumDistance: 24).onEnded { value in
-                    guard abs(value.translation.width) > abs(value.translation.height) * 1.5 else { return }
-                    withAnimation(.easeInOut(duration: 0.22)) { revealed = value.translation.width < -30 }
-                })
-            if revealed {
-                HStack(spacing: 8) {
-                    action("Renommer", "pencil", .orange, rename)
-                    action("Dupliquer", "doc.on.doc", .blue, duplicate)
-                    action("Supprimer", "trash", .red, delete)
-                }.padding(.top, 8).transition(.move(edge: .trailing).combined(with: .opacity))
-            }
-        }
+                .frame(minHeight: 136)
+                .contentShape(Rectangle())
+                .background(LabCardSwipeGesture(changed:{ drag=$0 },ended:{ distance,velocity,cancelled in
+                    withAnimation(.easeInOut(duration:0.22)) {
+                        if !cancelled { revealed = (revealed ? -revealWidth : 0) + distance + velocity*0.12 < -revealWidth/2 }
+                        drag=0
+                    }
+                }))
+                .offset(x: min(0, max(-revealWidth, (revealed ? -revealWidth : 0) + drag)))
+        }.clipped()
         .contextMenu {
             Button("Renommer", systemImage: "pencil", action: rename)
             Button("Dupliquer", systemImage: "doc.on.doc", action: duplicate)
@@ -97,9 +104,109 @@ private struct LabSwipeActions: ViewModifier {
     }
     private func action(_ title: String, _ icon: String, _ tint: Color, _ operation: @escaping () -> Void) -> some View {
         Button { operation(); withAnimation { revealed = false } } label: {
-            VStack(spacing: 4) { Image(systemName: icon); Text(title).font(.caption) }
-                .frame(maxWidth: .infinity, minHeight: 52)
-        }.buttonStyle(.bordered).tint(tint)
+            Label(title, systemImage: icon).font(.caption.weight(.semibold))
+                .frame(maxWidth: .infinity, minHeight: 44)
+                .background(tint.opacity(0.12),in:RoundedRectangle(cornerRadius:12))
+        }.buttonStyle(.plain).foregroundStyle(tint)
+    }
+}
+
+/// A directional UIKit recognizer can fail a vertical gesture before recognition.
+/// A SwiftUI high-priority DragGesture cannot, and would block the project list's
+/// vertical scroll. This transparent probe never intercepts taps itself.
+private struct LabCardSwipeGesture: UIViewRepresentable {
+    let changed:(CGFloat)->Void
+    let ended:(CGFloat,CGFloat,Bool)->Void
+    func makeUIView(context:Context) -> Probe { Probe(changed:changed,ended:ended) }
+    func updateUIView(_ view:Probe,context:Context) { view.changed=changed; view.ended=ended }
+    static func dismantleUIView(_ view:Probe,coordinator:()) { view.detach() }
+    final class HorizontalPan: UIGestureRecognizer {
+        private var start:CGPoint?
+        private var previous:CGPoint?
+        private var timestamp:TimeInterval=0
+        private(set) var distance:CGFloat=0
+        private(set) var speed:CGFloat=0
+        override func canBePrevented(by preventingGestureRecognizer: UIGestureRecognizer) -> Bool { false }
+        override func touchesBegan(_ touches:Set<UITouch>,with event:UIEvent) {
+            guard touches.count == 1,start == nil,let touch=touches.first else {
+                state = state == .began || state == .changed ? .cancelled : .failed
+                return
+            }
+            start=touch.location(in:nil); previous=start; timestamp=touch.timestamp
+        }
+        override func touchesMoved(_ touches:Set<UITouch>,with event:UIEvent) {
+            guard let touch=touches.first,let start else { return }
+            let point=touch.location(in:nil),dx=point.x-start.x,dy=point.y-start.y
+            distance=dx
+            if touch.timestamp>timestamp { speed=(point.x-(previous?.x ?? point.x))/CGFloat(touch.timestamp-timestamp) }
+            previous=point; timestamp=touch.timestamp
+            if state == .possible {
+                guard max(abs(dx),abs(dy))>=8 else { return }
+                state = abs(dx)>abs(dy)*1.5 ? .began : .failed
+            } else if state == .began || state == .changed { state = .changed }
+        }
+        override func touchesEnded(_ touches:Set<UITouch>,with event:UIEvent) {
+            // Some pointer/accessibility gestures deliver only their two ends.
+            // Recognize that horizontal drag too, rather than opening the card.
+            if state == .possible,let start,let point=touches.first?.location(in:nil) {
+                let dx=point.x-start.x,dy=point.y-start.y
+                if abs(dx)>=8,abs(dx)>abs(dy)*1.5 { distance=dx; speed=0; state = .ended; return }
+            }
+            state = state == .began || state == .changed ? .ended : .failed
+        }
+        override func touchesCancelled(_ touches:Set<UITouch>,with event:UIEvent) { state = .cancelled }
+        override func reset() { super.reset(); start=nil; previous=nil; timestamp=0; distance=0; speed=0 }
+    }
+    final class Probe:UIView,UIGestureRecognizerDelegate {
+        var changed:(CGFloat)->Void
+        var ended:(CGFloat,CGFloat,Bool)->Void
+        private weak var observedWindow:UIWindow?
+        private weak var gestureHost:UIView?
+        private lazy var pan:HorizontalPan = {
+            let result=HorizontalPan(target:self,action:#selector(cardPanChanged(_:)))
+            result.cancelsTouchesInView=true; result.delegate=self
+            return result
+        }()
+        init(changed:@escaping(CGFloat)->Void,ended:@escaping(CGFloat,CGFloat,Bool)->Void) {
+            self.changed=changed; self.ended=ended; super.init(frame:.zero)
+            isUserInteractionEnabled=false; backgroundColor = .clear
+        }
+        required init?(coder:NSCoder) { fatalError("init(coder:) has not been implemented") }
+        override func didMoveToWindow() {
+            super.didMoveToWindow()
+            guard observedWindow !== window else { return }
+            detach(); observedWindow=window
+            gestureHost=window?.rootViewController?.view
+            gestureHost?.addGestureRecognizer(pan)
+        }
+        func detach() { gestureHost?.removeGestureRecognizer(pan); gestureHost=nil; observedWindow=nil }
+        private func owner(_ responder:UIResponder?) -> UIViewController? {
+            var current=responder
+            while let value=current { if let controller=value as? UIViewController { return controller }; current=value.next }
+            return nil
+        }
+        func gestureRecognizer(_ gestureRecognizer:UIGestureRecognizer,shouldReceive touch:UITouch) -> Bool {
+            guard window != nil,bounds.contains(touch.location(in:self)) else { return false }
+            if owner(self)?.presentedViewController != nil { return false }
+            var ancestor=superview
+            while let view=ancestor {
+                if view.isHidden || view.alpha<0.01 || (view.clipsToBounds && !view.bounds.contains(touch.location(in:view))) { return false }
+                ancestor=view.superview
+            }
+            return true
+        }
+        func gestureRecognizer(_ gestureRecognizer:UIGestureRecognizer,shouldBeRequiredToFailBy other:UIGestureRecognizer) -> Bool {
+            other is UIPanGestureRecognizer && other.view is UIScrollView
+        }
+        @objc private func cardPanChanged(_ recognizer:HorizontalPan) {
+            let x=recognizer.distance
+            switch recognizer.state {
+            case .began,.changed: changed(x)
+            case .ended: ended(x,recognizer.speed,false)
+            case .cancelled,.failed: ended(0,0,true)
+            default: break
+            }
+        }
     }
 }
 
@@ -193,7 +300,7 @@ private struct LabProjectCard: View {
         VStack(alignment: .leading, spacing: 0) {
             Button(action: onOpen) {
                 if let survey, !survey.checkpoints.isEmpty {
-                    SurveyThumbnailView(survey: survey).frame(height: 156).clipped().background(ContrastPalette.wash)
+                    SurveyThumbnailView(survey: survey).allowsHitTesting(false).frame(height: 156).clipped().background(ContrastPalette.wash)
                 }
             }.buttonStyle(.plain).accessibilityLabel("Ouvrir \(project.name)")
             VStack(alignment: .leading, spacing: 9) {
@@ -224,7 +331,7 @@ private struct LabWorkPreview: View {
     var body: some View {
         if let source = work.components.compactMap(\.surveySource).first,
            let survey = store.surveys.first(where: { $0.id == source.surveyID }) {
-            SurveyThumbnailView(survey: survey, selected: WorkPreviewSelection.surfaceIDs(work: work, survey: survey))
+            SurveyThumbnailView(survey: survey, selected: WorkPreviewSelection.surfaceIDs(work: work, survey: survey)).allowsHitTesting(false)
         } else {
             VStack(spacing: 5) {
                 Image(systemName: work.type.category == .ceilings ? "square.3.layers.3d" : "rectangle.split.3x1").font(.system(size: 30, weight: .light))
@@ -258,7 +365,7 @@ private struct LabProjectView: View {
                         let address = project.address.isEmpty ? (store.surveys(projectID: projectID).compactMap(\.captureAddress).first ?? "") : project.address
                         if !address.isEmpty { ProjectAddressMenu(address: address).font(.subheadline) }
                         Button { scanning=true } label: {
-                            Label("Scanner dans ce projet",systemImage:"viewfinder")
+                            Label { Text("Modéliser dans ce projet") } icon: { Image(uiImage: ModelingIcon.image) }
                                 .font(.headline).frame(maxWidth:.infinity,minHeight:52)
                         }.buttonStyle(.bordered).tint(ContrastPalette.blue)
                         if !store.surveys(projectID: projectID).isEmpty {
@@ -277,7 +384,7 @@ private struct LabProjectView: View {
                                     }.accessibilityLabel(collapsedSurveys.contains(survey.id) ? "Déplier les ouvrages" : "Replier les ouvrages")
                                     NavigationLink(value: LabRoute.survey(survey.id)) {
                                         HStack(spacing: 14) {
-                                            SurveyThumbnailView(survey: survey).frame(width: 100, height: 78).clipShape(RoundedRectangle(cornerRadius: 14))
+                                            SurveyThumbnailView(survey: survey).allowsHitTesting(false).frame(width: 100, height: 78).clipShape(RoundedRectangle(cornerRadius: 14))
                                             VStack(alignment: .leading, spacing: 5) {
                                                 Text(survey.name).font(.subheadline.weight(.semibold)).foregroundStyle(ContrastPalette.ink)
                                                 Text(survey.scanDate, format: .dateTime.day().month().year()).font(.caption).foregroundStyle(.secondary)

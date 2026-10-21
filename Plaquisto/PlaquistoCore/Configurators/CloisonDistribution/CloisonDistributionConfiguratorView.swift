@@ -189,6 +189,12 @@ struct CloisonDistributionConfiguratorView: View {
     }
 
     private var canContinue: Bool {
+        isStepValid(step) && (step != 6 || allStepsAreValid)
+    }
+
+    private var allStepsAreValid: Bool { (1...6).allSatisfy(isStepValid) }
+
+    private func isStepValid(_ step: Int) -> Bool {
         switch step {
         case 1:
             return height > 0 && (geometryMode == .length ? enteredLength > 0 : enteredSurface > 0)
@@ -241,7 +247,7 @@ struct CloisonDistributionConfiguratorView: View {
         .toolbar {
             if isEditing, let onSave {
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Enregistrer") { onSave(configurationSnapshot()) }
+                    Button("Enregistrer") { onSave(configurationSnapshot()) }.disabled(!allStepsAreValid)
                         .disabled(!allRequiredLayersAreComplete || actualArea<=0)
                 }
             }
@@ -306,6 +312,9 @@ struct CloisonDistributionConfiguratorView: View {
             if step > 1 {
                 Button("Retour") { step -= 1 }
                     .buttonStyle(.bordered)
+                    .formStepMenu(titles: stepNames, selection: $step, firstStep: 1, canShowResult: allStepsAreValid) {
+                        if step == 1 { populateSurfacesIfNeeded(); normalizeSystem() }
+                    }
             }
             Spacer()
             if step < 7 {
@@ -313,7 +322,7 @@ struct CloisonDistributionConfiguratorView: View {
                     .buttonStyle(.borderedProminent)
                     .disabled(!canContinue)
             } else if let onSave {
-                Button("Enregistrer") { onSave(configurationSnapshot()) }
+                Button("Enregistrer") { onSave(configurationSnapshot()) }.disabled(!allStepsAreValid)
                     .buttonStyle(.borderedProminent)
                     .disabled(!allRequiredLayersAreComplete || actualArea<=0)
             } else {

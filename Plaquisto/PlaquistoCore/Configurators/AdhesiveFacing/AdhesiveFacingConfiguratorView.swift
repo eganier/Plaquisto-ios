@@ -90,6 +90,12 @@ struct AdhesiveFacingConfiguratorView: View {
         return Double(selectedFormat.heightMM) / 1000 < height
     }
     private var canContinue: Bool {
+        isStepValid(step) && (step != 4 || allStepsAreValid)
+    }
+
+    private var allStepsAreValid: Bool { (1...4).allSatisfy(isStepValid) }
+
+    private func isStepValid(_ step: Int) -> Bool {
         switch step {
         case 1: height > 0 && (geometryMode == .length ? enteredLength > 0 : enteredSurface > 0)
         case 2: references.families.contains(selectedFamily) && selectedFunction != nil
@@ -130,7 +136,7 @@ struct AdhesiveFacingConfiguratorView: View {
                     Button("Enregistrer") {
                         if let configuration { onSave(configuration) }
                     }
-                    .disabled(configuration == nil)
+                    .disabled(configuration == nil || !allStepsAreValid)
                 }
             }
         }
@@ -185,6 +191,7 @@ struct AdhesiveFacingConfiguratorView: View {
             if step > 1 {
                 Button("Retour") { step -= 1 }
                     .buttonStyle(.borderedProminent).tint(green.opacity(0.18)).foregroundStyle(green)
+                    .formStepMenu(titles: stepNames, selection: $step, firstStep: 1, canShowResult: allStepsAreValid)
             }
             Spacer()
             if step < 5 {
@@ -194,7 +201,7 @@ struct AdhesiveFacingConfiguratorView: View {
                     if let onSave {
                         if let configuration { onSave(configuration) }
                     } else { step = 1 }
-                }.buttonStyle(.borderedProminent).disabled(configuration == nil)
+                }.buttonStyle(.borderedProminent).disabled(configuration == nil || !allStepsAreValid)
             }
         }
         .padding(20).background(.background)

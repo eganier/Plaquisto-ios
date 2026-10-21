@@ -86,7 +86,10 @@ private struct PaintingStepsView: View {
                 }
             }
             HStack {
-                if step > 0 { Button("Retour") { step -= 1 }.buttonStyle(.bordered) }
+                if step > 0 {
+                    Button("Retour") { step -= 1 }.buttonStyle(.bordered)
+                        .formStepMenu(titles: titles, selection: $step, canShowResult: validation == nil)
+                }
                 Spacer()
                 Button(currentStep == "Quantitatif" ? "Enregistrer" : currentStep == "Ratissage" ? "Terminer" : "Continuer") {
                     if currentStep == "Quantitatif" { onSave() } else { step += 1 }

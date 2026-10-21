@@ -69,6 +69,12 @@ struct BondedLiningConfiguratorView: View {
     private var recommendedThicknessMM: Int { max(0, selectedRevealMM - references.revealOffsetMM) }
     private var panelIsShort: Bool { Double(selectedHeightMM) / 1000 < height }
     private var canContinue: Bool {
+        isStepValid(step) && (step != 5 || allStepsAreValid)
+    }
+
+    private var allStepsAreValid: Bool { (1...5).allSatisfy(isStepValid) }
+
+    private func isStepValid(_ step: Int) -> Bool {
         switch step {
         case 1: height > 0 && (geometryMode == .length ? enteredLength > 0 : enteredSurface > 0)
         case 2: !allocations.isEmpty && allocations.allSatisfy { $0.surface > 0 } && abs(allocatedArea - actualArea) < 0.01 && !availableLambdas.isEmpty
@@ -105,7 +111,7 @@ struct BondedLiningConfiguratorView: View {
         .toolbar {
             if isEditing {
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Enregistrer") { onSave(configuration) }
+                    Button("Enregistrer") { onSave(configuration) }.disabled(!allStepsAreValid)
                 }
             }
         }
@@ -149,10 +155,13 @@ struct BondedLiningConfiguratorView: View {
 
     private var footer: some View {
         HStack {
-            if step > 1 { Button("Retour") { step -= 1 }.buttonStyle(.borderedProminent).tint(green.opacity(0.18)).foregroundStyle(green) }
+            if step > 1 {
+                Button("Retour") { step -= 1 }.buttonStyle(.borderedProminent).tint(green.opacity(0.18)).foregroundStyle(green)
+                    .formStepMenu(titles: stepNames, selection: $step, firstStep: 1, canShowResult: allStepsAreValid)
+            }
             Spacer()
             if step < 6 { Button("Continuer") { continueForm() }.buttonStyle(.borderedProminent).disabled(!canContinue) }
-            else { Button("Enregistrer") { onSave(configuration) }.buttonStyle(.borderedProminent) }
+            else { Button("Enregistrer") { onSave(configuration) }.disabled(!allStepsAreValid).buttonStyle(.borderedProminent) }
         }.padding(20).background(.background)
     }
 

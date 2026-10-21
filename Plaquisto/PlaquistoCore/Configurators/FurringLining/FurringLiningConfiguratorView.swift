@@ -212,6 +212,12 @@ struct FurringLiningConfiguratorView: View {
     }
 
     private var canContinue: Bool {
+        isStepValid(step) && (step != 5 || allStepsAreValid)
+    }
+
+    private var allStepsAreValid: Bool { (1...5).allSatisfy(isStepValid) }
+
+    private func isStepValid(_ step: Int) -> Bool {
         switch step {
         case 1:
             return finishedDepthMM.isFinite && (0...1000).contains(finishedDepthMM) && height > 0 && (!specifiesWallCount || wallCount > 0) && (geometryMode == .length ? enteredLength > 0 : enteredSurface > 0)
@@ -252,7 +258,7 @@ struct FurringLiningConfiguratorView: View {
         .toolbar {
             if isEditing, let onSave {
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Enregistrer") { onSave(configurationSnapshot()) }
+                    Button("Enregistrer") { onSave(configurationSnapshot()) }.disabled(!allStepsAreValid)
                 }
             }
         }
@@ -308,12 +314,17 @@ struct FurringLiningConfiguratorView: View {
 
     private var footer: some View {
         HStack {
-            if step > 1 { Button("Retour") { step -= 1 }.buttonStyle(.bordered) }
+            if step > 1 {
+                Button("Retour") { step -= 1 }.buttonStyle(.bordered)
+                    .formStepMenu(titles: stepNames, selection: $step, firstStep: 1, canShowResult: allStepsAreValid) {
+                        if step == 1 { initializeLayerSurfaces() }
+                    }
+            }
             Spacer()
             if step < 6 {
                 Button("Continuer") { advance() }.buttonStyle(.borderedProminent).disabled(!canContinue)
             } else if let onSave {
-                Button("Enregistrer") { onSave(configurationSnapshot()) }.buttonStyle(.borderedProminent)
+                Button("Enregistrer") { onSave(configurationSnapshot()) }.disabled(!allStepsAreValid).buttonStyle(.borderedProminent)
             } else {
                 Button("Recommencer") { reset() }.buttonStyle(.borderedProminent)
             }
