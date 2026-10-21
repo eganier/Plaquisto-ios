@@ -374,6 +374,7 @@ enum LayoutInteraction: String, CaseIterable {
 /// One row selects what the finger moves. Visibility and dimension cycling
 /// remain independent: selecting a tool never hides its content.
 struct LayoutLabToolBar: View {
+    @Environment(\.usesAtlantiqueDesign) private var atlantique
     @Binding var mode: LayoutInteraction
     @Binding var visibility: LayoutVisibilitySettings
 
@@ -402,9 +403,9 @@ struct LayoutLabToolBar: View {
                 }
                 Button { select(tool) } label: {
                     VStack(spacing:0) {
-                        LayoutLabVisibilityIcon(kind:kind,color:active ? .orange : .blue).frame(height:40)
+                        LayoutLabVisibilityIcon(kind:kind,color:active ? (atlantique ? Atlantique.Palette.actionInk : .orange) : (atlantique ? Atlantique.Palette.blue : .blue)).frame(height:40)
                         Text(element.title).font(.caption2).lineLimit(1).minimumScaleFactor(0.7)
-                            .foregroundStyle(active ? Color.orange : .blue)
+                            .foregroundStyle(active ? (atlantique ? Atlantique.Palette.actionInk : Color.orange) : (atlantique ? Atlantique.Palette.blue : .blue))
                     }.frame(maxWidth:.infinity).frame(height:58).contentShape(Rectangle())
                         .overlay(alignment:.bottom) {
                             Capsule().fill(visibility[element].showsDimensions ? Color.orange : .clear).frame(width:26,height:3).offset(y:4)
@@ -414,11 +415,12 @@ struct LayoutLabToolBar: View {
                     .accessibilityAddTraits(active ? .isSelected : [])
                     .accessibilityIdentifier("layout.tool.\(tool)")
             }
-            }.frame(maxWidth:.infinity)
+            }.frame(maxWidth:.infinity).padding(.horizontal, atlantique ? 5 : 0).padding(.vertical, atlantique ? 5 : 0)
+                .background { if atlantique { AtlantiqueSurface(radius: 14) } }
             Button { select(.move) } label: {
                 Image(systemName:"arrow.up.and.down.and.arrow.left.and.right")
                     .font(.system(size:28,weight:.regular))
-                    .foregroundStyle(mode == .move ? Color.orange : .blue)
+                    .foregroundStyle(mode == .move ? (atlantique ? Atlantique.Palette.actionInk : Color.orange) : (atlantique ? Atlantique.Palette.blue : .blue))
                     .frame(width:48,height:58)
                     .background(Color.white,in:RoundedRectangle(cornerRadius:18,style:.continuous))
                     .contentShape(RoundedRectangle(cornerRadius:18,style:.continuous))
@@ -610,6 +612,7 @@ struct SheetLayoutView: View {
     @State private var editingShape = false
     @State private var visibility = LayoutVisibilitySettings()
     @Environment(\.interfacePresentation) private var presentation
+    @Environment(\.usesAtlantiqueDesign) private var atlantique
     private var simplifiedInterface: Bool { presentation == .contrastLab }
     @ScaledMetric(relativeTo:.body) private var toolPanelHeight = 64.0
     @ScaledMetric(relativeTo:.body) private var toolActionsHeight = 44.0
@@ -639,6 +642,7 @@ struct SheetLayoutView: View {
                             Spacer()
                             Image(systemName: "chevron.up.chevron.down")
                         }.padding(.horizontal).padding(.vertical, 9)
+                            .foregroundStyle(atlantique ? Color.white : Color.accentColor)
                     }.accessibilityLabel("Sous-parties du calepinage")
                 }
                 if let document = model.document { editor(document) }
@@ -647,13 +651,22 @@ struct SheetLayoutView: View {
         }
         .navigationTitle(onSaveDocument == nil ? "Calepinage 2D rapide" : "Calepinage 2D").navigationBarTitleDisplayMode(.inline)
         .navigationBarBackButtonHidden(workbook != nil || (model.document != nil && onSaveDocument == nil))
-        .background(Color(.systemGroupedBackground))
+        .background(atlantique ? Atlantique.Palette.blue : Color(.systemGroupedBackground))
+        .atlantiquePage(onSaveDocument == nil ? "Calepinage 2D rapide" : "Calepinage 2D", root: true)
         .toolbar {
             if workbook != nil {
                 ToolbarItem(placement: .topBarLeading) {
-                    Button { performAfterSaving { dismiss() } } label: { Image(systemName: "chevron.left") }
+                    Button { performAfterSaving { dismiss() } } label: {
+                        if atlantique { AtlantiqueToolbarGlyph(symbol: "chevron.left") }
+                        else { Image(systemName: "chevron.left") }
+                    }
                         .accessibilityLabel("Enregistrer et revenir à l’ouvrage")
-                }
+                }.atlantiqueToolbarBackground(atlantique)
+            } else if atlantique && (onSaveDocument != nil || model.document == nil) {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button { performAfterSaving { dismiss() } } label: { AtlantiqueToolbarGlyph(symbol: "chevron.left") }
+                        .accessibilityLabel("Retour")
+                }.atlantiqueToolbarBackground()
             }
             if model.document != nil {
                 if onSaveDocument == nil {
@@ -670,7 +683,7 @@ struct SheetLayoutView: View {
                                 pendingSharedFrameSave = document
                             } else { saveLinked(document) }
                         } else { model.saveCurrentAndClose(); selectedVertex = nil }
-                    }
+                    }.foregroundStyle(atlantique ? Color.white : Color.accentColor)
                     Menu {
                         if onSaveDocument == nil {
                             Button("Retour aux calepinages", systemImage: "list.bullet") { model.saveCurrentAndClose(); selectedVertex = nil }
@@ -686,8 +699,11 @@ struct SheetLayoutView: View {
                         Divider()
                         Button { model.undo(); selectedVertex = nil } label: { Label("Annuler la modification", systemImage: "arrow.uturn.backward") }.disabled(!model.canUndo)
                         Button { model.redo(); selectedVertex = nil } label: { Label("Rétablir la modification", systemImage: "arrow.uturn.forward") }.disabled(!model.canRedo)
-                    } label: { Image(systemName: "ellipsis.circle") }.accessibilityLabel("Options du calepinage")
-                }
+                    } label: {
+                        if atlantique { AtlantiqueToolbarGlyph() }
+                        else { Image(systemName: "ellipsis.circle") }
+                    }.accessibilityLabel("Options du calepinage")
+                }.atlantiqueToolbarBackground(atlantique)
             }
         }
     }
@@ -776,7 +792,8 @@ struct SheetLayoutView: View {
             Button("OK") { quantityMessage=nil; finishLinkedNavigation() }
         } message: { Text(quantityMessage ?? "") }
         .toolbar(fullscreen ? .hidden : .visible, for:.navigationBar)
-        .toolbar(fullscreen ? .hidden : .visible, for:.tabBar)
+        .toolbar(fullscreen || atlantique ? .hidden : .visible, for:.tabBar)
+        .preference(key: AtlantiqueTabBarHiddenKey.self, value: fullscreen)
         .statusBarHidden(fullscreen)
         .onChange(of:model.document?.lighting?.count) { _,_ in selectedSpots = []; referenceSpot = nil }
         .onChange(of:model.document?.surface.id) { _,_ in
@@ -941,7 +958,7 @@ struct SheetLayoutView: View {
                                 Image(systemName:"chevron.right").font(.caption)
                             }.padding(.horizontal,12).frame(minHeight:44)
                                 .background(.regularMaterial,in:RoundedRectangle(cornerRadius:12))
-                        }.buttonStyle(.plain).foregroundStyle(Color.blue)
+                        }.buttonStyle(.plain).foregroundStyle(atlantique ? Atlantique.Palette.blue : Color.blue)
                             .accessibilityIdentifier("layout.plan.contour")
                             .padding(.horizontal,12)
                     } else {
@@ -986,7 +1003,10 @@ struct SheetLayoutView: View {
                     Color.clear.accessibilityHidden(true)
                 }
             }.frame(height:toolActionsHeight).padding(.horizontal,12)
-        }.padding(.bottom,6)
+        }.padding(.top, atlantique ? 6 : 0).padding(.bottom, 6)
+            .background {
+                if atlantique { AtlantiqueSurface(radius: 17).padding(.horizontal, 12) }
+            }
     }
 
     private func planDisplayOption(_ title:String,value:Binding<Bool>) -> some View {
@@ -1053,7 +1073,9 @@ struct SheetLayoutView: View {
                         }
                     }
                 }
-            }.padding(.horizontal)
+            }.padding(.horizontal, atlantique ? 12 : 16).padding(.vertical, atlantique ? 12 : 0)
+                .background { if atlantique { AtlantiqueSurface().padding(.horizontal, 4) } }
+                .padding(.horizontal, atlantique ? 8 : 0)
             if !simplifiedInterface {
             HStack(spacing:2) {
                 ForEach(LayoutInteraction.allCases,id:\.self) { item in

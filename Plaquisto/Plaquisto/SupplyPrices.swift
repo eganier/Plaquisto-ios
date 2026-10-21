@@ -143,11 +143,12 @@ enum SupplyCostEstimator {
 }
 
 struct SupplyCostSection: View {
+    @Environment(\.usesAtlantiqueDesign) private var atlantique
     let estimate:SupplyCostEstimator.Estimate
     let loading:Bool
     let message:String?
     var body: some View {
-        Section(estimate.missing.isEmpty ? "Fournitures · estimation HT" : "Fournitures · estimation HT partielle") {
+        Section {
             if loading { ProgressView("Chargement des tarifs…") }
             else if let lower=estimate.lower,let upper=estimate.upper {
                 Text("\(SupplyCostEstimator.money(lower)) à \(SupplyCostEstimator.money(upper)) HT").font(.title3.bold())
@@ -167,6 +168,9 @@ struct SupplyCostSection: View {
                     ForEach(estimate.missing) { Text($0.name).font(.caption) }
                 }
             }
+        } header: {
+            Text(estimate.missing.isEmpty ? "Fournitures · estimation HT" : "Fournitures · estimation HT partielle")
+                .foregroundStyle(atlantique ? Color.white.opacity(0.9) : Color.secondary)
         }
     }
 }

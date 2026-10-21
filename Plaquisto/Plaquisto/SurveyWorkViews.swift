@@ -306,6 +306,7 @@ struct SurveyWorkSelectionView: View {
 
 struct SurveyOverlapView: View {
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.usesAtlantiqueDesign) private var atlantique
     let survey: ProjectSurveyRecord
     let selections: [SurveyWorkSurface]
     let works: [WorkItem]
@@ -321,7 +322,9 @@ struct SurveyOverlapView: View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
-                    Text("Un ouvrage existe déjà sur cette zone.").font(.headline)
+                    Text("Un ouvrage existe déjà sur cette zone.")
+                        .font(atlantique ? Atlantique.Typography.heading : .headline)
+                        .foregroundStyle(atlantique ? Color.white : Color.primary)
                     SurveySurfacePlan(survey: survey, surfaces: SurveyWorkGeometry.surfaces(in: survey),
                         kind: selections.first?.source.kind ?? .wall, selected: ids, blocked: [], onTap: { _ in })
                         .frame(height: 240).clipShape(RoundedRectangle(cornerRadius: 16))
@@ -329,13 +332,22 @@ struct SurveyOverlapView: View {
                         VStack(alignment: .leading) {
                             Text(work.name).font(.headline)
                             Text("\(work.type.title) · \(work.area.formatted(.number.precision(.fractionLength(1)))) m²").font(.subheadline)
-                        }
+                        }.frame(maxWidth: .infinity, alignment: .leading).padding(atlantique ? 14 : 0)
+                            .background { if atlantique { AtlantiqueSurface() } }
                     }
+                    if atlantique {
+                        Button("Exclure de la nouvelle sélection") { onExclude(ids) }.buttonStyle(AtlantiqueButtonStyle(kind: .primary))
+                        Button("Conserver la sélection", action: onKeep).buttonStyle(AtlantiqueButtonStyle(kind: .secondary))
+                        Button("Annuler") { dismiss() }.foregroundStyle(.white).frame(maxWidth: .infinity, minHeight: 44)
+                    } else {
                     Button("Exclure de la nouvelle sélection") { onExclude(ids) }.buttonStyle(.bordered)
                     Button("Conserver la sélection", action: onKeep).buttonStyle(.borderedProminent)
-                    Text("Les ouvrages existants ne sont ni supprimés ni modifiés.").font(.caption).foregroundStyle(.secondary)
+                    }
+                    Text("Les ouvrages existants ne sont ni supprimés ni modifiés.").font(.caption)
+                        .foregroundStyle(atlantique ? Color.white.opacity(0.85) : Color.secondary)
                 }.padding()
             }.navigationTitle("Zone déjà utilisée").navigationBarTitleDisplayMode(.inline)
+                .atlantiquePage("Zone déjà utilisée", root: true)
                 .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Annuler") { dismiss() } } }
         }
     }

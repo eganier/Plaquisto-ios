@@ -395,6 +395,7 @@ private enum SurveyPlanMode: String, CaseIterable, Identifiable {
 
 struct SurveyPlanEditor: View {
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.usesAtlantiqueDesign) private var atlantique
     let original: PlaquistoRoomDocument
     let ceilingNumbers:[String:Int]
     let initiallyConfigureCeilings: Bool
@@ -534,6 +535,7 @@ struct SurveyPlanEditor: View {
     }
     private var planContent: some View {
             VStack(spacing: 10) {
+                if !atlantique {
                 HStack(spacing:2) {
                     ForEach(SurveyPlanMode.allCases) { item in
                         Button { mode=item } label: {
@@ -545,8 +547,10 @@ struct SurveyPlanEditor: View {
                     }
                 }.padding(3).background(Color(.tertiarySystemFill),in:Capsule()).padding(.horizontal)
                     .disabled(drawingPartition || placingDoor || placingColumn || columnPreview != nil || manipulation != nil || splittingCeiling != nil)
+                }
                 if !fullscreen { Text(instructions)
-                    .font(.caption).foregroundStyle(.secondary).padding(.horizontal)
+                    .font(.caption).foregroundStyle(atlantique ? Color.white.opacity(0.85) : Color.secondary).padding(.horizontal)
+                    .frame(height: atlantique ? 36 : nil, alignment: .top)
                 }
                 if splittingCeiling != nil {
                     Button("Annuler le découpage", role: .cancel) { cancelCeilingCut() }
@@ -597,22 +601,40 @@ struct SurveyPlanEditor: View {
                 if splittingCeiling != nil {
                     SurveyCeilingCutConfirmation(ready: ceilingCut.preview != nil,
                         redo: { ceilingCut.reset() }, accept: acceptCeilingCut)
-                } else if splittingCeiling == nil && (!fullscreen || mode != .view) { editorTools }
+                } else if splittingCeiling == nil && (!fullscreen || mode != .view) {
+                    if atlantique { ScrollView { editorTools }.frame(height: 152) }
+                    else { editorTools }
+                }
+                if atlantique && !fullscreen {
+                    LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 4), count: 3), spacing: 4) {
+                        ForEach(SurveyPlanMode.allCases) { item in
+                            Button { mode = item } label: {
+                                Text(item.rawValue).font(Atlantique.Typography.caption).frame(maxWidth: .infinity, minHeight: 44)
+                                    .foregroundStyle(Atlantique.Palette.ink)
+                                    .background(mode == item ? Atlantique.Palette.orange : .clear, in: RoundedRectangle(cornerRadius: 10))
+                            }.buttonStyle(.plain).accessibilityAddTraits(mode == item ? .isSelected : [])
+                        }
+                    }.padding(6).background { AtlantiqueSurface() }.padding(.horizontal, 16).padding(.bottom, 8)
+                        .disabled(drawingPartition || placingDoor || placingColumn || columnPreview != nil || manipulation != nil || splittingCeiling != nil)
+                }
             }
-            .background(Color(.systemGroupedBackground))
+            .background(atlantique ? Atlantique.Palette.blue : Color(.systemGroupedBackground))
             .navigationTitle(initiallyConfigureCeilings ? "Configurer les plafonds" : "Modifier le plan")
             .navigationBarTitleDisplayMode(.inline)
+            .atlantiquePage(initiallyConfigureCeilings ? "Configurer les plafonds" : "Modifier le plan", root: true)
             .toolbar(fullscreen ? .hidden : .visible,for:.navigationBar)
             .statusBarHidden(fullscreen)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Annuler") { if hasChanges { discard = true } else { dismiss() } }
+                        .foregroundStyle(atlantique ? Color.white : Color.accentColor)
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Enregistrer") {
                         do { try document.validate(); try onSave(document); dismiss() }
                         catch { self.error = error.localizedDescription }
-                    }.disabled(document == original || draftWall != nil || firstPoint != nil || manipulation != nil || splittingCeiling != nil)
+                    }.foregroundStyle(atlantique ? Color.white : Color.accentColor)
+                        .disabled(document == original || draftWall != nil || firstPoint != nil || manipulation != nil || splittingCeiling != nil)
                 }
             }
             .interactiveDismissDisabled(hasChanges)
@@ -1811,6 +1833,7 @@ extension RoomPoint {
 /// No semantic room names are invented when the scan contains one open space.
 struct CeilingZonePicker: View {
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.usesAtlantiqueDesign) private var atlantique
     let room: PlaquistoRoomModel
     let choices: [WallCeilingEstimate.Proposal]
     var numbers: [String:Int] = [:]
@@ -1827,6 +1850,9 @@ struct CeilingZonePicker: View {
     var body: some View {
         NavigationStack {
             List {
+                if atlantique {
+                    ceilingOverview.frame(height: 245).listRowInsets(EdgeInsets()).listRowBackground(Color.clear)
+                }
                 if choices.contains(where: { $0.ceilingID == nil }) {
                     Section {
                     ForEach(choices.filter { $0.ceilingID == nil }) { choice in
@@ -1845,22 +1871,36 @@ struct CeilingZonePicker: View {
                                         Image(systemName: selectedCeilings.contains(ceiling.id) ? "checkmark.circle.fill" : "circle")
                                             .font(.title2).frame(width: 44, height: 64)
                                     }.buttonStyle(.borderless).accessibilityLabel("Sélectionner \(CeilingPlanNaming.title(ceiling,in:room,numbers:numbers))")
+                                        .foregroundStyle(atlantique ? Atlantique.Palette.actionInk : Color.accentColor)
                                     row(choice,title:CeilingPlanNaming.title(ceiling,in:room,numbers:numbers),
                                         detail:ceiling.isHidden == true ? "Masqué" : ceiling.estimateSettings?.shape.title ?? "Hauteur et pente",
                                         onTap: { if !selectedCeilings.insert(ceiling.id).inserted { selectedCeilings.remove(ceiling.id) } })
+                                    if atlantique {
+                                        Button { onSplit(ceiling.id) } label: {
+                                            Image(systemName: "scissors").frame(width: 44, height: 44)
+                                        }.buttonStyle(.borderless).disabled(ceiling.isHidden == true)
+                                            .foregroundStyle(Atlantique.Palette.actionInk)
+                                            .accessibilityLabel("Découper \(CeilingPlanNaming.title(ceiling,in:room,numbers:numbers))")
+                                    }
                                 }
+                                if !atlantique {
                                 HStack(spacing:18) {
                                     Button { onChoose(choice) } label: { Label("Hauteur et pente", systemImage: "slider.horizontal.3") }
                                     Button { onSplit(ceiling.id) } label: { Label("Découper",systemImage:"scissors") }
                                         .disabled(ceiling.isHidden == true)
                                 }.font(.caption).buttonStyle(.borderless)
+                                }
                             }
                         }
                     }
                 }
             }
             .navigationTitle("Choisir un plafond").navigationBarTitleDisplayMode(.inline)
+            .scrollContentBackground(atlantique ? .hidden : .visible)
+            .background(atlantique ? Atlantique.Palette.blue : Color(uiColor: .systemGroupedBackground))
+            .atlantiquePage("Plafonds", root: true)
             .safeAreaInset(edge: .bottom) {
+                VStack(spacing: 8) {
                 if !selectedCeilings.isEmpty {
                     HStack {
                         Button("Fusionner", systemImage: "square.on.square") {
@@ -1879,6 +1919,20 @@ struct CeilingZonePicker: View {
                         }
                     }.buttonStyle(.borderedProminent).padding().background(.regularMaterial)
                 }
+                    if atlantique {
+                        if let choice = choices.first(where: { $0.ceilingID.map { selectedCeilings.contains($0) } ?? false }), selectedCeilings.count == 1 {
+                            Button("Type de plafond et hauteur") { onChoose(choice) }
+                                .buttonStyle(AtlantiqueButtonStyle(kind: .secondary))
+                        } else {
+                            Menu {
+                                ForEach(choices.filter { selectedCeilings.isEmpty || $0.ceilingID.map { selectedCeilings.contains($0) } == true }) { choice in
+                                    Button(choice.ceilingID.flatMap { id in room.ceilings.first { $0.id == id }.map { CeilingPlanNaming.title($0, in: room, numbers: numbers) } } ?? "Créer un plafond") { onChoose(choice) }
+                                }
+                            } label: { Label("Type de plafond et hauteur", systemImage: "slider.horizontal.3").frame(maxWidth: .infinity, minHeight: 48) }
+                                .buttonStyle(AtlantiqueButtonStyle(kind: .secondary)).disabled(choices.isEmpty)
+                        }
+                    }
+                }.padding(atlantique ? 12 : 0).background(atlantique ? Atlantique.Palette.blue : Color.clear)
             }
             .confirmationDialog("Fusionner ces deux plafonds ?",isPresented:Binding(get:{ mergePair.count == 2 },set:{ if !$0 { mergePair=[] } }),titleVisibility:.visible) {
                 Button("Fusionner") {
@@ -1894,20 +1948,43 @@ struct CeilingZonePicker: View {
             .toolbar {
                 ToolbarItem(placement:.cancellationAction) { Button("Fermer") {
                     if let onClose { onClose() } else { dismiss() }
-                } }
+                }.foregroundStyle(atlantique ? Color.white : Color.accentColor) }
                 if let onSave {
                     ToolbarItem(placement:.confirmationAction) {
                         Button(action:onSave) { Image(systemName:"checkmark") }
+                            .foregroundStyle(atlantique ? Color.white : Color.accentColor)
                             .accessibilityLabel("Enregistrer les plafonds").disabled(!canSave)
                     }
                 }
             }
         }
     }
+    private var ceilingOverview: some View {
+        Canvas { context, size in
+            let points = room.walls.flatMap { [$0.start, $0.effectiveEnd] } + choices.flatMap(\.boundary)
+            let x0 = points.map(\.x).min() ?? 0, z0 = points.map(\.z).min() ?? 0
+            let width = max(0.1, (points.map(\.x).max() ?? 1) - x0)
+            let height = max(0.1, (points.map(\.z).max() ?? 1) - z0)
+            let scale = min((size.width - 32) / width, (size.height - 32) / height)
+            func point(_ p: RoomPoint) -> CGPoint {
+                .init(x: (p.x - x0 - width / 2) * scale + size.width / 2, y: (p.z - z0 - height / 2) * scale + size.height / 2)
+            }
+            for choice in choices {
+                var path = Path(); path.addLines(choice.boundary.map(point)); path.closeSubpath()
+                let selected = choice.ceilingID.map { selectedCeilings.contains($0) } ?? false
+                context.fill(path, with: .color(selected ? Atlantique.Palette.orange.opacity(0.35) : Atlantique.Palette.paper))
+                context.stroke(path, with: .color(selected ? Atlantique.Palette.actionInk : Atlantique.Palette.separator), lineWidth: 2)
+            }
+            for wall in room.walls {
+                var line = Path(); line.move(to: point(wall.start)); line.addLine(to: point(wall.effectiveEnd))
+                context.stroke(line, with: .color(Atlantique.Palette.ink), lineWidth: 2)
+            }
+        }.background { AtlantiqueSurface() }.accessibilityLabel("Plan des plafonds, les zones sélectionnées sont en orange")
+    }
     private func row(_ choice: WallCeilingEstimate.Proposal, title: String, detail: String, onTap: (() -> Void)? = nil) -> some View {
         Button { if let onTap { onTap() } else { onChoose(choice) } } label: {
             HStack(spacing:14) {
-                Canvas { context, size in
+                if !atlantique { Canvas { context, size in
                     let points = room.walls.flatMap { [$0.start,$0.effectiveEnd] }+choice.boundary
                     let x0 = points.map(\.x).min() ?? 0, z0 = points.map(\.z).min() ?? 0
                     let w = max(0.1,(points.map(\.x).max() ?? 1)-x0)
@@ -1924,7 +2001,7 @@ struct CeilingZonePicker: View {
                         var line = Path(); line.move(to:p(wall.start)); line.addLine(to:p(wall.effectiveEnd))
                         context.stroke(line,with:.color(.primary.opacity(0.65)),lineWidth:1.5)
                     }
-                }.frame(width:100,height:78).background(.quaternary,in:RoundedRectangle(cornerRadius:10))
+                }.frame(width:100,height:78).background(.quaternary,in:RoundedRectangle(cornerRadius:10)) }
                 VStack(alignment:.leading,spacing:4) {
                     Text(title).font(.headline)
                     Text(detail).font(.caption).foregroundStyle(.secondary)

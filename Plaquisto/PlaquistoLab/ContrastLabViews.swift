@@ -9,32 +9,50 @@ private enum LabRoute: Hashable {
 struct ContrastLabRoot: View {
     @EnvironmentObject private var store: ProjectStore
     @State private var tab = 0
+    @State private var visitedTabs: Set<Int> = [0]
     @State private var settings = false
+    @State private var hideTabBar = false
+    @State private var keyboardVisible = false
     var body: some View {
-        TabView(selection: $tab) {
-            LabProjectsView(onSettings: { settings = true })
-                .tabItem { Label("Projets", systemImage: "folder") }.tag(0)
-            ScannerDebugView(onOpenAccount: { settings = true })
-                .tabItem { Label { Text("Modéliser") } icon: { Image(uiImage: ModelingIcon.image) } }.tag(1)
+        VStack(spacing: 0) {
+        // Keep each visited navigation stack alive without a second, native tab bar.
+        ZStack {
+            LabProjectsView(onSettings: { settings = true }).atlantiqueDesign()
+                .opacity(tab == 0 ? 1 : 0).allowsHitTesting(tab == 0).accessibilityHidden(tab != 0)
+            if visitedTabs.contains(1) {
+            ScannerDebugView(onOpenAccount: { settings = true }).atlantiqueDesign()
+                .opacity(tab == 1 ? 1 : 0).allowsHitTesting(tab == 1).accessibilityHidden(tab != 1)
+            }
+            if visitedTabs.contains(2) {
             ToolsHomeView(onOpenAccount: { settings = true })
-                .tabItem { Label("Outils", systemImage: "wrench.and.screwdriver") }.tag(2)
+                .opacity(tab == 2 ? 1 : 0).allowsHitTesting(tab == 2).accessibilityHidden(tab != 2)
+            }
+            if visitedTabs.contains(3) {
             StockHomeView()
-                .tabItem { Label("Stock", systemImage: "shippingbox") }.tag(3)
+                .opacity(tab == 3 ? 1 : 0).allowsHitTesting(tab == 3).accessibilityHidden(tab != 3)
+            }
         }
+        .toolbar(.hidden, for: .tabBar)
+        if !hideTabBar && !keyboardVisible { AtlantiqueTabBar(selection: $tab).background(Atlantique.Palette.blue) }
+        }.background(Atlantique.Palette.blue.ignoresSafeArea())
+        .onPreferenceChange(AtlantiqueTabBarHiddenKey.self) { hideTabBar = $0 }
+        .onChange(of: tab) { _, value in visitedTabs.insert(value) }
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in keyboardVisible = true }
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in keyboardVisible = false }
         .onChange(of: store.projectNavigationRequest) { _, request in if request != nil { tab = 0 } }
         .sheet(isPresented: $settings) {
             NavigationStack {
                 List {
                     Section {
                         Label("Plaquisto Lab · Contraste", systemImage: "sparkles")
-                        Text("Vos projets de test sont séparés de ceux de Plaquisto.").font(.subheadline).foregroundStyle(.secondary)
+                        Text("Vos projets de test sont séparés de ceux de Plaquisto.").font(Atlantique.Typography.font(15, relativeTo: .subheadline)).foregroundStyle(.secondary)
                     }
                     Section {
                         NavigationLink("Composants Atlantique") {
                             AtlantiqueGallery()
                         }
                         NavigationLink("Ouvrir l’interface actuelle") {
-                            ProjectsHomeView().environment(\.interfacePresentation, .standard)
+                            ProjectsHomeView().environment(\.interfacePresentation, .standard).environment(\.usesAtlantiqueDesign, false)
                         }
                     } header: { Text("Comparer") } footer: {
                         Text("Les deux présentations utilisent ici les mêmes données du Lab. Les calculs et fonctions métier sont conservés.")
@@ -52,18 +70,17 @@ struct ContrastLabRoot: View {
 
 private struct LabCard: ViewModifier {
     func body(content: Content) -> some View {
-        content.background(.white, in: RoundedRectangle(cornerRadius: 22))
-            .overlay { RoundedRectangle(cornerRadius: 22).strokeBorder(.black.opacity(0.035)) }
-            .shadow(color: .black.opacity(0.035), radius: 10, y: 4)
+        content.background { AtlantiqueSurface() }.foregroundStyle(Atlantique.Palette.ink)
     }
 }
 private struct LabPrimaryLabel: View {
     let title: String
     let symbol: String
     var body: some View {
-        Label(title, systemImage: symbol).font(.subheadline.weight(.semibold))
-            .frame(maxWidth: .infinity, minHeight: 50).foregroundStyle(.white)
-            .background(ContrastPalette.ink, in: RoundedRectangle(cornerRadius: 17))
+        Label(title, systemImage: symbol).font(Atlantique.Typography.button)
+            .padding(.horizontal, 12).frame(maxWidth: .infinity, minHeight: 50)
+            .foregroundStyle(Atlantique.Palette.blue)
+            .background { AtlantiqueSurface(radius: 12) }
     }
 }
 
@@ -73,20 +90,13 @@ private struct LabSwipeActions: ViewModifier {
     let rename: () -> Void
     let duplicate: () -> Void
     let delete: () -> Void
+    var compact = false
     @State private var revealed = false
     @State private var drag: CGFloat = 0
     private let revealWidth: CGFloat = 116
     func body(content: Content) -> some View {
-        ZStack(alignment: .trailing) {
-            VStack(spacing: 2) {
-                action("Renommer", "pencil", .orange, rename)
-                action("Dupliquer", "doc.on.doc", .blue, duplicate)
-                action("Supprimer", "trash", .red, delete)
-            }.frame(width: revealWidth - 8)
-                .opacity(revealed || drag < 0 ? 1 : 0)
-                .allowsHitTesting(revealed)
-            content
-                .frame(minHeight: 136)
+        content
+                .frame(minHeight: compact ? 132 : 144)
                 .contentShape(Rectangle())
                 .background(LabCardSwipeGesture(changed:{ drag=$0 },ended:{ distance,velocity,cancelled in
                     withAnimation(.easeInOut(duration:0.22)) {
@@ -95,7 +105,15 @@ private struct LabSwipeActions: ViewModifier {
                     }
                 }))
                 .offset(x: min(0, max(-revealWidth, (revealed ? -revealWidth : 0) + drag)))
-        }.clipped()
+            .background(alignment: .trailing) {
+                VStack(spacing: compact ? 0 : 6) {
+                    action("Renommer", "pencil", Atlantique.Palette.actionInk, rename)
+                    action("Dupliquer", "doc.on.doc", Atlantique.Palette.actionInk, duplicate)
+                    action("Supprimer", "trash", Atlantique.Palette.danger, delete)
+                }.frame(width: revealWidth - 8)
+                    .opacity(revealed || drag < 0 ? 1 : 0).allowsHitTesting(revealed)
+            }
+        .clipped()
         .contextMenu {
             Button("Renommer", systemImage: "pencil", action: rename)
             Button("Dupliquer", systemImage: "doc.on.doc", action: duplicate)
@@ -107,9 +125,11 @@ private struct LabSwipeActions: ViewModifier {
     }
     private func action(_ title: String, _ icon: String, _ tint: Color, _ operation: @escaping () -> Void) -> some View {
         Button { operation(); withAnimation { revealed = false } } label: {
-            Label(title, systemImage: icon).font(.caption.weight(.semibold))
-                .frame(maxWidth: .infinity, minHeight: 44)
-                .background(tint.opacity(0.12),in:RoundedRectangle(cornerRadius:12))
+            VStack(spacing: compact ? 2 : 5) {
+                Image(systemName: icon).font(.system(size: compact ? 17 : 24, weight: .regular))
+                Text(title).font(Atlantique.Typography.font(compact ? 10 : 11, weight: .medium, relativeTo: .caption2))
+            }.frame(maxWidth: .infinity, maxHeight: .infinity).frame(minHeight: 44)
+                .background { AtlantiqueSurface(radius: 12) }
         }.buttonStyle(.plain).foregroundStyle(tint)
     }
 }
@@ -231,11 +251,12 @@ private struct LabProjectsView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
                     HStack {
-                        Text("\(visible.count) projet\(visible.count == 1 ? "" : "s")").font(.subheadline.weight(.semibold))
+                        Text("\(visible.count) projet\(visible.count == 1 ? "" : "s")").font(Atlantique.Typography.body).foregroundStyle(.white)
                         Spacer()
                         Button { adding = true } label: { Label("Nouveau", systemImage: "plus") }
-                            .buttonStyle(.borderedProminent).accessibilityIdentifier("lab.newProject")
+                            .buttonStyle(AtlantiqueButtonStyle()).fixedSize(horizontal: true, vertical: false).accessibilityIdentifier("lab.newProject")
                     }
+                    AtlantiqueSearchField(prompt: "Projet, lieu ou date", text: $search)
                     if let error = store.lastError { Text(error).foregroundStyle(.red) }
                     if store.projects.isEmpty {
                         ContentUnavailableView("Votre premier projet", systemImage: "folder.badge.plus", description: Text("Créez un projet ou commencez par un scan."))
@@ -250,10 +271,13 @@ private struct LabProjectsView: View {
                         }
                     }
                 }.padding(20)
-            }.background(ContrastPalette.paper)
-            .navigationTitle("Mes projets")
-            .searchable(text: $search, prompt: "Projet, lieu ou date")
-            .toolbar { Button(action: onSettings) { Image(systemName: "gearshape") }.accessibilityLabel("Réglages de l’application") }
+            }.background(Atlantique.Palette.blue)
+            .atlantiquePage("Mes projets", root: true)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button(action: onSettings) { AtlantiqueToolbarGlyph(symbol: "gearshape") }.accessibilityLabel("Réglages de l’application")
+                }.atlantiqueToolbarBackground()
+            }
             .navigationDestination(for: LabRoute.self) { route in
                 switch route {
                 case .project(let id): LabProjectView(projectID: id)
@@ -300,31 +324,31 @@ private struct LabProjectCard: View {
     let survey: ProjectSurveyRecord?
     let onOpen: () -> Void
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            Button(action: onOpen) {
-                if let survey, !survey.checkpoints.isEmpty {
-                    SurveyThumbnailView(survey: survey).allowsHitTesting(false).frame(height: 156).clipped().background(ContrastPalette.wash)
-                }
-            }.buttonStyle(.plain).accessibilityLabel("Ouvrir \(project.name)")
-            VStack(alignment: .leading, spacing: 9) {
-                Button(action: onOpen) {
-                HStack {
-                    Text(project.name).font(.title3.weight(.bold)); Spacer()
-                    Image(systemName: "chevron.right").font(.caption).foregroundStyle(.secondary)
-                }.frame(minHeight: 44)
-                }.buttonStyle(.plain)
-                let address = project.address.isEmpty ? (survey?.captureAddress ?? "") : project.address
-                if !address.isEmpty { ProjectAddressMenu(address: address).font(.subheadline).foregroundStyle(ContrastPalette.blue).lineLimit(2) }
-                if survey == nil {
-                    ForEach(ProjectGalleryIndex.summary(project), id: \.title) { item in
-                        Text("\(item.area.formatted(.number.precision(.fractionLength(0...1)))) m² · \(item.title)")
-                            .font(.subheadline).foregroundStyle(ContrastPalette.blue)
+        Button(action: onOpen) {
+            VStack(alignment: .leading, spacing: 12) {
+                Group {
+                    if let survey, !survey.checkpoints.isEmpty {
+                        SurveyThumbnailView(survey: survey).allowsHitTesting(false)
+                    } else {
+                        AtlantiqueSymbol(icon: .projects, size: 50)
+                            .foregroundStyle(Atlantique.Palette.blue)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
                     }
-                }
-                Text("\(project.visibleWorks.count) ouvrage(s) · " + (survey.map { "Scan du \($0.scanDate.formatted(date: .numeric, time: .omitted))" } ?? "Créé le \(project.createdAt.formatted(date: .numeric, time: .omitted))"))
-                    .font(.caption).foregroundStyle(.secondary)
-            }.padding(18)
-        }.foregroundStyle(ContrastPalette.ink).clipShape(RoundedRectangle(cornerRadius: 22)).modifier(LabCard())
+                }.frame(height: 145).frame(maxWidth: .infinity)
+                    .background(Atlantique.Palette.paper).clipShape(RoundedRectangle(cornerRadius: 12))
+                HStack {
+                    VStack(alignment: .leading, spacing: 5) {
+                        Text(project.name).font(Atlantique.Typography.heading).lineLimit(2).frame(minHeight: 26, alignment: .leading)
+                        Text("\(project.visibleWorks.reduce(0) { $0 + $1.area }.formatted(.number.precision(.fractionLength(0...1)))) m² · \(project.visibleWorks.count) ouvrages")
+                            .font(Atlantique.Typography.caption).foregroundStyle(Atlantique.Palette.muted)
+                        Text("Modifié · " + project.updatedAt.formatted(date: .abbreviated, time: .omitted))
+                            .font(Atlantique.Typography.caption).foregroundStyle(Atlantique.Palette.muted)
+                    }
+                    Spacer(minLength: 8)
+                    Image(systemName: "chevron.right").foregroundStyle(Atlantique.Palette.actionInk)
+                }.frame(minHeight: 88, alignment: .top)
+            }.padding(12).modifier(LabCard())
+        }.buttonStyle(.plain).accessibilityLabel("Ouvrir \(project.name)")
     }
 }
 
@@ -338,7 +362,7 @@ private struct LabWorkPreview: View {
         } else {
             VStack(spacing: 5) {
                 Image(systemName: work.type.category == .ceilings ? "square.3.layers.3d" : "rectangle.split.3x1").font(.system(size: 30, weight: .light))
-                Text("Sans scan").font(.caption2)
+                Text("Sans scan").font(Atlantique.Typography.font(12, relativeTo: .caption2))
             }.foregroundStyle(ContrastPalette.blue).frame(maxWidth: .infinity, maxHeight: .infinity).background(ContrastPalette.wash)
         }
     }
@@ -350,6 +374,7 @@ private struct LabProjectView: View {
     let projectID: UUID
     @State private var adding = false
     @State private var editing = false
+    @State private var information = false
     @State private var deleting = false
     @State private var surveyToDelete: ProjectSurveyRecord?
     @State private var collapsedSurveys: Set<UUID> = []
@@ -366,77 +391,69 @@ private struct LabProjectView: View {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 22) {
                         let address = project.address.isEmpty ? (store.surveys(projectID: projectID).compactMap(\.captureAddress).first ?? "") : project.address
-                        if !address.isEmpty { ProjectAddressMenu(address: address).font(.subheadline) }
+                        if !address.isEmpty { ProjectAddressMenu(address: address).font(Atlantique.Typography.body).foregroundStyle(.white) }
                         Button { scanning=true } label: {
-                            Label { Text("Modéliser dans ce projet") } icon: { Image(uiImage: ModelingIcon.image) }
-                                .font(.headline).frame(maxWidth:.infinity,minHeight:52)
-                        }.buttonStyle(.bordered).tint(ContrastPalette.blue)
+                            Label { Text("Modéliser dans ce projet") } icon: { AtlantiqueSymbol(icon: .model, size: 24) }
+                                .font(Atlantique.Typography.button).frame(maxWidth:.infinity,minHeight:52)
+                        }.buttonStyle(AtlantiqueButtonStyle(kind: .secondary))
                         if !store.surveys(projectID: projectID).isEmpty {
-                            VStack(alignment: .leading, spacing: 12) {
-                                Text("Relevés 3D").font(.headline)
+                            VStack(alignment: .leading, spacing: 16) {
+                                Text("Relevés 3D").font(Atlantique.Typography.heading).foregroundStyle(.white)
                                 ForEach(store.surveys(projectID: projectID)) { survey in
-                                    HStack(spacing: 4) {
-                                    Button {
-                                        withAnimation(.easeInOut(duration: 0.25)) {
-                                            if !collapsedSurveys.insert(survey.id).inserted { collapsedSurveys.remove(survey.id) }
+                                    VStack(spacing: 8) {
+                                        surveyCard(survey)
+                                        if !collapsedSurveys.contains(survey.id) && project.visibleWorks.contains(where: { owningSurvey($0) == survey.id }) {
+                                            VStack(spacing: 8) {
+                                                ForEach(project.visibleWorks.filter { owningSurvey($0) == survey.id }) { work in
+                                                    workCard(work)
+                                                }
+                                            }.padding(.leading, 30)
+                                                .overlay(alignment: .leading) {
+                                                    Rectangle().fill(.white.opacity(0.5)).frame(width: 1).padding(.leading, 16)
+                                                }
+                                                .transition(.opacity.combined(with: .move(edge: .top)))
                                         }
-                                    } label: {
-                                        Image(systemName: "triangle.fill").font(.caption)
-                                            .rotationEffect(.degrees(collapsedSurveys.contains(survey.id) ? 90 : 180))
-                                            .frame(width: 32, height: 60)
-                                    }.accessibilityLabel(collapsedSurveys.contains(survey.id) ? "Déplier les ouvrages" : "Replier les ouvrages")
-                                    NavigationLink(value: LabRoute.survey(survey.id)) {
-                                        HStack(spacing: 14) {
-                                            SurveyThumbnailView(survey: survey).allowsHitTesting(false).frame(width: 100, height: 78).clipShape(RoundedRectangle(cornerRadius: 14))
-                                            VStack(alignment: .leading, spacing: 5) {
-                                                Text(survey.name).font(.subheadline.weight(.semibold)).foregroundStyle(ContrastPalette.ink)
-                                                Text(survey.scanDate, format: .dateTime.day().month().year()).font(.caption).foregroundStyle(.secondary)
-                                                Text("Ouvrir la maquette").font(.caption.weight(.semibold)).foregroundStyle(ContrastPalette.blue)
-                                            }; Spacer(minLength: 0)
-                                        }.padding(10).modifier(LabCard())
-                                    }.buttonStyle(.plain)
-                                    }
-                                    .modifier(LabSwipeActions(rename: { beginRename(survey.id, name: survey.name, survey: true) },
-                                        duplicate: { perform { try store.duplicateSurvey(projectID: projectID, surveyID: survey.id) } }, delete: { surveyToDelete = survey }))
-                                    if !collapsedSurveys.contains(survey.id) {
-                                        ForEach(project.visibleWorks.filter { owningSurvey($0) == survey.id }) { work in
-                                            workCard(work).padding(.leading, 28).transition(.opacity.combined(with: .move(edge: .top)))
-                                        }
-                                    }
+                                    }.padding(.bottom, 16)
                                 }
                             }
                         }
                         VStack(alignment: .leading, spacing: 12) {
                             HStack {
-                                Text(store.surveys(projectID: projectID).isEmpty ? "Ouvrages" : "Ouvrages sans relevé").font(.headline); Spacer()
-                                Button { adding = true } label: { Label("Ajouter", systemImage: "plus") }.frame(minHeight: 44)
+                                Text("Ouvrages sans relevés 3D").font(Atlantique.Typography.heading).foregroundStyle(.white); Spacer()
+                                Button { adding = true } label: { Label("Ajouter", systemImage: "plus") }.buttonStyle(AtlantiqueButtonStyle()).fixedSize(horizontal: true, vertical: false)
                             }
-                            if project.visibleWorks.isEmpty { Text("Ajoutez un ouvrage ou choisissez ses surfaces dans la maquette.").font(.subheadline).foregroundStyle(.secondary) }
+                            if project.visibleWorks.isEmpty { Text("Ajoutez un ouvrage ou choisissez ses surfaces dans la maquette.").font(Atlantique.Typography.font(15, relativeTo: .subheadline)).foregroundStyle(.white.opacity(0.85)) }
                             ForEach(project.visibleWorks.filter { owningSurvey($0) == nil }) { work in workCard(work) }
                         }
-                        if !project.client.isEmpty || !project.notes.isEmpty {
-                            DisclosureGroup("Informations du projet") {
-                                VStack(alignment: .leading, spacing: 8) {
-                                    if !project.client.isEmpty { Text(project.client) }
-                                    if !project.notes.isEmpty { Text(project.notes) }
-                                }.font(.subheadline).frame(maxWidth: .infinity, alignment: .leading).padding(.top, 8)
-                            }.padding(16).modifier(LabCard())
-                        }
                     }.padding(20)
-                }.background(ContrastPalette.paper)
+                }.background(Atlantique.Palette.blue)
                 .safeAreaInset(edge: .bottom) {
                     NavigationLink { LabQuantitySelection(projectID: projectID) } label: {
                         LabPrimaryLabel(title: "Voir les quantitatifs", symbol: "list.bullet.rectangle")
                     }.disabled(project.visibleWorks.isEmpty).opacity(project.visibleWorks.isEmpty ? 0.45 : 1)
-                        .padding(.horizontal, 20).padding(.vertical, 10).background(.ultraThinMaterial)
+                        .padding(.horizontal, 20).padding(.vertical, 10).background(Atlantique.Palette.blue)
                 }
-                .navigationTitle(project.name).navigationBarTitleDisplayMode(.large)
+                .atlantiquePage(project.name)
                 .toolbar {
+                    ToolbarItem(placement: .topBarTrailing) {
                     Menu {
+                        Button("Informations du projet", systemImage: "info.circle") { information = true }
                         Button("Modifier le projet", systemImage: "pencil") { editing = true }
                         Button("Dupliquer", systemImage: "plus.square.on.square") { perform { try store.duplicateProject(id: projectID) } }
                         Button("Supprimer", systemImage: "trash", role: .destructive) { deleting = true }
-                    } label: { Image(systemName: "ellipsis") }.accessibilityLabel("Options du projet")
+                    } label: { AtlantiqueToolbarGlyph() }.accessibilityLabel("Options du projet")
+                    }.atlantiqueToolbarBackground()
+                }
+                .sheet(isPresented: $information) {
+                    NavigationStack {
+                        Form {
+                            LabeledContent("Projet", value: project.name)
+                            if !project.client.isEmpty { LabeledContent("Client", value: project.client) }
+                            if !project.address.isEmpty { LabeledContent("Adresse", value: project.address) }
+                            if !project.notes.isEmpty { Section("Notes") { Text(project.notes) } }
+                        }.navigationTitle("Informations du projet").navigationBarTitleDisplayMode(.inline)
+                            .toolbar { Button("Fermer") { information = false } }
+                    }
                 }
                 .sheet(isPresented: $editing) { ProjectFormView(project: project) }
                 .fullScreenCover(isPresented:$scanning) {
@@ -471,6 +488,35 @@ private struct LabProjectView: View {
         }
         .alert("Action impossible", isPresented: Binding(get: { error != nil }, set: { if !$0 { error = nil } })) { Button("OK") { error = nil } } message: { Text(error ?? "") }
     }
+    private func surveyCard(_ survey: ProjectSurveyRecord) -> some View {
+        HStack(spacing: 4) {
+            Button {
+                withAnimation(.easeInOut(duration: 0.25)) {
+                    if !collapsedSurveys.insert(survey.id).inserted { collapsedSurveys.remove(survey.id) }
+                }
+            } label: {
+                Image(systemName: "triangle.fill").font(.system(size: 11))
+                    .rotationEffect(.degrees(collapsedSurveys.contains(survey.id) ? 90 : 180))
+                    .foregroundStyle(Atlantique.Palette.actionInk).frame(width: 44, height: 84)
+            }.buttonStyle(.plain)
+                .accessibilityLabel(collapsedSurveys.contains(survey.id) ? "Déplier les ouvrages" : "Replier les ouvrages")
+            NavigationLink(value: LabRoute.survey(survey.id)) {
+                HStack(spacing: 10) {
+                    SurveyThumbnailView(survey: survey).allowsHitTesting(false).frame(width: 78, height: 76)
+                        .clipShape(RoundedRectangle(cornerRadius: 10))
+                    VStack(alignment: .leading, spacing: 5) {
+                        Text(survey.name).font(Atlantique.Typography.button).lineLimit(2)
+                        Text("\(survey.scanDate.formatted(date: .abbreviated, time: .omitted)) · \(project?.visibleWorks.filter { owningSurvey($0) == survey.id }.count ?? 0) ouvrages")
+                            .font(Atlantique.Typography.font(12, relativeTo: .caption)).foregroundStyle(Atlantique.Palette.muted)
+                        Text("Ouvrir la maquette").font(Atlantique.Typography.caption).foregroundStyle(Atlantique.Palette.blue)
+                    }; Spacer(minLength: 0)
+                }.frame(minHeight: 96).padding(.trailing, 10)
+            }.buttonStyle(.plain).accessibilityIdentifier("lab.survey.\(survey.id)")
+        }.padding(.vertical, 6).frame(minHeight: 132).modifier(LabCard())
+            .modifier(LabSwipeActions(rename: { beginRename(survey.id, name: survey.name, survey: true) },
+                duplicate: { perform { try store.duplicateSurvey(projectID: projectID, surveyID: survey.id) } },
+                delete: { surveyToDelete = survey }, compact: true))
+    }
     private func owningSurvey(_ work: WorkItem) -> UUID? {
         let ids = Set(work.components.compactMap { $0.surveySource?.surveyID })
         return store.surveys(projectID: projectID).first { ids.contains($0.id) }?.id
@@ -481,14 +527,14 @@ private struct LabProjectView: View {
             HStack(spacing: 12) {
                 LabWorkPreview(work: work).frame(width: 104, height: 84).clipShape(RoundedRectangle(cornerRadius: 14))
                 VStack(alignment: .leading, spacing: 7) {
-                    Text(work.name).font(.subheadline.weight(.semibold)).foregroundStyle(ContrastPalette.ink)
-                    Text(work.type.title).font(.caption).foregroundStyle(.secondary).lineLimit(2)
-                    Text("\(work.area.formatted(.number.precision(.fractionLength(0...1)))) m²").font(.subheadline.weight(.semibold)).foregroundStyle(ContrastPalette.blue)
+                    Text(work.name).font(Atlantique.Typography.font(15, weight: .demi, relativeTo: .subheadline)).foregroundStyle(ContrastPalette.ink)
+                    Text(work.type.title).font(Atlantique.Typography.caption).foregroundStyle(.secondary).lineLimit(2)
+                    Text("\(work.area.formatted(.number.precision(.fractionLength(0...1)))) m²").font(Atlantique.Typography.font(15, weight: .demi, relativeTo: .subheadline)).foregroundStyle(ContrastPalette.blue)
                 }; Spacer(minLength: 0)
-            }.padding(10).modifier(LabCard())
+            }.padding(10).frame(minHeight: 132).modifier(LabCard())
         }.buttonStyle(.plain).accessibilityIdentifier("lab.work.\(work.id)")
         .modifier(LabSwipeActions(rename: { beginRename(work.id, name: work.name, survey: false) },
-            duplicate: { perform { try store.duplicateWork(projectID: projectID, workID: work.id) } }, delete: { workToDelete = work }))
+            duplicate: { perform { try store.duplicateWork(projectID: projectID, workID: work.id) } }, delete: { workToDelete = work }, compact: true))
     }
     private func perform(_ operation: () throws -> Void) { do { try operation() } catch { self.error = error.localizedDescription } }
 }
@@ -500,6 +546,7 @@ private struct LabWorkView: View {
     let projectID: UUID
     let workID: UUID
     @State private var rename = false
+    @State private var configuration = false
     @State private var deleting = false
     @State private var error: String?
     private var work: WorkItem? { store.project(id: projectID)?.works.first { $0.id == workID } }
@@ -510,23 +557,23 @@ private struct LabWorkView: View {
                     VStack(alignment: .leading, spacing: 20) {
                         LabWorkPreview(work: work).frame(height: 210).clipShape(RoundedRectangle(cornerRadius: 24))
                         HStack(alignment: .top) {
-                            Text(work.type.title).font(.subheadline).foregroundStyle(.secondary); Spacer()
-                            Text("\(work.area.formatted(.number.precision(.fractionLength(0...1)))) m²").font(.title3.bold()).foregroundStyle(ContrastPalette.blue)
+                            Text(work.type.title).font(Atlantique.Typography.body).foregroundStyle(.white); Spacer()
+                            Text("\(work.area.formatted(.number.precision(.fractionLength(0...1)))) m²").font(Atlantique.Typography.heading).foregroundStyle(.white)
                         }
                         if work.surveySourceNeedsReview { SurveySourceReviewNotice(work: work) }
                         if work.layoutNeedsRecalculation == true {
-                            Label("Le plan a changé. Vérifiez le quantitatif avant de commander.", systemImage: "exclamationmark.triangle").font(.subheadline).foregroundStyle(ContrastPalette.orange)
+                            Label("Le plan a changé. Vérifiez le quantitatif avant de commander.", systemImage: "exclamationmark.triangle").font(Atlantique.Typography.font(15, relativeTo: .subheadline)).foregroundStyle(ContrastPalette.orange)
                         }
                         VStack(alignment: .leading, spacing: 10) {
-                            Text("Configuration actuelle").font(.headline)
+                            Text("Configuration actuelle").font(Atlantique.Typography.button)
                             Text(WorkTechnicalSummary.text(for: work, catalogue: references.workSummaryCatalogue))
-                                .font(.subheadline)
+                                .font(Atlantique.Typography.font(15, relativeTo: .subheadline))
                             let openings = WorkOpeningRelations.summary(for: work, allWorks: store.project(id: projectID)?.works ?? [])
                             if !openings.isEmpty {
                                 Divider()
-                                Label("Ouvertures", systemImage: "door.left.hand.open").font(.subheadline.weight(.semibold))
+                                Label("Ouvertures", systemImage: "door.left.hand.open").font(Atlantique.Typography.font(15, weight: .demi, relativeTo: .subheadline))
                                 ForEach(Array(openings.enumerated()), id: \.offset) { _, title in
-                                    Text(title).font(.subheadline)
+                                    Text(title).font(Atlantique.Typography.font(15, relativeTo: .subheadline))
                                 }
                             }
                         }.frame(maxWidth: .infinity, alignment: .leading).padding(16).modifier(LabCard())
@@ -536,7 +583,7 @@ private struct LabWorkView: View {
                         if work.type != .paintingBeta && work.type != .jointTreatment && (work.hasSavedLayout || !work.components.isEmpty || (work.type != .openings && !work.isPartition)) {
                             NavigationLink { WorkLayoutWorkbookView(projectID: projectID, workID: workID) } label: { action("Calepinage 2D", symbol: "square.grid.3x3") }
                         }
-                        NavigationLink { LabWorkConfigurationView(projectID:projectID,workID:workID) } label: { action("Modifier la configuration", symbol: "slider.horizontal.3") }
+                        Button { configuration = true } label: { action("Modifier la configuration", symbol: "slider.horizontal.3") }.buttonStyle(.plain)
                         if work.supportsAttachedOpenings {
                             NavigationLink { WorkOpeningsView(work: work) } label: { action("Ajouter / gérer les ouvertures", symbol: "door.left.hand.open") }
                         }
@@ -546,14 +593,22 @@ private struct LabWorkView: View {
                             }
                         }
                     }.padding(20)
-                }.background(ContrastPalette.paper)
-                .navigationTitle(work.name).navigationBarTitleDisplayMode(.inline)
+                }.background(Atlantique.Palette.blue)
+                .atlantiquePage(work.name)
                 .toolbar {
+                    ToolbarItem(placement: .topBarTrailing) {
                     Menu {
                         Button("Renommer", systemImage: "pencil") { rename = true }
                         Button("Dupliquer", systemImage: "plus.square.on.square") { perform { try store.duplicateWork(projectID: projectID, workID: workID) } }
                         Button("Supprimer", systemImage: "trash", role: .destructive) { deleting = true }
-                    } label: { Image(systemName: "ellipsis") }.accessibilityLabel("Options de l’ouvrage")
+                    } label: { AtlantiqueToolbarGlyph() }.accessibilityLabel("Options de l’ouvrage")
+                    }.atlantiqueToolbarBackground()
+                }
+                .sheet(isPresented: $configuration) {
+                    NavigationStack {
+                        LabWorkConfigurationView(projectID: projectID, workID: workID)
+                            .toolbar { Button("Fermer") { configuration = false } }
+                    }.presentationDetents([.medium, .large]).presentationDragIndicator(.visible)
                 }
                 .sheet(isPresented: $rename) {
                     RenameWorkView(work: work) { title in perform { try store.renameWorkTitle(projectID: projectID, workID: workID, title: title); rename = false } }
@@ -567,8 +622,8 @@ private struct LabWorkView: View {
         .alert("Action impossible", isPresented: Binding(get: { error != nil }, set: { if !$0 { error = nil } })) { Button("OK") { error = nil } } message: { Text(error ?? "") }
     }
     private func action(_ title: String, symbol: String) -> some View {
-        HStack { Label(title, systemImage: symbol); Spacer(); Image(systemName: "chevron.right").font(.caption) }
-            .font(.subheadline.weight(.semibold)).padding(18).modifier(LabCard())
+        HStack { Label(title, systemImage: symbol); Spacer(); Image(systemName: "chevron.right").font(Atlantique.Typography.caption) }
+            .font(Atlantique.Typography.button).foregroundStyle(.white).padding(.vertical, 12)
     }
     private func perform(_ operation: () throws -> Void) { do { try operation() } catch { self.error = error.localizedDescription } }
 }
@@ -591,14 +646,14 @@ private struct LabWorkConfigurationView: View {
             if let work {
                 List {
                     Section {
-                        Text(work.name).font(.headline)
-                        Text(work.type.title).font(.subheadline).foregroundStyle(.secondary)
+                        Text(work.name).font(Atlantique.Typography.button)
+                        Text(work.type.title).font(Atlantique.Typography.font(15, relativeTo: .subheadline)).foregroundStyle(.secondary)
                         Text("\(work.area.formatted(.number.precision(.fractionLength(0...1)))) m²").foregroundStyle(ContrastPalette.blue)
                     }
                     Section("Modifier un réglage") {
                         ForEach(shortcuts(work)) { shortcut in
                             Button { editing = shortcut } label: {
-                                HStack { Text(shortcut.title); Spacer(); Image(systemName:"chevron.right").font(.caption) }
+                                HStack { Text(shortcut.title); Spacer(); Image(systemName:"chevron.right").font(Atlantique.Typography.caption) }
                                     .frame(minHeight:44).contentShape(Rectangle())
                             }.accessibilityIdentifier("lab.configuration.step.\(shortcut.step)")
                         }
@@ -606,7 +661,7 @@ private struct LabWorkConfigurationView: View {
                     }
                     Section {
                         DisclosureGroup("Configuration actuelle") {
-                            Text(WorkTechnicalSummary.text(for:work,catalogue:references.workSummaryCatalogue)).font(.subheadline)
+                            Text(WorkTechnicalSummary.text(for:work,catalogue:references.workSummaryCatalogue)).font(Atlantique.Typography.font(15, relativeTo: .subheadline))
                         }
                     }
                 }
@@ -638,9 +693,11 @@ private struct LabQuantitySelection: View {
             // Recreate the share document for each selection; never share an old total.
             .id(chosen.map(\.id))
             .toolbar {
-                Button { filtering=true } label: { Label("Filtrer",systemImage:"line.3.horizontal.decrease") }
+                ToolbarItem(placement: .topBarTrailing) {
+                Button { filtering=true } label: { AtlantiqueToolbarGlyph(symbol: "line.3.horizontal.decrease") }
                     .accessibilityLabel("Filtrer les ouvrages inclus")
                     .accessibilityValue("\(chosen.count) sur \(works.count)")
+                }.atlantiqueToolbarBackground()
             }
             .sheet(isPresented:$filtering) {
                 NavigationStack {

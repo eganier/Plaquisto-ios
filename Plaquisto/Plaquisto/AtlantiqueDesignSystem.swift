@@ -65,6 +65,9 @@ extension EnvironmentValues {
 }
 
 extension View {
+    func atlantiquePage(_ title: String, root: Bool = false) -> some View {
+        modifier(AtlantiquePageModifier(title: title, root: root))
+    }
     /// Opt-in while screens migrate. Never installs a global UIAppearance proxy.
     func atlantiqueDesign() -> some View {
         environment(\.usesAtlantiqueDesign, true)
@@ -72,6 +75,81 @@ extension View {
             .tint(Atlantique.Palette.actionInk)
             .foregroundStyle(Atlantique.Palette.ink)
             .preferredColorScheme(.light)
+    }
+}
+
+extension ToolbarContent {
+    @ToolbarContentBuilder
+    func atlantiqueToolbarBackground(_ enabled: Bool = true) -> some ToolbarContent {
+        if #available(iOS 26.0, *), enabled {
+            self.sharedBackgroundVisibility(.hidden)
+        } else { self }
+    }
+}
+
+struct AtlantiqueTabBarHiddenKey: PreferenceKey {
+    static let defaultValue = false
+    static func reduce(value: inout Bool, nextValue: () -> Bool) { value = value || nextValue() }
+}
+
+private struct AtlantiquePageModifier: ViewModifier {
+    let title: String
+    let root: Bool
+    @Environment(\.usesAtlantiqueDesign) private var enabled
+    @Environment(\.dismiss) private var dismiss
+    func body(content: Content) -> some View {
+        if enabled {
+            content
+                .background(Atlantique.Palette.blue.ignoresSafeArea())
+                .navigationTitle(title).navigationBarTitleDisplayMode(.inline)
+                .navigationBarBackButtonHidden()
+                .toolbarBackground(Atlantique.Palette.blue, for: .navigationBar)
+                .toolbarBackground(.visible, for: .navigationBar)
+                .toolbarColorScheme(.dark, for: .navigationBar)
+                .toolbar {
+                    if !root {
+                        ToolbarItem(placement: .topBarLeading) {
+                            AtlantiqueIconButton(icon: .back) { dismiss() }
+                        }.atlantiqueToolbarBackground()
+                    }
+                    ToolbarItem(placement: .principal) {
+                        Text(title).font(Atlantique.Typography.heading).foregroundStyle(.white).lineLimit(1).minimumScaleFactor(0.75)
+                    }
+                }
+        } else { content }
+    }
+}
+
+struct AtlantiqueToolbarGlyph: View {
+    var symbol = "ellipsis"
+    var body: some View {
+        Image(systemName: symbol).font(.system(size: 20, weight: .semibold))
+            .foregroundStyle(Atlantique.Palette.actionInk)
+            .frame(width: 44, height: 44)
+            .background { AtlantiqueSurface(radius: 14) }
+    }
+}
+
+struct AtlantiqueTabBar: View {
+    @Binding var selection: Int
+    private let items: [AtlantiqueIcon] = [.projects, .model, .tools, .stock]
+    var body: some View {
+        HStack(spacing: 4) {
+            ForEach(Array(items.enumerated()), id: \.offset) { index, icon in
+                Button { selection = index } label: {
+                    VStack(spacing: 4) {
+                        AtlantiqueSymbol(icon: icon, size: 24)
+                        Text(icon.label).font(Atlantique.Typography.font(11, weight: .medium, relativeTo: .caption2))
+                            .lineLimit(1).minimumScaleFactor(0.75)
+                    }.foregroundStyle(selection == index ? Atlantique.Palette.ink : Atlantique.Palette.actionInk)
+                        .frame(maxWidth: .infinity, minHeight: 56)
+                        .background(selection == index ? Atlantique.Palette.orange : .clear, in: RoundedRectangle(cornerRadius: 12))
+                }.buttonStyle(.plain).accessibilityLabel(icon.label)
+                    .accessibilityAddTraits(selection == index ? .isSelected : [])
+                    .accessibilityIdentifier("atlantique.tab.\(index)")
+            }
+        }.padding(5).background { AtlantiqueSurface(radius: 18) }
+            .padding(.horizontal, 16).padding(.top, 6).padding(.bottom, 6)
     }
 }
 

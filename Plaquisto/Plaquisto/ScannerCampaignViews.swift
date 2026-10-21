@@ -118,6 +118,7 @@ private struct SurveyRepairView: View {
 /// The scan opens here immediately: selection precedes project/work creation.
 struct ScannerCampaignWorkspaceView: View {
     @EnvironmentObject private var store: ProjectStore
+    @Environment(\.usesAtlantiqueDesign) private var atlantique
     @Environment(\.interfacePresentation) private var presentation
     private var isLab: Bool { presentation == .contrastLab }
     @State var draft: ScanCampaignDraft
@@ -210,70 +211,10 @@ struct ScannerCampaignWorkspaceView: View {
         else { selectedKeys.insert(key) }
     }
     var body: some View {
-        VStack(spacing: 0) {
-            HStack {
-                Picker("Vue", selection: $plan) { Text("3D").tag(false); Text("2D").tag(true) }.pickerStyle(.segmented)
-            }.padding()
-            if !inspectedWorks.isEmpty {
-                VStack(alignment: .leading, spacing: 3) {
-                    ForEach(inspectedWorks) { work in
-                        Text("\(work.name) · \(work.type.title) · \(work.area.formatted(.number.precision(.fractionLength(1)))) m²")
-                            .font(.caption).frame(maxWidth: .infinity, alignment: .leading)
-                    }
-                }.padding(.horizontal).padding(.bottom, 6)
-            }
-            if survey.checkpoints.count > 1 && survey.checkpoints.contains(where: { $0.spatialLinkState == .needsLink }) {
-                Label("Raccord non confirmé : zones présentées séparément", systemImage: "exclamationmark.triangle")
-                    .font(.caption).foregroundStyle(.orange).padding(.horizontal)
-            }
-            Group {
-                if plan {
-                    SurveySurfacePlan(survey: survey, surfaces: surfaces, kind: kind, selected: chosenIDs,
-                        blocked: [], onTap: toggle, showsDimensions: true)
-                } else {
-                    SurveySurfaceScene(survey: survey, surfaces: surfaces, kind: kind, selected: chosenIDs,
-                        claimed: [], onTap: toggle, showsCeilings: showsCeilings, resetToken: cameraReset,
-                        previewWorks: showsWorks ? linkedWorks : [], showsWorkJoints: showsWorkJoints,
-                        onRestoreSelection: { ids in
-                            let currentKind = surfaces.filter { $0.source.kind == kind }
-                            selectedKeys.subtract(currentKind.map(Self.key))
-                            selectedKeys.formUnion(currentKind.filter { ids.contains($0.id) }.map(Self.key))
-                            inspectedSurface = nil
-                        })
-                }
-            }.overlay(alignment: .bottomLeading) {
-                VStack(alignment: .leading, spacing: 8) {
-                if kind == .wall && chosen.isEmpty && (!isLab || choosingLining || quickLayout) {
-                    Text(choosingLining ? "Sélectionnez les murs à doubler. Touchez un doublage existant pour renseigner sa tapée." : quickLayout ? "Touchez le mur à calepiner" : "Touchez les murs à inclure dans un ouvrage")
-                        .font(.caption).padding(10).background(.regularMaterial, in: Capsule()).padding()
-                }
-                }
-            }
-            .clipShape(RoundedRectangle(cornerRadius: isLab ? 24 : 0))
-            .padding(.horizontal, isLab ? 12 : 0)
-            .overlay(alignment: .topTrailing) {
-                    VStack(spacing: 12) {
-                        if !plan {
-                            Button { showsWorks.toggle() } label: {
-                                Image(systemName: "square.stack.3d.up.fill").foregroundStyle(showsWorks ? Color.orange : Color.accentColor).padding(12)
-                            }.accessibilityLabel(showsWorks ? "Masquer les ouvrages" : "Afficher les ouvrages et leurs joints")
-                        }
-                        Button { kind = kind == .wall ? .ceiling : .wall } label: {
-                            SurveySelectionCube(ceiling: kind == .ceiling).frame(width: 30, height: 30).padding(12)
-                        }.disabled(choosingLining).accessibilityLabel(kind == .ceiling ? "Plafonds sélectionnables — afficher les murs" : "Murs sélectionnables — afficher les plafonds")
-                    }.buttonStyle(.borderless).background(.regularMaterial, in: Capsule()).padding()
-            }
-            HStack {
-                Button("Modifier le plan", systemImage: "pencil.and.outline") {
-                    openEditor(ceilings: false)
-                }.disabled(choosingLining)
-                Spacer()
-                Button("Configurer les plafonds", systemImage: "square.3.layers.3d") { openEditor(ceilings: true) }
-                    .disabled(choosingLining)
-            }.padding().background(.regularMaterial)
-        }
-        .background(isLab ? ContrastPalette.paper : Color(uiColor: .systemBackground))
+        workspaceContent
+        .background(atlantique ? Atlantique.Palette.blue : isLab ? ContrastPalette.paper : Color(uiColor: .systemBackground))
         .navigationTitle(survey.name).navigationBarTitleDisplayMode(.inline)
+        .atlantiquePage(survey.name)
         .safeAreaInset(edge: .bottom) {
             VStack(spacing:8) {
             if choosingLining {
@@ -284,12 +225,14 @@ struct ScannerCampaignWorkspaceView: View {
                     .buttonStyle(.bordered).frame(maxWidth:.infinity)
             }
             HStack {
+                if !atlantique {
                 VStack(alignment: .leading) {
                     Text("\(chosen.count) surface(s)").font(.headline)
                     Text("\(SurveyWorkGeometry.totalArea(chosen).formatted(.number.precision(.fractionLength(2)))) m² nets")
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 Spacer()
+                }
                 if quickLayout && !choosingLining {
                     Button("Calepiner cette surface") {
                         if let surface=chosen.first {
@@ -298,13 +241,19 @@ struct ScannerCampaignWorkspaceView: View {
                         }
                     }.buttonStyle(.borderedProminent).disabled(chosen.count != 1)
                 } else {
+                    if atlantique {
+                        Button(choosingLining ? "Créer le doublage" : "Créer un ouvrage") { creating = true }
+                            .buttonStyle(AtlantiqueButtonStyle(kind: .primary)).disabled(chosen.isEmpty)
+                    } else {
                     Button(choosingLining ? "Créer le doublage" : "Créer un ouvrage") { creating = true }.buttonStyle(.borderedProminent).disabled(chosen.isEmpty)
                         .tint(isLab ? ContrastPalette.ink : Color.accentColor)
+                    }
                 }
-            }.padding().background(.regularMaterial)
-            }.background(.regularMaterial)
+            }.padding(.horizontal, 16).padding(.vertical, 8)
+            }.background(atlantique ? Atlantique.Palette.blue : Color(uiColor: .systemBackground))
         }
         .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
             Menu {
                 if !quickLayout, store.surveys.contains(where: { $0.id == draft.id }) {
                     Button("Dupliquer le relevé", systemImage: "doc.on.doc") {
@@ -324,7 +273,11 @@ struct ScannerCampaignWorkspaceView: View {
                 Divider()
                 Button("Exporter DAE", systemImage: "square.and.arrow.up", action: exportDAE)
                     .disabled(exportingDAE).accessibilityIdentifier("survey.exportDAE")
-            } label: { Image(systemName: "ellipsis.circle") }
+            } label: {
+                if atlantique { AtlantiqueToolbarGlyph() }
+                else { Image(systemName: "ellipsis.circle") }
+            }.accessibilityLabel("Options du relevé")
+            }.atlantiqueToolbarBackground(atlantique)
         }
         .onChange(of: kind) { _, value in showsCeilings = value == .ceiling; if quickLayout { selectedKeys=[] } }
         .task(id: linkedWorks.map(\.id)) {
@@ -406,6 +359,111 @@ struct ScannerCampaignWorkspaceView: View {
         .sheet(isPresented:$savingSurvey) {
             SurveyWorkspaceCreationFlow(draft:draft,selectedKeys:[],onSaved:{ _ in savingSurvey=false },saveOnly:true)
         }
+    }
+    private var workspaceContent: some View {
+        VStack(spacing: 0) {
+            HStack {
+                if atlantique {
+                    AtlantiqueChoice(title: "Vue", options: [(false, "3D"), (true, "2D")], selection: $plan)
+                } else {
+                    Picker("Vue", selection: $plan) { Text("3D").tag(false); Text("2D").tag(true) }.pickerStyle(.segmented)
+                }
+            }.padding()
+            if atlantique {
+                selectionSummary.padding(.horizontal, 16).padding(.bottom, 12)
+            } else if !inspectedWorks.isEmpty {
+                VStack(alignment: .leading, spacing: 3) {
+                    ForEach(inspectedWorks) { work in
+                        Text("\(work.name) · \(work.type.title) · \(work.area.formatted(.number.precision(.fractionLength(1)))) m²")
+                            .font(.caption).frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                }.padding(.horizontal).padding(.bottom, 6)
+            }
+            if survey.checkpoints.count > 1 && survey.checkpoints.contains(where: { $0.spatialLinkState == .needsLink }) {
+                Label("Raccord non confirmé : zones présentées séparément", systemImage: "exclamationmark.triangle")
+                    .font(.caption).foregroundStyle(.orange).padding(.horizontal)
+            }
+            workspaceViewport
+            if atlantique {
+                HStack(spacing: 10) {
+                    Button { openEditor(ceilings: false) } label: {
+                        Text("Modifier le plan").frame(maxWidth: .infinity, minHeight: 44)
+                    }
+                    Button { openEditor(ceilings: true) } label: {
+                        Text("Configurer les plafonds").frame(maxWidth: .infinity, minHeight: 44)
+                    }
+                }.buttonStyle(AtlantiqueButtonStyle(kind: .secondary))
+                    .disabled(choosingLining).padding(12)
+            } else { HStack {
+                Button("Modifier le plan", systemImage: "pencil.and.outline") {
+                    openEditor(ceilings: false)
+                }.disabled(choosingLining)
+                Spacer()
+                Button("Configurer les plafonds", systemImage: "square.3.layers.3d") { openEditor(ceilings: true) }
+                    .disabled(choosingLining)
+            }.padding().background(.regularMaterial) }
+        }
+    }
+    private var workspaceViewport: some View {
+        Group {
+            if plan {
+                SurveySurfacePlan(survey: survey, surfaces: surfaces, kind: kind, selected: chosenIDs,
+                    blocked: [], onTap: toggle, showsDimensions: true)
+            } else {
+                SurveySurfaceScene(survey: survey, surfaces: surfaces, kind: kind, selected: chosenIDs,
+                    claimed: [], onTap: toggle, showsCeilings: showsCeilings, resetToken: cameraReset,
+                    previewWorks: showsWorks ? linkedWorks : [], showsWorkJoints: showsWorkJoints,
+                    onRestoreSelection: { ids in
+                        let currentKind = surfaces.filter { $0.source.kind == kind }
+                        selectedKeys.subtract(currentKind.map(Self.key))
+                        selectedKeys.formUnion(currentKind.filter { ids.contains($0.id) }.map(Self.key))
+                        inspectedSurface = nil
+                    })
+            }
+        }.overlay(alignment: .bottomLeading) {
+            VStack(alignment: .leading, spacing: 8) {
+            if kind == .wall && chosen.isEmpty && (!isLab || choosingLining || quickLayout) {
+                Text(choosingLining ? "Sélectionnez les murs à doubler. Touchez un doublage existant pour renseigner sa tapée." : quickLayout ? "Touchez le mur à calepiner" : "Touchez les murs à inclure dans un ouvrage")
+                    .font(.caption).padding(10).background(.regularMaterial, in: Capsule()).padding()
+            }
+            }
+        }
+        .clipShape(RoundedRectangle(cornerRadius: atlantique ? 17 : isLab ? 24 : 0))
+        .padding(.horizontal, isLab ? 12 : 0)
+        .overlay(alignment: .topTrailing) {
+                VStack(spacing: 12) {
+                    if !plan {
+                        Button { showsWorks.toggle() } label: {
+                            Image(systemName: "square.stack.3d.up.fill").foregroundStyle(showsWorks ? Color.orange : Color.accentColor).padding(12)
+                        }.accessibilityLabel(showsWorks ? "Masquer les ouvrages" : "Afficher les ouvrages et leurs joints")
+                    }
+                    Button { kind = kind == .wall ? .ceiling : .wall } label: {
+                        SurveySelectionCube(ceiling: kind == .ceiling).frame(width: 30, height: 30).padding(12)
+                    }.disabled(choosingLining).accessibilityLabel(kind == .ceiling ? "Plafonds sélectionnables — afficher les murs" : "Murs sélectionnables — afficher les plafonds")
+                }.buttonStyle(.borderless).background(.regularMaterial, in: Capsule()).padding()
+        }
+    }
+
+    /// Always occupies the same space: selecting a surface or switching 2D/3D never moves the drawing.
+    private var selectionSummary: some View {
+        HStack(spacing: 12) {
+            VStack(alignment: .leading, spacing: 3) {
+                if let work = inspectedWorks.first {
+                    Text(work.name).font(Atlantique.Typography.button).lineLimit(1)
+                    Text(work.type.title).font(Atlantique.Typography.caption).lineLimit(2)
+                } else {
+                    Text("\(chosen.count) surface\(chosen.count > 1 ? "s" : "")").font(Atlantique.Typography.button)
+                    Text("\(SurveyWorkGeometry.totalArea(chosen).formatted(.number.precision(.fractionLength(2)))) m² nets")
+                        .font(Atlantique.Typography.caption)
+                }
+            }
+            Spacer(minLength: 0)
+            if let work = inspectedWorks.first {
+                Text("\(work.area.formatted(.number.precision(.fractionLength(2)))) m²").font(Atlantique.Typography.button)
+            }
+        }.foregroundStyle(Atlantique.Palette.ink).padding(.horizontal, 14).frame(height: 76)
+            .background { AtlantiqueSurface() }.accessibilityElement(children: .combine)
+            .accessibilityIdentifier("survey.selectionSummary")
     }
     private func saveEditedDocument(_ document:PlaquistoRoomDocument, checkpoint:ProjectRoomScanCheckpoint) throws {
         if store.surveys.contains(where: { $0.id == draft.id }) {

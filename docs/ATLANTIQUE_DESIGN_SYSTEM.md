@@ -45,12 +45,13 @@ La valeur métier n'est pas arrondie lors de l'affichage.
 Réglages → Comparer → Composants Atlantique.
 La galerie est interactive et ne touche pas aux données de l'utilisateur.
 Arguments de lancement simulateur : `-atlantique-gallery`, éventuellement `-atlantique-keyboard`.
-La galerie n'est pas une nouvelle version des écrans métier : ceux-ci seront migrés par lot.
+La galerie sert à vérifier les composants isolément. La migration des écrans métier se fait par lot.
+Le premier lot intégré dans le Lab est décrit dans [ATLANTIQUE_LOT1.md](ATLANTIQUE_LOT1.md).
 
 Contrôler : petit écran, Dynamic Type, Réduire la transparence, Réduire les animations,
 contraste augmenté, état désactivé, menus VoiceOver et clavier natif dans un formulaire.
 
-## Vérifications réalisées le 21 octobre 2026
+## Vérifications du socle réalisées le 21 octobre 2026 (avant intégration du lot 1)
 
 - Compilation Debug simulateur de Plaquisto Lab et de Plaquisto réussie.
 - Suite `PlaquistoTests/ToolCalculatorTests` : 28 tests réussis, dont 6 ajoutés au socle.

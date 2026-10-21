@@ -3,6 +3,25 @@ import SwiftUI
 @testable import Plaquisto
 
 @MainActor final class StockTests:XCTestCase {
+    func testInlineShoppingSelectionUsesCurrentEditedValuesAndStableSourceIDs() {
+        let a = StockProduct(name: "Appuis 100", unit: "unités")
+        let b = StockProduct(name: "Appuis 120", unit: "unités")
+        let lines: [StockTakeoffLine] = [.init(product: a, required: 5, fromStock: 0), .init(product: b, required: 8, fromStock: 0)]
+        var edits = ShoppingListEdits()
+        edits.edits[a.id] = .init(name: "Appuis renommés", quantity: 12, deductStock: true)
+        let rows = ShoppingSupplyRow.make(lines: lines, edits: edits, available: [a.id: 4])
+        let selected = QuantityTextExport.shoppingSelection(rows, selected: [a.id])
+        XCTAssertEqual(selected.count, 1)
+        XCTAssertEqual(selected.first?.name, "Appuis renommés")
+        XCTAssertEqual(selected.first?.quantity, 8)
+        XCTAssertEqual(selected.first?.unit, "unité") // Canonical unit used by the quantity exporter.
+        XCTAssertTrue(QuantityTextExport.shoppingSelection(rows, selected: ["removed-row"]).isEmpty)
+        edits.merge(a.id, into: b.id)
+        let merged = ShoppingSupplyRow.make(lines: lines, edits: edits, available: [a.id: 4])
+        XCTAssertTrue(QuantityTextExport.shoppingSelection(merged, selected: [a.id]).isEmpty)
+        XCTAssertEqual(QuantityTextExport.shoppingSelection(merged, selected: [a.id, b.id]).count, 1)
+    }
+
     func testShoppingStockOnlyChangesPurchasesAndUsesAllAvailableAfterOverride() throws {
         let stock=StockStore(fileURL:location())
         try add(stock,rail,quantity:10)

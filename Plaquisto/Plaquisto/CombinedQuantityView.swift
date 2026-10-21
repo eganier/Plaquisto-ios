@@ -115,6 +115,11 @@ struct CombinedQuantityView: View {
     @State private var addingSupply = false
     @State private var shoppingError: String?
     @State private var choosingSuppliesToExport = false
+    @State private var selectingSupplies = false
+    @State private var selectedSupplies: Set<String> = []
+    @State private var sharedList: StockShareDocument?
+    @State private var copiedList = false
+    @Environment(\.usesAtlantiqueDesign) private var atlantique
     @StateObject private var store = CeilingReferenceStore()
     @StateObject private var prices = SupplyPriceStore()
     @EnvironmentObject private var projectStore: ProjectStore
@@ -194,74 +199,56 @@ struct CombinedQuantityView: View {
                     ForEach(currentWorks.filter { $0.automaticLayout != nil }) { work in
                         if let automatic = work.automaticLayout,
                            automatic.configurationFingerprint == LayoutQuantityCalculator.configurationFingerprint(work) {
-                            Section("Calepinage automatique · " + work.name) {
-                                Text("Les besoins du plan complètent l’estimation du formulaire uniquement à la hausse. Marge incluse, sans ajout d’une seconde marge.").font(.footnote)
+                            Section {
+                                if atlantique {
+                                    DisclosureGroup("Calepinage automatique · " + work.name) {
+                                        Text("Les besoins du plan complètent l’estimation du formulaire uniquement à la hausse. Marge incluse, sans ajout d’une seconde marge.").font(.footnote)
+                                    }
+                                } else {
+                                    Text("Calepinage automatique · " + work.name).font(.headline)
+                                    Text("Les besoins du plan complètent l’estimation du formulaire uniquement à la hausse. Marge incluse, sans ajout d’une seconde marge.").font(.footnote)
+                                }
                                 ForEach(automatic.warnings, id: \.self) { Text($0).font(.footnote).foregroundStyle(.orange) }
                             }
                         }
                     }
                     let toReview = currentWorks.filter(\.surveySourceNeedsReview)
                     if !toReview.isEmpty {
-                        Section("Quantités à contrôler") {
+                        Section {
                             ForEach(toReview) { work in
                                 VStack(alignment: .leading, spacing: 6) {
                                     Text(work.name).font(.headline)
                                     SurveySourceReviewNotice(work: work)
                                 }
                             }
-                        }
+                        } header: { sectionHeading("Quantités à contrôler") }
                     }
-                    Section("Ouvrages inclus") {
+                    Section {
                         if isLab {
                             DisclosureGroup("\(currentWorks.count) ouvrage(s)") { includedWorks }
                         } else {
                             includedWorks
                         }
                         LabeledContent("Surface totale", value: format(summary.totalArea) + " m²").fontWeight(.semibold)
-                    }
-                    Section("Fournitures totales indicatives") {
-                        ForEach(currentWorks.filter { $0.layoutQuantityTakeoff != nil || ($0.hasSavedLayout && $0.automaticLayout == nil && ($0.type == .ceilingOnFurring || $0.type == .ceilingOnRailsAndStuds)) }) { work in
-                            if LayoutQuantityCalculator.applicable(work) != nil {
-                                if isLab {
-                                    DisclosureGroup("Calcul affiné · \(work.name)") { takeoffExplanation(work) }
-                                        .font(.subheadline)
-                                } else { takeoffExplanation(work) }
-                            } else {
-                                Label("\(work.name) : le calepinage n’est pas exploitable pour le calcul détaillé. L’estimation du formulaire est affichée.",systemImage:"exclamationmark.triangle")
-                                    .font(.caption).foregroundStyle(.orange)
-                            }
-                        }
-                        if isLab {
-                            ForEach(shoppingRows(summary)) { line in
-                                shoppingSupplyRow(line)
-                            }
-                            if stockProjectID != nil {
-                                Button { addingSupply=true } label: { Label("Ajouter un produit",systemImage:"plus.circle").frame(minHeight:48) }
-                            }
-                        } else { ForEach(supplyRows(summary.supplies)) { row in
-                            if isLab {
-                                HStack(alignment: .firstTextBaseline, spacing: 20) {
-                                    Text(row.name).frame(maxWidth: .infinity, alignment: .leading)
-                                    Text(row.value).fontWeight(.bold).foregroundStyle(ContrastPalette.blue)
-                                        .multilineTextAlignment(.trailing)
-                                }.padding(.vertical, 8)
-                            } else { LabeledContent(row.name, value: row.value) }
-                        } }
-                    }
+                    } header: { sectionHeading("Ouvrages inclus") }
+                    supplySection(summary)
                 }
                 .scrollContentBackground(isLab ? .hidden : .visible)
-                .background(isLab ? ContrastPalette.paper : Color(uiColor: .systemGroupedBackground))
+                .background(atlantique ? Atlantique.Palette.blue : isLab ? ContrastPalette.paper : Color(uiColor: .systemGroupedBackground))
                 .safeAreaInset(edge: .bottom) {
+                    if atlantique { exportActions(summary) } else {
                             Button { choosingSuppliesToExport = true } label: {
                                     Label("Partager / copier", systemImage: "square.and.arrow.up")
                                         .font(.headline).frame(maxWidth: .infinity, minHeight: 50)
                                         .foregroundStyle(.white).background(ContrastPalette.ink, in: RoundedRectangle(cornerRadius: 17))
                             }.padding().background(.regularMaterial)
+                    }
                 }
             }
         }
         .navigationTitle(title)
         .navigationBarTitleDisplayMode(.inline)
+        .atlantiquePage(title)
         .task { if !works.isEmpty && store.catalogue == nil { await store.load() } }
         .task { if !works.isEmpty { await prices.load() } }
         .alert("Liste de courses",isPresented:Binding(get:{ shoppingError != nil },set:{ if !$0 { shoppingError=nil } })) {
@@ -304,14 +291,119 @@ struct CombinedQuantityView: View {
                     supplies:isLab ? shoppingRows(summary).map { .init(name:$0.name,quantity:$0.quantity,unit:$0.unit) } : summary.supplies)
             }
         }
+        .sheet(item: $sharedList) { file in StockShareSheet(url: file.url) }
+    }
+
+    private func supplySection(_ summary: CombinedQuantitySummary) -> some View {
+        Section {
+            ForEach(currentWorks.filter { $0.layoutQuantityTakeoff != nil || ($0.hasSavedLayout && $0.automaticLayout == nil && ($0.type == .ceilingOnFurring || $0.type == .ceilingOnRailsAndStuds)) }) { work in
+                if LayoutQuantityCalculator.applicable(work) != nil {
+                    if isLab {
+                        DisclosureGroup("Calcul affiné · \(work.name)") { takeoffExplanation(work) }.font(.subheadline)
+                    } else { takeoffExplanation(work) }
+                } else {
+                    Label("\(work.name) : le calepinage n’est pas exploitable pour le calcul détaillé. L’estimation du formulaire est affichée.", systemImage: "exclamationmark.triangle")
+                        .font(.caption).foregroundStyle(.orange)
+                }
+            }
+            if isLab {
+                if atlantique && selectingSupplies {
+                    Button(selectedSupplies.count == exportableRows(summary).count ? "Tout désélectionner" : "Tout sélectionner") {
+                        selectedSupplies = selectedSupplies.count == exportableRows(summary).count ? [] : Set(exportableRows(summary).map(\.id))
+                        copiedList = false
+                    }.frame(minHeight: 44)
+                }
+                ForEach(shoppingRows(summary)) { line in
+                    if atlantique && selectingSupplies { selectableSupply(line) }
+                    else { shoppingSupplyRow(line) }
+                }
+                if stockProjectID != nil && !selectingSupplies {
+                    Button { addingSupply = true } label: {
+                        Label("Ajouter un produit", systemImage: "plus.circle").frame(minHeight: 48)
+                    }
+                }
+            } else {
+                ForEach(supplyRows(summary.supplies)) { row in LabeledContent(row.name, value: row.value) }
+            }
+        } header: { sectionHeading(atlantique ? "Fournitures" : "Fournitures totales indicatives") }
+    }
+
+    private func selectableSupply(_ line: ShoppingSupplyRow) -> some View {
+        Button {
+            if !selectedSupplies.insert(line.id).inserted { selectedSupplies.remove(line.id) }
+            copiedList = false
+        } label: {
+            HStack(spacing: 12) {
+                Image(systemName: selectedSupplies.contains(line.id) ? "checkmark.circle.fill" : "circle")
+                    .font(.title2).foregroundStyle(Atlantique.Palette.actionInk)
+                VStack(alignment: .leading, spacing: 7) {
+                    HStack(alignment: .firstTextBaseline) {
+                        Text(line.name).frame(maxWidth: .infinity, alignment: .leading)
+                        Text("\(format(line.quantity)) \(line.unit)").bold().foregroundStyle(Atlantique.Palette.blue)
+                    }.frame(minHeight: 44)
+                    if line.modified {
+                        Text("Initial : \(line.originalName) · \(format(line.originalQuantity)) \(line.unit)")
+                            .font(Atlantique.Typography.caption).foregroundStyle(.secondary)
+                    }
+                }.foregroundStyle(Atlantique.Palette.ink).padding(.vertical, 8)
+            }
+        }.buttonStyle(.plain).disabled(!line.quantity.isFinite || line.quantity <= 0)
+            .accessibilityAddTraits(selectedSupplies.contains(line.id) ? .isSelected : [])
+    }
+
+    private func sectionHeading(_ title: String) -> some View {
+        Text(title).foregroundStyle(atlantique ? Color.white.opacity(0.9) : Color.secondary)
+    }
+
+    private func exportableRows(_ summary: CombinedQuantitySummary) -> [ShoppingSupplyRow] {
+        shoppingRows(summary).filter { $0.quantity.isFinite && $0.quantity > 0 }
+    }
+    private func exportText(_ summary: CombinedQuantitySummary) -> String {
+        let supplies = QuantityTextExport.shoppingSelection(shoppingRows(summary), selected: selectedSupplies)
+        return QuantityTextExport.text(projects: projectStore.projects.filter { Set(works.map(\.projectID)).contains($0.id) },
+                                       supplies: supplies, selected: Set(supplies.map(\.id)))
+    }
+    private func exportActions(_ summary: CombinedQuantitySummary) -> some View {
+        VStack(spacing: 8) {
+            if selectingSupplies {
+                HStack {
+                    Text("\(exportableRows(summary).filter { selectedSupplies.contains($0.id) }.count) fourniture(s)")
+                        .font(Atlantique.Typography.caption).foregroundStyle(.white)
+                    Spacer()
+                    Button("Annuler") { selectingSupplies = false; copiedList = false }
+                        .foregroundStyle(.white).frame(minHeight: 44)
+                }
+                HStack(spacing: 10) {
+                    Button {
+                        do {
+                            let url = FileManager.default.temporaryDirectory.appendingPathComponent("Quantitatif-\(UUID().uuidString.prefix(8)).txt")
+                            try exportText(summary).write(to: url, atomically: true, encoding: .utf8)
+                            sharedList = .init(url: url)
+                        } catch { shoppingError = "Impossible de préparer le partage : \(error.localizedDescription)" }
+                    } label: { Label("Partager", systemImage: "square.and.arrow.up") }
+                        .buttonStyle(AtlantiqueButtonStyle(kind: .primary))
+                    Button {
+                        UIPasteboard.general.string = exportText(summary); copiedList = true
+                    } label: { Label(copiedList ? "Copié" : "Copier le texte", systemImage: copiedList ? "checkmark" : "doc.on.doc") }
+                        .buttonStyle(AtlantiqueButtonStyle(kind: .secondary))
+                }.disabled(!exportableRows(summary).contains { selectedSupplies.contains($0.id) })
+            } else {
+                Button {
+                    selectedSupplies = Set(exportableRows(summary).map(\.id)); selectingSupplies = true; copiedList = false
+                } label: { Label("Partager / copier", systemImage: "square.and.arrow.up") }
+                    .buttonStyle(AtlantiqueButtonStyle(kind: .primary))
+                    .disabled(exportableRows(summary).isEmpty)
+                    .accessibilityIdentifier("quantity.selectForExport")
+            }
+        }.padding(.horizontal, 16).padding(.vertical, 8).background(Atlantique.Palette.blue)
     }
 
     private func shoppingSupplyRow(_ line:ShoppingSupplyRow) -> some View {
         return VStack(alignment:.leading,spacing:7) {
             Button { editingSupply=line } label: {
                 HStack(alignment:.firstTextBaseline) {
-                    Text(line.name).frame(maxWidth:.infinity,alignment:.leading).foregroundStyle(line.replaced ? .secondary : .primary)
-                    Text("\(format(line.quantity)) \(line.unit)").bold().foregroundStyle(line.replaced ? Color.secondary : ContrastPalette.blue)
+                    Text(line.name).frame(maxWidth:.infinity,alignment:.leading).foregroundStyle(line.replaced ? Color.secondary : atlantique ? Atlantique.Palette.ink : Color.primary)
+                    Text("\(format(line.quantity)) \(line.unit)").bold().foregroundStyle(line.replaced ? Color.secondary : atlantique ? Atlantique.Palette.blue : ContrastPalette.blue)
                 }.frame(minHeight:44)
             }.buttonStyle(.plain).disabled(stockProjectID == nil || line.replaced)
             if line.modified {
@@ -502,6 +594,11 @@ private struct ShoppingProductEditor: View {
 }
 
 enum QuantityTextExport {
+    /// Keep selection tied to source identities even after a row is renamed or its stock deduction changes.
+    static func shoppingSelection(_ rows: [ShoppingSupplyRow], selected: Set<String>) -> [CombinedSupply] {
+        rows.filter { selected.contains($0.id) && $0.quantity.isFinite && $0.quantity > 0 }
+            .map { .init(name: $0.name, quantity: $0.quantity, unit: $0.unit) }
+    }
     static func eligible(_ supplies:[CombinedSupply]) -> [CombinedSupply] {
         supplies.filter { $0.quantity.isFinite && $0.quantity>0 }
     }
