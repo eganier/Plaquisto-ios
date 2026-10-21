@@ -11,7 +11,13 @@ struct PlaquistoLabApp: App {
     @StateObject private var projects = ProjectStore()
     var body: some Scene {
         WindowGroup {
-            ContrastLabRoot().environmentObject(projects)
+            Group {
+                if ProcessInfo.processInfo.arguments.contains("-atlantique-gallery") {
+                    AtlantiqueGallery()
+                } else {
+                    ContrastLabRoot()
+                }
+            }.environmentObject(projects)
                 .task { try? await ScanEvidenceStore.shared.prune() }
                 .environment(\.interfacePresentation, .contrastLab)
                 .preferredColorScheme(.light)

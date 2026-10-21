@@ -30,6 +30,9 @@ struct ContrastLabRoot: View {
                         Text("Vos projets de test sont séparés de ceux de Plaquisto.").font(.subheadline).foregroundStyle(.secondary)
                     }
                     Section {
+                        NavigationLink("Composants Atlantique") {
+                            AtlantiqueGallery()
+                        }
                         NavigationLink("Ouvrir l’interface actuelle") {
                             ProjectsHomeView().environment(\.interfacePresentation, .standard)
                         }

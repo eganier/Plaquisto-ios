@@ -4,6 +4,7 @@ import UIKit
 /// Editing grammar only. Each caller retains ownership of its business value,
 /// units, empty-value policy and validation.
 enum PlaquistoNumericInput {
+    static let keypadRows = [["7", "8", "9"], ["4", "5", "6"], ["1", "2", "3"], ["0", ",", "delete"]]
     static func replacing(_ text: String, range: NSRange, with replacement: String,
                           integer: Bool, signed: Bool) -> String? {
         guard let swiftRange = Range(range, in: text) else { return nil }
@@ -40,12 +41,13 @@ struct PlaquistoNumericField: UIViewRepresentable {
     var onValidate: () -> Void = {}
     @Environment(\.isEnabled) private var enabled
     @Environment(\.multilineTextAlignment) private var alignment
+    @Environment(\.usesAtlantiqueDesign) private var atlantique
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
     func makeUIView(context: Context) -> UITextField {
         let field = UITextField()
         field.placeholder = placeholder
-        field.font = .preferredFont(forTextStyle: .body)
+        field.font = atlantique ? Atlantique.Typography.uiFont() : .preferredFont(forTextStyle: .body)
         field.adjustsFontForContentSizeCategory = true
         field.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         field.delegate = context.coordinator
@@ -64,9 +66,12 @@ struct PlaquistoNumericField: UIViewRepresentable {
         context.coordinator.parent = self
         field.isEnabled = enabled
         field.placeholder = placeholder
+        field.font = atlantique ? Atlantique.Typography.uiFont() : .preferredFont(forTextStyle: .body)
+        field.textColor = atlantique ? UIColor(Atlantique.Palette.ink) : .label
+        field.tintColor = atlantique ? UIColor(Atlantique.Palette.actionInk) : nil
         field.textAlignment = alignment == .trailing ? .right : alignment == .center ? .center : .left
         if field.text != text { field.text = text }
-        if old.integer != integer || old.signed != signed {
+        if old.integer != integer || old.signed != signed || old.atlantique != atlantique {
             context.coordinator.installKeyboard()
             if field.isFirstResponder { field.reloadInputViews() }
         }
@@ -89,7 +94,7 @@ struct PlaquistoNumericField: UIViewRepresentable {
         func installKeyboard() {
             let generation = UUID()
             keyboardGeneration = generation
-            field?.inputView = PlaquistoNumericInputView(integer: parent.integer, signed: parent.signed,
+            field?.inputView = PlaquistoNumericInputView(integer: parent.integer, signed: parent.signed, atlantique: parent.atlantique,
                 key: { [weak self] in self?.press($0) },
                 close: { [weak self] validate in
                     guard let self, self.keyboardGeneration == generation,
@@ -168,8 +173,8 @@ private final class PlaquistoNumericInputView: UIInputView {
     private var panelHeight: NSLayoutConstraint!
     private var dragTranslation: CGFloat = 0
     private var fullHeight: CGFloat { landscape ? 245 : 320 }
-    init(integer: Bool, signed: Bool, key: @escaping (String) -> Void, close: @escaping (Bool) -> Void) {
-        host = UIHostingController(rootView: PlaquistoNumericKeypad(integer: integer, signed: signed, key: key, close: close))
+    init(integer: Bool, signed: Bool, atlantique: Bool, key: @escaping (String) -> Void, close: @escaping (Bool) -> Void) {
+        host = UIHostingController(rootView: PlaquistoNumericKeypad(integer: integer, signed: signed, key: key, close: close, atlantique: atlantique))
         // iOS may still supply a backing plate even with a transparent input
         // view. Resize the actual input area, not an offset inside that plate.
         super.init(frame: CGRect(x: 0, y: 0, width: 390, height: 320), inputViewStyle: .default)
@@ -177,7 +182,7 @@ private final class PlaquistoNumericInputView: UIInputView {
         backgroundColor = .clear
         clipsToBounds = true
         host.rootView = PlaquistoNumericKeypad(integer: integer, signed: signed, key: key, close: close,
-            drag: { [weak self] translation, animated in self?.resizeForDrag(translation, animated: animated) })
+            drag: { [weak self] translation, animated in self?.resizeForDrag(translation, animated: animated) }, atlantique: atlantique)
         host.view.backgroundColor = .clear
         host.view.translatesAutoresizingMaskIntoConstraints = false
         addSubview(host.view)
@@ -221,8 +226,10 @@ struct PlaquistoNumericKeypad: View {
     let key: (String) -> Void
     let close: (Bool) -> Void
     var drag: (CGFloat, Bool) -> Void = { _, _ in }
+    // Explicit: this view lives in a UIKit inputView and cannot inherit the form environment.
+    var atlantique = false
     @State private var closing = false
-    private let rows = [["7", "8", "9"], ["4", "5", "6"], ["1", "2", "3"], ["0", ",", "delete"]]
+    private let rows = PlaquistoNumericInput.keypadRows
 
     var body: some View {
         panel.allowsHitTesting(!closing)
@@ -257,12 +264,12 @@ struct PlaquistoNumericKeypad: View {
                                 Button { key(item) } label: {
                                     Group {
                                         if item == "delete" { Image(systemName: "delete.left").font(.system(size: 26)) }
-                                        else { Text(item).font(.system(size: 30, weight: .regular, design: .rounded)) }
+                                        else { Text(item).font(atlantique ? Atlantique.Typography.font(30, relativeTo: .title) : .system(size: 30, weight: .regular, design: .rounded)) }
                                     }
                                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                                     .contentShape(Rectangle())
                                 }
-                                .buttonStyle(NumericKeyStyle(secondary: item == "," || item == "delete"))
+                                .buttonStyle(NumericKeyStyle(secondary: item == "," || item == "delete", atlantique: atlantique))
                                 .disabled(item == "," && integer)
                                 .accessibilityLabel(item == "delete" ? "Supprimer" : item == "," ? "Virgule" : item)
                                 .accessibilityIdentifier("numeric.key.\(item)")
@@ -273,17 +280,18 @@ struct PlaquistoNumericKeypad: View {
                 Button { dismiss(validate: true) } label: {
                     VStack(spacing: 9) {
                         Image(systemName: "checkmark").font(.system(size: 28, weight: .semibold))
-                        Text("Valider").font(.system(size: 16, weight: .semibold)).minimumScaleFactor(0.7).lineLimit(1)
+                        Text("Valider").font(atlantique ? Atlantique.Typography.font(16, weight: .demi) : .system(size: 16, weight: .semibold)).minimumScaleFactor(0.7).lineLimit(1)
                     }
                     .frame(width: 68).frame(maxHeight: .infinity)
-                    .foregroundStyle(.blue)
-                    .background(.blue.opacity(0.14), in: RoundedRectangle(cornerRadius: 18))
+                    .foregroundStyle(atlantique ? Atlantique.Palette.blue : .blue)
+                    .background(atlantique ? Atlantique.Palette.validation : .blue.opacity(0.14), in: RoundedRectangle(cornerRadius: 18))
                     .contentShape(Rectangle())
                 }.buttonStyle(.plain).accessibilityIdentifier("numeric.validate")
             }
         }
         .padding(.horizontal, 10).padding(.bottom, 20)
         .background(.regularMaterial, in: UnevenRoundedRectangle(topLeadingRadius: 26, topTrailingRadius: 26))
+        .background(atlantique ? Atlantique.Palette.keyboard : .clear, in: UnevenRoundedRectangle(topLeadingRadius: 26, topTrailingRadius: 26))
     }
     private func dismiss(validate: Bool) {
         guard !closing else { return }
@@ -297,10 +305,11 @@ struct PlaquistoNumericKeypad: View {
 
 private struct NumericKeyStyle: ButtonStyle {
     var secondary: Bool
+    var atlantique = false
     @Environment(\.isEnabled) private var enabled
     func makeBody(configuration: Configuration) -> some View {
-        configuration.label.foregroundStyle(Color.primary.opacity(enabled ? 1 : 0.25))
-            .background(secondary ? Color(.tertiarySystemFill) : Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 12))
+        configuration.label.foregroundStyle((atlantique ? Atlantique.Palette.ink : Color.primary).opacity(enabled ? 1 : 0.25))
+            .background(atlantique ? (secondary ? Atlantique.Palette.disabled : .white) : (secondary ? Color(.tertiarySystemFill) : Color(.secondarySystemGroupedBackground)), in: RoundedRectangle(cornerRadius: 12))
             .overlay { RoundedRectangle(cornerRadius: 12).fill(.primary.opacity(configuration.isPressed ? 0.1 : 0)) }
     }
 }

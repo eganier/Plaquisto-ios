@@ -3,6 +3,77 @@ import SwiftUI
 @testable import Plaquisto
 
 final class ToolCalculatorTests: XCTestCase {
+    func testAtlantiqueIsOptInAndPreservesStandardPresentation() {
+        let environment = EnvironmentValues()
+        XCTAssertFalse(environment.usesAtlantiqueDesign)
+        XCTAssertEqual(environment.interfacePresentation, .standard)
+    }
+
+    @MainActor func testAtlantiqueFontsExistOnIOS() {
+        for weight in Atlantique.Typography.Weight.allCases {
+            XCTAssertNotNil(UIFont(name: weight.rawValue, size: 17), weight.rawValue)
+            XCTAssertEqual(Atlantique.Typography.uiFont(weight: weight).fontName, weight.rawValue)
+        }
+    }
+
+    @MainActor func testAtlantiquePaletteMatchesApprovedBooks() {
+        func rgb(_ color: Color) -> [Int] {
+            var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+            XCTAssertTrue(UIColor(color).getRed(&r, green: &g, blue: &b, alpha: &a))
+            return [r, g, b].map { Int(($0 * 255).rounded()) }
+        }
+        XCTAssertEqual(rgb(Atlantique.Palette.blue), [40, 89, 130])
+        XCTAssertEqual(rgb(Atlantique.Palette.orange), [255, 138, 31])
+        XCTAssertEqual(rgb(Atlantique.Palette.ink), [23, 50, 74])
+        XCTAssertGreaterThanOrEqual(Atlantique.Metrics.touchTarget, 44)
+    }
+
+    func testR50KeypadOrderingAndUniqueKeys() {
+        XCTAssertEqual(PlaquistoNumericInput.keypadRows,
+                       [["7", "8", "9"], ["4", "5", "6"], ["1", "2", "3"], ["0", ",", "delete"]])
+        XCTAssertEqual(Set(PlaquistoNumericInput.keypadRows.flatMap { $0 }).count, 12)
+        XCTAssertNil(PlaquistoNumericInput.replacing("12", range: NSRange(location: 2, length: 0), with: ",", integer: true, signed: false))
+        XCTAssertEqual(PlaquistoNumericInput.replacing("12", range: NSRange(location: 2, length: 0), with: ".5", integer: false, signed: false), "12,5")
+    }
+
+    @MainActor func testAtlantiqueNumericFieldKeepsBindingUntilUserEdits() async throws {
+        var value = "12,3456"
+        let host = UIHostingController(rootView: AtlantiqueNumberRow(title: "Hauteur", unit: "cm",
+            text: Binding(get: { value }, set: { value = $0 })).atlantiqueDesign())
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 390, height: 844))
+        window.rootViewController = host; window.makeKeyAndVisible()
+        defer { window.isHidden = true; window.rootViewController = nil }
+        host.view.layoutIfNeeded()
+        try await Task.sleep(for: .milliseconds(200))
+        func findField(_ view: UIView) -> UITextField? {
+            if let field = view as? UITextField { return field }
+            return view.subviews.compactMap { findField($0) }.first
+        }
+        let field = try XCTUnwrap(findField(host.view))
+        XCTAssertEqual(field.font?.fontName, "AvenirNext-Regular")
+        XCTAssertEqual(field.text, "12,3456")
+        XCTAssertEqual(value, "12,3456")
+        XCTAssertNotNil(field.inputView)
+        field.text = "45,5"
+        field.sendActions(for: .editingChanged)
+        XCTAssertEqual(value, "45,5")
+    }
+
+    @MainActor func testAtlantiqueComponentsRenderWithAccessibilityTextSize() throws {
+        let content = VStack {
+            AtlantiqueCard {
+                Text("Plénum supplémentaire").font(Atlantique.Typography.heading)
+                AtlantiqueChoice(title: "Entraxe", options: [(40, "40 cm"), (60, "60 cm")], selection: .constant(60))
+            }
+            Button("Enregistrer") {}.buttonStyle(AtlantiqueButtonStyle()).disabled(true)
+            HStack { ForEach(AtlantiqueIcon.allCases.prefix(6), id: \.self) { AtlantiqueSymbol(icon: $0) } }
+        }.padding().frame(width: 390).atlantiqueDesign()
+            .environment(\.dynamicTypeSize, .accessibility1)
+        let image = try XCTUnwrap(ImageRenderer(content: content).uiImage)
+        XCTAssertEqual(image.size.width, 390)
+        XCTAssertGreaterThan(image.size.height, 200)
+    }
+
     func testFormMenuPreservesZeroBasedStepNumbersAndExcludesResult() {
         let choices = FormStepNavigation.choices(titles: ["Dimensions", "Isolation", "Parements", "Résultat"])
         XCTAssertEqual(choices.map(\.step), [0, 1, 2])

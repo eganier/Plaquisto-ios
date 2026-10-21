@@ -1,5 +1,6 @@
 build/
 build-new/
+build-atlantique/
 DerivedData/
 *.xcuserstate
 xcuserdata/
