@@ -145,6 +145,7 @@ struct LayoutPolygonAnnotations: View {
 }
 
 struct LayoutConstraintForm: View {
+    @Environment(\.usesAtlantiqueDesign) private var atlantique
     @Environment(\.dismiss) private var dismiss
     let selection: LayoutPolygonSelection
     let original: Surface2D
@@ -199,8 +200,8 @@ struct LayoutConstraintForm: View {
             .scrollDismissesKeyboard(.interactively)
             .navigationTitle(isAngle ? "Modifier l’angle" : "Modifier la cote").navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement:.cancellationAction) { Button("Annuler") { dismiss() } }
-                ToolbarItem(placement:.confirmationAction) { Button("Valider") { if update() { onSave(preview); dismiss() } }.disabled(error != nil) }
+                ToolbarItem(placement:.cancellationAction) { Button("Annuler") { dismiss() }.atlantiqueToolbarAction() }.atlantiqueToolbarBackground(atlantique)
+                ToolbarItem(placement:.confirmationAction) { Button("Valider") { if update() { onSave(preview); dismiss() } }.atlantiqueToolbarAction().disabled(error != nil) }.atlantiqueToolbarBackground(atlantique)
             }
             .onChange(of:value) { _,_ in _ = update() }
         }
@@ -287,9 +288,7 @@ struct LayoutManualContourEditor: View {
                 } else if let surface {
                     HStack(spacing:24) {
                         if atlantique {
-                            Picker("Afficher", selection: Binding(get: { showAngles ? 1 : 0 }, set: { showAngles = $0 == 1; showDimensions = $0 == 0 })) {
-                                Text("Cotes").tag(0); Text("Angles").tag(1)
-                            }.pickerStyle(.segmented).padding(.horizontal)
+                            AtlantiqueChoice(title: "Afficher", options: [(0, "Cotes"), (1, "Angles")], selection: Binding(get: { showAngles ? 1 : 0 }, set: { showAngles = $0 == 1; showDimensions = $0 == 0 })).padding(.horizontal)
                         } else {
                         Button { showDimensions.toggle() } label: {
                             LayoutVisibilityIcon(kind:.sheet,state:showDimensions ? .dimensioned : .hidden).frame(width:52,height:42)
@@ -468,8 +467,8 @@ struct LayoutManualContourEditor: View {
             .navigationTitle(title ?? (kind == .wall ? "Dessiner le mur" : "Dessiner le plafond")).navigationBarTitleDisplayMode(.inline)
             .atlantiqueFormPage(title ?? "Modifier le contour")
             .toolbar {
-                ToolbarItem(placement:.cancellationAction) { Button("Annuler") { dismiss() } }
-                ToolbarItem(placement:.confirmationAction) { Button("Utiliser") { if let surface { onSave(surface); dismiss() } }.disabled(surface == nil || drawing) }
+                ToolbarItem(placement:.cancellationAction) { Button("Annuler") { dismiss() }.atlantiqueToolbarAction() }.atlantiqueToolbarBackground(atlantique)
+                ToolbarItem(placement:.confirmationAction) { Button("Utiliser") { if let surface { onSave(surface); dismiss() } }.atlantiqueToolbarAction().disabled(surface == nil || drawing) }.atlantiqueToolbarBackground(atlantique)
             }
             .alert(topologyVertex != nil ? "Supprimer ce sommet ?" : "Ajouter un sommet ?",isPresented:$confirmingTopology) {
                 Button("Annuler",role:.cancel) {}

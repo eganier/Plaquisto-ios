@@ -431,10 +431,8 @@ struct ArchTemplateToolView: View {
                 Slider(value: $amplitude, in: 0...1).accessibilityLabel("Ampleur sur les côtés")
             }
             Section {
-                HStack {
-                    ToolNumberField(title: "Largeur", unit: "cm", value: $width)
-                    ToolNumberField(title: "Pas depuis le centre", unit: "cm", value: $spacing)
-                }
+                ToolNumberField(title: "Largeur", unit: "cm", value: $width)
+                ToolNumberField(title: "Pas depuis le centre", unit: "cm", value: $spacing)
             }
             Section {
                 NavigationLink("Table de traçage") {

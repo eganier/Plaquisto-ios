@@ -47,3 +47,27 @@ les cartes Ossature et les titres de section. La dernière passe visuelle du lot
 est INCOMPLÈTE : le Mac s’est verrouillé et l’automatisation d’interface ne pouvait
 plus accéder au simulateur. La compilation et les tests ne remplacent pas cette passe.
 Aucune écriture dans les projets réels. Aucun déploiement iPhone ni push GitHub.
+
+## Reprise de recette et corrections — 22 octobre 2026
+
+La passe interrompue ci-dessus a été reprise sur le simulateur iPhone 17 Pro,
+avec les projets de démonstration. Corrections d’affichage uniquement :
+
+- boutons de barre « Fermer », « Annuler » et « Utiliser » non comprimés ;
+- sélecteurs orange communs dans les outils techniques, le stock et le contour,
+  avec conservation du sélecteur natif hors thème Atlantique ;
+- titre Plénum et actions rapides du stock plus lisibles ;
+- champs Largeur / Pas depuis le centre sur deux lignes et libellé de
+  conditionnement raccourci ; raccourci du formulaire renommé « Ossature ».
+
+Contrôle visuel du binaire Lab corrigé : Ossature et Fixations, changements
+Simples/Doublés et 40/60 cm dans Hauteur de cloison, champs du gabarit d’arche,
+famille Vis et fixations et saisie du conditionnement, éditeur de sol et bascule
+Cotes/Angles. Les essais de stock et de dessin ont été quittés sans enregistrement.
+Les matériaux de verre/transparence existants sont conservés sans nouvelle retouche.
+
+Suite complète : **661 tests réussis, aucun échec ni test ignoré**, dont deux
+nouveaux tests de rendu (largeur des actions et sélecteurs sur petits écrans /
+texte agrandi). Résultat : `Test-Plaquisto-2026.10.21_23-59-35-+0200.xcresult`.
+Compilation finale PlaquistoLab réussie ; binaire installé sur le simulateur
+uniquement. La recette capteurs et gestes sur iPhone réel reste à effectuer.

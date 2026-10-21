@@ -583,7 +583,7 @@ private struct LabWorkView: View {
                 .sheet(isPresented: $configuration) {
                     NavigationStack {
                         LabWorkConfigurationView(projectID: projectID, workID: workID)
-                            .toolbar { Button("Fermer") { configuration = false } }
+                            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Fermer") { configuration = false }.atlantiqueToolbarAction() }.atlantiqueToolbarBackground() }
                     }.presentationDetents([.medium, .large]).presentationDragIndicator(.visible)
                 }
                 .sheet(isPresented: $rename) {
@@ -629,7 +629,7 @@ private struct LabWorkConfigurationView: View {
                     AtlantiqueSection("Modifier un réglage") {
                         ForEach(shortcuts(work)) { shortcut in
                             Button { editing = shortcut } label: {
-                                HStack { Text(shortcut.title); Spacer(); Image(systemName:"chevron.right").font(Atlantique.Typography.caption) }
+                                HStack { Text(work.type == .ceilingOnFurring && shortcut.step == 3 ? "Ossature" : shortcut.title); Spacer(); Image(systemName:"chevron.right").font(Atlantique.Typography.caption) }
                                     .frame(minHeight:44).contentShape(Rectangle())
                             }.accessibilityIdentifier("lab.configuration.step.\(shortcut.step)")
                         }
@@ -646,7 +646,7 @@ private struct LabWorkConfigurationView: View {
                         SavedWorkView(work:work)
                             .environment(\.configurationEntryStep,shortcut.step)
                             .toolbar {
-                                ToolbarItem(placement:.cancellationAction) { Button("Fermer") { editing=nil }.atlantiqueToolbarAction() }
+                                ToolbarItem(placement:.cancellationAction) { Button("Fermer") { editing=nil }.atlantiqueToolbarAction() }.atlantiqueToolbarBackground()
                             }
                     }.interactiveDismissDisabled()
                 }

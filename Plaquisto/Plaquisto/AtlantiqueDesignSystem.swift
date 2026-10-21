@@ -93,10 +93,12 @@ private struct AtlantiqueToolbarTextStyle: ButtonStyle {
     @Environment(\.isEnabled) private var enabled
     func makeBody(configuration: Configuration) -> some View {
         configuration.label.font(Atlantique.Typography.font(15, weight: .demi))
+            .lineLimit(1).fixedSize(horizontal: true, vertical: false)
             .foregroundStyle(enabled ? Atlantique.Palette.actionInk : Atlantique.Palette.muted)
             .padding(.horizontal, 12).frame(minHeight: 44)
             .background(enabled ? Atlantique.Palette.surface : Atlantique.Palette.disabled, in: RoundedRectangle(cornerRadius: 12))
             .opacity(configuration.isPressed ? 0.8 : 1)
+            .fixedSize(horizontal: true, vertical: false)
     }
 }
 
@@ -448,6 +450,23 @@ struct AtlantiqueChoice<Value: Hashable>: View {
                     .accessibilityAddTraits(selection == option.value ? .isSelected : [])
             }
         }.padding(4).background { AtlantiqueSurface(radius: 14) }
+    }
+}
+
+/// Uses the approved selection treatment only in Lab; the legacy picker is unchanged.
+struct AtlantiqueSegmentedChoice<Value: Hashable>: View {
+    let title: String
+    let options: [(value: Value, title: String)]
+    @Binding var selection: Value
+    @Environment(\.usesAtlantiqueDesign) private var enabled
+    var body: some View {
+        if enabled {
+            AtlantiqueChoice(title: title, options: options, selection: $selection)
+        } else {
+            Picker(title, selection: $selection) {
+                ForEach(options, id: \.value) { Text($0.title).tag($0.value) }
+            }.pickerStyle(.segmented)
+        }
     }
 }
 

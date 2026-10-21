@@ -3,6 +3,31 @@ import SwiftUI
 @testable import Plaquisto
 
 final class ToolCalculatorTests: XCTestCase {
+    @MainActor func testToolbarTextDoesNotCompressToIconWidth() throws {
+        for title in ["Fermer", "Annuler", "Utiliser", "Enregistrer"] {
+            let renderer = ImageRenderer(content: Button(title) {}.atlantiqueToolbarAction().atlantiqueDesign())
+            renderer.proposedSize = ProposedViewSize(width: 44, height: 44)
+            let image = try XCTUnwrap(renderer.uiImage)
+            XCTAssertGreaterThan(image.size.width, 60, title)
+            XCTAssertGreaterThanOrEqual(image.size.height, 44, title)
+        }
+    }
+
+    @MainActor func testSegmentedChoicesRenderAtPhoneWidthsWithoutChangingSelection() throws {
+        for width: CGFloat in [320, 390] {
+            for size in [DynamicTypeSize.large, .accessibility1] {
+                var selected = true
+                let view = AtlantiqueSegmentedChoice(title: "Saisie", options: [(false, "Unité"), (true, "Conditionnement")],
+                    selection: Binding(get: { selected }, set: { selected = $0 }))
+                    .frame(width: width).atlantiqueDesign().environment(\.dynamicTypeSize, size)
+                let image = try XCTUnwrap(ImageRenderer(content: view).uiImage)
+                XCTAssertEqual(image.size.width, width)
+                XCTAssertGreaterThanOrEqual(image.size.height, 48)
+                XCTAssertTrue(selected)
+            }
+        }
+    }
+
     func testAdjustableArchUsesSymmetricCentreBasedMeasurements() throws {
         let points = ArchCalculator.adjustable(width:120,rise:60,amplitude:0.5,spacing:20)
         XCTAssertEqual(points.map(\.x),[0,20,40,60,80,100,120])

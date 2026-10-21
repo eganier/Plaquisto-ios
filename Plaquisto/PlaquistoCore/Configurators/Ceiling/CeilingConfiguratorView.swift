@@ -991,6 +991,7 @@ struct CeilingConfiguratorView: View {
                 }
             } header: {
                 Text(plenumSectionTitle)
+                    .foregroundStyle(atlantique ? Color.white : .secondary)
             }
             Section {
                 if isWoodSupport {

@@ -117,14 +117,10 @@ struct CeilingSpanToolView: View {
                 Section {
                     if atlantique {
                         Picker("Type de parement", selection: $facing) { ForEach(availableFacings, id: \.self) { Text(ceilingFacingLabel($0, options: options)).tag($0) } }
-                        Picker("Configuration", selection: $layers) { ForEach(availableLayers, id: \.self) { Text(liningLayerTitle($0)).tag($0) } }.pickerStyle(.segmented)
+                        AtlantiqueSegmentedChoice(title: "Configuration", options: availableLayers.map { ($0, liningLayerTitle($0)) }, selection: $layers)
                     }
                     selectorTitle("Configuration des montants") {
-                        Picker("Configuration des montants", selection: $findAssembly) {
-                            ForEach(PartitionAssemblyFilter.allCases) { Text($0.rawValue).tag($0) }
-                        }
-                        .labelsHidden()
-                        .pickerStyle(.segmented)
+                        AtlantiqueSegmentedChoice(title: "Configuration des montants", options: PartitionAssemblyFilter.allCases.map { ($0, $0.rawValue) }, selection: $findAssembly)
                     }
                 }
                 AtlantiqueSection("Configurations compatibles") {
@@ -274,12 +270,12 @@ struct PartitionHeightToolView: View {
                 Picker("Système", selection: $selectedFrame) { ForEach(frames, id: \.self) { Text($0).tag($0) } }
             }
             AtlantiqueSection("Montants") {
-                Picker("Configuration des montants", selection: $doubled) { Text("Simples").tag(false); Text("Doublés").tag(true) }.pickerStyle(.segmented)
-                Picker("Entraxe des montants", selection: $spacing) { Text("40 cm").tag(0.4); Text("60 cm").tag(0.6) }.pickerStyle(.segmented)
+                AtlantiqueSegmentedChoice(title: "Configuration des montants", options: [(false, "Simples"), (true, "Doublés")], selection: $doubled)
+                AtlantiqueSegmentedChoice(title: "Entraxe des montants", options: [(0.4, "40 cm"), (0.6, "60 cm")], selection: $spacing)
             }
             AtlantiqueSection("Parement") {
                 Picker("Type de parement", selection: $facing) { ForEach(verifyFacings, id: \.self) { Text($0).tag($0) } }
-                Picker("Configuration", selection: $layers) { ForEach(verifyLayers, id: \.self) { Text(layerTitle($0)).tag($0) } }.pickerStyle(.segmented)
+                AtlantiqueSegmentedChoice(title: "Configuration", options: verifyLayers.map { ($0, layerTitle($0)) }, selection: $layers)
             }
             compatibility(maximum: selectedMaximum, requested: height)
             Section { Button("Réinitialiser") { height = 0; spacing = 0.4; doubled = false; selectedFrame = frames.first ?? ""; layers = 1; normalizeSelections() } }
@@ -572,7 +568,7 @@ struct LiningHeightToolView: View {
             if !atlantique { Section { Picker("Mode", selection: $mode) { ForEach(TechnicalSearchMode.allCases) { Text($0.rawValue).tag($0) } }.pickerStyle(.segmented) } }
             if atlantique { atlantiqueContent } else {
             AtlantiqueSection("Système") {
-                Picker("Ossature", selection: $system) { Text("Lisses / fourrures").tag(0); Text("Rails / montants").tag(1) }.pickerStyle(.segmented)
+                AtlantiqueSegmentedChoice(title: "Ossature", options: [(0, "Lisses / fourrures"), (1, "Rails / montants")], selection: $system)
                 ToolNumberField(title: "Hauteur sous plafond", unit: "m", value: $height)
             }
             AtlantiqueSection("Parement") {
@@ -616,18 +612,18 @@ struct LiningHeightToolView: View {
         Group {
             AtlantiqueSection("Hauteur") { ToolNumberField(title: "Hauteur de doublage", unit: "m", value: $height) }
             AtlantiqueSection("Système") {
-                Picker("Ossature", selection: $system) { Text("Lisses / fourrures").tag(0); Text("Rails / montants").tag(1) }.pickerStyle(.segmented)
+                AtlantiqueSegmentedChoice(title: "Ossature", options: [(0, "Lisses / fourrures"), (1, "Rails / montants")], selection: $system)
                 if system == 1 { Picker("Système rail / montant", selection: $liningFrame) { ForEach(liningFrames, id: \.self) { Text($0).tag($0) } } }
             }
             if system == 1 {
                 AtlantiqueSection("Montants") {
-                    Picker("Configuration des montants", selection: $liningDoubled) { Text("Simples").tag(false); Text("Doublés").tag(true) }.pickerStyle(.segmented)
-                    Picker("Entraxe des montants", selection: $liningSpacing) { ForEach(liningSpacings, id: \.self) { Text("\(Int($0 * 100)) cm").tag($0) } }.pickerStyle(.segmented)
+                    AtlantiqueSegmentedChoice(title: "Configuration des montants", options: [(false, "Simples"), (true, "Doublés")], selection: $liningDoubled)
+                    AtlantiqueSegmentedChoice(title: "Entraxe des montants", options: liningSpacings.map { ($0, "\(Int($0 * 100)) cm") }, selection: $liningSpacing)
                 }
             }
             AtlantiqueSection("Parement") {
                 Picker("Type de parement", selection: $facing) { ForEach(availableFacings, id: \.self) { Text($0).tag($0) } }
-                Picker("Configuration", selection: $layers) { ForEach(availableLayers, id: \.self) { Text(liningLayerTitle($0)).tag($0) } }.pickerStyle(.segmented)
+                AtlantiqueSegmentedChoice(title: "Configuration", options: availableLayers.map { ($0, liningLayerTitle($0)) }, selection: $layers)
             }
             if system == 0 { furringContent }
             else { compatibility(maximum: selectedLining?.maximumHeight ?? 0, requested: height) }

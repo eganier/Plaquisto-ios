@@ -39,7 +39,7 @@ struct StockReservationView: View {
                 }
                 if let error { Text(error).foregroundStyle(.red) }
             }.navigationTitle("Réserver").atlantiqueFormPage("Réserver")
-                .toolbar { ToolbarItem(placement:.cancellationAction) { Button("Annuler") { dismiss() } } }
+                .toolbar { ToolbarItem(placement:.cancellationAction) { Button("Annuler") { dismiss() }.atlantiqueToolbarAction() } }
                 .safeAreaInset(edge:.bottom) {
                     Button {
                         do {
@@ -157,11 +157,13 @@ struct StockHomeView: View {
                             }
                         } else {
                             if let family {
-                                Button { self.family = nil; subcategory = "" } label: { Label(family.rawValue,systemImage:"chevron.left") }.frame(minHeight:44)
+                                Button { self.family = nil; subcategory = "" } label: { Label(family.rawValue,systemImage:"chevron.left") }.frame(minHeight:44).foregroundStyle(atlantique ? Color.white : .primary)
                                 Picker("Sous-catégorie",selection:$subcategory) {
                                     Text("Toutes les sous-catégories").tag("")
                                     ForEach(Array(Set(catalogue.filter { $0.family == family }.map(\.subcategory))).sorted(),id:\.self) { Text($0).tag($0) }
                                 }.pickerStyle(.menu).frame(minHeight:44)
+                                    .padding(.horizontal, atlantique ? 12 : 0)
+                                    .background(atlantique ? Color.white : Color.clear, in: RoundedRectangle(cornerRadius: 12))
                             }
                             if filteredProducts.isEmpty { Text("Aucune référence pour cette recherche.").foregroundStyle(.secondary) }
                             LazyVStack(spacing:10) {
@@ -293,7 +295,7 @@ struct StockHomeView: View {
     private func quickButton(_ product:StockProduct,_ kind:StockMovement) -> some View {
         Button { quickMovement = .init(product:product,kind:kind) } label: {
             Label(kind.rawValue,systemImage:atlantique ? (kind == .entry ? "arrow.up" : "arrow.down") : kind.symbol).font(.subheadline.bold())
-                .frame(maxWidth:.infinity,minHeight:48)
+                .frame(maxWidth:.infinity,minHeight:48).foregroundStyle(.white)
         }.buttonStyle(.borderedProminent).tint(atlantique ? (kind == .entry ? Atlantique.Palette.success : Atlantique.Palette.danger) : .blue)
             .disabled(stock.loadError != nil || (kind == .exit && (stock.entry(product.id)?.quantity ?? 0)<=0))
     }
@@ -382,7 +384,7 @@ private struct StockCustomProductView: View {
                 Text("Un produit personnel n’a pas de prix Admin tant qu’il n’est pas référencé. Utilisez une référence du catalogue quand elle existe.").font(.caption)
             }.navigationTitle("Nouveau produit").atlantiqueFormPage("Nouveau produit")
                 .safeAreaInset(edge:.bottom) { Button { done(.init(name:name,unit:unit,family:family)) } label: { StockActionLabel(title:"Continuer",symbol:"arrow.right") }.padding().disabled(name.trimmingCharacters(in:.whitespaces).isEmpty) }
-                .toolbar { ToolbarItem(placement:.cancellationAction) { Button("Annuler") { dismiss() } } }
+                .toolbar { ToolbarItem(placement:.cancellationAction) { Button("Annuler") { dismiss() }.atlantiqueToolbarAction() } }
         }
     }
 }
@@ -461,7 +463,7 @@ private struct StockMovementView: View {
                     Text("Actuellement : \(StockQuantity.text(stock.entry(product.id)?.quantity ?? 0)) \(product.unit)").foregroundStyle(.secondary)
                 }
                 AtlantiqueSection(kind == .inventory ? "Quantité réellement présente" : "Quantité à \(kind == .entry ? "ajouter" : "sortir")") {
-                    Picker("Saisie",selection:$usesPack) { Text(product.unit).tag(false); Text("Conditionnement").tag(true) }.pickerStyle(.segmented)
+                    AtlantiqueSegmentedChoice(title: "Saisie", options: [(false, product.unit), (true, "Conditionnement")], selection: $usesPack)
                         .onChange(of:usesPack) { _,_ in quantity = atlantique && usesPack ? "0" : ""; partialPack = 0 }
                     HStack {
                         TextField("Quantité",text:$quantity).keyboardType(.decimalPad).font(.largeTitle.bold()).focused($focused)
@@ -469,7 +471,7 @@ private struct StockMovementView: View {
                     }.frame(minHeight:64)
                     if usesPack {
                         if atlantique {
-                            HStack { Text("Contenu d’une unité de conditionnement"); TextField("Contenu", text: $packSize).keyboardType(.decimalPad).focused($focused).multilineTextAlignment(.trailing); Text(product.unit) }
+                            HStack { Text("Contenu du conditionnement"); TextField("Contenu", text: $packSize).keyboardType(.decimalPad).focused($focused).multilineTextAlignment(.trailing); Text(product.unit) }
                             Picker("Conditionnement", selection: $packName) { ForEach(["boîte","sac","seau","pot","rouleau","unité","plaque","paquet"], id: \.self) { Text($0).tag($0) } }
                             LabeledContent("Conditionnement entamé", value: "\(Int((partialPack * 100).rounded())) %")
                             Slider(value: $partialPack, in: 0...1, step: 0.01).accessibilityLabel("Remplissage du conditionnement entamé")
@@ -514,7 +516,7 @@ private struct StockMovementView: View {
                     }
                     initializedPack = true
                 }
-                .toolbar { ToolbarItem(placement:.cancellationAction) { Button("Annuler") { dismiss() } }; ToolbarItemGroup(placement:.keyboard) { Spacer(); Button("Terminé") { focused = false } } }
+                .toolbar { ToolbarItem(placement:.cancellationAction) { Button("Annuler") { dismiss() }.atlantiqueToolbarAction() }; ToolbarItemGroup(placement:.keyboard) { Spacer(); Button("Terminé") { focused = false } } }
                 .safeAreaInset(edge:.bottom) {
                     Button {
                         focused = false
