@@ -532,7 +532,10 @@ final class ProjectStore: ObservableObject {
         // Insert the draft only in this transaction: failed validation or abandoned editors
         // must never leave an empty component in persistent storage.
         if !next[i].works[j].components.contains(where: { $0.id == componentID }), let newComponent {
-            guard newComponent.id == componentID, newComponent.surface == nil, newComponent.plans.isEmpty,
+            // A dimensioned ceiling draft already carries its rectangular support.
+            // It remains unsaved until this transaction; validate the submitted
+            // document below rather than rejecting that initial geometry.
+            guard newComponent.id == componentID, newComponent.surveySource == nil, newComponent.plans.isEmpty,
                   !newComponent.name.trimmed.isEmpty,
                   !next[i].works[j].components.contains(where: {
                       $0.name.normalizedForComparison == newComponent.name.normalizedForComparison

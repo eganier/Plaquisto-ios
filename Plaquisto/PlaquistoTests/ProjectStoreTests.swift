@@ -1665,6 +1665,32 @@ final class ProjectStoreTests: XCTestCase {
         XCTAssertEqual(store.project(id: project)!.works.first { $0.id == work }!.components.count, 1)
     }
 
+    func testDimensionedCeilingDraftSavesThroughRealWorkbookPath() throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let url = folder.appendingPathComponent("projects.json")
+        let store = ProjectStore(fileURL: url)
+        let project = try store.createProject(name: "Parcours réel", client: "", address: "", notes: "")
+        let payload = WorkConfiguration.ceiling(.init(length: 5, width: 4))
+        let id = try store.createConfiguredWork(projectID: project, name: "Plafond", type: .ceilingOnFurring,
+            payload: payload, roomID: nil, newRoomName: nil)
+        let draft = WorkLayoutDefaults.firstComponent(name: "Plafond partie A", configuration: payload)
+        let surface = try XCTUnwrap(draft.surface)
+        var document = WorkLayoutDefaults.document(surface: surface, configuration: payload)
+        document.layers[0].offset.x = 137
+        XCTAssertTrue(store.project(id: project)!.works.first!.components.isEmpty)
+        try store.saveComponentPlan(projectID: project, workID: id, componentID: draft.id, sideRoomID: nil,
+            document: document, expectedGeometryRevision: draft.geometryRevision, newComponent: draft)
+        let reopened = try XCTUnwrap(ProjectStore(fileURL: url).project(id: project)?.works.first)
+        XCTAssertEqual(reopened.components.count, 1)
+        XCTAssertEqual(reopened.components[0].surface, surface)
+        XCTAssertEqual(reopened.components[0].plans[0].layers[0].offset.x, 137)
+        XCTAssertNotNil(reopened.layoutQuantityTakeoff)
+        try store.saveComponentPlan(projectID: project, workID: id, componentID: draft.id, sideRoomID: nil,
+            document: document, newComponent: draft)
+        XCTAssertEqual(store.project(id: project)?.works.first?.components.count, 1)
+    }
+
     func testLayoutExistenceIgnoresLegacyEmptyComponentsAndIncludesMultiplePlans() {
         var work = summaryWork(.ceiling(.init()), type: .ceilingOnFurring)
         var component = WorkComponentRecord(name: "Ancien brouillon")

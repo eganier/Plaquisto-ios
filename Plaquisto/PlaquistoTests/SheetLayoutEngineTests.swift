@@ -1979,7 +1979,7 @@ final class SheetLayoutEngineTests: XCTestCase {
             LayoutBounds(min: .zero, max: .init(x: 1200, y: 8000)).polygon,
             offcutCeiling().contour
         ]
-        for size in [CGSize(width: 343, height: 230), .init(width: 358, height: 430), .init(width: 398, height: 650)] {
+        for size in [CGSize(width: 343, height: 173), .init(width: 343, height: 230), .init(width: 358, height: 430), .init(width: 398, height: 650)] {
             for contour in contours {
                 for angle in [0.0, 0.6, Double.pi / 2] {
                     let bounds = LayoutViewport.fittedBounds(contour, rotation: angle, paddingFraction: 0)

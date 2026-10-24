@@ -19,7 +19,11 @@ struct LayoutViewport {
     static func initialEditingSize(_ size: CGSize, stableControls: Bool = false) -> CGSize {
         // The book interface has a fixed dock: use its available height instead
         // of reserving room for controls that will never expand over the plan.
-        if stableControls { return .init(width: size.width, height: max(1, size.height - min(50, size.height * 0.15))) }
+        if stableControls {
+            // scale already subtracts 70 pt. Reserve the actual top toolbar
+            // and bottom breathing room only, including very short SE canvases.
+            return .init(width: size.width, height: max(1, size.height + 70 - min(64, size.height * 0.3) - 24))
+        }
         return .init(width: size.width, height: min(size.height, max(180, size.width * 0.95)))
     }
     func upperFramingPan(contour: [LayoutPoint], stableControls: Bool = false) -> CGSize {
