@@ -274,6 +274,11 @@ enum StockFailure: LocalizedError {
 }
 
 enum StockQuantity {
+    static func packed(complete: Double, partial: Double, size: Double) -> Double? {
+        guard complete.isFinite, complete >= 0, partial.isFinite, (0...1).contains(partial), size.isFinite, size > 0 else { return nil }
+        let total = (complete + partial) * size
+        return total.isFinite ? total : nil
+    }
     static func text(_ value:Double) -> String { value.formatted(.number.precision(.fractionLength(0...2))) }
     static func input(_ value:Double) -> String {
         let text = String(value)

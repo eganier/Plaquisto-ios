@@ -3,6 +3,244 @@ import SwiftUI
 @testable import Plaquisto
 
 final class ToolCalculatorTests: XCTestCase {
+    @MainActor func testBookOpeningDimensionsFitSideBySideWithoutChangingValues() throws {
+        for width: CGFloat in [280, 350] {
+            var length = 600.0, height = 1200.0
+            let fields = HStack(spacing: 16) {
+                LayoutDimensionField(title: "Largeur", millimetres: Binding(get: { length }, set: { length = $0 }))
+                Divider()
+                LayoutDimensionField(title: "Longueur", millimetres: Binding(get: { height }, set: { height = $0 }))
+            }.frame(width: width).fixedSize(horizontal: false, vertical: true).atlantiqueDesign()
+            let image = try XCTUnwrap(ImageRenderer(content: fields).uiImage)
+            XCTAssertEqual(image.size.width, width)
+            XCTAssertGreaterThanOrEqual(image.size.height, 44)
+            XCTAssertLessThan(image.size.height, 150)
+            XCTAssertEqual(length, 600)
+            XCTAssertEqual(height, 1200)
+        }
+    }
+
+    func testBookFacingPresentationPreservesExceptionalAllocations() {
+        XCTAssertTrue(Atlantique.Book.canUseSimpleFacingFields(areas: [20], total: 20))
+        XCTAssertTrue(Atlantique.Book.canUseSimpleFacingFields(areas: [20, 20], total: 20))
+        XCTAssertFalse(Atlantique.Book.canUseSimpleFacingFields(areas: [12, 20], total: 20))
+        XCTAssertFalse(Atlantique.Book.canUseSimpleFacingFields(areas: [], total: 20))
+        XCTAssertFalse(Atlantique.Book.canUseSimpleFacingFields(areas: [.nan], total: 20))
+        XCTAssertFalse(Atlantique.Book.canUseSimpleFacingFields(areas: [20], total: .infinity))
+        XCTAssertFalse(Atlantique.Book.canUseSimpleFacingFields(areas: [-1], total: -1))
+    }
+
+    @MainActor func testToolbarTextDoesNotCompressToIconWidth() throws {
+        for title in ["Fermer", "Annuler", "Utiliser", "Enregistrer"] {
+            let renderer = ImageRenderer(content: Button(title) {}.atlantiqueToolbarAction().atlantiqueDesign())
+            renderer.proposedSize = ProposedViewSize(width: 44, height: 44)
+            let image = try XCTUnwrap(renderer.uiImage)
+            XCTAssertGreaterThan(image.size.width, 60, title)
+            XCTAssertGreaterThanOrEqual(image.size.height, 44, title)
+        }
+    }
+
+    @MainActor func testBookSaveActionKeepsReadableSizeInBothStates() throws {
+        for enabled in [true, false] {
+            let renderer = ImageRenderer(content: Button("Enregistrer") {}
+                .atlantiqueToolbarAction(primary: true).disabled(!enabled).atlantiqueDesign())
+            renderer.proposedSize = ProposedViewSize(width: 44, height: 44)
+            let image = try XCTUnwrap(renderer.uiImage)
+            XCTAssertGreaterThan(image.size.width, 90)
+            XCTAssertGreaterThanOrEqual(image.size.height, 44)
+        }
+    }
+
+    @MainActor func testBookPickerRendersLongReferenceWithoutChangingSelection() throws {
+        for width: CGFloat in [280, 350] {
+            var selected = "biosource"
+            let field = AtlantiquePicker("Type d’isolant", selection: Binding(get: { selected }, set: { selected = $0 })) {
+                Text("Biosourcé · chanvre, lin, coton").tag("biosource")
+                Text("Laine de verre").tag("verre")
+            }.frame(width: width).atlantiqueDesign()
+            let image = try XCTUnwrap(ImageRenderer(content: field).uiImage)
+            XCTAssertEqual(image.size.width, width)
+            XCTAssertGreaterThan(image.size.height, 44)
+            XCTAssertEqual(selected, "biosource")
+        }
+    }
+
+    @MainActor func testSegmentedChoicesRenderAtPhoneWidthsWithoutChangingSelection() throws {
+        for width: CGFloat in [320, 390] {
+            for size in [DynamicTypeSize.large, .accessibility1] {
+                var selected = true
+                let view = AtlantiqueSegmentedChoice(title: "Saisie", options: [(false, "Unité"), (true, "Conditionnement")],
+                    selection: Binding(get: { selected }, set: { selected = $0 }))
+                    .frame(width: width).atlantiqueDesign().environment(\.dynamicTypeSize, size)
+                let image = try XCTUnwrap(ImageRenderer(content: view).uiImage)
+                XCTAssertEqual(image.size.width, width)
+                XCTAssertGreaterThanOrEqual(image.size.height, 48)
+                XCTAssertTrue(selected)
+            }
+        }
+    }
+
+    func testAdjustableArchUsesSymmetricCentreBasedMeasurements() throws {
+        let points = ArchCalculator.adjustable(width:120,rise:60,amplitude:0.5,spacing:20)
+        XCTAssertEqual(points.map(\.x),[0,20,40,60,80,100,120])
+        XCTAssertEqual(points.first?.y,0)
+        XCTAssertEqual(points.last?.y,0)
+        XCTAssertEqual(points[3].y,60,accuracy:0.0001)
+        XCTAssertEqual(points[4].y,sqrt(3200),accuracy:0.0001)
+        for i in points.indices { XCTAssertEqual(points[i].y,points[points.count-1-i].y,accuracy:0.0001) }
+        let narrow = ArchCalculator.adjustable(width:120,rise:60,amplitude:0,spacing:20)
+        let wide = ArchCalculator.adjustable(width:120,rise:60,amplitude:1,spacing:20)
+        XCTAssertLessThan(narrow[4].y,points[4].y)
+        XCTAssertGreaterThan(wide[4].y,points[4].y)
+        let uneven = ArchCalculator.adjustable(width:125,rise:40,amplitude:0.5,spacing:20)
+        XCTAssertEqual(uneven.filter { $0.x >= 62.5 }.map { $0.x-62.5 },[0,20,40,60,62.5])
+    }
+
+    func testAdjustableArchRejectsInvalidAndBoundsSampling() {
+        XCTAssertTrue(ArchCalculator.adjustable(width:0,rise:50,amplitude:0.5,spacing:10).isEmpty)
+        XCTAssertTrue(ArchCalculator.adjustable(width:120,rise:.nan,amplitude:0.5,spacing:10).isEmpty)
+        XCTAssertTrue(ArchCalculator.adjustable(width:120,rise:50,amplitude:2,spacing:10).isEmpty)
+        XCTAssertTrue(ArchCalculator.adjustable(width:120,rise:50,amplitude:0.5,spacing:0).isEmpty)
+        XCTAssertLessThanOrEqual(ArchCalculator.adjustable(width:120,rise:50,amplitude:0.5,spacing:0.000001).count,2003)
+    }
+
+    func testAtlantiqueIsOptInAndPreservesStandardPresentation() {
+        let environment = EnvironmentValues()
+        XCTAssertFalse(environment.usesAtlantiqueDesign)
+        XCTAssertEqual(environment.interfacePresentation, .standard)
+    }
+
+    @MainActor func testAtlantiqueFontsExistOnIOS() {
+        for weight in Atlantique.Typography.Weight.allCases {
+            XCTAssertNotNil(UIFont(name: weight.rawValue, size: 17), weight.rawValue)
+            XCTAssertEqual(Atlantique.Typography.uiFont(weight: weight).fontName, weight.rawValue)
+        }
+    }
+
+    @MainActor func testAtlantiquePaletteMatchesApprovedBooks() {
+        func rgb(_ color: Color) -> [Int] {
+            var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+            XCTAssertTrue(UIColor(color).getRed(&r, green: &g, blue: &b, alpha: &a))
+            return [r, g, b].map { Int(($0 * 255).rounded()) }
+        }
+        XCTAssertEqual(rgb(Atlantique.Palette.blue), [40, 89, 130])
+        XCTAssertEqual(rgb(Atlantique.Palette.orange), [255, 138, 31])
+        XCTAssertEqual(rgb(Atlantique.Palette.ink), [23, 50, 74])
+        XCTAssertGreaterThanOrEqual(Atlantique.Metrics.touchTarget, 44)
+    }
+
+    func testR50KeypadOrderingAndUniqueKeys() {
+        XCTAssertEqual(PlaquistoNumericInput.keypadRows,
+                       [["7", "8", "9"], ["4", "5", "6"], ["1", "2", "3"], ["0", ",", "delete"]])
+        XCTAssertEqual(Set(PlaquistoNumericInput.keypadRows.flatMap { $0 }).count, 12)
+        XCTAssertNil(PlaquistoNumericInput.replacing("12", range: NSRange(location: 2, length: 0), with: ",", integer: true, signed: false))
+        XCTAssertEqual(PlaquistoNumericInput.replacing("12", range: NSRange(location: 2, length: 0), with: ".5", integer: false, signed: false), "12,5")
+    }
+
+    @MainActor func testAtlantiqueNumericFieldKeepsBindingUntilUserEdits() async throws {
+        var value = "12,3456"
+        let host = UIHostingController(rootView: AtlantiqueNumberRow(title: "Hauteur", unit: "cm",
+            text: Binding(get: { value }, set: { value = $0 })).atlantiqueDesign())
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 390, height: 844))
+        window.rootViewController = host; window.makeKeyAndVisible()
+        defer { window.isHidden = true; window.rootViewController = nil }
+        host.view.layoutIfNeeded()
+        try await Task.sleep(for: .milliseconds(200))
+        func findField(_ view: UIView) -> UITextField? {
+            if let field = view as? UITextField { return field }
+            return view.subviews.compactMap { findField($0) }.first
+        }
+        let field = try XCTUnwrap(findField(host.view))
+        XCTAssertEqual(field.font?.fontName, "AvenirNext-Regular")
+        XCTAssertEqual(field.text, "12,3456")
+        XCTAssertEqual(value, "12,3456")
+        XCTAssertNotNil(field.inputView)
+        field.text = "45,5"
+        field.sendActions(for: .editingChanged)
+        XCTAssertEqual(value, "45,5")
+    }
+
+    @MainActor func testAtlantiqueComponentsRenderWithAccessibilityTextSize() throws {
+        let content = VStack {
+            AtlantiqueCard {
+                Text("Plénum supplémentaire").font(Atlantique.Typography.heading)
+                AtlantiqueChoice(title: "Entraxe", options: [(40, "40 cm"), (60, "60 cm")], selection: .constant(60))
+            }
+            Button("Enregistrer") {}.buttonStyle(AtlantiqueButtonStyle()).disabled(true)
+            HStack { ForEach(AtlantiqueIcon.allCases.prefix(6), id: \.self) { AtlantiqueSymbol(icon: $0) } }
+        }.padding().frame(width: 390).atlantiqueDesign()
+            .environment(\.dynamicTypeSize, .accessibility1)
+        let image = try XCTUnwrap(ImageRenderer(content: content).uiImage)
+        XCTAssertEqual(image.size.width, 390)
+        XCTAssertGreaterThan(image.size.height, 200)
+    }
+
+    func testFormMenuPreservesZeroBasedStepNumbersAndExcludesResult() {
+        let choices = FormStepNavigation.choices(titles: ["Dimensions", "Isolation", "Parements", "Résultat"])
+        XCTAssertEqual(choices.map(\.step), [0, 1, 2])
+        XCTAssertEqual(choices.map(\.title), ["Dimensions", "Isolation", "Parements"])
+    }
+
+    func testFormMenuPreservesOneBasedStepNumbers() {
+        let choices = FormStepNavigation.choices(titles: ["Dimensions", "Parements", "Bandes", "Résultat"], firstStep: 1)
+        XCTAssertEqual(choices.map(\.step), [1, 2, 3])
+        XCTAssertEqual(choices.last?.title, "Bandes")
+    }
+
+    func testFormMenuHidesSuspensionStepsForSelfSupportingCeiling() {
+        let titles = ["Dimensions", "Isolation", "Parements", "Ossature", "Support", "Plénum", "Suspension", "Bandes", "Résultat"]
+        let choices = FormStepNavigation.choices(titles: titles, visibleSteps: [0, 1, 2, 3, 7, 8])
+        XCTAssertEqual(choices.map(\.step), [0, 1, 2, 3, 7])
+        XCTAssertFalse(choices.contains { ["Support", "Plénum", "Suspension", "Résultat"].contains($0.title) })
+    }
+
+    func testFormMenuDoesNotInventEntriesForEmptyOrResultOnlyForms() {
+        XCTAssertTrue(FormStepNavigation.choices(titles: []).isEmpty)
+        XCTAssertTrue(FormStepNavigation.choices(titles: ["Résultat"]).isEmpty)
+        XCTAssertTrue(FormStepNavigation.choices(titles: ["Dimensions", "Résultat"], visibleSteps: []).isEmpty)
+    }
+
+    func testFormMenuReflectsConditionalPaintingSteps() {
+        let withoutPrimer = FormStepNavigation.choices(titles: ["Traitements", "Finition", "Quantitatif"])
+        let withPrimer = FormStepNavigation.choices(titles: ["Traitements", "Impression", "Finition", "Quantitatif"])
+        XCTAssertEqual(withoutPrimer.map(\.title), ["Traitements", "Finition"])
+        XCTAssertEqual(withPrimer.map(\.title), ["Traitements", "Impression", "Finition"])
+        XCTAssertEqual(withPrimer.last?.step, 2)
+    }
+
+    func testFormMenuOffersResultOnlyWhenConfigurationIsComplete() {
+        let titles = ["Dimensions", "Parements", "Résultat"]
+        XCTAssertEqual(FormStepNavigation.choices(titles: titles, includeResult: false).map(\.step), [0, 1])
+        XCTAssertEqual(FormStepNavigation.choices(titles: titles, includeResult: true).map(\.step), [0, 1, 2])
+        XCTAssertEqual(FormStepNavigation.choices(titles: titles, firstStep: 1, includeResult: true).last?.step, 3)
+    }
+
+    func testRoofWindowProfilesAreCountedOnlyInLinearMeters() {
+        let opening=OpeningInput(kind:.roofWindow,width:0.78,height:1.30)
+        let result=OpeningQuantityCalculator.calculate(opening,context:.init(system:.furringCeiling,hsp:0,spacing:0.4))
+        XCTAssertTrue(result.isComplete)
+        XCTAssertEqual(result.quantities.first { $0.name == "Cornière" }?.quantity ?? 0,3.8,accuracy:1e-8)
+        XCTAssertEqual(result.quantities.first { $0.name == "Fourrures F45/F47" }?.quantity ?? 0,2.16,accuracy:1e-8)
+        XCTAssertTrue(result.quantities.allSatisfy { $0.unit == .linearMeter })
+        let studs=OpeningQuantityCalculator.calculate(opening,context:.init(system:.railStudCeiling,hsp:0,spacing:0.6,ceilingLengthInStudDirection:4.2))
+        XCTAssertTrue(studs.quantities.allSatisfy { $0.unit == .linearMeter })
+    }
+    func testSupplyUnitAliasesConsolidateWithoutInventingBarLengths() {
+        let rows=SupplyListingConsolidator.rows([
+            .init(name:"Cornière",quantity:3,unit:" ml "),.init(name:"Cornières",quantity:5,unit:"m.l."),
+            .init(name:"Appuis 100",quantity:2,unit:"unité(s)"),.init(name:"Appuis 100",quantity:3,unit:"unités"),
+            .init(name:"Cornière inconnue",quantity:2,unit:"unité"),.init(name:"Cornière inconnue",quantity:6,unit:"ml")])
+        XCTAssertEqual(rows.first { $0.name == "Cornière" }?.measurements.count,1)
+        XCTAssertEqual(rows.first { $0.name == "Cornière" }?.measurements.first?.quantity,8)
+        XCTAssertEqual(rows.first { $0.name == "Appuis 100" }?.measurements.first?.quantity,5)
+        XCTAssertEqual(rows.first { $0.name == "Cornière inconnue" }?.measurements.count,2)
+    }
+    func testHatchAvailableForWallsAndCeilingsAndSurvivesEncoding() throws {
+        XCTAssertTrue(LayoutOpeningKind.available(for:.wall).contains(.hatch))
+        XCTAssertTrue(LayoutOpeningKind.available(for:.ceiling).contains(.hatch))
+        let hatch=LayoutOpening(kind:.hatch,contour:[.init(x:0,y:0),.init(x:600,y:0),.init(x:600,y:600),.init(x:0,y:600)])
+        XCTAssertEqual(try JSONDecoder().decode(LayoutOpening.self,from:JSONEncoder().encode(hatch)),hatch)
+    }
     @MainActor func testDecimalFieldPreservesPrecisionUntilUserActuallyEdits() async throws {
         var value=2.537842
         let host=UIHostingController(rootView:ZeroEmptyDecimalTextField(value:Binding(get:{ value },set:{ value=$0 })))

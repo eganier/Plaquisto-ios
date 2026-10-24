@@ -12,57 +12,8 @@ extension EnvironmentValues {
     }
 }
 
-struct LayoutExportForm: View {
-    @EnvironmentObject private var store: ProjectStore
-    @Environment(\.dismiss) private var dismiss
-    let document: LayoutDocument
-    @State private var projectID: UUID?
-    @State private var projectName = ""
-    @State private var roomName = ""
-    @State private var type = WorkType.ceilingOnFurring
-    @State private var configuring = false
-    @State private var error: String?
-    private var types: [WorkType] {
-        document.surface.kind == .ceiling ? [.ceilingOnFurring,.ceilingOnRailsAndStuds] : [.peripheralLiningFurrings,.peripheralLiningStuds,.distributionPartition]
-    }
-    var body: some View {
-        NavigationStack {
-            Form {
-                Section("Projet de destination") {
-                    Picker("Projet",selection:$projectID) {
-                        Text("Créer un projet").tag(nil as UUID?)
-                        ForEach(store.projects) { Text($0.name).tag(Optional($0.id)) }
-                    }
-                    if projectID == nil { TextField("Nom du projet",text:$projectName) }
-                    LabeledContent("Pièce (facultatif)") { TextField("Exemple : Salon",text:$roomName) }
-                }
-                Section("Type d’ouvrage") {
-                    Picker("Système",selection:$type) { ForEach(types) { Text($0.title).tag($0) } }
-                }
-                Section {
-                    Text("Le formulaire métier reçoit la surface nette et conserve le calepinage avec l’ouvrage. Vérifiez les portées, supports et hauteurs : les calculs métier restent ceux du formulaire, distincts du nombre exact de plaques dessiné.").font(.footnote).foregroundStyle(.secondary)
-                    Button("Configurer et calculer le quantitatif") {
-                        do {
-                            _ = try SheetLayoutEngine.calculate(surface:document.surface,layer:document.layers.first ?? .init())
-                            if projectID == nil { projectID = try store.createProject(name:projectName,client:"",address:"",notes:"") }
-                            configuring = true
-                        } catch { self.error = error.localizedDescription }
-                    }.disabled(projectID == nil && projectName.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty)
-                    if let error { Text(error).foregroundStyle(.red) }
-                }
-            }
-            .navigationTitle("Exporter vers un ouvrage").navigationBarTitleDisplayMode(.inline)
-            .onAppear { type = types[0]; projectID = store.projects.first?.id }
-            .toolbar { ToolbarItem(placement:.cancellationAction) { Button("Fermer") { dismiss() } } }
-            .fullScreenCover(isPresented:$configuring) {
-                if let projectID {
-                    WorkConfiguratorContainer(projectID:projectID,workName:type.generatedName(roomName:roomName),workType:type,onFinished:{ configuring = false; dismiss() },layoutDocument:document,newRoomName:roomName)
-                }
-            }
-        }
-    }
-}
-
+// Shared geometry remains necessary for existing ouvrages and their linked
+// calepinages. Quick calepinages deliberately have no project-export UI.
 enum LayoutWorkGeometry {
     static func rectangle(_ document:LayoutDocument) -> (length:Double,width:Double)? {
         let points = document.surface.contour

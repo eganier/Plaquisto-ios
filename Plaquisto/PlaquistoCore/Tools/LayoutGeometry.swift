@@ -1,5 +1,40 @@
 import Foundation
 
+/// Local-axis dimensions stop at the first actual polygon edge, not its bounding box.
+enum LayoutPlacementDimensions {
+    struct Dimension: Identifiable {
+        var id: Int
+        var start: LayoutPoint
+        var end: LayoutPoint
+        var direction: LayoutPoint
+        var distance: Double { (end - start).length }
+        var label: String { ["A", "B", "C", "D"][id] }
+    }
+    static func dimensions(contour: [LayoutPoint], center: LayoutPoint, width: Double = 0, height: Double = 0, angle: Double = 0) -> [Dimension] {
+        guard contour.count >= 3, [center.x, center.y, width, height, angle].allSatisfy(\.isFinite) else { return [] }
+        let axes: [LayoutPoint] = [.init(x: -1, y: 0), .init(x: 1, y: 0), .init(x: 0, y: -1), .init(x: 0, y: 1)]
+        func cross(_ a: LayoutPoint, _ b: LayoutPoint) -> Double { a.x * b.y - a.y * b.x }
+        return axes.enumerated().compactMap { index, axis in
+            let direction = LayoutOpeningFrame.rotate(axis, by: angle)
+            let start = center + direction * (index < 2 ? width / 2 : height / 2)
+            let candidates = contour.indices.compactMap { i -> Double? in
+                let a = contour[i], segment = contour[(i + 1) % contour.count] - a
+                let denominator = cross(direction, segment)
+                guard abs(denominator) > 0.000001 else { return nil }
+                let t = cross(a - start, segment) / denominator
+                let u = cross(a - start, direction) / denominator
+                return t >= -0.0001 && u >= -0.0001 && u <= 1.0001 ? max(0, t) : nil
+            }
+            guard let distance = candidates.min() else { return nil }
+            return Dimension(id: index, start: start, end: start + direction * distance, direction: direction)
+        }
+    }
+    static func movedCenter(_ center: LayoutPoint, dimension: Dimension, distance: Double) -> LayoutPoint? {
+        guard distance.isFinite, (0...100_000).contains(distance) else { return nil }
+        return center + dimension.direction * (dimension.distance - distance)
+    }
+}
+
 /// Screen-space placement only; never changes a cut or its stock coordinates.
 enum LayoutNumberCallout {
     static func rect(anchor:CGPoint, size:CGSize, viewport:CGRect, occupied:[CGRect], displaced:Bool) -> CGRect {

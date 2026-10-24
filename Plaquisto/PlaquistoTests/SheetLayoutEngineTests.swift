@@ -3,6 +3,434 @@ import SwiftUI
 @testable import Plaquisto
 
 final class SheetLayoutEngineTests: XCTestCase {
+    func testSkinProjectionRoundTripsWithoutChangingStoredOrderOrSharedFrame() throws {
+        var first = LayoutLayer()
+        first.referenceEdge = 1
+        first.furring = .init(spacing: 600, offset: 75)
+        var layers = LayoutFacingDraft.addingSecond(to: [first])
+        layers[1].orientation = .horizontal
+        layers[1].referenceEdge = 2
+        let original = LayoutDocument(surface: surface(width: 4000, height: 3000), layers: layers)
+        let projection = LayoutSkinEditing(original, selectedID: layers[1].id)
+        XCTAssertEqual(projection.document.layers.first?.id, layers[1].id)
+        XCTAssertEqual(projection.restoring(projection.document), original)
+        let before = LayoutPlanning.worldFurring(surface: original.surface, layer: first)
+        let after = LayoutPlanning.worldFurring(surface: original.surface, layer: projection.document.layers[0])
+        XCTAssertEqual(before.lines.count, after.lines.count)
+        for line in before.lines {
+            XCTAssertTrue(after.lines.contains { LayoutOpeningFraming.same($0, line) }, "Changing skin must not move the shared frame")
+        }
+        var edited = projection.document
+        edited.layers[0].offset.x += 175
+        let saved = projection.restoring(edited)
+        XCTAssertEqual(saved.layers[0], original.layers[0])
+        XCTAssertEqual(saved.layers[1].offset.x, layers[1].offset.x + 175)
+        XCTAssertNil(saved.layers[1].furring)
+        edited.layers[0].furring?.offset = 200
+        let reframed = projection.restoring(edited)
+        XCTAssertEqual(reframed.layers[0].furring?.offset, 200)
+        XCTAssertNil(reframed.layers[1].furring)
+    }
+
+    @MainActor func testSecondSkinGestureUndoCancelAndSelectionFallback() throws {
+        let editor = LayoutEditorModel(persistsStandaloneLibrary: false)
+        var first = LayoutLayer(); first.furring = .init()
+        var original = LayoutDocument(surface: surface(width: 4000, height: 3000), layers: LayoutFacingDraft.addingSecond(to: [first]))
+        original.layers = original.layers.map { $0.forSurface(original.surface) }
+        editor.apply(original)
+        editor.selectSkin(original.layers[1].id)
+        let before = try XCTUnwrap(editor.editingDocument)
+        var moved = before
+        moved.layers[0].offset.x += 215
+        editor.previewEditing(moved)
+        editor.finishEditingGesture(from: before)
+        XCTAssertEqual(editor.document?.layers[0], original.layers[0])
+        XCTAssertEqual(editor.document?.layers[1].offset.x, original.layers[1].offset.x + 215)
+        editor.undo()
+        XCTAssertEqual(editor.document, original)
+        XCTAssertEqual(editor.selectedSkinID, original.layers[1].id)
+        editor.redo()
+        XCTAssertEqual(editor.editingDocument?.layers[0].offset.x, moved.layers[0].offset.x)
+        let committed = try XCTUnwrap(editor.document)
+        let current = try XCTUnwrap(editor.editingDocument)
+        var interrupted = current; interrupted.layers[0].offset.y += 300
+        editor.previewEditing(interrupted)
+        editor.cancelEditingGesture(restoring: current)
+        XCTAssertEqual(editor.document, committed)
+        var single = committed; single.layers.removeLast()
+        editor.apply(single)
+        XCTAssertEqual(editor.selectedSkinID, single.layers[0].id)
+        XCTAssertEqual(editor.editingDocument, single)
+    }
+
+    @MainActor func testSelectedSkinCalculationAndOptimizationAreIsolated() async throws {
+        let editor = LayoutEditorModel(persistsStandaloneLibrary: false)
+        var layers = LayoutFacingDraft.addingSecond(to: [LayoutLayer()])
+        layers[1].sheetWidth = 600
+        layers[1].sheetLength = 1200
+        let original = LayoutDocument(surface: surface(width: 4000, height: 3000), layers: layers)
+        editor.apply(original)
+        editor.selectSkin(layers[1].id)
+        for _ in 0..<500 where editor.isCalculating { try await Task.sleep(nanoseconds: 10_000_000) }
+        XCTAssertFalse(editor.isCalculating)
+        let expected = try SheetLayoutEngine.calculate(surface: original.surface, layer: layers[1])
+        XCTAssertEqual(editor.result?.purchasedSheetCount, expected.purchasedSheetCount)
+        XCTAssertEqual(editor.resultDocument?.layers.first?.id, layers[1].id)
+        editor.optimize(furring: false)
+        for _ in 0..<2000 where editor.isOptimizing { try await Task.sleep(nanoseconds: 10_000_000) }
+        XCTAssertFalse(editor.isOptimizing)
+        XCTAssertFalse(editor.optimizationFailed)
+        XCTAssertEqual(editor.document?.layers.first, layers.first)
+        XCTAssertEqual(editor.document?.layers.last?.id, layers.last?.id)
+        editor.selectSkin(layers[0].id)
+        for _ in 0..<500 where editor.isCalculating { try await Task.sleep(nanoseconds: 10_000_000) }
+        XCTAssertEqual(editor.resultDocument?.layers.first?.id, layers[0].id)
+    }
+
+    @MainActor func testSharedFramingGestureFromSecondSkinRestoresExactArchiveOnUndoAndCancel() throws {
+        let editor = LayoutEditorModel(persistsStandaloneLibrary: false)
+        var first = LayoutLayer(); first.referenceEdge = 1; first.furring = .init()
+        var original = LayoutDocument(surface: surface(width: 4000, height: 3000), layers: LayoutFacingDraft.addingSecond(to: [first]))
+        original.layers = original.layers.map { $0.forSurface(original.surface) }
+        editor.apply(original); editor.selectSkin(original.layers[1].id)
+        let before = try XCTUnwrap(editor.editingDocument)
+        var moved = before; moved.layers[0].furring?.offset = 230
+        editor.previewEditing(moved)
+        editor.cancelEditingGesture(restoring: before)
+        XCTAssertEqual(editor.document, original)
+        editor.previewEditing(moved)
+        editor.finishEditingGesture(from: before)
+        XCTAssertEqual(editor.document?.layers[0].furring?.offset, 230)
+        XCTAssertEqual(editor.document?.layers[1], original.layers[1])
+        editor.undo()
+        XCTAssertEqual(editor.document, original)
+    }
+
+    func testQuickFacingFunctionLabelsDoNotRepeatTheBoardFamily() {
+        var format = LayoutCatalogFormat(id: "test", title: "BA13", width: 1200, length: 2400, function: "standard")
+        XCTAssertEqual(format.functionTitle, "Standard")
+        format.function = "hydrofuge"
+        XCTAssertEqual(format.functionTitle, "Hydrofuge H1")
+        format.function = "quatre_bords_amincis"
+        XCTAssertEqual(format.functionTitle, "Quatre bords amincis")
+        format.function = "future_catalog_function"
+        format.title = "Fonction spéciale du catalogue"
+        XCTAssertEqual(format.functionTitle, format.title)
+    }
+
+    func testQuickFacingDraftAddsDistinctSkinWithoutDuplicatingFrame() throws {
+        var first = LayoutLayer()
+        first.catalogFormatID = "saved-format"
+        first.offset = .init(x: 125, y: 75)
+        first.furring = .init(spacing: 600)
+        let added = LayoutFacingDraft.addingSecond(to: [first])
+        XCTAssertEqual(added.count, 2)
+        XCTAssertEqual(added[0], first)
+        XCTAssertNotEqual(added[0].id, added[1].id)
+        XCTAssertEqual(added[1].catalogFormatID, first.catalogFormatID)
+        XCTAssertEqual(added[1].offset.x, first.offset.x + first.cellWidth / 2)
+        XCTAssertNil(added[1].furring)
+        XCTAssertEqual(LayoutFacingDraft.addingSecond(to: added), added)
+        XCTAssertEqual(LayoutFacingDraft.removing(at: 1, from: added), [first])
+        XCTAssertEqual(LayoutFacingDraft.removing(at: 0, from: added), added)
+        XCTAssertEqual(LayoutFacingDraft.removing(at: 12, from: added), added)
+    }
+
+    func testQuickFacingDraftValidatesEverySkinAndKeepsLegacyLayers() throws {
+        let first = LayoutLayer()
+        var added = LayoutFacingDraft.addingSecond(to: [first])
+        XCTAssertTrue(LayoutFacingDraft.canApply(added))
+        added[1].sheetLength = .nan
+        XCTAssertFalse(LayoutFacingDraft.canApply(added))
+        added[1].sheetLength = 0
+        XCTAssertFalse(LayoutFacingDraft.canApply(added))
+        XCTAssertFalse(LayoutFacingDraft.canApply([]))
+        XCTAssertFalse(LayoutFacingDraft.canApply([first, first]))
+        let legacy = [first, LayoutLayer(), LayoutLayer()]
+        XCTAssertEqual(LayoutFacingDraft.addingSecond(to: legacy), legacy)
+        XCTAssertEqual(LayoutFacingDraft.removing(at: 1, from: legacy), [legacy[0], legacy[2]])
+    }
+
+    @MainActor func testQuickFacingDraftPersistsAllSkinsAndUndoRestoresWholeDocument() throws {
+        let suite = "test.quick-facing.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let editor = LayoutEditorModel(defaults: defaults)
+        var original = LayoutDocument(surface: surface(width: 4000, height: 3000), layers: [LayoutLayer()])
+        original.surface.openings = [.init(kind: .door, contour: [.init(x: 100,y: 0), .init(x: 1000,y: 0), .init(x: 1000,y: 2100), .init(x: 100,y: 2100)])]
+        editor.apply(original)
+        var changed = original
+        changed.layers = LayoutFacingDraft.addingSecond(to: original.layers)
+        editor.apply(changed)
+        editor.undo()
+        XCTAssertEqual(editor.document, original)
+        editor.redo()
+        XCTAssertEqual(editor.document, changed)
+        editor.saveCurrentAndClose()
+        let reopened = LayoutEditorModel(defaults: defaults)
+        XCTAssertEqual(reopened.savedDocuments.last?.document, changed)
+    }
+
+    func testBookRectangleKeepsRightAnglesWhenEditingEitherOppositeSide() throws {
+        let floor = LayoutFloorDraft.rectangle()
+        let wide = try LayoutFloorDraft.changing(floor, index: 0, value: 5000, isAngle: false)
+        for i in wide.contour.indices { XCTAssertEqual(LayoutPolygonSolver.interiorAngle(at: i, in: wide.contour), 90, accuracy: 0.25) }
+        XCTAssertEqual((wide.contour[1] - wide.contour[0]).length, 5000, accuracy: 0.5)
+        XCTAssertEqual((wide.contour[3] - wide.contour[2]).length, 5000, accuracy: 0.5)
+        XCTAssertEqual(wide.contour[1].y, wide.contour[0].y, accuracy: 0.001, "Changing length must not rotate the rectangle")
+        XCTAssertEqual((wide.contour[2] - wide.contour[1]).length, 3000, accuracy: 0.001)
+        let narrow = try LayoutFloorDraft.changing(wide, index: 2, value: 4500, isAngle: false)
+        XCTAssertEqual((narrow.contour[1] - narrow.contour[0]).length, 4500, accuracy: 0.5)
+        XCTAssertEqual((narrow.contour[3] - narrow.contour[2]).length, 4500, accuracy: 0.5)
+        let taller = try LayoutFloorDraft.changing(narrow, index: 3, value: 3500, isAngle: false)
+        XCTAssertEqual((taller.contour[2] - taller.contour[1]).length, 3500, accuracy: 0.001)
+        XCTAssertEqual((taller.contour[1] - taller.contour[0]).length, 4500, accuracy: 0.001)
+        XCTAssertEqual(taller.contour[1].y, taller.contour[0].y, accuracy: 0.001)
+        XCTAssertEqual(floor.bounds.width, 4000, "The source floor is not mutated")
+    }
+
+    func testBookFloorAllowsExplicitAngleAndRejectsInvalidInput() throws {
+        let floor = LayoutFloorDraft.rectangle()
+        let changed = try LayoutFloorDraft.changing(floor, index: 0, value: 100, isAngle: true)
+        XCTAssertEqual(LayoutPolygonSolver.interiorAngle(at: 0, in: changed.contour), 100, accuracy: 0.25)
+        XCTAssertEqual(changed.provenance, "manual")
+        XCTAssertThrowsError(try LayoutFloorDraft.changing(floor, index: 0, value: .nan, isAngle: false))
+        XCTAssertThrowsError(try LayoutFloorDraft.changing(floor, index: 9, value: 120, isAngle: true))
+        XCTAssertThrowsError(try LayoutFloorDraft.changing(floor, index: 0, value: -1, isAngle: true))
+    }
+
+    func testPlacementDimensionsMeasureActualConcaveBoundaryAndRotatedAxes() throws {
+        let contour: [LayoutPoint] = [.init(x:0,y:0), .init(x:4000,y:0), .init(x:4000,y:2000),
+            .init(x:2000,y:2000), .init(x:2000,y:4000), .init(x:0,y:4000)]
+        let center = LayoutPoint(x:1000,y:3000)
+        let dimensions = LayoutPlacementDimensions.dimensions(contour:contour,center:center,width:400,height:600)
+        XCTAssertEqual(dimensions.map(\.distance), [800,800,2700,700])
+        let angle = 0.71
+        let rotated = LayoutPlacementDimensions.dimensions(contour:contour.map { LayoutOpeningFrame.rotate($0,by:angle) },
+            center:LayoutOpeningFrame.rotate(center,by:angle),width:400,height:600,angle:angle)
+        for (a,b) in zip(dimensions,rotated) { XCTAssertEqual(a.distance,b.distance,accuracy:0.001) }
+        let right = try XCTUnwrap(dimensions.first { $0.id == 1 })
+        let moved = try XCTUnwrap(LayoutPlacementDimensions.movedCenter(center,dimension:right,distance:500))
+        XCTAssertEqual(moved.x,1300,accuracy:0.001)
+        XCTAssertEqual(moved.y,3000,accuracy:0.001)
+        XCTAssertNil(LayoutPlacementDimensions.movedCenter(center,dimension:right,distance:-1))
+        XCTAssertNil(LayoutPlacementDimensions.movedCenter(center,dimension:right,distance:.nan))
+    }
+
+    func testElectricalVerticalDimensionMovesOnlySelectedPointAndPreservesRows() throws {
+        let wall = surface(width:4000,height:3000)
+        var lights = LayoutLighting(count:2)
+        lights.positions = [.init(x:1000,y:1000), .init(x:2000,y:1000)]
+        lights.wallRowHeights = [1000]
+        let moved = try LayoutWallLighting.positioning(lights,index:0,point:.init(x:1000,y:1200),surface:wall)
+        XCTAssertEqual(moved.positions[0].y,1200)
+        XCTAssertEqual(moved.positions[1],lights.positions[1])
+        XCTAssertEqual(moved.wallRowHeights,[1000])
+        XCTAssertThrowsError(try LayoutWallLighting.positioning(lights,index:0,point:.init(x:-100,y:1200),surface:wall))
+    }
+
+    func testSuspensionSpacingConfigurationRemainsBackwardCompatible() throws {
+        let original = CeilingConfiguration()
+        let encoded = try JSONEncoder().encode(original)
+        var json = try XCTUnwrap(JSONSerialization.jsonObject(with:encoded) as? [String:Any])
+        json.removeValue(forKey:"suspensionSpacingMeters")
+        let legacy = try JSONDecoder().decode(CeilingConfiguration.self,from:JSONSerialization.data(withJSONObject:json))
+        XCTAssertNil(legacy.suspensionSpacingMeters)
+        var updated = legacy; updated.suspensionSpacingMeters = 0.8
+        let roundTrip = try JSONDecoder().decode(CeilingConfiguration.self,from:JSONEncoder().encode(updated))
+        XCTAssertEqual(roundTrip.suspensionSpacingMeters,0.8)
+        let support = surface(width:4000,height:3000)
+        let document = WorkLayoutDefaults.document(surface:support,configuration:.ceiling(updated))
+        XCTAssertEqual(document.layers.first?.furring?.ceilingSuspensionSpacing,800)
+        var custom = document.layers[0]
+        custom.furring?.ceilingSuspensionSpacing = 600
+        XCTAssertEqual(WorkLayoutDefaults.resolvingSupport(custom,configuration:.ceiling(updated)).furring?.ceilingSuspensionSpacing,600)
+    }
+
+    private var snapContour: Surface2D {
+        .init(name:"Contour",kind:.ceiling,contour:[.init(x:0,y:0),.init(x:2000,y:200),
+            .init(x:4000,y:0),.init(x:4000,y:3000),.init(x:0,y:3000)])
+    }
+
+    func testContourSnapAlignsMiddleVertexWithoutRemovingIt() throws {
+        let original = snapContour
+        let preview = try LayoutContourSnapping.preview(original:original,vertex:1,
+            candidate:.init(x:2100,y:40),screenScale:0.1)
+        XCTAssertEqual(preview.snap,.straight)
+        XCTAssertEqual(preview.surface.contour.count,5)
+        XCTAssertEqual(preview.surface.contour[1].x,2100,accuracy:0.001)
+        XCTAssertEqual(preview.surface.contour[1].y,0,accuracy:0.001)
+        for i in [0,2,3,4] { XCTAssertEqual(preview.surface.contour[i],original.contour[i]) }
+        XCTAssertTrue(preview.surface.editableIntent.userAnglesDegrees.allSatisfy { $0 == nil })
+        XCTAssertTrue(preview.surface.editableIntent.userVertexPositions.allSatisfy { $0 == nil })
+    }
+
+    func testContourSnapAcquiresHoldsAndReleasesInScreenPoints() throws {
+        let original = snapContour
+        let acquired = try LayoutContourSnapping.preview(original:original,vertex:1,
+            candidate:.init(x:2000,y:80),screenScale:0.1)
+        XCTAssertEqual(acquired.snap,.straight)
+        let held = try LayoutContourSnapping.preview(original:original,vertex:1,
+            candidate:.init(x:2000,y:120),screenScale:0.1,latched:acquired.snap)
+        XCTAssertEqual(held.snap,.straight)
+        let released = try LayoutContourSnapping.preview(original:original,vertex:1,
+            candidate:.init(x:2000,y:170),screenScale:0.1,latched:held.snap)
+        XCTAssertNil(released.snap)
+        XCTAssertEqual(released.surface.contour[1].y,170,accuracy:0.001)
+        let zoomed = try LayoutContourSnapping.preview(original:original,vertex:1,
+            candidate:.init(x:2000,y:80),screenScale:0.2)
+        XCTAssertNil(zoomed.snap,"16 screen points must not acquire a new snap")
+    }
+
+    func testContourSnapRightAngleAtMovingVertex() throws {
+        let original = Surface2D(name:"Triangle",kind:.ceiling,contour:[
+            .init(x:-1000,y:0),.init(x:0,y:900),.init(x:1000,y:0)])
+        let preview = try LayoutContourSnapping.preview(original:original,vertex:1,
+            candidate:.init(x:0,y:970),screenScale:0.1)
+        XCTAssertEqual(preview.snap,.rightAngle(1))
+        XCTAssertEqual(LayoutPolygonSolver.interiorAngle(at:1,in:preview.surface.contour),90,accuracy:0.001)
+        XCTAssertEqual(preview.surface.contour[1].y,1000,accuracy:0.001)
+    }
+
+    func testContourSnapRightAngleAtNeighbourOnRotatedWall() throws {
+        let frame = LayoutGridFrame(origin:.init(x:800,y:900),angle:0.61)
+        var original = surface(width:4000,height:3000)
+        original.contour = original.contour.map(frame.world)
+        let preview = try LayoutContourSnapping.preview(original:original,vertex:2,
+            candidate:frame.world(.init(x:4030,y:3500)),screenScale:0.1)
+        XCTAssertEqual(preview.snap,.rightAngle(1))
+        XCTAssertEqual(LayoutPolygonSolver.interiorAngle(at:1,in:preview.surface.contour),90,accuracy:0.001)
+    }
+
+    func testContourSnapStraightOnRotatedSegment() throws {
+        let frame = LayoutGridFrame(origin:.init(x:800,y:900),angle:0.61)
+        var original = snapContour; original.contour = original.contour.map(frame.world)
+        let preview = try LayoutContourSnapping.preview(original:original,vertex:1,
+            candidate:frame.world(.init(x:1800,y:40)),screenScale:0.1)
+        XCTAssertEqual(preview.snap,.straight)
+        XCTAssertLessThan((preview.surface.contour[1]-frame.world(.init(x:1800,y:0))).length,0.001)
+    }
+
+    func testContourSnapRejectsCollapsedAndInvalidGeometry() throws {
+        XCTAssertThrowsError(try LayoutContourSnapping.preview(original:snapContour,vertex:1,
+            candidate:.zero,screenScale:0.1))
+        XCTAssertThrowsError(try LayoutContourSnapping.preview(original:snapContour,vertex:1,
+            candidate:.init(x:2000,y:4000),screenScale:0.1))
+        XCTAssertThrowsError(try LayoutContourSnapping.preview(original:snapContour,vertex:9,
+            candidate:.zero,screenScale:0.1))
+        XCTAssertThrowsError(try LayoutContourSnapping.preview(original:snapContour,vertex:1,
+            candidate:.init(x:.nan,y:0),screenScale:0.1))
+    }
+
+    func testContourSnapHonoursExistingLocksAndSurvivesSaving() throws {
+        var original = surface(width:4000,height:3000)
+        original.contourIntent = .init(sketch:original.contour)
+        original.contourIntent?.userMeasuredLengths[0] = 4000
+        original.contourIntent?.lockedLengthIndices = [0]
+        original.contourIntent?.userAnglesDegrees[0] = 90
+        let preview = try LayoutContourSnapping.preview(original:original,vertex:2,
+            candidate:.init(x:4030,y:3500),screenScale:0.1)
+        XCTAssertNotNil(preview.snap)
+        XCTAssertEqual((preview.surface.contour[1]-preview.surface.contour[0]).length,4000,accuracy:0.5)
+        XCTAssertEqual(preview.surface.editableIntent.lockedLengthIndices,[0])
+        XCTAssertEqual(preview.surface.editableIntent.userAnglesDegrees[0],90)
+        let restored = try JSONDecoder().decode(Surface2D.self,from:JSONEncoder().encode(preview.surface))
+        XCTAssertEqual(restored,preview.surface,"Saving must not recalculate the validated preview")
+    }
+
+    @MainActor func testContourSnappedPreviewCommitAndUndoKeepExactGeometry() throws {
+        let key = "contour-snap-\(UUID())", defaults = UserDefaults(suiteName:key)!
+        defer { defaults.removePersistentDomain(forName:key) }
+        let model = LayoutEditorModel(defaults:defaults)
+        let original = LayoutDocument(surface:snapContour)
+        model.apply(original)
+        let preview = try LayoutContourSnapping.preview(original:original.surface,vertex:1,
+            candidate:.init(x:2000,y:40),screenScale:0.1)
+        var copy = original; copy.surface = preview.surface
+        model.preview(copy); model.finishGesture(from:original)
+        XCTAssertEqual(model.document?.surface.contour,preview.surface.contour)
+        model.undo(); XCTAssertEqual(model.document,original)
+        model.redo(); XCTAssertEqual(model.document?.surface.contour,preview.surface.contour)
+    }
+
+    @MainActor func testLabToolbarSelectsMovementWithoutHidingLayersOrChangingDimensions() {
+        var mode=LayoutInteraction.move
+        var visibility=LayoutVisibilitySettings()
+        visibility.cycleDimensions()
+        let bar=LayoutLabToolBar(mode:Binding(get:{mode},set:{mode=$0}),
+                                visibility:Binding(get:{visibility},set:{visibility=$0}))
+        let elements=LayoutVisibilitySettings.Element.allCases
+        XCTAssertEqual(elements.map(LayoutInteraction.tool(for:)),[.grid,.framing,.openings,.lighting])
+        for tool in [LayoutInteraction.grid,.framing,.openings,.lighting,.move] {
+            for _ in 0..<2 {
+                bar.select(tool)
+                XCTAssertEqual(mode,tool,"A second tap keeps the tool selected instead of hiding its layer")
+                XCTAssertTrue(elements.allSatisfy { visibility[$0].isVisible })
+                XCTAssertEqual(visibility.dimensionedElement,.sheets)
+            }
+        }
+        visibility.cycleDimensions()
+        XCTAssertEqual(visibility.dimensionedElement,.framing)
+        XCTAssertEqual(mode,.move,"Dimensions do not leave safe plan-navigation mode")
+    }
+
+    @MainActor func testLabToolbarRendersSixControlsAtCompactPhoneWidths() throws {
+        for width in [320.0,390,430] {
+            let view=LayoutLabToolBar(mode:.constant(.grid),visibility:.constant(.init()))
+                .frame(width:width).padding(.vertical,8).background(Color.white)
+            let renderer=ImageRenderer(content:view); renderer.scale=2
+            let image=try XCTUnwrap(renderer.uiImage)
+            XCTAssertEqual(image.size.width,width,accuracy:0.01)
+            XCTAssertLessThan(image.size.height,100)
+            let attachment=XCTAttachment(image:image)
+            attachment.name="Calepinage-outils-\(Int(width))"
+            attachment.lifetime = .keepAlways
+            add(attachment)
+        }
+    }
+
+    func testWallOptimizerCentersJointOverDoorAndWindowOnBothFaces() throws {
+        for kind: LayoutOpeningKind in [.door, .window] {
+            var wall = surface(width: 4800, height: 2500)
+            wall.openings = [.init(kind: kind, contour: LayoutBounds(
+                min: .init(x: 1550, y: kind == .door ? 0 : 900), max: .init(x: 2450, y: 2100)).polygon)]
+            for face in [wall, wall.mirroredComponentSide()] {
+                var layer = LayoutLayer(sheetWidth: 1200, sheetLength: 2600)
+                layer.furring = .init(parallelToBoards: true, spacing: 600)
+                let optimized = try LayoutPlanning.optimize(surface: face, layer: layer, furring: false, alignFraming: true)
+                let result = try SheetLayoutEngine.calculate(surface: face, layer: optimized)
+                let quality = LayoutPlanning.openingJointQuality(surface: face, result: result)
+                XCTAssertEqual(quality.misses, 0)
+                XCTAssertEqual(quality.centering, 0, accuracy: 0.01)
+                XCTAssertTrue(LayoutPlanning.aligned(optimized))
+                XCTAssertTrue(LayoutCutQuality.smallPieces(result).isEmpty)
+                XCTAssertEqual(result.netArea, try face.netMeasuredArea(), accuracy: 1)
+            }
+        }
+    }
+
+    func testOpeningJointFallbackKeepsFifteenCentimetresAndLockedFrame() throws {
+        var wall = surface(width: 4800, height: 2500)
+        wall.openings = [.init(kind: .door, contour: LayoutBounds(min: .init(x: 1050, y: 0), max: .init(x: 1950, y: 2100)).polygon)]
+        var layer = LayoutLayer(sheetWidth: 1200, sheetLength: 2600)
+        layer.furring = .init(parallelToBoards: true, spacing: 600, offset: 0)
+        let optimized = try LayoutPlanning.optimize(surface: wall, layer: layer, furring: false, lockFraming: true)
+        let quality = LayoutPlanning.openingJointQuality(surface: wall, result: try SheetLayoutEngine.calculate(surface: wall, layer: optimized))
+        XCTAssertEqual(quality.misses, 0)
+        XCTAssertEqual(quality.centering, 300, accuracy: 0.01)
+        XCTAssertEqual(optimized.furring, layer.forSurface(wall).furring)
+        XCTAssertTrue(LayoutPlanning.aligned(optimized))
+    }
+
+    func testOpeningJointRuleDoesNotApplyToCeilingsOrCountHiddenLines() {
+        var wall = surface(width: 3600, height: 2500)
+        wall.openings = [.init(kind: .window, contour: LayoutBounds(min: .init(x: 1000, y: 900), max: .init(x: 2000, y: 2100)).polygon)]
+        let invisible = SheetLayoutResult(sheets: [], joints: [.init(start: .init(x: 1500, y: 1000), end: .init(x: 1500, y: 2000))])
+        XCTAssertEqual(LayoutPlanning.openingJointQuality(surface: wall, result: invisible).misses, 1)
+        wall.kind = .ceiling
+        XCTAssertEqual(LayoutPlanning.openingJointQuality(surface: wall, result: invisible).misses, 0)
+    }
+
     func testOpeningKeepsItsOwnDimensionsAndCenterInRotatedScan() throws {
         let base = LayoutBounds(min: .zero, max: .init(x: 900, y: 1800)).polygon
         for yaw in [0.0, 0.37, -0.83, Double.pi / 2] {
@@ -568,8 +996,8 @@ final class SheetLayoutEngineTests: XCTestCase {
         layer.furring?.offset=199
         let moved=try LayoutFurringEngine.calculate(surface:wall,layer:layer)
         XCTAssertEqual(moved.openingProfiles,result.openingProfiles)
-        // Left grid line is now beyond 10 cm; right line is still redundant.
-        XCTAssertTrue(moved.lines.contains { $0.start.x == 799 && $0.end.x == 799 })
+        // Moving by a millimetre must not reintroduce a redundant neighbor.
+        XCTAssertFalse(moved.lines.contains { $0.start.x == 799 && $0.end.x == 799 })
         XCTAssertFalse(moved.lines.contains { $0.start.x == 1999 && $0.end.x == 1999 })
     }
 
@@ -580,27 +1008,41 @@ final class SheetLayoutEngineTests: XCTestCase {
         }
         for x in [849.0,960,1040,1960,2040,2151] {
             let line=vertical(x)
-            XCTAssertEqual(LayoutOpeningFraming.subtractWindowNeighbors(line,openings:wall.openings,profiles:profiles),[line])
+            XCTAssertEqual(LayoutOpeningFraming.subtractOpeningNeighbors(line,openings:wall.openings,profiles:profiles,spacing:200),[line])
         }
         let taller=vertical(850,2800)
-        XCTAssertEqual(LayoutOpeningFraming.subtractWindowNeighbors(taller,openings:wall.openings,profiles:profiles),[
+        XCTAssertEqual(LayoutOpeningFraming.subtractOpeningNeighbors(taller,openings:wall.openings,profiles:profiles,spacing:200),[
             .init(start:.init(x:850,y:2600),end:.init(x:850,y:2800))])
         let reversed=LayoutJoint(start:vertical(2150).end,end:vertical(2150).start)
-        XCTAssertTrue(LayoutOpeningFraming.subtractWindowNeighbors(reversed,openings:wall.openings,profiles:profiles).isEmpty)
+        XCTAssertTrue(LayoutOpeningFraming.subtractOpeningNeighbors(reversed,openings:wall.openings,profiles:profiles,spacing:200).isEmpty)
     }
 
-    func testWindowNeighborCleanupDoesNotChangeStudsOrDoorGrid() throws {
-        for kind in [LayoutOpeningKind.window,.door] {
+    func testOpeningNeighborCleanupAppliesToDoorsAndWindowsForBothFramingSystems() throws {
+        for kind in [LayoutOpeningKind.window,.door] { for system in [LayoutOpeningFramingSystem.studs,.furring] {
             var wall=openingWall(kind)
             wall.openings[0].contour=LayoutBounds(min:.init(x:950,y:kind == .door ? 0 : 800),max:.init(x:1850,y:2000)).polygon
             var layer=WorkLayoutDefaults.document(surface:wall,configuration:.furringLining(.init())).layers[0]
             layer.furring?.spacing=600; layer.furring?.offset=200
-            if kind == .window { layer.furring?.openingSystem = .studs }
+            layer.furring?.openingSystem = system
             let result=try LayoutFurringEngine.calculate(surface:wall,layer:layer)
             for x in [800.0,2000.0] {
-                XCTAssertTrue(result.lines.contains { $0.start.x == x && $0.end.x == x })
+                XCTAssertFalse(result.lines.contains { $0.start.x == x && $0.end.x == x })
             }
-        }
+            for x in [900.0,1900.0] {
+                let sides=result.lines.filter { abs($0.start.x-x)<0.01 && abs($0.end.x-x)<0.01 }
+                XCTAssertEqual(sides.count,1)
+                XCTAssertEqual(sides.reduce(0){$0+($1.end-$1.start).length},wall.bounds.height,accuracy:0.01)
+            }
+        } }
+    }
+
+    func testSmallCutsRemainAllowedWhenNoBetterLayoutExists() throws {
+        let wall=surface(width:250,height:2500)
+        let optimized=try LayoutPlanning.optimize(surface:wall,layer:.init(sheetWidth:1200,sheetLength:2600),furring:false)
+        let result=try SheetLayoutEngine.calculate(surface:wall,layer:optimized)
+        XCTAssertFalse(result.sheets.isEmpty)
+        XCTAssertFalse(LayoutCutQuality.smallPieces(result).isEmpty)
+        XCTAssertEqual(result.netArea,625000,accuracy:0.01)
     }
     func testMovingFrameSnapsAndMergesIntoOpeningSide() throws {
         let wall=openingWall()
@@ -1529,6 +1971,33 @@ final class SheetLayoutEngineTests: XCTestCase {
         let placed=LayoutViewport(bounds:base.bounds,size:size,zoom:1,pan:pan)
         XCTAssertEqual(contour.map { placed.screen($0).y }.min()!,27,accuracy:0.001)
         XCTAssertLessThan(contour.map { placed.screen($0).y }.max()!,size.height)
+    }
+
+    func testBookCanvasUsesAvailableSpaceOnCompactAndLargeScreensWithoutClipping() {
+        let contours = [
+            LayoutBounds(min: .zero, max: .init(x: 4000, y: 2600)).polygon,
+            LayoutBounds(min: .zero, max: .init(x: 1200, y: 8000)).polygon,
+            offcutCeiling().contour
+        ]
+        for size in [CGSize(width: 343, height: 173), .init(width: 343, height: 230), .init(width: 358, height: 430), .init(width: 398, height: 650)] {
+            for contour in contours {
+                for angle in [0.0, 0.6, Double.pi / 2] {
+                    let bounds = LayoutViewport.fittedBounds(contour, rotation: angle, paddingFraction: 0)
+                    let fit = LayoutViewport.initialEditingSize(size, stableControls: true)
+                    let base = LayoutViewport(bounds: bounds, size: size, zoom: 1, pan: .zero, rotation: angle, fittingSize: fit)
+                    let placed = LayoutViewport(bounds: bounds, size: size, zoom: 1,
+                        pan: base.upperFramingPan(contour: contour, stableControls: true), rotation: angle, fittingSize: fit)
+                    let points = contour.map { placed.screen($0) }
+                    XCTAssertGreaterThanOrEqual(points.map(\.x).min()!, 34.9)
+                    XCTAssertLessThanOrEqual(points.map(\.x).max()!, size.width - 34.9)
+                    XCTAssertGreaterThanOrEqual(points.map(\.y).min()!, 0)
+                    XCTAssertLessThan(points.map(\.y).max()!, size.height - 20)
+                    let old = LayoutViewport(bounds: LayoutViewport.fittedBounds(contour, rotation: angle),
+                        size: size, zoom: 1, pan: .zero, rotation: angle, fittingSize: LayoutViewport.initialEditingSize(size))
+                    XCTAssertGreaterThan(placed.scale, old.scale)
+                }
+            }
+        }
     }
 
     private var fourEdgeFormat: LayoutCatalogFormat {

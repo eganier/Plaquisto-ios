@@ -30,7 +30,7 @@ struct CeilingAutoFit {
     private let defaultHeight: Double
     private let hasSlopingProfile: Bool
 
-    init(room: PlaquistoRoomModel, proposal: WallCeilingEstimate.Proposal) {
+    init(room: PlaquistoRoomModel, proposal: WallCeilingEstimate.Proposal, includeWallExtensions: Bool = false) {
         boundary = proposal.boundary
         floor = proposal.floorElevation
         let reference = proposal.floorElevation
@@ -41,7 +41,7 @@ struct CeilingAutoFit {
         }
         // Keep only the upper envelope if a native contour has several vertical intervals.
         let segments: [Segment] = room.walls.filter { abs($0.start.y-reference) < 0.20 }.flatMap { wall in
-            let strips = PlaquistoWallGeometry.analyze(wall:wall,room:room).strips
+            let strips = PlaquistoWallGeometry.analyze(wall:wall,room:room,includeCeilingExtensions:includeWallExtensions).strips
             return strips.filter { s in !strips.contains { other in
                 other.x0 == s.x0 && other.x1 == s.x1 && other.h0+other.h1 > s.h0+s.h1
             }}.map { s in

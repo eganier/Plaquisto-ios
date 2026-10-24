@@ -31,7 +31,7 @@ struct PaintingBetaConfiguratorView: View {
                 }
             }
         }
-        .navigationTitle("Peinture et ratissages")
+        .navigationTitle("Peinture et ratissages").atlantiqueFormPage("Peinture et ratissages")
         .navigationBarTitleDisplayMode(.inline)
         .task { await load() }
     }
@@ -71,12 +71,12 @@ private struct PaintingStepsView: View {
                 Text("Étape \(step + 1) sur \(titles.count) · \(currentStep)").foregroundStyle(.secondary)
                 ProgressView(value: Double(step + 1), total: Double(titles.count)).tint(.accentColor)
             }.frame(maxWidth: .infinity, alignment: .leading).padding()
-            Form {
+            AtlantiqueForm {
                 switch currentStep {
                 case "Traitements": preparation
                 case "Ratissage": skimStep
-                case "Impression": Section("Impression") { productEditor($treatment.primer) }
-                case "Finition": Section("Peinture de finition") {
+                case "Impression": AtlantiqueSection("Impression") { productEditor($treatment.primer) }
+                case "Finition": AtlantiqueSection("Peinture de finition") {
                     Picker("Nombre de couches", selection: $treatment.finishCoats) {
                         ForEach(1...3, id: \.self) { Text("\($0)").tag($0) }
                     }
@@ -86,11 +86,14 @@ private struct PaintingStepsView: View {
                 }
             }
             HStack {
-                if step > 0 { Button("Retour") { step -= 1 }.buttonStyle(.bordered) }
+                if step > 0 {
+                    Button("Retour") { step -= 1 }.atlantiqueActionStyle(.secondary)
+                        .formStepMenu(titles: titles, selection: $step, canShowResult: validation == nil)
+                }
                 Spacer()
                 Button(currentStep == "Quantitatif" ? "Enregistrer" : currentStep == "Ratissage" ? "Terminer" : "Continuer") {
                     if currentStep == "Quantitatif" { onSave() } else { step += 1 }
-                }.buttonStyle(.borderedProminent)
+                }.atlantiqueActionStyle()
                     .disabled(step == 0 ? !area.isFinite || area <= 0 || !(treatment.skimEnabled || treatment.includesPrimer || treatment.paintEnabled) : validation != nil)
             }.padding().background(.bar)
         }
@@ -118,7 +121,7 @@ private struct PaintingStepsView: View {
             Toggle("Prévoir une impression", isOn: $treatment.primerEnabled)
             Toggle("Prévoir une peinture de finition", isOn: $treatment.paintEnabled)
         }
-        Section("Surface à traiter") {
+        AtlantiqueSection("Surface à traiter") {
             if readOnlyArea { LabeledContent("Surface nette", value: "\(number(area)) m²") }
             else {
                 HStack {
@@ -133,7 +136,7 @@ private struct PaintingStepsView: View {
 
     @ViewBuilder private var skimStep: some View {
         if treatment.passes.count > 1 {
-            Section("Passes prévues") {
+            AtlantiqueSection("Passes prévues") {
                 ForEach(Array(treatment.passes.enumerated()), id: \.element.id) { i, pass in
                     Button {
                         activePass = i
@@ -186,7 +189,7 @@ private struct PaintingStepsView: View {
     }
 
     @ViewBuilder private var quantities: some View {
-        Section("Quantités à prévoir") {
+        AtlantiqueSection("Quantités à prévoir") {
             ForEach(Array(supplies.enumerated()), id: \.offset) { _, item in
                 LabeledContent(item.name, value: "\(number(PaintingCalculator.displayedQuantity(item.quantity))) \(item.unit)")
             }
@@ -224,7 +227,7 @@ private struct PaintingPassEditor: View {
         switch kind { case .rebouchage: .red; case .charge: .green; case .finition: .blue }
     }
     var body: some View {
-        Section("Passe \(index)") {
+        AtlantiqueSection("Passe \(index)") {
             HStack(spacing: 8) {
                 ForEach(PaintingPassKind.allCases) { choice in
                     Button { select(choice, paste: paste) } label: {

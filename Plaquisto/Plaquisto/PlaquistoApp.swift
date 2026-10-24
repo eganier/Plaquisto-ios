@@ -35,7 +35,7 @@ private struct PlaquistoRootView: View {
                 .tag(AppTab.projects)
 
             ScannerDebugView(onOpenAccount: { showingAccount = true })
-            .tabItem { Label("Scanner", systemImage: "viewfinder") }
+            .tabItem { Label { Text("Modéliser") } icon: { Image(uiImage: ModelingIcon.image) } }
             .tag(AppTab.scanner)
 
             ToolsHomeView(onOpenAccount: { showingAccount = true })

@@ -44,8 +44,8 @@ struct LayoutSurfaceForm: View {
     }
     var body: some View {
         NavigationStack {
-            Form {
-                Section("Support") {
+            AtlantiqueForm {
+                AtlantiqueSection("Support") {
                     TextField("Pièce (facultatif)", text: $name)
                     Picker("Type", selection: $kind) { ForEach(LayoutSupportKind.allCases, id: \.self) { Text($0.rawValue) } }.pickerStyle(.segmented).disabled(requiredKind != nil)
                     Picker("Forme", selection: $preset) { ForEach(LayoutPreset.available(for: kind), id: \.self) { Text($0.rawValue) } }
@@ -57,7 +57,7 @@ struct LayoutSurfaceForm: View {
                             .font(.footnote).foregroundStyle(.secondary)
                     }
                 } else {
-                    Section("Dimensions") {
+                    AtlantiqueSection("Dimensions") {
                         if preset != .lShape || kind == .ceiling {
                             LayoutDimensionField(title: "Longueur", millimetres: $length, tint: .blue)
                         }
@@ -79,14 +79,14 @@ struct LayoutSurfaceForm: View {
                         }
                     }
                 }
-                Section("Aperçu du support") {
+                AtlantiqueSection("Aperçu du support") {
                     LayoutMeasuredPreview(contour: contour, tones: tones, corrections: generated.corrections) { selectedCorrection = $0 }
                         .frame(height: max(320,min(640,Double(contour.count)*32+120)))
                 }
                 Section { Text("Toutes les cotes sont en centimètres. Pour un rampant de plafond, renseignez les longueurs mesurées dans le plan incliné.").font(.footnote).foregroundStyle(.secondary) }
             }
             .scrollDismissesKeyboard(.interactively)
-            .navigationTitle("Créer le support").navigationBarTitleDisplayMode(.inline)
+            .navigationTitle("Créer le support").atlantiqueFormPage("Créer le support").navigationBarTitleDisplayMode(.inline)
             .onAppear { if let requiredKind { kind = requiredKind } }
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Annuler") { dismiss() } }
@@ -147,6 +147,10 @@ struct LayoutSurfaceForm: View {
 }
 
 struct LayoutOpeningForm: View {
+    @Environment(\.usesAtlantiqueDesign) private var atlantique
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var positioning = false
+    @State private var dimensionID = 0
     @Environment(\.dismiss) private var dismiss
     let support: LayoutSupportKind
     let existing: LayoutOpening?
@@ -178,14 +182,78 @@ struct LayoutOpeningForm: View {
     }
     var body: some View {
         NavigationStack {
-            Form {
-                Section("Ouverture") {
+            AtlantiqueForm(bookLayout: true) {
+                if atlantique {
+                    if positioning {
+                        Section {
+                            HStack {
+                                Text("\(kind.rawValue) · \(layoutCM(width)) × \(layoutCM(height))").font(Atlantique.Typography.button)
+                                Spacer()
+                                Button("Réglages") { setPositioning(false) }.foregroundStyle(Atlantique.Palette.actionInk)
+                            }.frame(minHeight: 44)
+                        }
+                    } else {
+                        Section {
+                            AtlantiquePicker("Type", selection: $kind) {
+                                ForEach(LayoutOpeningKind.available(for: support), id: \.self) { Text($0.rawValue).tag($0) }
+                            }
+                        }
+                        Section {
+                            HStack(spacing: 16) {
+                                LayoutDimensionField(title: "Largeur", millimetres: $width)
+                                Divider()
+                                LayoutDimensionField(title: support == .wall ? "Hauteur" : "Longueur", millimetres: $height)
+                            }
+                        }
+                    }
+                } else { AtlantiqueSection("Ouverture") {
                     Picker("Type", selection: $kind) { ForEach(LayoutOpeningKind.available(for: support), id: \.self) { Text($0.rawValue) } }
-                    LayoutDimensionField(title: "Largeur", millimetres: $width)
-                    LayoutDimensionField(title: support == .wall ? "Hauteur" : "Longueur", millimetres: $height)
+                    HStack {
+                        LayoutDimensionField(title: "Largeur", millimetres: $width)
+                        LayoutDimensionField(title: support == .wall ? "Hauteur" : "Longueur", millimetres: $height)
+                    }
                 }
-                if support == .ceiling, surfaceContour.count >= 3 {
-                    Section("Orientation") {
+                }
+                if atlantique, surfaceContour.count >= 3 {
+                    Section {
+                        if support == .ceiling {
+                            HStack {
+                                Button { changeWall(-1) } label: { Image(systemName: "chevron.left").frame(width: 44, height: 44) }.accessibilityLabel("Mur précédent")
+                                Spacer()
+                                VStack(spacing: 4) {
+                                    Text("Parallèle à").font(Atlantique.Typography.caption).foregroundStyle(Atlantique.Palette.muted)
+                                    Text(referenceEdge < 0 ? "Orientation actuelle" : "Mur \(referenceEdge + 1)").font(Atlantique.Typography.button)
+                                }
+                                Spacer()
+                                Button { changeWall(1) } label: { Image(systemName: "chevron.right").frame(width: 44, height: 44) }.accessibilityLabel("Mur suivant")
+                            }.buttonStyle(.borderless)
+                        }
+                        // Keep the distance editor visible when the header collapses.
+                        openingPreview.frame(height: 220)
+                    }
+                    if !positioning {
+                        Section {
+                            Button { setPositioning(true) } label: {
+                                HStack {
+                                    Image(systemName: "arrow.up.and.down.and.arrow.left.and.right").foregroundStyle(Atlantique.Palette.actionInk)
+                                    Text("Disposition").foregroundStyle(Atlantique.Palette.ink)
+                                    Spacer()
+                                    Image(systemName: "chevron.right").foregroundStyle(Atlantique.Palette.actionInk)
+                                }.font(Atlantique.Typography.button).frame(minHeight: 44).contentShape(Rectangle())
+                            }.buttonStyle(.plain)
+                        }
+                    }
+                    if positioning {
+                        Section {
+                            AtlantiqueSegmentedChoice(title: "Cote", options: placementDimensions.map { ($0.id, $0.label) }, selection: $dimensionID)
+                            Divider()
+                            if placementDimensions.contains(where: { $0.id == dimensionID }) {
+                                LayoutDimensionField(title: "Distance " + ["A", "B", "C", "D"][dimensionID], millimetres: dimensionBinding)
+                            }
+                        }
+                    }
+                } else if support == .ceiling, surfaceContour.count >= 3 {
+                    AtlantiqueSection("Orientation") {
                         openingPreview.frame(height: 180)
                         Picker("Parallèle à", selection: $referenceEdge) {
                             Text(existing == nil ? "Vue du plan" : "Orientation actuelle").tag(-1)
@@ -199,28 +267,66 @@ struct LayoutOpeningForm: View {
                         }
                     }
                 }
-                Section(support == .ceiling ? "Position du centre" : "Position du coin inférieur gauche") {
+                if !atlantique || surfaceContour.count < 3 { Section(support == .ceiling ? "Position du centre" : "Position du coin inférieur gauche") {
                     LayoutDimensionField(title: "Depuis la gauche (X)", millimetres: $x, signed: true)
                     LayoutDimensionField(title: support == .wall ? "Depuis le sol (Y)" : "Depuis le bas (Y)", millimetres: $y, signed: true)
                     Text("La partie située dans le support sera retirée des plaques. Une porte peut toucher le sol ; les ouvertures qui se chevauchent ne sont déduites qu’une fois.").font(.footnote).foregroundStyle(.secondary)
+                }
                 }
                 if existing != nil, let onDelete { Section { Button("Supprimer l’ouverture", role: .destructive) { onDelete(); dismiss() } } }
             }
             .scrollDismissesKeyboard(.interactively)
             .navigationTitle(existing == nil ? "Nouvelle ouverture" : "Modifier l’ouverture").navigationBarTitleDisplayMode(.inline)
+            .atlantiqueFormPage("Ouverture")
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button("Annuler") { dismiss() } }
+                ToolbarItem(placement: .cancellationAction) { Button("Annuler") { dismiss() }.atlantiqueToolbarAction() }.atlantiqueToolbarBackground(atlantique)
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Valider") {
-                        let polygon = openingContour
-                        onSave(.init(id: existing?.id ?? UUID(), kind: kind, contour: polygon,
-                            doorHanding:kind == .door ? existing?.doorHanding : nil,
-                            doorOpeningSide:kind == .door ? existing?.doorOpeningSide : nil)); dismiss()
-                    }.disabled(width <= 0 || height <= 0 || [x, y, width, height].contains { !$0.isFinite || abs($0) > 100_000 })
+                    Button(atlantique ? "Enregistrer" : "Appliquer", action: save)
+                        .disabled(!canApply).atlantiqueToolbarAction(primary: true)
+                }.atlantiqueToolbarBackground(atlantique)
+            }
+            .safeAreaInset(edge: .bottom) {
+                if atlantique {
+                    Button(positioning ? "Terminer" : "Appliquer", action: save)
+                        .atlantiqueActionStyle().disabled(!canApply)
+                        .padding(20).background(Atlantique.Palette.blue)
                 }
             }
             .onChange(of: kind) { _, value in if value == .door { y = 0 } }
         }
+    }
+    private var canApply: Bool {
+        width > 0 && height > 0 && width <= 100_000 && height <= 100_000
+            && [x, y, width, height, angle].allSatisfy { $0.isFinite }
+    }
+    private func save() {
+        guard canApply else { return }
+        onSave(.init(id: existing?.id ?? UUID(), kind: kind, contour: openingContour,
+            doorHanding: kind == .door ? existing?.doorHanding : nil,
+            doorOpeningSide: kind == .door ? existing?.doorOpeningSide : nil))
+        dismiss()
+    }
+    private func setPositioning(_ value: Bool) {
+        withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.25)) { positioning = value }
+    }
+    private var placementCenter: LayoutPoint {
+        support == .ceiling ? .init(x: x, y: y) : .init(x: x + width / 2, y: y + height / 2)
+    }
+    private var placementDimensions: [LayoutPlacementDimensions.Dimension] {
+        LayoutPlacementDimensions.dimensions(contour: surfaceContour, center: placementCenter, width: width, height: height, angle: support == .ceiling ? angle : 0)
+    }
+    private var dimensionBinding: Binding<Double> {
+        Binding(get: { placementDimensions.first { $0.id == dimensionID }?.distance ?? 0 }, set: { value in
+            guard let dimension = placementDimensions.first(where: { $0.id == dimensionID }),
+                  let center = LayoutPlacementDimensions.movedCenter(placementCenter, dimension: dimension, distance: value) else { return }
+            x = center.x - (support == .wall ? width / 2 : 0)
+            y = center.y - (support == .wall ? height / 2 : 0)
+        })
+    }
+    private func changeWall(_ delta: Int) {
+        guard !surfaceContour.isEmpty else { return }
+        referenceEdge = (max(0, referenceEdge) + delta + surfaceContour.count) % surfaceContour.count
+        angle = LayoutOpeningFrame.wallAngle(surfaceContour, edge: referenceEdge) ?? angle
     }
     private var openingContour: [LayoutPoint] {
         support == .ceiling ? frame.contour(center: .init(x: x, y: y), width: width, height: height, angle: angle)
@@ -250,6 +356,14 @@ struct LayoutOpeningForm: View {
                 }
                 context.draw(Text("\(i + 1)").font(.caption.bold()), at: screen((a + b) * 0.5))
             }
+            if atlantique && positioning {
+                for dimension in placementDimensions {
+                    var line = Path(); line.move(to: screen(dimension.start)); line.addLine(to: screen(dimension.end))
+                    context.stroke(line, with: .color(Atlantique.Palette.ink), lineWidth: 1)
+                    let midpoint = screen((dimension.start + dimension.end) * 0.5)
+                    context.draw(Text("\(dimension.label) · \(layoutCM(dimension.distance))").font(.caption.bold()).foregroundStyle(Atlantique.Palette.ink), at: .init(x: midpoint.x, y: midpoint.y - 10))
+                }
+            }
             context.fill(path(openingContour), with: .color(.orange.opacity(0.25)))
             context.stroke(path(openingContour), with: .color(.orange), lineWidth: 2)
         }
@@ -270,12 +384,12 @@ struct LayoutVertexForm: View {
     }
     var body: some View {
         NavigationStack {
-            Form {
-                Section("Sommet \(index + 1)") {
+            AtlantiqueForm {
+                AtlantiqueSection("Sommet \(index + 1)") {
                     LayoutDimensionField(title: "Depuis la gauche (X)", millimetres: $contour[index].x, signed: true)
                     LayoutDimensionField(title: "Depuis le bas (Y)", millimetres: $contour[index].y, signed: true)
                 }
-                Section("Côté vers le sommet \((index + 1) % contour.count + 1)") {
+                AtlantiqueSection("Côté vers le sommet \((index + 1) % contour.count + 1)") {
                     LayoutDimensionField(title: "Longueur du côté", millimetres: $sideLength)
                     Button("Appliquer cette longueur") {
                         let next = (index + 1) % contour.count, direction = contour[next] - contour[index]
@@ -296,7 +410,7 @@ struct LayoutVertexForm: View {
                 if let message { Section { Text(message).foregroundStyle(.red) } }
             }
             .scrollDismissesKeyboard(.interactively)
-            .navigationTitle("Modifier le contour").navigationBarTitleDisplayMode(.inline)
+            .navigationTitle("Modifier le contour").atlantiqueFormPage("Modifier le contour").navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Annuler") { dismiss() } }
                 ToolbarItem(placement: .confirmationAction) { Button("Valider") { save(contour) } }
@@ -310,11 +424,86 @@ struct LayoutVertexForm: View {
 }
 
 struct LayoutSettingsForm: View {
+    @Environment(\.usesAtlantiqueDesign) private var atlantique
     @Environment(\.dismiss) private var dismiss
-    @EnvironmentObject private var catalogue: ToolTechnicalStore
-    let onSave: (LayoutLayer) -> Void
     let surface: Surface2D
-    @State private var layer: LayoutLayer
+    let onSave: ([LayoutLayer]) -> Void
+    @State private var layers: [LayoutLayer]
+
+    init(layers: [LayoutLayer], surface: Surface2D, onSave: @escaping ([LayoutLayer]) -> Void) {
+        self.surface = surface
+        self.onSave = onSave
+        _layers = State(initialValue: layers.map {
+            var copy = $0
+            copy.materializeFurringOrientation()
+            return copy.forSurface(surface)
+        })
+    }
+
+    var body: some View {
+        NavigationStack {
+            AtlantiqueForm(bookLayout: true) {
+                ForEach($layers) { $layer in
+                    let index = layers.firstIndex(where: { $0.id == layer.id }) ?? 0
+                    Section {
+                        LayoutFacingFields(number: index + 1, surface: surface, layer: $layer)
+                        if index > 0 {
+                            Button("Retirer le parement \(index + 1)", role: .destructive) {
+                                layers = LayoutFacingDraft.removing(at: index, from: layers)
+                            }.accessibilityIdentifier("layout.facing.remove.\(index)")
+                        }
+                    }
+                }
+                if layers.count == 1 {
+                    Section {
+                        Button {
+                            layers = LayoutFacingDraft.addingSecond(to: layers)
+                        } label: {
+                            HStack {
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text("Parement 2").font(.headline)
+                                    Text("Ajouter une deuxième peau").font(.caption).foregroundStyle(.secondary)
+                                }
+                                Spacer()
+                                Image(systemName: "plus").foregroundStyle(atlantique ? Atlantique.Palette.actionInk : Color.accentColor)
+                            }.frame(minHeight: 48).contentShape(Rectangle())
+                        }.buttonStyle(.plain).accessibilityIdentifier("layout.facing.add")
+                    }
+                }
+            }
+            .scrollDismissesKeyboard(.interactively)
+            .navigationTitle("Parements").atlantiqueFormPage("Parements").navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Annuler") { dismiss() }.atlantiqueToolbarAction()
+                }.atlantiqueToolbarBackground(atlantique)
+                ToolbarItem(placement: .confirmationAction) {
+                    Button(atlantique ? "Enregistrer" : "Appliquer") { save() }
+                        .atlantiqueToolbarAction(primary: true).disabled(!LayoutFacingDraft.canApply(layers))
+                }.atlantiqueToolbarBackground(atlantique)
+            }
+            .safeAreaInset(edge: .bottom) {
+                if atlantique {
+                    Button("Appliquer") { save() }.atlantiqueActionStyle().disabled(!LayoutFacingDraft.canApply(layers))
+                        .padding(20).background(Atlantique.Palette.blue)
+                }
+            }
+        }
+    }
+
+    private func save() {
+        guard LayoutFacingDraft.canApply(layers) else { return }
+        onSave(layers)
+        dismiss()
+    }
+}
+
+private struct LayoutFacingFields: View {
+    @Environment(\.usesAtlantiqueDesign) private var atlantique
+    @EnvironmentObject private var catalogue: ToolTechnicalStore
+    let number: Int
+    let surface: Surface2D
+    @Binding var layer: LayoutLayer
     @State private var compatibilityMessage: String?
     private var selectedFormat:LayoutCatalogFormat? { catalogue.layoutFormats.first { $0.id == layer.catalogFormatID } }
     private var families:[String] { Array(Set(catalogue.layoutFormats.map(\.family))).sorted() }
@@ -323,7 +512,8 @@ struct LayoutSettingsForm: View {
         return catalogue.layoutFormats.filter { $0.family == selectedFormat?.family && seen.insert($0.productID ?? $0.id).inserted }
     }
     private var dimensions:[LayoutCatalogFormat] {
-        guard let product=selectedFormat?.productID else { return [] }
+        guard let selectedFormat else { return [] }
+        guard let product=selectedFormat.productID else { return [selectedFormat] }
         return catalogue.layoutFormats.filter { $0.productID == product }
     }
     private func select(_ format:LayoutCatalogFormat?) {
@@ -332,17 +522,24 @@ struct LayoutSettingsForm: View {
         layer.sheetWidth=format.width; layer.sheetLength=format.length
         layer.fourTaperedEdges=format.fourTaperedEdges
     }
-    init(layer: LayoutLayer, surface: Surface2D, onSave: @escaping (LayoutLayer) -> Void) {
-        self.surface = surface; self.onSave = onSave
-        var copy = layer
-        copy.materializeFurringOrientation()
-        _layer = State(initialValue: copy.forSurface(surface))
+    private var functionSelection: Binding<String> {
+        Binding(get: {
+            guard let format = selectedFormat else { return "" }
+            return format.productID ?? format.id
+        }, set: { product in
+            let candidates = catalogue.layoutFormats.filter { ($0.productID ?? $0.id) == product }
+            select(candidates.first { $0.width == layer.sheetWidth && $0.length == layer.sheetLength } ?? candidates.first)
+        })
+    }
+    private var functionPicker: some View {
+        AtlantiquePicker("Fonction", selection: functionSelection) {
+            ForEach(products) { format in Text(format.functionTitle).tag(format.productID ?? format.id) }
+        }
     }
     var body: some View {
-        NavigationStack {
-            Form {
-                Section("Format de plaque") {
-                    Picker("Type de parement",selection:Binding(get:{selectedFormat?.family ?? ""},set:{ family in
+        Group {
+                    if atlantique { Text("Parement \(number)").font(Atlantique.Typography.button); Divider() }
+                    AtlantiquePicker("Type de plaque",selection:Binding(get:{selectedFormat?.family ?? ""},set:{ family in
                         select(catalogue.layoutFormats.first { $0.family == family && $0.width == layer.sheetWidth && $0.length == layer.sheetLength }
                             ?? catalogue.layoutFormats.first { $0.family == family })
                     })) {
@@ -350,23 +547,29 @@ struct LayoutSettingsForm: View {
                         ForEach(families,id:\.self) { Text($0).tag($0) }
                     }
                     if selectedFormat != nil {
-                        Picker("Fonction",selection:Binding(get:{selectedFormat?.productID ?? ""},set:{ product in
-                            select(catalogue.layoutFormats.first { $0.productID == product && $0.width == layer.sheetWidth && $0.length == layer.sheetLength }
-                                ?? catalogue.layoutFormats.first { $0.productID == product })
-                        })) { ForEach(products) { Text($0.title).tag($0.productID ?? "") } }
+                        if atlantique { Divider() }
+                        functionPicker
+                        if atlantique {
+                            Divider()
+                            AtlantiquePicker("Dimension", selection: Binding(get: { layer.catalogFormatID ?? "" }, set: { id in
+                                select(dimensions.first { $0.id == id })
+                            })) {
+                                ForEach(dimensions) { Text("\(layoutCM($0.width)) × \(layoutCM($0.length))").tag($0.id) }
+                            }
+                        } else {
                         Picker("Largeur de plaque",selection:Binding(get:{layer.sheetWidth},set:{ width in
                             select(dimensions.first { $0.width == width && $0.length == layer.sheetLength } ?? dimensions.first { $0.width == width })
                         })) { ForEach(Array(Set(dimensions.map(\.width))).sorted(),id:\.self) { Text(layoutCM($0)).tag($0) } }
                         Picker("Longueur de plaque",selection:Binding(get:{layer.sheetLength},set:{ length in
                             select(dimensions.first { $0.width == layer.sheetWidth && $0.length == length })
                         })) { ForEach(dimensions.filter { $0.width == layer.sheetWidth }) { Text(layoutCM($0.length)).tag($0.length) } }
+                        }
                     } else {
                         LabeledContent("Format enregistré",value:"\(layoutCM(layer.sheetWidth)) × \(layoutCM(layer.sheetLength))")
                     }
                     if catalogue.layoutFormats.isEmpty { Text("Catalogue indisponible : le parement enregistré est conservé.").font(.footnote).foregroundStyle(.secondary) }
                     if let compatibilityMessage { Label(compatibilityMessage,systemImage:"exclamationmark.triangle.fill").foregroundStyle(.orange) }
-                }
-                if surface.kind == .wall { Section("Pose") {
+                if surface.kind == .wall && (!atlantique || Atlantique.Book.showsAdvancedFormControls) { AtlantiqueSection("Pose") {
                     Toggle("Pose en quinconce",isOn:Binding(get:{layer.staggered == true},set:{ value in
                         layer.staggered=value; layer.staggerOffset=nil
                         if value { layer=LayoutPlanning.alignBoards(to:layer,support:surface.kind) }
@@ -380,16 +583,9 @@ struct LayoutSettingsForm: View {
                     }
                 } }
             }
-            .scrollDismissesKeyboard(.interactively)
-            .onChange(of:layer.sheetLength) { _,_ in reconcileSpacing() }
-            .onChange(of:layer.sheetWidth) { _,_ in reconcileSpacing() }
-            .onChange(of:layer.orientation) { _,_ in reconcileSpacing() }
-            .navigationTitle("Plaques et pose").navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button("Annuler") { dismiss() } }
-                ToolbarItem(placement: .confirmationAction) { Button("Appliquer") { onSave(layer); dismiss() }.disabled(layer.sheetWidth < 1 || layer.sheetLength < 1 || layer.sheetWidth > 100_000 || layer.sheetLength > 100_000 || (layer.furring != nil && LayoutPlanning.compatibleSpacings(layer).isEmpty)) }
-            }
-        }
+        .onChange(of:layer.sheetLength) { _,_ in reconcileSpacing() }
+        .onChange(of:layer.sheetWidth) { _,_ in reconcileSpacing() }
+        .onChange(of:layer.orientation) { _,_ in reconcileSpacing() }
     }
     private func reconcileSpacing() {
         layer.materializeFurringOrientation()
@@ -473,8 +669,8 @@ struct LayoutCutDetail: View {
                 }.padding()
             }
             .background(Color(.systemGroupedBackground))
-            .navigationTitle("Plaque \(sheet.label(for:piece))").navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Fermer") { dismiss() } } }
+            .navigationTitle("Plaque \(sheet.label(for:piece))").atlantiqueFormPage("Plaque \(sheet.label(for:piece))").navigationBarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Fermer") { dismiss() }.atlantiqueToolbarAction() } }
         }
     }
     private func draw(context:inout GraphicsContext,size:CGSize) {
@@ -630,8 +826,8 @@ struct LayoutCorrectionDetail: View {
     let edgeCount: Int
     var body: some View {
         NavigationStack {
-            Form {
-                Section("Cote \(vertexName(correction.edgeIndex))–\(vertexName((correction.edgeIndex + 1) % max(1, edgeCount)))") {
+            AtlantiqueForm {
+                AtlantiqueSection("Cote \(vertexName(correction.edgeIndex))–\(vertexName((correction.edgeIndex + 1) % max(1, edgeCount)))") {
                     LabeledContent("Mesure saisie", value: layoutCM(correction.original))
                     LabeledContent("Mesure retenue", value: layoutCM(correction.corrected))
                     LabeledContent("Correction", value: "\(correction.correctionDelta >= 0 ? "+" : "")\(layoutCM(correction.correctionDelta))")
@@ -647,8 +843,8 @@ struct LayoutCorrectionDetail: View {
                     }
                 }
             }
-            .navigationTitle("Correction de mesure").navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Fermer") { dismiss() } } }
+            .navigationTitle("Correction de mesure").atlantiqueFormPage("Correction de mesure").navigationBarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Fermer") { dismiss() }.atlantiqueToolbarAction() } }
         }
     }
 }

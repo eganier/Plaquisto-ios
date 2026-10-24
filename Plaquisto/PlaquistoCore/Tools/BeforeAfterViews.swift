@@ -12,6 +12,7 @@ extension EnvironmentValues {
 }
 
 struct BeforeAfterHomeView: View {
+    @Environment(\.usesAtlantiqueDesign) private var atlantique
     @Environment(\.beforeAfterAccount) private var account
     @State private var projects: [BeforeAfterProject] = []
     @State private var photo: PhotosPickerItem?
@@ -33,7 +34,7 @@ struct BeforeAfterHomeView: View {
                     Text("Choisissez une photo Avant, retrouvez son cadrage avec la caméra, puis créez votre comparatif.").foregroundStyle(.secondary)
                     PhotosPicker(selection:$photo,matching:.images,preferredItemEncoding:.current) {
                         Label("Choisir la photo Avant",systemImage:"photo.badge.plus").frame(maxWidth:.infinity).padding(.vertical,7)
-                    }.buttonStyle(.borderedProminent).disabled(busy)
+                    }.atlantiqueActionStyle(.primary).disabled(busy)
                     if busy { ProgressView("Préparation de la photo…") }
                 }.padding(.vertical,8)
             }
@@ -50,10 +51,11 @@ struct BeforeAfterHomeView: View {
                         Button { renaming = project; name = project.name } label: { Label("Renommer",systemImage:"pencil") }.tint(.blue)
                     }
                 }
-            } header: { Text("Mes avant / après") }
-            footer: { Text("Photos locales, sans synchronisation cloud ni rattachement à un projet. Export sans coordonnées GPS.") }
+            } header: { Text("Mes avant / après").foregroundStyle(atlantique ? .white : .secondary) }
+            footer: { Text("Photos locales, sans synchronisation cloud ni rattachement à un projet. Export sans coordonnées GPS.").foregroundStyle(atlantique ? .white.opacity(0.85) : .secondary) }
         }
         .navigationTitle("Montage avant / après").navigationBarTitleDisplayMode(.inline)
+        .atlantiqueFormSurface().atlantiqueFormPage("Avant / Après")
         .navigationDestination(isPresented:$opening) {
             if let selected { BeforeAfterEditorView(project:selected,onSaved:{ Task { await reload() } }) }
         }
@@ -209,6 +211,7 @@ final class BeforeAfterEditorModel: ObservableObject {
 }
 
 private struct BeforeAfterEditorView: View {
+    @Environment(\.usesAtlantiqueDesign) private var atlantique
     @StateObject private var model: BeforeAfterEditorModel
     @Environment(\.beforeAfterAccount) private var account
     @Environment(\.dismiss) private var dismiss
@@ -228,9 +231,12 @@ private struct BeforeAfterEditorView: View {
                 if let pair = model.pair {
                     Text("Ajuster le comparatif").font(.headline)
                     BeforeAfterComparisonView(project:$model.project,pair:pair,account:account)
-                    Picker("Mode de comparaison",selection:$model.project.mode) {
+                    Picker("Séparation",selection:$model.project.mode) {
                         ForEach(BeforeAfterMode.allCases) { Text($0.title).tag($0) }
                     }.pickerStyle(.menu)
+                    if atlantique && model.project.mode != .sideBySide {
+                        Slider(value: $model.project.divider, in: 0...1).accessibilityLabel("Position de la séparation")
+                    }
                     // The gesture modifies only the mask, never the image registration.
                     if let alignment = model.project.alignment {
                         Label(alignment.message,systemImage:alignment.isUsable ? "checkmark.circle" : "exclamationmark.triangle")
@@ -246,7 +252,7 @@ private struct BeforeAfterEditorView: View {
                     if account.canDisableWatermark { Toggle("Filigrane Plaquisto",isOn:$model.project.showsWatermark) }
                     Button { Task { await model.export(account:account); if model.exportURL != nil { share = true; onSaved() } } } label: {
                         Label("Exporter et partager",systemImage:"square.and.arrow.up").frame(maxWidth:.infinity).padding(.vertical,8)
-                    }.buttonStyle(.borderedProminent)
+                    }.atlantiqueActionStyle(.primary)
                     Text("JPEG jusqu’à 2 000 px par photo. Enregistrez dans Photos ou Fichiers via le partage iOS. Les photos du projet sont conservées séparément du rendu.").font(.caption).foregroundStyle(.secondary)
                 } else if let before = model.before {
                     Image(uiImage:before).resizable().scaledToFit().clipShape(RoundedRectangle(cornerRadius:18))
@@ -256,18 +262,19 @@ private struct BeforeAfterEditorView: View {
                 if model.before != nil {
                     Button { camera = true } label: {
                         Label(model.project.after == nil ? "Prendre la photo Après" : "Reprendre la photo Après",systemImage:"camera.fill").frame(maxWidth:.infinity).padding(.vertical,8)
-                    }.buttonStyle(.bordered)
+                    }.atlantiqueActionStyle(.secondary)
                 }
                 if model.saved { Label("Projet enregistré sur cet iPhone",systemImage:"checkmark.circle").font(.caption).foregroundStyle(.secondary) }
-            }.padding()
+            }.padding().background(atlantique ? Color.white : Color.clear, in: RoundedRectangle(cornerRadius:17)).padding(atlantique ? 16 : 0)
             .disabled(model.busy)
         }
-        .background(Color(.systemGroupedBackground))
+        .background(atlantique ? Atlantique.Palette.blue : Color(.systemGroupedBackground))
+        .atlantiqueFormPage("Avant / Après")
         .navigationTitle(model.project.name).navigationBarTitleDisplayMode(.inline)
         .navigationBarBackButtonHidden()
         .toolbar {
-            ToolbarItem(placement:.topBarLeading) { Button { pendingSave?.cancel(); Task { if await model.save() { onSaved(); dismiss() } } } label: { Image(systemName:"chevron.left") }.accessibilityLabel("Revenir aux projets").disabled(model.busy) }
-            ToolbarItem(placement:.topBarTrailing) { Button("Enregistrer") { Task { if await model.save() { onSaved(); dismiss() } } }.disabled(model.busy) }
+            ToolbarItem(placement:.topBarLeading) { Button { pendingSave?.cancel(); Task { if await model.save() { onSaved(); dismiss() } } } label: { Image(systemName:"chevron.left") }.atlantiqueToolbarAction().accessibilityLabel("Revenir aux projets").disabled(model.busy) }.atlantiqueToolbarBackground(atlantique)
+            ToolbarItem(placement:.topBarTrailing) { Button("Enregistrer") { Task { if await model.save() { onSaved(); dismiss() } } }.atlantiqueToolbarAction(primary: true).disabled(model.busy) }.atlantiqueToolbarBackground(atlantique)
         }
         .overlay { if model.busy { ProgressView(model.status).padding(24).background(.regularMaterial,in:RoundedRectangle(cornerRadius:18)) } }
         .task { await model.load() }

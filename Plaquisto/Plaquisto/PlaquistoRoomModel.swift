@@ -156,6 +156,8 @@ struct PlaquistoOpening: Codable, Equatable, Identifiable {
     var doorOpeningSide: DoorOpeningSide? = nil
     /// A pocket door remains a door for openings/quantities, without a swing arc.
     var isPocketDoor: Bool? = nil
+    /// Preserve a calepinage-specific type (notably an access hatch) on round-trip.
+    var layoutKind: LayoutOpeningKind? = nil
 }
 struct RoomPlane: Codable, Equatable {
     // Parametric plane y = a*x + b*z + c; a boundary is separate from the plane.
@@ -190,6 +192,7 @@ struct PlaquistoCeiling: Codable, Equatable, Identifiable {
     var planNumber: Int? = nil
     /// Presentation only. Geometry and existing work quantities remain intact.
     var isHidden: Bool? = nil
+    var canConfigureShape: Bool { provenance.source == .estimated || provenance.source == .manual }
 }
 
 enum CeilingPlanNaming {
@@ -239,6 +242,19 @@ struct CeilingEstimateSettings: Codable, Equatable {
     var ridgePosition: Double = 0.5
     /// Optional for older files. True means the walls could not determine the pitch/ridge height.
     var riseIsEstimated: Bool? = nil
+    /// Explicit ceiling edit: extend the derived wall envelope, never overwrite scan measurements.
+    var extendsWalls: Bool? = nil
+    mutating func setSliderHeight(_ value: Double, isMinimum: Bool) {
+        guard value.isFinite, value > 0 else { return }
+        if shape == .flat {
+            lowHeight = value; highHeight = value
+        } else if isMinimum {
+            lowHeight = value; highHeight = max(highHeight,value)
+        } else {
+            // The maximum stops at the minimum; it must never push it down.
+            highHeight = max(lowHeight,value)
+        }
+    }
     var isValid: Bool {
         [lowHeight, highHeight, azimuth, ridgePosition].allSatisfy(\.isFinite)
             && lowHeight > 0 && highHeight >= lowHeight && highHeight <= 1000

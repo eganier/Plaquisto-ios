@@ -116,10 +116,10 @@ struct PlaquistoRoomEditor: View {
                 Text("\(document.room.openings.count) ouverture(s) enregistrée(s) · \(document.room.slopes.count) pan(s) de plafond").font(.caption)
                 if !document.room.slopes.isEmpty {
                     Label(document.room.slopes.contains(where: { $0.provenance.source == .estimated })
-                          ? "Plafond estimé à partir des murs" : "Plafond reconnu", systemImage: "info.circle")
+                          ? "Plafond estimé à partir des murs" : document.room.metadata.source == .manual ? "Plafond défini à partir de vos mesures" : "Plafond reconnu", systemImage: "info.circle")
                         .font(.caption).foregroundStyle(.secondary)
                 }
-                if document.room.slopes.isEmpty || document.room.ceilings.contains(where: { $0.provenance.source == .estimated }) {
+                if document.room.slopes.isEmpty || document.room.ceilings.contains(where: \.canConfigureShape) {
                     Menu {
                         ForEach(Array(((try? WallCeilingEstimate.manualProposals(in: document.room)) ?? []).enumerated()), id: \.element.id) { index, value in
                             Button(value.ceilingID.flatMap { id in document.room.ceilings.first { $0.id==id } }.map {
@@ -395,6 +395,7 @@ private enum SurveyPlanMode: String, CaseIterable, Identifiable {
 
 struct SurveyPlanEditor: View {
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.usesAtlantiqueDesign) private var atlantique
     let original: PlaquistoRoomDocument
     let ceilingNumbers:[String:Int]
     let initiallyConfigureCeilings: Bool
@@ -486,6 +487,7 @@ struct SurveyPlanEditor: View {
     @State private var alignedWall: UUID?
     @State private var fullscreen = false
     @State private var canvasFitSize: CGSize?
+    @State private var viewportInteracted = false
     @State private var recenterToken = 0
     init(document: PlaquistoRoomDocument, ceilingNumbers:[String:Int]=[:], initiallyConfigureCeilings: Bool = false,
          liningDepths: [UUID: Double] = [:], resumePartitions: Bool = false, onRequestLining: (() -> Void)? = nil,
@@ -533,6 +535,7 @@ struct SurveyPlanEditor: View {
     }
     private var planContent: some View {
             VStack(spacing: 10) {
+                if !atlantique {
                 HStack(spacing:2) {
                     ForEach(SurveyPlanMode.allCases) { item in
                         Button { mode=item } label: {
@@ -544,8 +547,10 @@ struct SurveyPlanEditor: View {
                     }
                 }.padding(3).background(Color(.tertiarySystemFill),in:Capsule()).padding(.horizontal)
                     .disabled(drawingPartition || placingDoor || placingColumn || columnPreview != nil || manipulation != nil || splittingCeiling != nil)
+                }
                 if !fullscreen { Text(instructions)
-                    .font(.caption).foregroundStyle(.secondary).padding(.horizontal)
+                    .font(.caption).foregroundStyle(atlantique ? Color.white.opacity(0.85) : Color.secondary).padding(.horizontal)
+                    .frame(height: atlantique ? 36 : nil, alignment: .top)
                 }
                 if splittingCeiling != nil {
                     Button("Annuler le découpage", role: .cancel) { cancelCeilingCut() }
@@ -596,22 +601,40 @@ struct SurveyPlanEditor: View {
                 if splittingCeiling != nil {
                     SurveyCeilingCutConfirmation(ready: ceilingCut.preview != nil,
                         redo: { ceilingCut.reset() }, accept: acceptCeilingCut)
-                } else if splittingCeiling == nil && (!fullscreen || mode != .view) { editorTools }
+                } else if splittingCeiling == nil && (!fullscreen || mode != .view) {
+                    if atlantique { ScrollView { editorTools }.frame(height: 152) }
+                    else { editorTools }
+                }
+                if atlantique && !fullscreen {
+                    LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 4), count: 3), spacing: 4) {
+                        ForEach(SurveyPlanMode.allCases) { item in
+                            Button { mode = item } label: {
+                                Text(item.rawValue).font(Atlantique.Typography.caption).frame(maxWidth: .infinity, minHeight: 44)
+                                    .foregroundStyle(Atlantique.Palette.ink)
+                                    .background(mode == item ? Atlantique.Palette.orange : .clear, in: RoundedRectangle(cornerRadius: 10))
+                            }.buttonStyle(.plain).accessibilityAddTraits(mode == item ? .isSelected : [])
+                        }
+                    }.padding(6).background { AtlantiqueSurface() }.padding(.horizontal, 16).padding(.bottom, 8)
+                        .disabled(drawingPartition || placingDoor || placingColumn || columnPreview != nil || manipulation != nil || splittingCeiling != nil)
+                }
             }
-            .background(Color(.systemGroupedBackground))
+            .background(atlantique ? Atlantique.Palette.blue : Color(.systemGroupedBackground))
             .navigationTitle(initiallyConfigureCeilings ? "Configurer les plafonds" : "Modifier le plan")
             .navigationBarTitleDisplayMode(.inline)
+            .atlantiquePage(initiallyConfigureCeilings ? "Configurer les plafonds" : "Modifier le plan", root: true)
             .toolbar(fullscreen ? .hidden : .visible,for:.navigationBar)
             .statusBarHidden(fullscreen)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Annuler") { if hasChanges { discard = true } else { dismiss() } }
+                        .foregroundStyle(atlantique ? Color.white : Color.accentColor)
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Enregistrer") {
                         do { try document.validate(); try onSave(document); dismiss() }
                         catch { self.error = error.localizedDescription }
-                    }.disabled(document == original || draftWall != nil || firstPoint != nil || manipulation != nil || splittingCeiling != nil)
+                    }.foregroundStyle(atlantique ? Color.white : Color.accentColor)
+                        .disabled(document == original || draftWall != nil || firstPoint != nil || manipulation != nil || splittingCeiling != nil)
                 }
             }
             .interactiveDismissDisabled(hasChanges)
@@ -1288,11 +1311,11 @@ struct SurveyPlanEditor: View {
             let minX = points.map(\.x).min() ?? 0, maxX = points.map(\.x).max() ?? 4
             let minZ = points.map(\.z).min() ?? 0, maxZ = points.map(\.z).max() ?? 4
             let fitSize=canvasFitSize ?? proxy.size
-            let scale = max(1, min((fitSize.width-116)/max(1,maxX-minX), (fitSize.height-116)/max(1,maxZ-minZ))) * zoom * pinch
             let center = RoomPoint(x: (minX+maxX)/2, y: document.room.walls.first?.start.y ?? 0, z: (minZ+maxZ)/2)
             let rotatedPoints=points.map { SurveyPlanCamera.rotated($0,around:center,angle:viewRotation) }
             let halfWidth=rotatedPoints.map { abs($0.x-center.x) }.max() ?? 2
             let halfHeight=rotatedPoints.map { abs($0.z-center.z) }.max() ?? 2
+            let scale = max(1, min((fitSize.width-116)/max(0.1,halfWidth*2), (fitSize.height-116)/max(0.1,halfHeight*2))) * zoom * pinch
             let limitX = max(0, proxy.size.width/2 + halfWidth*scale - 40)
             let limitY = max(0, proxy.size.height/2 + halfHeight*scale - 40)
             let baseDX = min(limitX, max(-limitX, offset.width))
@@ -1486,6 +1509,7 @@ struct SurveyPlanEditor: View {
             .background(ArchitecturalPlanInk.paper)
             .overlay {
                 SurveyPlanGestureSurface(autoscrollEnabled: drawingPartition, single: { phase,point,delta in
+                    if phase == .began { viewportInteracted=true }
                     if phase == .cancelled || phase == .failed {
                         manipulation=nil; cursor=nil; snapResult=nil; columnPreview=nil; columnDragStart=nil; ceilingCut.cancelGesture(); return
                     }
@@ -1567,6 +1591,7 @@ struct SurveyPlanEditor: View {
                         y: center.y, z: (target.y - proxy.size.height / 2 - next.height) / scale + center.z)
                     placement(SurveyPlanCamera.rotated(p, around: center, angle: -viewRotation), tolerance: min(0.20, 18 / scale))
                 }, navigate: { delta,factor,anchor in
+                    viewportInteracted=true
                     ceilingCut.cancelGesture()
                     manipulation=nil; cursor=nil; snapResult=nil; columnPreview=nil; columnDragStart=nil
                     let next=min(8,max(0.5,zoom*factor)), ratio=next/zoom
@@ -1583,7 +1608,9 @@ struct SurveyPlanEditor: View {
                 if canvasFitSize == nil, proxy.size.width>116, proxy.size.height>116 { canvasFitSize=proxy.size }
             }
             .onChange(of:proxy.size) { _,size in
-                if canvasFitSize == nil, size.width>116, size.height>116 { canvasFitSize=size }
+                // Sheet presentation first reports a compressed canvas. Follow its
+                // expansion until interaction, then keep a stable drawing scale.
+                if !viewportInteracted, size.width>116, size.height>116 { canvasFitSize=size }
             }
             .onChange(of:recenterToken) { _,_ in canvasFitSize=proxy.size }
             .clipped()
@@ -1806,6 +1833,7 @@ extension RoomPoint {
 /// No semantic room names are invented when the scan contains one open space.
 struct CeilingZonePicker: View {
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.usesAtlantiqueDesign) private var atlantique
     let room: PlaquistoRoomModel
     let choices: [WallCeilingEstimate.Proposal]
     var numbers: [String:Int] = [:]
@@ -1822,6 +1850,9 @@ struct CeilingZonePicker: View {
     var body: some View {
         NavigationStack {
             List {
+                if atlantique {
+                    ceilingOverview.frame(height: 245).listRowInsets(EdgeInsets()).listRowBackground(Color.clear)
+                }
                 if choices.contains(where: { $0.ceilingID == nil }) {
                     Section {
                     ForEach(choices.filter { $0.ceilingID == nil }) { choice in
@@ -1840,22 +1871,36 @@ struct CeilingZonePicker: View {
                                         Image(systemName: selectedCeilings.contains(ceiling.id) ? "checkmark.circle.fill" : "circle")
                                             .font(.title2).frame(width: 44, height: 64)
                                     }.buttonStyle(.borderless).accessibilityLabel("Sélectionner \(CeilingPlanNaming.title(ceiling,in:room,numbers:numbers))")
+                                        .foregroundStyle(atlantique ? Atlantique.Palette.actionInk : Color.accentColor)
                                     row(choice,title:CeilingPlanNaming.title(ceiling,in:room,numbers:numbers),
                                         detail:ceiling.isHidden == true ? "Masqué" : ceiling.estimateSettings?.shape.title ?? "Hauteur et pente",
                                         onTap: { if !selectedCeilings.insert(ceiling.id).inserted { selectedCeilings.remove(ceiling.id) } })
+                                    if atlantique {
+                                        Button { onSplit(ceiling.id) } label: {
+                                            Image(systemName: "scissors").frame(width: 44, height: 44)
+                                        }.buttonStyle(.borderless).disabled(ceiling.isHidden == true)
+                                            .foregroundStyle(Atlantique.Palette.actionInk)
+                                            .accessibilityLabel("Découper \(CeilingPlanNaming.title(ceiling,in:room,numbers:numbers))")
+                                    }
                                 }
+                                if !atlantique {
                                 HStack(spacing:18) {
                                     Button { onChoose(choice) } label: { Label("Hauteur et pente", systemImage: "slider.horizontal.3") }
                                     Button { onSplit(ceiling.id) } label: { Label("Découper",systemImage:"scissors") }
                                         .disabled(ceiling.isHidden == true)
                                 }.font(.caption).buttonStyle(.borderless)
+                                }
                             }
                         }
                     }
                 }
             }
             .navigationTitle("Choisir un plafond").navigationBarTitleDisplayMode(.inline)
+            .scrollContentBackground(atlantique ? .hidden : .visible)
+            .background(atlantique ? Atlantique.Palette.blue : Color(uiColor: .systemGroupedBackground))
+            .atlantiquePage("Plafonds", root: true)
             .safeAreaInset(edge: .bottom) {
+                VStack(spacing: 8) {
                 if !selectedCeilings.isEmpty {
                     HStack {
                         Button("Fusionner", systemImage: "square.on.square") {
@@ -1874,6 +1919,20 @@ struct CeilingZonePicker: View {
                         }
                     }.buttonStyle(.borderedProminent).padding().background(.regularMaterial)
                 }
+                    if atlantique {
+                        if let choice = choices.first(where: { $0.ceilingID.map { selectedCeilings.contains($0) } ?? false }), selectedCeilings.count == 1 {
+                            Button("Type de plafond et hauteur") { onChoose(choice) }
+                                .buttonStyle(AtlantiqueButtonStyle(kind: .secondary))
+                        } else {
+                            Menu {
+                                ForEach(choices.filter { selectedCeilings.isEmpty || $0.ceilingID.map { selectedCeilings.contains($0) } == true }) { choice in
+                                    Button(choice.ceilingID.flatMap { id in room.ceilings.first { $0.id == id }.map { CeilingPlanNaming.title($0, in: room, numbers: numbers) } } ?? "Créer un plafond") { onChoose(choice) }
+                                }
+                            } label: { Label("Type de plafond et hauteur", systemImage: "slider.horizontal.3").frame(maxWidth: .infinity, minHeight: 48) }
+                                .buttonStyle(AtlantiqueButtonStyle(kind: .secondary)).disabled(choices.isEmpty)
+                        }
+                    }
+                }.padding(atlantique ? 12 : 0).background(atlantique ? Atlantique.Palette.blue : Color.clear)
             }
             .confirmationDialog("Fusionner ces deux plafonds ?",isPresented:Binding(get:{ mergePair.count == 2 },set:{ if !$0 { mergePair=[] } }),titleVisibility:.visible) {
                 Button("Fusionner") {
@@ -1889,20 +1948,43 @@ struct CeilingZonePicker: View {
             .toolbar {
                 ToolbarItem(placement:.cancellationAction) { Button("Fermer") {
                     if let onClose { onClose() } else { dismiss() }
-                } }
+                }.foregroundStyle(atlantique ? Color.white : Color.accentColor) }
                 if let onSave {
                     ToolbarItem(placement:.confirmationAction) {
                         Button(action:onSave) { Image(systemName:"checkmark") }
+                            .foregroundStyle(atlantique ? Color.white : Color.accentColor)
                             .accessibilityLabel("Enregistrer les plafonds").disabled(!canSave)
                     }
                 }
             }
         }
     }
+    private var ceilingOverview: some View {
+        Canvas { context, size in
+            let points = room.walls.flatMap { [$0.start, $0.effectiveEnd] } + choices.flatMap(\.boundary)
+            let x0 = points.map(\.x).min() ?? 0, z0 = points.map(\.z).min() ?? 0
+            let width = max(0.1, (points.map(\.x).max() ?? 1) - x0)
+            let height = max(0.1, (points.map(\.z).max() ?? 1) - z0)
+            let scale = min((size.width - 32) / width, (size.height - 32) / height)
+            func point(_ p: RoomPoint) -> CGPoint {
+                .init(x: (p.x - x0 - width / 2) * scale + size.width / 2, y: (p.z - z0 - height / 2) * scale + size.height / 2)
+            }
+            for choice in choices {
+                var path = Path(); path.addLines(choice.boundary.map(point)); path.closeSubpath()
+                let selected = choice.ceilingID.map { selectedCeilings.contains($0) } ?? false
+                context.fill(path, with: .color(selected ? Atlantique.Palette.orange.opacity(0.35) : Atlantique.Palette.paper))
+                context.stroke(path, with: .color(selected ? Atlantique.Palette.actionInk : Atlantique.Palette.separator), lineWidth: 2)
+            }
+            for wall in room.walls {
+                var line = Path(); line.move(to: point(wall.start)); line.addLine(to: point(wall.effectiveEnd))
+                context.stroke(line, with: .color(Atlantique.Palette.ink), lineWidth: 2)
+            }
+        }.background { AtlantiqueSurface() }.accessibilityLabel("Plan des plafonds, les zones sélectionnées sont en orange")
+    }
     private func row(_ choice: WallCeilingEstimate.Proposal, title: String, detail: String, onTap: (() -> Void)? = nil) -> some View {
         Button { if let onTap { onTap() } else { onChoose(choice) } } label: {
             HStack(spacing:14) {
-                Canvas { context, size in
+                if !atlantique { Canvas { context, size in
                     let points = room.walls.flatMap { [$0.start,$0.effectiveEnd] }+choice.boundary
                     let x0 = points.map(\.x).min() ?? 0, z0 = points.map(\.z).min() ?? 0
                     let w = max(0.1,(points.map(\.x).max() ?? 1)-x0)
@@ -1919,7 +2001,7 @@ struct CeilingZonePicker: View {
                         var line = Path(); line.move(to:p(wall.start)); line.addLine(to:p(wall.effectiveEnd))
                         context.stroke(line,with:.color(.primary.opacity(0.65)),lineWidth:1.5)
                     }
-                }.frame(width:100,height:78).background(.quaternary,in:RoundedRectangle(cornerRadius:10))
+                }.frame(width:100,height:78).background(.quaternary,in:RoundedRectangle(cornerRadius:10)) }
                 VStack(alignment:.leading,spacing:4) {
                     Text(title).font(.headline)
                     Text(detail).font(.caption).foregroundStyle(.secondary)
@@ -1944,6 +2026,7 @@ struct WallCeilingEstimateView: View {
     @State private var settings: CeilingEstimateSettings
     @State private var lowText: String
     @State private var highText: String
+    @State private var heightSliderUpper: Double
     @State private var selected: UUID?
     @State private var error: String?
     @State private var topView = false
@@ -1975,6 +2058,7 @@ struct WallCeilingEstimateView: View {
         rounded.highHeight=settings.shape == .flat ? rounded.lowHeight : (settings.highHeight*100).rounded()/100
         unchangedInput=rounded
         _settings = State(initialValue: settings)
+        _heightSliderUpper = State(initialValue:max(5,ceil(max(settings.lowHeight,settings.highHeight)+1)))
         _lowText = State(initialValue: settings.lowHeight.formatted(.number.precision(.fractionLength(2))))
         _highText = State(initialValue: settings.highHeight.formatted(.number.precision(.fractionLength(2))))
     }
@@ -1984,6 +2068,7 @@ struct WallCeilingEstimateView: View {
     private func restore(_ value: SettingsSnapshot) {
         settings = value.settings; lowText = value.low; highText = value.high
         estimatedRise = value.estimatedRise
+        heightSliderUpper=max(heightSliderUpper,ceil(max(value.settings.lowHeight,value.settings.highHeight)+1))
     }
     private func changeShape(to shape: CeilingEstimateSettings.Shape) {
         guard shape != settings.shape else { return }
@@ -2016,6 +2101,7 @@ struct WallCeilingEstimateView: View {
         guard let low = number(lowText), let high = number(highText) else { return nil }
         var value = settings
         value.lowHeight = low; value.highHeight = settings.shape == .flat ? low : high
+        value.extendsWalls = true
         return value.isValid ? value : nil
     }
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
@@ -2058,10 +2144,6 @@ struct WallCeilingEstimateView: View {
                             }
                             heightSlider(settings.shape == .flat ? "Hauteur sous plafond" : "Hauteur minimale",isLow:true)
                             if settings.shape != .flat { heightSlider("Hauteur maximale",isLow:false) }
-                            DisclosureGroup("Saisie précise des hauteurs") {
-                                heightField(settings.shape == .flat ? "Hauteur sous plafond" : "Hauteur minimale",text:$lowText)
-                                if settings.shape != .flat { heightField("Hauteur maximale",text:$highText) }
-                            }
                             Button("Ajuster aux murs",systemImage:"wand.and.stars") { adjust(to:settings.shape) }
                                 .accessibilityIdentifier("ceiling.fitWalls")
                             if previousSettings != nil {
@@ -2107,7 +2189,7 @@ struct WallCeilingEstimateView: View {
                                     .font(.footnote).foregroundStyle(.secondary)
                             }
                             DisclosureGroup("À propos des mesures") {
-                                Text("Les hauteurs préremplies sont des estimations, pas des mesures du plafond. Hauteurs mesurées depuis le sol ; cette création ne modifie jamais le contour des murs.")
+                                Text("Les hauteurs préremplies sont des estimations, pas des mesures du plafond. Les murs sont prolongés jusqu’au plafond si nécessaire, sans modifier leur position ni les mesures originales du scan.")
                                 if proposal.maximumCornerAdjustment > 0.005 {
                                     Text("Raccord estimé des angles : jusqu’à \((proposal.maximumCornerAdjustment*100).formatted(.number.precision(.fractionLength(1)))) cm.")
                                 }
@@ -2148,7 +2230,7 @@ struct WallCeilingEstimateView: View {
                 if let previewDocument {
                     RoomDomainScene(room:previewDocument.room,selected:.constant(selected),ceilingMode:2,
                         showFloor:true,topView:topView,cameraReset:cameraReset,
-                        ceilingGaps:input.map { fitting.gaps(settings:$0) } ?? [])
+                        ceilingGaps:input.map { CeilingAutoFit(room:previewDocument.room,proposal:proposal,includeWallExtensions:true).gaps(settings:$0) } ?? [])
                 } else {
                     ContentUnavailableView("Aperçu du plafond",systemImage:"cube.transparent",
                         description:Text("Renseignez les hauteurs pour afficher le plafond."))
@@ -2174,42 +2256,45 @@ struct WallCeilingEstimateView: View {
                 Text("\(pans.reduce(0) { $0+PlaquistoSurfaceGeometry.area(of:$1) }.formatted(.number.precision(.fractionLength(2)))) m² · Hauteurs estimées, à vérifier")
                     .font(.caption).foregroundStyle(.secondary)
             }
-            if previewIssue == nil, let input, let gap = fitting.gaps(settings:input).first {
+            if previewIssue == nil, let input, let previewDocument,
+               let gap = CeilingAutoFit(room:previewDocument.room,proposal:proposal,includeWallExtensions:true).gaps(settings:input).first {
                 Text("Repères orange : écart avec les murs jusqu’à \((abs(gap.wall.y-gap.ceiling.y)*100).formatted(.number.precision(.fractionLength(0)))) cm")
                     .font(.caption).foregroundStyle(.orange)
             }
         }.padding(.horizontal,16).padding(.vertical,8)
     }
-    private func heightField(_ title: String, text: Binding<String>) -> some View {
-        HStack {
-            Text(title).fixedSize(horizontal:false,vertical:true)
-            Spacer()
-            PlaquistoNumericField(placeholder: "0", text: text)
-                .frame(minWidth:65,maxWidth:100)
-                .multilineTextAlignment(.trailing).accessibilityLabel(title)
-            Text("m").foregroundStyle(.secondary)
-        }
-    }
     private func heightSlider(_ title:String,isLow:Bool) -> some View {
         let low=Double(lowText.replacingOccurrences(of:",",with:".")) ?? settings.lowHeight
         let high=Double(highText.replacingOccurrences(of:",",with:".")) ?? settings.highHeight
         // Stable range while dragging. Taller existing roofs retain their full editable range.
-        let upper=max(5,ceil(max(unchangedInput.lowHeight,unchangedInput.highHeight)+1))
-        let value=Binding<Double>(get:{ min(upper,max(0.1,isLow ? low : high)) },set:{ next in
-            let formatted=next.formatted(.number.precision(.fractionLength(2)))
-            if isLow {
-                lowText=formatted
-                if high < next { highText=formatted }
-            } else {
-                highText=formatted
-                if low > next { lowText=formatted }
-            }
+        let upper=heightSliderUpper
+        let lower=isLow ? 0.1 : min(upper,max(0.1,low))
+        let value=Binding<Double>(get:{ min(upper,max(lower,isLow ? low : high)) },set:{ next in
+            var updated=settings
+            updated.lowHeight=low; updated.highHeight=high
+            updated.setSliderHeight(next,isMinimum:isLow)
+            lowText=updated.lowHeight.formatted(.number.precision(.fractionLength(2)))
+            highText=updated.highHeight.formatted(.number.precision(.fractionLength(2)))
             estimatedRise=false
         })
         return VStack(alignment:.leading,spacing:8) {
-            LabeledContent(title,value:"\((isLow ? low : high).formatted(.number.precision(.fractionLength(2)))) m")
-                .monospacedDigit()
-            Slider(value:value,in:0.1...upper,step:0.01)
+            LabeledContent(title) {
+                HStack(spacing:4) {
+                    PlaquistoNumericField(placeholder:"0",text:isLow ? $lowText : $highText,
+                        onEditingChanged:{ editing in
+                            guard !editing, let input else { return }
+                            heightSliderUpper=max(heightSliderUpper,ceil(max(input.lowHeight,input.highHeight)+1))
+                            estimatedRise=false
+                        })
+                        .frame(width:85).frame(minHeight:44).multilineTextAlignment(.trailing)
+                        .foregroundStyle(Color.accentColor).monospacedDigit()
+                        .accessibilityLabel(title)
+                        .accessibilityHint("Saisir une hauteur précise en mètres")
+                        .accessibilityIdentifier(isLow ? "ceiling.height.low.input" : "ceiling.height.high.input")
+                    Text("m").foregroundStyle(.secondary)
+                }
+            }
+            Slider(value:value,in:lower...upper,step:0.01)
                 .accessibilityLabel(title).accessibilityIdentifier(isLow ? "ceiling.height.low" : "ceiling.height.high")
         }
     }
@@ -2245,7 +2330,9 @@ struct RoomDomainScene: UIViewRepresentable {
         let rebuild=coordinator.lastRoom != room
         let rebuildShell = coordinator.content == nil || coordinator.lastRoom?.id != room.id ||
             coordinator.lastRoom?.walls != room.walls || coordinator.lastRoom?.openings != room.openings ||
-            coordinator.lastRoom?.floors != room.floors
+            coordinator.lastRoom?.floors != room.floors ||
+            (rebuild && (room.ceilings.contains { $0.estimateSettings?.extendsWalls == true } ||
+                coordinator.lastRoom?.ceilings.contains { $0.estimateSettings?.extendsWalls == true } == true))
         coordinator.parent=self
         coordinator.lastRoom=room
         let root=view.scene!.rootNode

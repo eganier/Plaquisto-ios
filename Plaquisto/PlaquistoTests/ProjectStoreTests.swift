@@ -2,6 +2,151 @@ import XCTest
 import SwiftUI
 @testable import Plaquisto
 
+final class WorkLayoutFacingSyncTests: XCTestCase {
+    @MainActor func testExternalFacingReloadCannotUndoBackToAnObsoleteComposition() throws {
+        let work = ceiling()
+        let document = try XCTUnwrap(work.components[0].document(for: work.components[0].plans[0]))
+        let editor = LayoutEditorModel(persistsStandaloneLibrary: false)
+        editor.apply(document)
+        var moved = document; moved.layers[0].offset.x += 150
+        editor.apply(moved)
+        XCTAssertTrue(editor.canUndo)
+        var refreshed = moved
+        var second = moved.layers[0]; second.id = UUID()
+        refreshed.layers.append(second)
+        editor.open(.init(document: refreshed))
+        XCTAssertEqual(editor.document, refreshed)
+        XCTAssertFalse(editor.canUndo)
+        XCTAssertFalse(editor.canRedo)
+        editor.undo()
+        XCTAssertEqual(editor.document?.layers.count, 2)
+    }
+
+    func testNewUnsavedComponentStartsWithEveryConfiguredSkin() throws {
+        var c = CeilingConfiguration(length: 4, width: 3)
+        c.layers = 2
+        c.firstSkin = [.init(facingID: "BA13", dimensionID: "1200x2400", area: 12)]
+        c.secondSkin = [.init(facingID: "HYDRO", dimensionID: "1200x2600", area: 12)]
+        let component = WorkLayoutDefaults.firstComponent(name: "Plafond", configuration: .ceiling(c))
+        let document = try XCTUnwrap(component.initialDocument(sideRoomID: nil, configuration: .ceiling(c)))
+        XCTAssertEqual(document.layers.count, 2)
+        XCTAssertTrue(document.layers[0].catalogFormatID?.hasPrefix("BA13-") == true)
+        XCTAssertTrue(try XCTUnwrap(document.layers.dropFirst().first).catalogFormatID?.hasPrefix("HYDRO-") == true)
+        XCTAssertEqual(document.surface, component.surface)
+        XCTAssertTrue(component.plans.isEmpty)
+    }
+
+    private func ceiling() -> WorkItem {
+        var config = CeilingConfiguration(length: 4, width: 3)
+        config.firstSkin = [.init(facingID: "BA13", dimensionID: "1200x2400", area: 12)]
+        let surface = Surface2D(name: "Plafond", kind: .ceiling,
+            contour: LayoutPreset.rectangle.contour(length: 4000, height: 3000, secondaryHeight: 0))
+        let doc = WorkLayoutDefaults.document(surface: surface, configuration: .ceiling(config))
+        var layer = doc.layers[0]; layer.offset = .init(x: 123, y: 456); layer.furring = nil
+        var work = WorkItem(id: UUID(), projectID: UUID(), name: "Plafond", type: .ceilingOnFurring,
+            configuration: config, createdAt: Date(), updatedAt: Date())
+        work.components = [.init(name: "Salon", surface: surface, plans: [.init(layers: [layer])], framing: doc.layers[0].furring)]
+        return work
+    }
+
+    func testAddingAndRemovingSkinPreservesGeometryAndFirstLayoutAndRefreshesQuantities() throws {
+        let original = ceiling()
+        var config = try XCTUnwrap(original.ceilingConfiguration)
+        config.layers = 2
+        config.secondSkin = [.init(facingID: "HYDRO", dimensionID: "1200x2600", area: 12)]
+        let doubled = WorkLayoutFacingSync.applying(.ceiling(config), to: original)
+        let first = original.components[0]
+        let component = doubled.components[0]
+        XCTAssertEqual(component.surface, first.surface)
+        XCTAssertEqual(component.framing, first.framing)
+        XCTAssertEqual(component.geometryRevision, first.geometryRevision)
+        XCTAssertEqual(component.plans[0].layers[0], first.plans[0].layers[0])
+        XCTAssertEqual(component.plans[0].layers.count, 2)
+        XCTAssertNotEqual(component.plans[0].layers[0].id, component.plans[0].layers[1].id)
+        XCTAssertTrue(component.plans[0].layers[1].catalogFormatID?.hasPrefix("HYDRO-") == true)
+        let takeoff = try XCTUnwrap(LayoutQuantityCalculator.validated(doubled))
+        XCTAssertEqual(takeoff.boardCoverage(0), 1)
+        XCTAssertEqual(takeoff.boardCoverage(1), 1)
+        XCTAssertEqual(takeoff.boards.count, 2)
+        config.layers = 1
+        let single = WorkLayoutFacingSync.applying(.ceiling(config), to: doubled)
+        XCTAssertEqual(single.components, original.components)
+        XCTAssertEqual(try XCTUnwrap(LayoutQuantityCalculator.validated(single)).boards.count, 1)
+    }
+
+    func testNonFacingChangesKeepManualPlansAndHistoricalExtraSkinsUntouched() throws {
+        var original = ceiling()
+        original.components[0].plans[0].layers[0].manualFacing = true
+        original.components[0].plans[0].layers[0].catalogFormatID = "custom"
+        var extra = original.components[0].plans[0].layers[0]; extra.id = UUID()
+        original.components[0].plans[0].layers.append(extra)
+        var config = try XCTUnwrap(original.ceilingConfiguration)
+        config.plenum = 25; config.compoundChoice = "pâte"
+        let updated = WorkLayoutFacingSync.applying(.ceiling(config), to: original)
+        XCTAssertEqual(updated.components, original.components)
+    }
+
+    func testChangingFormatPreservesOffsetIdentityAndIncompleteCatalogDoesNotEraseIt() throws {
+        let original = ceiling()
+        var config = try XCTUnwrap(original.ceilingConfiguration)
+        config.firstSkin = [.init(facingID: "HYDRO", dimensionID: "1200x2600", area: 12)]
+        let updated = WorkLayoutFacingSync.applying(.ceiling(config), to: original)
+        let layer = updated.components[0].plans[0].layers[0]
+        XCTAssertEqual(layer.id, original.components[0].plans[0].layers[0].id)
+        XCTAssertEqual(layer.offset, original.components[0].plans[0].layers[0].offset)
+        XCTAssertEqual(layer.sheetLength, 2600)
+        config.firstSkin = []
+        let unresolved = WorkLayoutFacingSync.applying(.ceiling(config), to: updated)
+        XCTAssertEqual(unresolved.components, updated.components)
+    }
+
+    func testPartitionFacesUseTheirOwnProductsAndKeepSharedFrameAndOpenings() throws {
+        var c = CloisonDistributionConfiguration()
+        c.enteredLength = 4; c.height = 3
+        c.faceAFirst = [.init(facingID: "A", formatID: "1200x2400", surface: 12)]
+        c.faceBFirst = [.init(facingID: "B", formatID: "1200x2400", surface: 12)]
+        var work = ceiling()
+        work.type = .distributionPartition; work.payload = .distributionPartition(c)
+        let a = UUID(), b = UUID()
+        work.components[0].surface?.kind = .wall
+        work.components[0].referenceSideRoomID = a
+        work.components[0].localLayoutSideIDs = [a,b]
+        work.components[0].plans = [.init(sideRoomID: a, layers: [.init()]), .init(sideRoomID: b, layers: [.init()])]
+        let before = work.components[0]
+        c.layers = 2
+        c.faceASecond = [.init(facingID: "A2", formatID: "1200x2600", surface: 12)]
+        c.faceBSecond = [.init(facingID: "B2", formatID: "1200x3000", surface: 12)]
+        let updated = WorkLayoutFacingSync.applying(.distributionPartition(c), to: work)
+        XCTAssertEqual(updated.components[0].surface, before.surface)
+        XCTAssertEqual(updated.components[0].framing, before.framing)
+        XCTAssertTrue(updated.components[0].plans[0].layers[1].catalogFormatID?.hasPrefix("A2-") == true)
+        XCTAssertTrue(updated.components[0].plans[1].layers[1].catalogFormatID?.hasPrefix("B2-") == true)
+        XCTAssertEqual(updated.components[0].plans[0].sideRoomID, a)
+        XCTAssertEqual(updated.components[0].plans[1].sideRoomID, b)
+    }
+
+    @MainActor func testStoreSavesBothSkinsAndReopensSamePlans() throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("facing-\(UUID()).json")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let store = ProjectStore(fileURL: url)
+        let project = try store.createProject(name: "Test", client: "", address: "", notes: "")
+        let original = ceiling()
+        var config = try XCTUnwrap(original.ceilingConfiguration)
+        let id = try store.createWork(projectID: project, name: "Plafond", type: .ceilingOnFurring, configuration: config)
+        _ = try store.addComponent(projectID: project, workID: id, name: "Salon")
+        let component = try XCTUnwrap(store.project(id: project)?.works.first?.components.first)
+        let document = try XCTUnwrap(original.components[0].document(for: original.components[0].plans[0]))
+        try store.saveComponentPlan(projectID: project, workID: id, componentID: component.id, sideRoomID: nil, document: document)
+        let saved = try XCTUnwrap(store.project(id: project)?.works.first)
+        config.layers = 2; config.secondSkin = config.firstSkin
+        try store.updateWork(saved, configuration: config)
+        let reopened = try XCTUnwrap(ProjectStore(fileURL: url).project(id: project)?.works.first)
+        XCTAssertEqual(reopened.ceilingConfiguration?.layers, 2)
+        XCTAssertEqual(reopened.components[0].plans[0].layers.count, 2)
+        XCTAssertEqual(try XCTUnwrap(LayoutQuantityCalculator.validated(reopened)).boardCoverage(1), 1)
+    }
+}
+
 final class PartitionRegressionTests: XCTestCase {
     func testInsulationDefaultTracksFrameWidthInsteadOfFirstThinRoll() {
         let wool = CloisonInsulation(id:"wool",title:"Laine de verre phonique",lambda:0.04,thicknessesMM:[30,45,60,70,85],maxOverFrameMM:10)
@@ -170,6 +315,82 @@ final class CompositeHangerSelectionTests: XCTestCase {
     }
 }
 
+final class HangerModelOverrideTests: XCTestCase {
+    private func model(_ id: String, min: Double = 61, max: Double = 150, composite: Bool = false, status: String = "Publié") -> CeilingReferenceRecord {
+        .init(id: id, kind: "quantity_item", title: id, summary: "", sourcePage: 0, status: status,
+              data: ["category": .string(composite ? "composite_hanger" : "galvanized_hanger"),
+                     "unit": .string("unité"), "length_mm": .number(180), "model": .string(id),
+                     "support": .string("Plancher bois horizontal"),
+                     "plenum_min_mm": .number(min), "plenum_max_mm": .number(max),
+                     "hourdis_plenum_min_mm": .number(71), "hourdis_plenum_max_mm": .number(170)])
+    }
+    private func system(composite: Bool = false, support: String = "Plancher bois horizontal") -> CeilingReferenceRecord {
+        .init(id: "fix", kind: "fixing_system", title: "Suspentes", summary: "", sourcePage: 0, status: "Publié",
+              data: ["support": .string(support), "components": .array([
+                .object(["selection": .string(composite ? "composite_hanger" : "galvanized_hanger"),
+                         "name": .string("Ancien modèle"), "reference_id": .string("obsolete"),
+                         "quantity": .number(1), "unit": .string("unité"), "calculation": .string("unit")]),
+                .object(["name": .string("Vis de fixation"), "quantity": .number(2), "unit": .string("unité"), "calculation": .string("unit")])])])
+    }
+    private func catalogue(_ models: [CeilingReferenceRecord], composite: Bool = false) -> CeilingCataloguePayload {
+        .init(version: "test", ouvrage: nil, isolation: [], systemesFixation: [system(composite: composite)],
+              parements: [], quantitatifs: models + [.init(id: "QTY-FIXATION", kind: "quantity_item", title: "Fixations", summary: "", sourcePage: 0, status: "Publié",
+                data: ["values": .object(["simple_060": .number(2)])])], pareVapeur: [], regles: [])
+    }
+    func testExplicitCompatibleModelResolvesOverlapWithoutGuessing() {
+        for composite in [false, true] {
+            let cat = catalogue([model("A", composite: composite), model("B", composite: composite)], composite: composite)
+            let candidates = CeilingHangerComponents.models(for: system(composite: composite), plenumCM: 12, catalogue: cat)
+            XCTAssertEqual(candidates.map(\.id), ["A", "B"])
+            XCTAssertNil(CeilingHangerComponents.selected(from: candidates, modelID: nil))
+            let resolved = CeilingHangerComponents.resolve(for: system(composite: composite), plenumCM: 12, catalogue: cat, modelID: "B")
+            XCTAssertEqual(resolved[0].object?["reference_id"]?.string, "B")
+            XCTAssertEqual(resolved[0].object?["name"]?.string, "B")
+            XCTAssertEqual(resolved[1].object?["name"]?.string, "Vis de fixation")
+            XCTAssertEqual(resolved[1].object?["quantity"]?.number, 2)
+        }
+    }
+    func testInvalidArchivedChoiceDoesNotRetainOldReferenceOrSwitchSilently() {
+        for composite in [false, true] {
+            let cat = catalogue([model("A", composite: composite)], composite: composite)
+            for id in ["obsolete", "other"] {
+                let resolved = CeilingHangerComponents.resolve(for: system(composite: composite), plenumCM: 12, catalogue: cat, modelID: id)
+                XCTAssertNil(resolved[0].object?["reference_id"])
+                XCTAssertTrue(resolved[0].object?["name"]?.string?.contains("à préciser") == true)
+            }
+            XCTAssertNil(CeilingHangerComponents.resolve(for: system(composite: composite), plenumCM: 30, catalogue: cat, modelID: "A")[0].object?["reference_id"])
+        }
+    }
+    func testChoicesRespectSupportWholeMillimetersPublicationAndUniqueIDs() {
+        let cat = catalogue([model("A"), model("unpublished", status: "Proposé"), model("duplicate"), model("duplicate")])
+        XCTAssertEqual(CeilingHangerComponents.models(for: system(), plenumCM: 12, catalogue: cat).map(\.id), ["A"])
+        XCTAssertEqual(CeilingHangerComponents.resolve(for: system(), plenumCM: 12, catalogue: cat)[0].object?["reference_id"]?.string, "A")
+        XCTAssertNil(CeilingHangerComponents.resolve(for: system(), plenumCM: 12, catalogue: cat, modelID: "duplicate")[0].object?["reference_id"])
+        XCTAssertTrue(CeilingHangerComponents.models(for: system(), plenumCM: 12.05, catalogue: cat).isEmpty)
+        XCTAssertTrue(CeilingHangerComponents.models(for: system(support: "Dalle béton"), plenumCM: 12, catalogue: cat).isEmpty)
+        XCTAssertTrue(CeilingHangerComponents.models(for: system(), plenumCM: 16, catalogue: cat).isEmpty)
+        XCTAssertEqual(CeilingHangerComponents.models(for: system(support: "Plancher hourdis béton"), plenumCM: 16, catalogue: cat).map(\.id), ["A"])
+    }
+    func testModelRoundTripAndLegacyArchive() throws {
+        var c = CeilingConfiguration(length: 5, width: 4, hangerModelID: "B")
+        XCTAssertEqual(try JSONDecoder().decode(CeilingConfiguration.self, from: JSONEncoder().encode(c)), c)
+        c.hangerModelID = nil
+        let oldData = try JSONEncoder().encode(c)
+        XCTAssertFalse(String(decoding: oldData, as: UTF8.self).contains("hangerModelID"))
+        XCTAssertNil(try JSONDecoder().decode(CeilingConfiguration.self, from: oldData).hangerModelID)
+    }
+    func testCombinedQuantitiesUseSavedModelAndKeepAccessoryCounts() {
+        let c = CeilingConfiguration(length: 5, width: 4, support: "Plancher bois horizontal", plenum: 12,
+                                     fixingSystemID: "fix", hangerModelID: "B")
+        let work = WorkItem(id: UUID(), projectID: UUID(), name: "Plafond", type: .ceilingOnFurring,
+                            configuration: c, createdAt: Date(), updatedAt: Date())
+        let result = CombinedQuantityCalculator.calculate(works: [work], catalogue: catalogue([model("A"), model("B")]))
+        XCTAssertNil(result.supplies.first { $0.name == "A" })
+        XCTAssertEqual(result.supplies.first { $0.name == "B" }?.quantity, 40)
+        XCTAssertEqual(result.supplies.first { $0.name == "Vis de fixation" }?.quantity, 80)
+    }
+}
+
 final class GalvanizedHangerSelectionTests: XCTestCase {
     private var records: [CeilingReferenceRecord] {
         let lengths = [80, 180, 240, 300, 400, 500, 600]
@@ -286,6 +507,29 @@ final class WoodCeilingPlenumDiagramTests: XCTestCase {
 
 @MainActor
 final class ProjectStoreTests: XCTestCase {
+    func testFrenchCeilingBetaIsListedWithoutInventingAConfiguration() throws {
+        let type = WorkType.frenchCeiling
+        XCTAssertTrue(WorkType.allCases.contains(type))
+        XCTAssertEqual(type.category,.ceilings)
+        XCTAssertEqual(type.title,"Plafond à la française (bêta)")
+        XCTAssertEqual(type.generatedName(roomName:"Salon"),"Salon - Plafond à la française")
+        XCTAssertTrue(WorkConfigurationShortcut.choices(for:type).isEmpty)
+        XCTAssertEqual(try JSONDecoder().decode(WorkType.self,from:JSONEncoder().encode(type)),type)
+    }
+
+    func testFrenchCeilingBetaCannotSaveAnotherCeilingCalculator() throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID()).json")
+        defer { try? FileManager.default.removeItem(at:url) }
+        let store = ProjectStore(fileURL:url)
+        let id = try store.createProject(name:"Plafond français",client:"",address:"",notes:"")
+        let before = try Data(contentsOf:url)
+        XCTAssertThrowsError(try store.createConfiguredWork(projectID:id,name:"Salon",type:.frenchCeiling,
+            payload:.ceiling(.init()),roomID:nil,newRoomName:nil))
+        XCTAssertThrowsError(try store.createWork(projectID:id,name:"Salon",type:.frenchCeiling,configuration:.init()))
+        XCTAssertTrue(try XCTUnwrap(store.project(id:id)).works.isEmpty)
+        XCTAssertEqual(try Data(contentsOf:url),before)
+    }
+
     func testModularCeilingFromScanIsSavedAndTracksCeilingChanges() throws {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID()).json")
         defer { try? FileManager.default.removeItem(at: url) }
@@ -302,6 +546,10 @@ final class ProjectStoreTests: XCTestCase {
         let survey = try XCTUnwrap(store.surveys.first)
         let selected = SurveyWorkGeometry.surfaces(in: survey).filter { $0.source.kind == .ceiling }
         XCTAssertTrue(SurveyWorkGeometry.availableWorkTypes(for: selected).contains(.modularCeiling))
+        XCTAssertTrue(SurveyWorkGeometry.availableWorkTypes(for: selected).contains(.frenchCeiling))
+        XCTAssertFalse(SurveyWorkGeometry.availableWorkTypes(for:SurveyWorkGeometry.surfaces(in:survey).filter { $0.source.kind == .wall }).contains(.frenchCeiling))
+        XCTAssertThrowsError(try store.createSurveyWork(surveyID:survey.id,selections:selected,name:"Français",
+            type:.frenchCeiling,payload:.ceiling(.init()),roomID:nil))
         var configuration = SurveyWorkGeometry.modularCeiling(selected)
         configuration.plenumCM = 20
         XCTAssertEqual(configuration.area, 12, accuracy: 0.001)
@@ -416,6 +664,19 @@ final class ProjectStoreTests: XCTestCase {
         }
         XCTAssertEqual(WorkConfigurationShortcut.choices(for: .ceilingOnFurring)[2].title, "Isolation et pare-vapeur")
         XCTAssertEqual(WorkConfigurationShortcut.choices(for: .peripheralLiningFurrings)[3].step, 4)
+    }
+
+    func testBondedBookNavigationGroupsCompositionWithoutSkippingJointsOrLosingLegacyEntries() {
+        XCTAssertEqual(BondedFormSteps.compact, [1, 2, 5, 6])
+        XCTAssertEqual(BondedFormSteps.compact.map(BondedFormSteps.displayed), [1, 2, 3, 4])
+        XCTAssertEqual(BondedFormSteps.compact.dropLast().map(BondedFormSteps.next), [2, 5, 6])
+        XCTAssertEqual(BondedFormSteps.compact.dropFirst().map(BondedFormSteps.previous), [1, 2, 5])
+        // Saved shortcuts to thermal/format fields still open the combined card.
+        for legacyStep in 2...4 {
+            XCTAssertEqual(BondedFormSteps.displayed(legacyStep), 2)
+            XCTAssertEqual(BondedFormSteps.previous(legacyStep), 1)
+            XCTAssertEqual(BondedFormSteps.next(legacyStep), 5)
+        }
     }
 
     func testConfigurationEntryIsOptionalAndRejectsInvalidSteps() async throws {
@@ -734,6 +995,45 @@ final class ProjectStoreTests: XCTestCase {
         XCTAssertEqual(try XCTUnwrap(result.lower),1.2765*0.95,accuracy:0.000001)
         XCTAssertEqual(try XCTUnwrap(result.upper),1.2765*1.05,accuracy:0.000001)
         XCTAssertTrue(result.missing.isEmpty)
+    }
+    func testApprovedLegacyPowderPriceWorksOfflineWithoutDuplicatingCanonicalTariff() throws {
+        let catalogue = CeilingCataloguePayload(version:"test",ouvrage:nil,isolation:[],systemesFixation:[],parements:[],
+            quantitatifs:[.init(id:"QTY-ENDUIT-POUDRE",kind:"quantity_item",title:"Enduit à joints en poudre",summary:"",sourcePage:0,status:"Publié",data:["unit":.string("kg")])],pareVapeur:[],regles:[])
+        var slow = priceTestTariff()
+        slow.referenceId="QTY-ENDUIT-POUDRE"; slow.variantKey="lent"; slow.unit="kg"; slow.unitPriceHT=2
+        let supplies=[CombinedSupply(name:"Enduit à joints en poudre · standard",quantity:4,unit:"kg")]
+        let first=SupplyCostEstimator.estimate(supplies,prices:priceTestPayload([slow]),catalogue:catalogue,day:"2026-10-09")
+        XCTAssertEqual(first.total,8)
+        var standard=slow; standard.id="canonical"; standard.variantKey="standard"; standard.unitPriceHT=3
+        let both=SupplyCostEstimator.estimate(supplies,prices:priceTestPayload([slow,standard]),catalogue:catalogue,day:"2026-10-09")
+        XCTAssertEqual(both.total,12)
+        var fast=slow; fast.variantKey="rapide"
+        XCTAssertNil(SupplyCostEstimator.estimate(supplies,prices:priceTestPayload([fast]),catalogue:catalogue,day:"2026-10-09").total)
+        var angle=slow; angle.referenceId="QTY-CORNIERE"; angle.variantKey="CR2-30x35"; angle.unit="ml"
+        XCTAssertEqual(angle.key.variantKey,"standard")
+        angle.unit="unité"
+        XCTAssertEqual(angle.key.variantKey,"CR2-30x35")
+        for variant in ["F45", "F47", "standard"] {
+            var furring=slow; furring.referenceId="QTY-FOURRURE"; furring.variantKey=variant; furring.unit="ml"
+            XCTAssertEqual(furring.key.variantKey,"standard")
+            XCTAssertEqual(SupplyListingConsolidator.canonicalName("Fourrures F45/F47 · \(variant)"),"Fourrures F45/F47")
+        }
+    }
+    func testWoodInsulationRetirementAndSharedTariffIdentity() {
+        for lambda in [0.037,0.038] {
+            XCTAssertFalse(InsulationCatalogueAvailability.allows(referenceID:"WALL-INSULATION-LDB",lambda:lambda))
+            XCTAssertTrue(InsulationCatalogueAvailability.allows(referenceID:"WALL-INSULATION-LDV",lambda:lambda))
+        }
+        XCTAssertFalse(InsulationCatalogueAvailability.allows(referenceID:"ISO-BOIS-038"))
+        XCTAssertTrue(InsulationCatalogueAvailability.allows(referenceID:"ISO-BOIS-040"))
+        XCTAssertTrue(InsulationCatalogueAvailability.allows(referenceID:"WALL-INSULATION-LDB",lambda:0.036))
+        for thickness in [40,50,60,80,100] {
+            var price=priceTestTariff(); price.referenceId="PARTITION-INSULATION-BOIS"; price.unit="m²"
+            price.variantKey="lambda=0.036;thickness=\(thickness)"
+            XCTAssertEqual(price.key.referenceId,"WALL-INSULATION-LDB")
+            price.unit="kg"
+            XCTAssertEqual(price.key.referenceId,"PARTITION-INSULATION-BOIS")
+        }
     }
     func testPriceEstimateResolvesExactBoardFormatAndIncludesREPOnce() throws {
         var price=priceTestTariff(); price.referenceId="FACING-BA13-STANDARD"; price.variantKey="1200x2500"; price.unit="m²"; price.unitPriceHT=2.84; price.repUnitHT=0.19
@@ -1069,6 +1369,47 @@ final class ProjectStoreTests: XCTestCase {
         XCTAssertEqual(try work.components.reduce(0.0) { $0+(try XCTUnwrap($1.surface).netMeasuredArea()) },configuration.area*1_000_000,accuracy:0.01)
     }
 
+    func testCeilingLayoutTracksColumnAdditionMoveResizeAndRemovalWithoutLosingHatch() throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID()).json")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let store = ProjectStore(fileURL: url)
+        let room = try ManualRoomModel.room(contour: [.init(x:0,y:0), .init(x:5000,y:0),
+            .init(x:5000,y:4000), .init(x:0,y:4000)], commonHeight: 2.5, constraints: [:], name: "Salon")
+        let saved = try store.saveScannedRoom(projectID:nil, newProjectName:"Poteau", surveyID:nil,
+            surveyName:"Relevé", roomID:nil, roomName:"Salon", document:.init(room:room))
+        try validateAllCheckpoints(in: store, surveyID: saved.surveyID)
+        let survey = try XCTUnwrap(store.surveys.first)
+        let checkpoint = try XCTUnwrap(survey.checkpoints.first)
+        let selected = SurveyWorkGeometry.surfaces(in: survey).filter { $0.source.kind == .ceiling }
+        let workID = try store.createSurveyWork(surveyID: survey.id, selections: selected, name:"Plafond",
+            type:.ceilingOnFurring, payload:.ceiling(SurveyWorkGeometry.ceiling(selected)), roomID:nil)
+        let component = try XCTUnwrap(store.project(id:saved.projectID)?.works.first?.components.first)
+        var layout = LayoutDocument.newSupport(try XCTUnwrap(component.surface))
+        let hatch = LayoutOpening(kind:.hatch, contour:[.init(x:500,y:500), .init(x:1000,y:500),
+            .init(x:1000,y:1000), .init(x:500,y:1000)])
+        layout.surface.openings.append(hatch)
+        layout.layers[0].offset = .init(x:127,y:311)
+        try store.saveComponentPlan(projectID:saved.projectID, workID:workID, componentID:component.id, sideRoomID:nil, document:layout)
+        var before = checkpoint.document
+        var column = PlaquistoColumn(center:.init(x:2,y:0,z:-2), sideA:0.4, sideB:0.6, angle:0, height:2.5)
+        for operation in 0..<3 {
+            if operation == 1 { column.center.x += 0.5; column.sideA = 0.8; column.angle = .pi/4 }
+            var after = try SurveyPlanEditing.placingColumn(before, column:column)
+            if operation == 2 { after.room.columns = [] }
+            try store.updateSurveyRoom(surveyID:survey.id, checkpointID:checkpoint.id, expectedDocument:before, document:after)
+            let reloaded = ProjectStore(fileURL:url)
+            let work = try XCTUnwrap(reloaded.project(id:saved.projectID)?.works.first)
+            let updated = try XCTUnwrap(work.components.first)
+            let surface = try XCTUnwrap(updated.surface)
+            XCTAssertTrue(surface.openings.contains { $0.id == hatch.id })
+            XCTAssertEqual(surface.openings.contains { $0.id == column.id }, operation != 2)
+            XCTAssertEqual(updated.plans.first?.layers.first?.offset, layout.layers[0].offset)
+            let occupied = operation == 2 ? 0 : column.sideA * column.sideB
+            XCTAssertEqual(try surface.netMeasuredArea() / 1_000_000, 20 - 0.25 - occupied, accuracy:0.00001)
+            before = after
+        }
+    }
+
     func testBentPartitionSplitInheritsCeilingLayoutInSameWork() throws {
         let url=FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID()).json")
         defer { try? FileManager.default.removeItem(at:url) }
@@ -1363,6 +1704,32 @@ final class ProjectStoreTests: XCTestCase {
         XCTAssertEqual(store.project(id: project)!.works.first { $0.id == work }!.components.count, 1)
     }
 
+    func testDimensionedCeilingDraftSavesThroughRealWorkbookPath() throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let url = folder.appendingPathComponent("projects.json")
+        let store = ProjectStore(fileURL: url)
+        let project = try store.createProject(name: "Parcours réel", client: "", address: "", notes: "")
+        let payload = WorkConfiguration.ceiling(.init(length: 5, width: 4))
+        let id = try store.createConfiguredWork(projectID: project, name: "Plafond", type: .ceilingOnFurring,
+            payload: payload, roomID: nil, newRoomName: nil)
+        let draft = WorkLayoutDefaults.firstComponent(name: "Plafond partie A", configuration: payload)
+        let surface = try XCTUnwrap(draft.surface)
+        var document = WorkLayoutDefaults.document(surface: surface, configuration: payload)
+        document.layers[0].offset.x = 137
+        XCTAssertTrue(store.project(id: project)!.works.first!.components.isEmpty)
+        try store.saveComponentPlan(projectID: project, workID: id, componentID: draft.id, sideRoomID: nil,
+            document: document, expectedGeometryRevision: draft.geometryRevision, newComponent: draft)
+        let reopened = try XCTUnwrap(ProjectStore(fileURL: url).project(id: project)?.works.first)
+        XCTAssertEqual(reopened.components.count, 1)
+        XCTAssertEqual(reopened.components[0].surface, surface)
+        XCTAssertEqual(reopened.components[0].plans[0].layers[0].offset.x, 137)
+        XCTAssertNotNil(reopened.layoutQuantityTakeoff)
+        try store.saveComponentPlan(projectID: project, workID: id, componentID: draft.id, sideRoomID: nil,
+            document: document, newComponent: draft)
+        XCTAssertEqual(store.project(id: project)?.works.first?.components.count, 1)
+    }
+
     func testLayoutExistenceIgnoresLegacyEmptyComponentsAndIncludesMultiplePlans() {
         var work = summaryWork(.ceiling(.init()), type: .ceilingOnFurring)
         var component = WorkComponentRecord(name: "Ancien brouillon")
@@ -1379,6 +1746,20 @@ final class ProjectStoreTests: XCTestCase {
         work.components = [component, WorkComponentRecord(name: "Autre")]
         XCTAssertTrue(work.hasSavedLayout)
         XCTAssertNil(work.layoutDocument) // The single-support facade is not an existence flag.
+    }
+
+    func testDetailCardIncludesBothFacesAndStudSettingsWithoutChangingExport() throws {
+        var c = CloisonDistributionConfiguration(height: 2.5, enteredLength: 4)
+        c.layers = 2
+        c.doubledStuds = true
+        c.spacing = 0.4
+        let work = summaryWork(.distributionPartition(c), type: .distributionPartition)
+        let catalogue = try summaryCatalogue()
+        let rows = WorkTechnicalSummary.detailRows(for: work, catalogue: catalogue)
+        XCTAssertTrue(rows.contains("Montants doublés · entraxe 40 cm"))
+        XCTAssertTrue(rows.contains("2 peaux sur chaque face"))
+        XCTAssertFalse(rows.contains(work.type.title))
+        XCTAssertFalse(WorkTechnicalSummary.text(for: work, catalogue: catalogue).contains("peaux sur chaque face"))
     }
 
     func testTechnicalSummaryUsesSavedSelectionsAndCentralThermalCalculation() throws {
@@ -1637,6 +2018,77 @@ final class ProjectStoreTests: XCTestCase {
         LayoutDocument(surface: Surface2D(name: "Mur A", kind: kind, contour: [
             .init(x: 0, y: 0), .init(x: 4000, y: 0), .init(x: 4000, y: 2500), .init(x: 0, y: 2500)
         ]), layers: [.init(furring: .init(parallelToBoards: true, spacing: 600, offset: 100))])
+    }
+
+    func testCompleteBookWorkflowsPersistLayoutsAndQuantitiesAcrossFiveFamilies() throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("book-workflows-\(UUID()).json")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let store = ProjectStore(fileURL: url)
+        let project = try store.createProject(name: "Recette complète", client: "", address: "", notes: "")
+        let product = "FACING-BA13-STANDARD"
+        var ceiling = CeilingConfiguration(length: 4, width: 2.5)
+        ceiling.firstSkin = [.init(facingID: product, dimensionID: "1200x2500", area: 10)]
+        var furring = FurringLiningConfiguration()
+        furring.enteredLength = 4; furring.height = 2.5; furring.insulationEnabled = false
+        furring.firstSkin = [.init(facingID: product, formatID: "1200x2500", surface: 10)]
+        furring.quantities = [.init(name: "BA13 · 1200 × 2500 mm", quantity: 10.5, unit: "m²")]
+        var lining = DoublageConfiguration()
+        lining.enteredLength = 4; lining.height = 2.5; lining.insulationEnabled = false
+        lining.firstSkin = [.init(facingID: product, formatID: "1200x2500", surface: 10)]
+        lining.quantities = furring.quantities
+        var partition = CloisonDistributionConfiguration()
+        partition.enteredLength = 4; partition.height = 2.5; partition.insulationEnabled = false
+        partition.faceAFirst = [.init(facingID: product, formatID: "1200x2500", surface: 10)]
+        partition.faceBFirst = partition.faceAFirst
+        partition.quantities = [.init(name: "BA13 · 1200 × 2500 mm", quantity: 21, unit: "m²")]
+        var bonded = BondedLiningConfiguration()
+        bonded.height = 2.5; bonded.enteredLength = 4
+        bonded.allocations = [.init(surface: 10)]
+        bonded.lambda = 0.032; bonded.insulationThicknessMM = 100
+        bonded.widthMM = 1200; bonded.panelHeightMM = 2500
+        bonded.quantities = [.init(name: "Complexe BA13 + PSE 100 mm", quantity: 10.5, unit: "m²")]
+        let cases: [(WorkType, WorkConfiguration)] = [
+            (.ceilingOnFurring, .ceiling(ceiling)), (.peripheralLiningFurrings, .furringLining(furring)),
+            (.peripheralLiningStuds, .peripheralLining(lining)), (.distributionPartition, .distributionPartition(partition)),
+            (.peripheralLiningBonded, .bondedLining(bonded))
+        ]
+        let catalogue = CeilingCataloguePayload(version: "test", ouvrage: nil, isolation: [], systemesFixation: [],
+            parements: [], quantitatifs: [], pareVapeur: [], regles: [])
+        for (type, payload) in cases {
+            let surface = componentDocument(kind: type == .ceilingOnFurring ? .ceiling : .wall).surface
+            let initial = WorkLayoutDefaults.document(surface: surface, configuration: payload)
+            let id = try store.createConfiguredWork(projectID: project, name: type.rawValue, type: type,
+                payload: payload, roomID: nil, newRoomName: nil, document: initial)
+            var work = try XCTUnwrap(store.project(id: project)?.works.first { $0.id == id })
+            let component = try XCTUnwrap(work.components.first)
+            let plan = try XCTUnwrap(component.plans.first)
+            var edited = try XCTUnwrap(component.document(for: plan))
+            edited.layers[0].offset.x += 137
+            edited.surface.openings = [.init(kind: .window, contour: LayoutBounds(min: .init(x: 1500, y: 900), max: .init(x: 2300, y: 1900)).polygon)]
+            let result = try SheetLayoutEngine.calculate(surface: edited.surface, layer: edited.layers[0])
+            XCTAssertGreaterThan(result.purchasedSheetCount, 0)
+            try store.saveComponentPlan(projectID: project, workID: id, componentID: component.id,
+                sideRoomID: plan.sideRoomID, document: edited, expectedGeometryRevision: component.geometryRevision)
+            work = try XCTUnwrap(store.project(id: project)?.works.first { $0.id == id })
+            let quantities = CombinedQuantityCalculator.calculate(works: [work], catalogue: catalogue)
+            XCTAssertFalse(quantities.supplies.isEmpty, type.rawValue)
+            XCTAssertTrue(quantities.supplies.allSatisfy { $0.quantity.isFinite && $0.quantity >= 0 })
+            let reopenedStore = ProjectStore(fileURL: url)
+            XCTAssertNil(reopenedStore.lastError)
+            let reopened = try XCTUnwrap(reopenedStore.project(id: project)?.works.first { $0.id == id })
+            XCTAssertEqual(reopened.payload, work.payload)
+            XCTAssertEqual(reopened.components, work.components)
+            XCTAssertEqual(reopened.layoutQuantityTakeoff, work.layoutQuantityTakeoff)
+            let repeated = CombinedQuantityCalculator.calculate(works: [reopened], catalogue: catalogue)
+            XCTAssertEqual(repeated.supplies.map(\.id), quantities.supplies.map(\.id))
+            XCTAssertEqual(repeated.supplies.map(\.quantity), quantities.supplies.map(\.quantity))
+            XCTAssertEqual(repeated.totalArea, quantities.totalArea)
+            let reopenedComponent = try XCTUnwrap(reopened.components.first)
+            let reopenedDocument = try XCTUnwrap(reopenedComponent.document(for: reopenedComponent.plans[0]))
+            XCTAssertEqual(reopenedDocument.layers[0].offset, edited.layers[0].offset)
+            XCTAssertEqual(reopenedDocument.surface.openings, edited.surface.openings)
+            XCTAssertEqual(try SheetLayoutEngine.calculate(surface: reopenedDocument.surface, layer: reopenedDocument.layers[0]).purchasedSheetCount, result.purchasedSheetCount)
+        }
     }
 
     @MainActor private struct AdjacencyFixture {
@@ -3549,6 +4001,103 @@ final class ProjectStoreTests: XCTestCase {
         XCTAssertEqual(refreshed.doublageConfiguration?.measuredWallRuns?.map(\.length), [6,4])
         XCTAssertEqual(refreshed.components.count, 2)
         XCTAssertEqual(try XCTUnwrap(store.project(id: saved.projectID)?.works.first?.doublageConfiguration?.area), 25, accuracy: 0.00001) // saving the plan applies its geometry immediately
+    }
+
+    func testLayoutWallHatchSynchronizesSurveyAndQuantitiesExactlyOnce() throws {
+        let url=FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID()).json")
+        defer { try? FileManager.default.removeItem(at:url) }
+        let store=ProjectStore(fileURL:url)
+        let saved=try store.saveScannedRoom(projectID:nil,newProjectName:"Trappes",surveyID:nil,
+            surveyName:"Scan",roomID:nil,roomName:"Pièce",document:scanDocument(name:"Pièce"))
+        let survey=try XCTUnwrap(store.surveys.first)
+        let surfaces=SurveyWorkGeometry.surfaces(in:survey)
+        let workID=try store.createSurveyWork(surveyID:saved.surveyID,selections:surfaces,name:"Doublage",
+            type:.peripheralLiningFurrings,payload:.furringLining(SurveyWorkGeometry.furring(surfaces)),roomID:nil)
+        var component=try XCTUnwrap(store.project(id:saved.projectID)?.works.first?.components.first)
+        var layout=try XCTUnwrap(component.initialDocument(sideRoomID:nil,configuration:nil))
+        let opening=LayoutOpening(kind:.hatch,contour:[.init(x:1000,y:1000),.init(x:1600,y:1000),.init(x:1600,y:1600),.init(x:1000,y:1600)])
+        layout.surface.openings.append(opening)
+        try store.saveComponentPlan(projectID:saved.projectID,workID:workID,componentID:component.id,sideRoomID:nil,
+            document:layout,expectedGeometryRevision:component.geometryRevision)
+        var actual=try XCTUnwrap(store.surveys.first?.checkpoints.first?.document)
+        XCTAssertEqual(actual.initialRoom,survey.checkpoints[0].document.initialRoom)
+        XCTAssertEqual(actual.room.openings.count,1)
+        XCTAssertEqual(actual.room.openings[0].id,opening.id)
+        XCTAssertEqual(actual.room.openings[0].layoutKind,.hatch)
+        XCTAssertEqual(actual.room.openings[0].width.effectiveValue,0.6,accuracy:1e-8)
+        XCTAssertEqual(try XCTUnwrap(store.project(id:saved.projectID)?.works.first?.area),9.64,accuracy:1e-8)
+        XCTAssertEqual(SurveyWorkGeometry.surfaces(in:store.surveys[0])[0].surface.openings[0].kind,.hatch)
+        component=try XCTUnwrap(store.project(id:saved.projectID)?.works.first?.components.first)
+        try store.saveComponentPlan(projectID:saved.projectID,workID:workID,componentID:component.id,sideRoomID:nil,
+            document:layout,expectedGeometryRevision:component.geometryRevision)
+        XCTAssertEqual(store.surveys[0].checkpoints[0].document.room.openings.count,1)
+        XCTAssertEqual(try XCTUnwrap(store.project(id:saved.projectID)?.works.first?.area),9.64,accuracy:1e-8)
+        // A stale open editor cannot reintroduce an opening after another edit.
+        let staleRevision=component.geometryRevision
+        layout.surface.openings[0].contour=layout.surface.openings[0].contour.map { .init(x:$0.x+300,y:$0.y) }
+        try store.saveComponentPlan(projectID:saved.projectID,workID:workID,componentID:component.id,sideRoomID:nil,
+            document:layout,expectedGeometryRevision:staleRevision)
+        XCTAssertEqual(store.surveys[0].checkpoints[0].document.room.openings[0].positionOnWall.effectiveValue,1.3,accuracy:1e-8)
+        XCTAssertThrowsError(try store.saveComponentPlan(projectID:saved.projectID,workID:workID,componentID:component.id,sideRoomID:nil,
+            document:layout,expectedGeometryRevision:staleRevision))
+        component=try XCTUnwrap(store.project(id:saved.projectID)?.works.first?.components.first)
+        layout.surface.openings=[]
+        try store.saveComponentPlan(projectID:saved.projectID,workID:workID,componentID:component.id,sideRoomID:nil,
+            document:layout,expectedGeometryRevision:component.geometryRevision)
+        actual=try XCTUnwrap(ProjectStore(fileURL:url).surveys.first?.checkpoints.first?.document)
+        XCTAssertTrue(actual.room.openings.isEmpty)
+        XCTAssertTrue(actual.room.walls[0].openingIDs.isEmpty)
+        XCTAssertEqual(try XCTUnwrap(store.project(id:saved.projectID)?.works.first?.area),10,accuracy:1e-8)
+    }
+
+    func testLayoutOpeningSyncUsesLocalFrameAndPreservesOtherOpenings() throws {
+        var document=scanDocument(name:"Mur tourné")
+        let source=document.room.walls[0].provenance
+        document.room.walls[0].start = .init(x:5,y:1,z:2)
+        document.room.walls[0].end = .init(x:5,y:1,z:6)
+        let id=document.room.walls[0].id
+        document=try SurveyPlanEditing.addingDoor(document,wallID:id,width:0.8,height:2,position:0.2)
+        let preserved=document.room.openings[0]
+        let before=Surface2D(name:"Mur",kind:.wall,contour:[.init(x:0,y:0),.init(x:4000,y:0),.init(x:4000,y:2500),.init(x:0,y:2500)],
+            localFrame:.init(origin:.init(x:5,y:1,z:2),axisX:.init(x:0,y:0,z:1),axisY:.init(x:0,y:1,z:0)))
+        var after=before
+        after.openings=[.init(kind:.window,contour:[.init(x:2000,y:1000),.init(x:3000,y:1000),.init(x:3000,y:2000),.init(x:2000,y:2000)])]
+        let result=try SurveyLayoutOpeningSync.apply(before:before,after:after,wallID:id,document:document)
+        XCTAssertEqual(result.room.openings[0],preserved)
+        XCTAssertEqual(result.room.openings[1].center,.init(x:5,y:2.5,z:4.5))
+        XCTAssertEqual(result.room.openings[1].provenance.source,.manual)
+        XCTAssertEqual(source.source,.roomPlan)
+        after.openings[0].contour=after.openings[0].contour.map { .init(x:$0.x-1800,y:$0.y) }
+        XCTAssertThrowsError(try SurveyLayoutOpeningSync.apply(before:before,after:after,wallID:id,document:document))
+    }
+
+    func testOppositePartitionLayoutHatchUpdatesBothFacesWithoutMirroringTheScan() throws {
+        let url=FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID()).json")
+        defer { try? FileManager.default.removeItem(at:url) }
+        let store=ProjectStore(fileURL:url)
+        var document=scanDocument(name:"Cloison")
+        document.wallWorkIntents=[.init(wallID:document.room.walls[0].id,use:.partition)]
+        let saved=try store.saveScannedRoom(projectID:nil,newProjectName:"Cloison",surveyID:nil,
+            surveyName:"Scan",roomID:nil,roomName:"Pièce",document:document)
+        let surfaces=SurveyWorkGeometry.surfaces(in:store.surveys[0])
+        var configuration=SurveyWorkGeometry.partition(surfaces)
+        configuration.faceAFirst=[.init(facingID:"ba13",formatID:"1200x2400",surface:10)]
+        configuration.faceBFirst=configuration.faceAFirst
+        let workID=try store.createSurveyWork(surveyID:saved.surveyID,selections:surfaces,name:"Cloison",
+            type:.distributionPartition,payload:.distributionPartition(configuration),roomID:nil)
+        let component=try XCTUnwrap(store.project(id:saved.projectID)?.works.first?.components.first)
+        let opposite=try XCTUnwrap(component.plans.first { component.isOppositeSide($0.sideRoomID) })
+        var layout=try XCTUnwrap(component.document(for:opposite))
+        var surface=try XCTUnwrap(component.surface)
+        surface.openings=[.init(kind:.hatch,contour:[.init(x:1000,y:1000),.init(x:1600,y:1000),.init(x:1600,y:1600),.init(x:1000,y:1600)])]
+        layout.surface=surface.mirroredComponentSide()
+        try store.saveComponentPlan(projectID:saved.projectID,workID:workID,componentID:component.id,sideRoomID:opposite.sideRoomID,
+            document:layout,expectedGeometryRevision:component.geometryRevision)
+        let updated=try XCTUnwrap(store.project(id:saved.projectID)?.works.first?.cloisonDistributionConfiguration)
+        XCTAssertEqual(updated.area,9.64,accuracy:1e-8)
+        XCTAssertEqual(updated.faceAFirst[0].surface,9.64,accuracy:1e-8)
+        XCTAssertEqual(updated.faceBFirst[0].surface,9.64,accuracy:1e-8)
+        XCTAssertEqual(store.surveys[0].checkpoints[0].document.room.openings[0].positionOnWall.effectiveValue,1,accuracy:1e-8)
     }
 
     private func validateAllCheckpoints(in store: ProjectStore, surveyID: UUID) throws {

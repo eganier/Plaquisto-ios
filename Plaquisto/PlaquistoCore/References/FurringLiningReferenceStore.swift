@@ -137,6 +137,7 @@ final class FurringLiningReferenceStore: ObservableObject {
         (payload?.isolants ?? []).compactMap { record in
             let lambdas = record.data["lambdas"]?.array?.compactMap { item -> DoublageInsulationLambda? in
                 guard let object = item.object, let lambda = object["lambda_w_mk"]?.number else { return nil }
+                guard InsulationCatalogueAvailability.allows(referenceID: record.id, lambda: lambda) else { return nil }
                 let thicknesses = object["thicknesses_mm"]?.array?.compactMap(\.number).map(Int.init).sorted() ?? []
                 return thicknesses.isEmpty ? nil : .init(value: lambda, thicknessesMM: thicknesses)
             } ?? []

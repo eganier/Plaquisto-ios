@@ -21,7 +21,17 @@ struct SupplyPrice: Codable, Identifiable {
     var validUntil: String?
     var status: String
     var updatedAt: String
-    var key: SupplyPriceKey { .init(referenceId:referenceId,variantKey:variantKey,unit:unit) }
+    var key: SupplyPriceKey {
+        if referenceId == "PARTITION-INSULATION-BOIS", unit == "m²",
+           [40,50,60,80,100].contains(where: { variantKey == "lambda=0.036;thickness=\($0)" }) {
+            return .init(referenceId:"WALL-INSULATION-LDB",variantKey:variantKey,unit:unit)
+        }
+        // Owner-approved aliases, including tariffs already cached offline.
+        let merged = (referenceId == "QTY-CORNIERE" && unit == "ml" && variantKey == "CR2-30x35")
+            || (referenceId == "QTY-FOURRURE" && unit == "ml" && ["F45", "F47"].contains(variantKey))
+            || (referenceId == "QTY-ENDUIT-POUDRE" && unit == "kg" && variantKey == "lent")
+        return .init(referenceId:referenceId,variantKey:merged ? "standard" : variantKey,unit:unit)
+    }
     func isUsable(on day: String) -> Bool {
         status == "validated" && unitPriceHT.isFinite && unitPriceHT > 0
             && repUnitHT.isFinite && repUnitHT >= 0
@@ -70,7 +80,12 @@ enum SupplyCostEstimator {
 
     static func estimate(_ supplies: [CombinedSupply], prices: SupplyPriceCatalogue?, catalogue: CeilingCataloguePayload, day: String) -> Estimate {
         let available = prices?.isSupported == true ? prices!.prices.filter { $0.isUsable(on:day) } : []
-        let indexed=Dictionary(grouping:available,by:\.key)
+        let effective = available.filter { price in
+            (price.variantKey == price.key.variantKey && price.referenceId == price.key.referenceId) || !available.contains {
+                $0.key == price.key && $0.variantKey == $0.key.variantKey && $0.referenceId == $0.key.referenceId
+            }
+        }
+        let indexed=Dictionary(grouping:effective,by:\.key)
         return Estimate(lines:supplies.map { supply in
             let resolved=resolve(supply,catalogue:catalogue)
             let candidates=resolved.flatMap { indexed[$0.key] } ?? []
@@ -142,12 +157,95 @@ enum SupplyCostEstimator {
     }
 }
 
+/// The book's final-form estimate uses exactly the same catalogue resolver as
+/// the project takeoff. It never saves an ouvrage or mutates the local stock.
+struct AtlantiqueConfigurationEstimate: View {
+    let type: WorkType
+    let configuration: WorkConfiguration
+    @StateObject private var references = CeilingReferenceStore()
+    @StateObject private var prices = SupplyPriceStore()
+
+    private var estimate: SupplyCostEstimator.Estimate? {
+        guard let catalogue = references.catalogue else { return nil }
+        let work = WorkItem(id: UUID(), projectID: UUID(), name: "Configuration", type: type,
+                            payload: configuration, createdAt: Date(), updatedAt: Date())
+        let supplies = CombinedQuantityCalculator.calculate(works: [work], catalogue: catalogue).supplies
+        return SupplyCostEstimator.estimate(supplies, prices: prices.catalogue, catalogue: catalogue,
+                                             day: SupplyCostEstimator.day())
+    }
+
+    var body: some View {
+        AtlantiqueCard {
+            VStack(alignment: .leading, spacing: 12) {
+                Text("Fournitures · estimation HT").font(Atlantique.Typography.caption).foregroundStyle(Atlantique.Palette.muted)
+                if references.isLoading || prices.isLoading {
+                    ProgressView("Chargement des tarifs…")
+                } else if let estimate, let lower = estimate.lower, let upper = estimate.upper {
+                    Text("\(SupplyCostEstimator.money(lower)) à \(SupplyCostEstimator.money(upper)) HT")
+                        .font(Atlantique.Typography.heading).fixedSize(horizontal: false, vertical: true)
+                    if !estimate.missing.isEmpty {
+                        Text("Estimation partielle · \(estimate.missing.count) fourniture(s) sans tarif validé")
+                            .font(Atlantique.Typography.caption).foregroundStyle(Atlantique.Palette.actionInk)
+                    }
+                    Text("Fourchette de ±5 % · éco-contribution incluse").font(Atlantique.Typography.caption).foregroundStyle(Atlantique.Palette.muted)
+                } else {
+                    Text("Tarifs validés indisponibles pour cette configuration.")
+                        .font(Atlantique.Typography.body)
+                }
+                if let message = references.error ?? prices.message {
+                    Text(message).font(Atlantique.Typography.caption).foregroundStyle(Atlantique.Palette.muted)
+                }
+            }
+        }.task {
+            async let catalogue: Void = references.load()
+            async let tariffs: Void = prices.load()
+            _ = await (catalogue, tariffs)
+        }
+    }
+}
+
 struct SupplyCostSection: View {
+    @Environment(\.usesAtlantiqueDesign) private var atlantique
+    @State private var showingDetails = false
     let estimate:SupplyCostEstimator.Estimate
     let loading:Bool
     let message:String?
     var body: some View {
-        Section(estimate.missing.isEmpty ? "Fournitures · estimation HT" : "Fournitures · estimation HT partielle") {
+        if atlantique {
+            Section {
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack {
+                        Text("Estimation fournitures HT").font(Atlantique.Typography.caption).foregroundStyle(Atlantique.Palette.muted)
+                        Spacer()
+                        Button { showingDetails.toggle() } label: {
+                            Image(systemName: "line.3.horizontal.decrease").foregroundStyle(Atlantique.Palette.actionInk)
+                                .frame(width: 44, height: 44).contentShape(Rectangle())
+                        }.buttonStyle(.plain).accessibilityLabel("Détail de l’estimation")
+                            .accessibilityValue(showingDetails ? "Déplié" : "Replié")
+                    }
+                    if loading { ProgressView("Chargement des tarifs…") }
+                    else if let lower = estimate.lower, let upper = estimate.upper {
+                        Text("\(SupplyCostEstimator.money(lower)) à \(SupplyCostEstimator.money(upper)) HT")
+                            .font(Atlantique.Typography.heading).fixedSize(horizontal: false, vertical: true)
+                    } else { Text("Aucun tarif validé disponible.").font(Atlantique.Typography.body) }
+                    if !loading && !estimate.missing.isEmpty {
+                        Text("Estimation partielle · \(estimate.missing.count) tarif(s) manquant(s)")
+                            .font(Atlantique.Typography.caption).foregroundStyle(Atlantique.Palette.actionInk)
+                    }
+                    if let message { Text(message).font(Atlantique.Typography.caption).foregroundStyle(Atlantique.Palette.muted) }
+                    if showingDetails {
+                        Divider()
+                        Text("Fourchette de ±5 % · éco-contribution incluse · hors main-d’œuvre et livraison.")
+                            .font(Atlantique.Typography.caption).foregroundStyle(Atlantique.Palette.muted)
+                        ForEach(estimate.priced) { line in
+                            if let amount = line.amount { LabeledContent(line.name, value: SupplyCostEstimator.money(amount)).font(Atlantique.Typography.caption) }
+                        }
+                        ForEach(estimate.missing) { Text("Sans tarif : \($0.name)").font(Atlantique.Typography.caption) }
+                    }
+                }.padding(.vertical, 4)
+            }
+        } else {
+        Section {
             if loading { ProgressView("Chargement des tarifs…") }
             else if let lower=estimate.lower,let upper=estimate.upper {
                 Text("\(SupplyCostEstimator.money(lower)) à \(SupplyCostEstimator.money(upper)) HT").font(.title3.bold())
@@ -167,6 +265,10 @@ struct SupplyCostSection: View {
                     ForEach(estimate.missing) { Text($0.name).font(.caption) }
                 }
             }
+        } header: {
+            Text(estimate.missing.isEmpty ? "Fournitures · estimation HT" : "Fournitures · estimation HT partielle")
+                .foregroundStyle(atlantique ? Color.white.opacity(0.9) : Color.secondary)
+        }
         }
     }
 }

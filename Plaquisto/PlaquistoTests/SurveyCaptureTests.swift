@@ -5,6 +5,173 @@ import RoomPlan
 import SwiftUI
 @testable import Plaquisto
 
+final class ManualRoomModelTests: XCTestCase {
+    private let rectangle: [LayoutPoint] = [.init(x: 0, y: 0), .init(x: 5000, y: 0), .init(x: 5000, y: 4000), .init(x: 0, y: 4000)]
+    func testColumnCreatesStableRotatedCeilingCutoutAndNetArea() throws {
+        var room = try ManualRoomModel.room(contour: rectangle, commonHeight: 2.5, constraints: [:], name: "Salon")
+        let column = PlaquistoColumn(center: .init(x: 2, y: 0, z: -2), sideA: 0.4, sideB: 0.6, angle: .pi/4, height: 2.5)
+        room.columns = [column]
+        let survey = ProjectSurveyRecord(projectID: UUID(), name: "Poteau", checkpoints: [
+            .init(roomID: room.id, document: .init(room: room), spatialLinkState: .sharedWorldSpace)])
+        let ceilings = SurveyWorkGeometry.surfaces(in: survey).filter { $0.source.kind == .ceiling }
+        let ceiling = try XCTUnwrap(ceilings.first)
+        XCTAssertEqual(ceiling.surface.openings.map(\.id), [column.id])
+        XCTAssertEqual(ceiling.netArea, 20 - 0.24, accuracy: 0.00001)
+        let opening = try XCTUnwrap(ceiling.surface.openings.first)
+        XCTAssertEqual(abs(LayoutGeometry.area(opening.contour)), 240_000, accuracy: 0.01)
+        XCTAssertEqual(ceilings.map(\.surface), SurveyWorkGeometry.surfaces(in: survey).filter { $0.source.kind == .ceiling }.map(\.surface))
+    }
+    func testColumnCutoutUsesSlopedCeilingPlane() throws {
+        var room = try ManualRoomModel.room(contour: rectangle, commonHeight: 2.5,
+            constraints: [0:2.5, 1:2.5, 2:3.5, 3:3.5], name: "Rampant")
+        room.columns = [.init(center: .init(x: 2, y: 0, z: -2), sideA: 0.4, sideB: 0.6, angle: 0, height: 3)]
+        let survey = ProjectSurveyRecord(projectID: UUID(), name: "Rampant", checkpoints: [
+            .init(roomID: room.id, document: .init(room: room), spatialLinkState: .sharedWorldSpace)])
+        let ceiling = try XCTUnwrap(SurveyWorkGeometry.surfaces(in: survey).first { $0.source.kind == .ceiling })
+        XCTAssertEqual(ceiling.netArea, (20 - 0.24) * sqrt(1 + 0.25 * 0.25), accuracy: 0.00001)
+    }
+    func testColumnCutoutsClipAtBoundaryAndDoNotDoubleDeductOverlaps() throws {
+        var room = try ManualRoomModel.room(contour: rectangle, commonHeight: 2.5, constraints: [:], name: "Salon")
+        let edge = PlaquistoColumn(center: .init(x: 0, y: 0, z: -2), sideA: 0.4, sideB: 0.6, angle: 0, height: 2.5)
+        var duplicate = edge; duplicate.id = UUID()
+        var outside = edge; outside.id = UUID(); outside.center.x = 8
+        room.columns = [edge, duplicate, outside]
+        let survey = ProjectSurveyRecord(projectID: UUID(), name: "Bord", checkpoints: [
+            .init(roomID: room.id, document: .init(room: room), spatialLinkState: .sharedWorldSpace)])
+        let ceiling = try XCTUnwrap(SurveyWorkGeometry.surfaces(in: survey).first { $0.source.kind == .ceiling })
+        XCTAssertEqual(ceiling.surface.openings.count, 2)
+        XCTAssertEqual(ceiling.netArea, 20 - 0.12, accuracy: 0.00001)
+    }
+    @MainActor func testSelectionIsImmediateAndDoubleTapRestoresOriginalSelection() {
+        var events: [String] = []
+        let coordinator = SurveySurfaceScene.Coordinator { events.append($0) }
+        coordinator.selected = ["previous"]
+        var restored: Set<String>?
+        coordinator.onRestoreSelection = { restored = $0 }
+        coordinator.select("wall", tapCount: 1)
+        XCTAssertEqual(events, ["wall"], "No timer or double-tap failure must delay the callback")
+        coordinator.selected = ["wall"] // Single-selection quick layout replaced the old wall.
+        coordinator.select("wall", tapCount: 2)
+        XCTAssertEqual(events, ["wall"])
+        coordinator.restoreSelection()
+        XCTAssertEqual(restored, ["previous"])
+        coordinator.select(nil, tapCount: 1)
+        XCTAssertEqual(events, ["wall"], "Empty space must not toggle the last selected wall")
+    }
+    func testCommonHeightBuildsClosedRoomAndSingleHorizontalCeiling() throws {
+        let room = try ManualRoomModel.room(contour: rectangle, commonHeight: 2.5, constraints: [:], name: "Salon")
+        XCTAssertEqual(room.walls.count, 4)
+        XCTAssertEqual(room.ceilings.count, 1)
+        XCTAssertEqual(room.slopes.count, 1)
+        XCTAssertEqual(room.floors.count, 1)
+        XCTAssertEqual(room.metadata.source, .manual)
+        XCTAssertEqual(room.walls.map { $0.length.effectiveValue }, [5,4,5,4])
+        XCTAssertTrue(room.walls.allSatisfy { $0.height.effectiveValue == 2.5 && $0.height.manuallyValidated })
+        XCTAssertEqual(room.slopes[0].plane.slopeDegrees, 0)
+        XCTAssertEqual(room.slopes[0].boundaries[0].map(\.y), [2.5,2.5,2.5,2.5])
+        let document = PlaquistoRoomDocument(room: room)
+        let decoded = try PlaquistoRoomDocument.decode(document.encoded())
+        XCTAssertEqual(decoded.room.walls, room.walls)
+        XCTAssertEqual(decoded.room.ceilings, room.ceilings)
+    }
+    func testSegmentHeightMakesBothEndsLevelAndWallsReachRamp() throws {
+        let room = try ManualRoomModel.room(contour: rectangle, commonHeight: 2.5,
+            constraints: [0:2.5, 1:2.5, 2:3.5, 3:3.5], name: "Rampant")
+        XCTAssertEqual(room.slopes[0].boundaries[0].map(\.y), [2.5,2.5,3.5,3.5])
+        XCTAssertEqual(room.walls[1].localOutline?.map(\.y), [0,0,3.5,2.5])
+        XCTAssertEqual(room.walls[3].localOutline?.map(\.y), [0,0,2.5,3.5])
+        XCTAssertEqual(room.walls[1].height.effectiveValue, 3.5)
+    }
+    func testTwoVerticesDefineMinimalSlopeAndUnspecifiedCornersFollowPlane() throws {
+        let plane = try ManualRoomModel.plane(contour: rectangle, commonHeight: 2.5, constraints: [0:2.5,1:3])
+        XCTAssertEqual(plane.a, 0.1, accuracy: 1e-9)
+        XCTAssertEqual(plane.b, 0, accuracy: 1e-9)
+        XCTAssertEqual(plane.height(x: 5, z: -4), 3, accuracy: 1e-9)
+    }
+    func testThreeNonCollinearHeightsDefineObliquePlane() throws {
+        let plane = try ManualRoomModel.plane(contour: rectangle, commonHeight: 2.5, constraints: [0:2.5,1:3,3:3.5])
+        XCTAssertEqual(plane.height(x: 5, z: -4), 4, accuracy: 1e-9)
+    }
+    func testOneConstraintIsHorizontalUntilASecondHeightIsSet() throws {
+        let plane = try ManualRoomModel.plane(contour: rectangle, commonHeight: 2.5, constraints: [2:3])
+        XCTAssertEqual(plane, RoomPlane(a: 0, b: 0, c: 3))
+    }
+    func testNonPlanarConstraintsAreRejectedRatherThanAveraged() {
+        XCTAssertThrowsError(try ManualRoomModel.plane(contour: rectangle, commonHeight: 2.5, constraints: [0:2.5,1:2.5,2:3,3:2.5]))
+    }
+    func testInvalidAndExtrapolatedNegativeHeightsAreRejected() {
+        for height in [Double.nan, .infinity, 0, -1, 21] {
+            XCTAssertThrowsError(try ManualRoomModel.plane(contour: rectangle, commonHeight: height, constraints: [:]))
+            XCTAssertThrowsError(try ManualRoomModel.plane(contour: rectangle, commonHeight: 2.5, constraints: [0:height]))
+        }
+        XCTAssertThrowsError(try ManualRoomModel.plane(contour: rectangle, commonHeight: 2.5, constraints: [4:2.5]))
+        XCTAssertThrowsError(try ManualRoomModel.plane(contour: rectangle, commonHeight: 2.5, constraints: [0:4,1:1,3:1]))
+    }
+    func testConcaveFloorRetainsAllVerticesAndNetArea() throws {
+        let contour: [LayoutPoint] = [.init(x: 0,y: 0),.init(x: 6000,y: 0),.init(x: 6000,y: 3000),.init(x: 3000,y: 3000),.init(x: 3000,y: 5000),.init(x: 0,y: 5000)]
+        let room = try ManualRoomModel.room(contour: contour, commonHeight: 2.5, constraints: [:], name: "Pièce en L")
+        XCTAssertEqual(room.walls.count, 6)
+        let draft = try ManualRoomModel.campaign(room: room)
+        XCTAssertTrue(draft.sharesWorldSpace)
+        XCTAssertNil(draft.captureLocation)
+        XCTAssertFalse(draft.hasUnreviewedDuplicates)
+        let checkpoint = ProjectRoomScanCheckpoint(roomID: room.id, document: draft.chunks[0].document, spatialLinkState: .sharedWorldSpace, workState: .validated)
+        let survey = ProjectSurveyRecord(projectID: UUID(), name: "Manuel", checkpoints: [checkpoint])
+        let surfaces = SurveyWorkGeometry.surfaces(in: survey)
+        XCTAssertEqual(surfaces.filter { $0.source.kind == .wall }.count, 6)
+        XCTAssertEqual(SurveyWorkGeometry.totalArea(surfaces.filter { $0.source.kind == .ceiling }), 24, accuracy: 1e-6)
+        XCTAssertFalse(SurveyWorkGeometry.availableWorkTypes(for: surfaces.filter { $0.source.kind == .ceiling }).isEmpty)
+    }
+    func testInvalidFloorIsRejected() {
+        XCTAssertThrowsError(try ManualRoomModel.room(contour: Array(rectangle.prefix(2)), commonHeight: 2.5, constraints: [:], name: "Invalide"))
+        XCTAssertThrowsError(try ManualRoomModel.room(contour: [rectangle[0],rectangle[2],rectangle[1],rectangle[3]], commonHeight: 2.5, constraints: [:], name: "Croisé"))
+    }
+    func testManualCeilingCanReopenConfigureAndSplitWithoutLosingItsHeight() throws {
+        let room = try ManualRoomModel.room(contour: rectangle, commonHeight: 2.5, constraints: [0:2.5,1:2.5,2:3.2,3:3.2], name: "Rampant")
+        let document = PlaquistoRoomDocument(room: room)
+        let proposals = try WallCeilingEstimate.manualProposals(in: room)
+        XCTAssertEqual(proposals.count, 1)
+        let proposal = try XCTUnwrap(proposals.first)
+        XCTAssertEqual(proposal.ceilingID, room.ceilings[0].id)
+        var settings = try XCTUnwrap(room.ceilings[0].estimateSettings)
+        XCTAssertEqual(settings.shape, .singleSlope)
+        XCTAssertEqual(settings.lowHeight, 2.5)
+        XCTAssertEqual(settings.highHeight, 3.2)
+        let unchanged = try WallCeilingEstimate.applying(to: document, proposal: proposal, settings: settings, manuallyEdited: true)
+        for point in room.slopes[0].boundaries[0] {
+            XCTAssertEqual(unchanged.room.slopes[0].plane.height(x: point.x, z: point.z), point.y, accuracy: 1e-8)
+        }
+        settings.highHeight = 3.5
+        let updated = try WallCeilingEstimate.applying(to: document, proposal: proposal, settings: settings, manuallyEdited: true)
+        XCTAssertEqual(updated.initialRoom, document.initialRoom)
+        XCTAssertEqual(updated.room.ceilings[0].provenance.source, .manual)
+        XCTAssertEqual(updated.room.slopes[0].plane.height(x: 0, z: -4), 3.5, accuracy: 1e-8)
+        let split = try WallCeilingEstimate.split(updated, ceilingID: room.ceilings[0].id,
+            from: .init(x: 2.5,y: 0,z: 1), to: .init(x: 2.5,y: 0,z: -5))
+        XCTAssertEqual(split.room.ceilings.count, 2)
+        XCTAssertEqual(try WallCeilingEstimate.manualProposals(in: split.room).count, 2)
+    }
+    @MainActor func testSavedManualModelsReloadInNewAndExistingProjectsWithoutDuplication() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("ManualRoomTests-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("projects.json")
+        let store = ProjectStore(fileURL: url)
+        let room = try ManualRoomModel.room(contour: rectangle, commonHeight: 2.5, constraints: [:], name: "Salon")
+        let first = try ManualRoomModel.campaign(room: room)
+        try store.saveScanCampaign(first, projectID: nil, newProjectName: "Mes mesures", surveyName: "Salon", newProjectAddress: "Adresse saisie")
+        let projectID = try XCTUnwrap(store.projects.first?.id)
+        let second = try ManualRoomModel.campaign(room: ManualRoomModel.room(contour: rectangle, commonHeight: 2.5, constraints: [0:2.5,1:3], name: "Étage"))
+        try store.saveScanCampaign(second, projectID: projectID, newProjectName: "", surveyName: "Étage")
+        XCTAssertThrowsError(try store.saveScanCampaign(first, projectID: projectID, newProjectName: "", surveyName: "Doublon"))
+        let loaded = ProjectStore(fileURL: url)
+        XCTAssertEqual(loaded.projects.count, 1)
+        XCTAssertEqual(loaded.surveys.count, 2)
+        XCTAssertEqual(loaded.projects[0].address, "Adresse saisie")
+        XCTAssertTrue(loaded.surveys.allSatisfy { $0.checkpoints[0].document.room.metadata.source == .manual })
+        XCTAssertEqual(loaded.surveys[1].checkpoints[0].document.room.slopes[0].plane.a, 0.1, accuracy: 1e-9)
+    }
+}
+
 final class CeilingMeshCleanupTests: XCTestCase {
     private func rectangle(_ x:Double,_ z:Double,_ width:Double,_ depth:Double) -> [SIMD3<Double>] {
         let a=SIMD3(x,2.5,z),b=SIMD3(x+width,2.5,z),c=SIMD3(x+width,2.5,z+depth),d=SIMD3(x,2.5,z+depth)
@@ -712,6 +879,56 @@ final class SurveyCaptureTests: XCTestCase {
         let xml=try SurveyDAEExport.xml(meshes:meshes,title:survey.name,date:survey.scanDate)
         XCTAssertTrue(XMLParser(data:Data(xml.utf8)).parse())
         XCTAssertEqual(xml.components(separatedBy:"<geometry id=").count-1,meshes.count)
+    }
+
+    func testPartitionPreviewUsesIndependentMirroredPlansOnBothFaces() throws {
+        var document=ceilingRoom([(0,0),(4,0),(4,3),(0,3)])
+        document=try SurveyPlanEditing.addingDoor(document,wallID:document.room.walls[0].id,width:0.9,height:2.1,position:0.8)
+        let survey=ProjectSurveyRecord(projectID:UUID(),name:"Deux faces",checkpoints:[
+            .init(roomID:document.room.id,document:document,spatialLinkState:.sharedWorldSpace)])
+        let surfaces=SurveyWorkGeometry.surfaces(in:survey)
+        let wall=try XCTUnwrap(surfaces.first { $0.source.surfaceID == document.room.walls[0].id })
+        let a=UUID(),b=UUID()
+        var component=WorkComponentRecord(name:wall.name,surface:wall.surface)
+        component.referenceSideRoomID=a; component.localLayoutSideIDs=[a,b]; component.surveySource=wall.source
+        component.plans=[.init(sideRoomID:a,layers:[.init(sheetWidth:1200,sheetLength:2600)]),
+                         .init(sideRoomID:b,layers:[.init(sheetWidth:900,sheetLength:2600)])]
+        var work=WorkItem(id:UUID(),projectID:survey.projectID,name:"Cloison",type:.distributionPartition,
+                         payload:.distributionPartition(.init()),createdAt:Date(),updatedAt:Date())
+        work.components=[component]
+        let snapshot=work
+        func mesh(_ work:WorkItem) throws -> SurveyWorkPreview.Mesh {
+            try XCTUnwrap(SurveyWorkPreview.make(survey:survey,surfaces:surfaces,works:[work],showJoints:true).first)
+        }
+        let first=try mesh(work)
+        let origin=document.room.walls[0].start
+        let direction=document.room.walls[0].direction
+        let normal=RoomPoint(x:-direction.z,y:0,z:direction.x)
+        func distance(_ p:RoomPoint)->Double { (p.x-origin.x)*normal.x+(p.z-origin.z)*normal.z }
+        let front=first.joints.filter { distance($0)>0 },rear=first.joints.filter { distance($0)<0 }
+        XCTAssertFalse(front.isEmpty); XCTAssertFalse(rear.isEmpty)
+        for p in rear {
+            // The mirrored local x axis still maps onto the physical wall.
+            let x=(p.x-origin.x)*direction.x+(p.z-origin.z)*direction.z
+            XCTAssertGreaterThanOrEqual(x,-0.001); XCTAssertLessThanOrEqual(x,4.001)
+            XCTAssertFalse(x>0.8 && x<1.7 && p.y>0.001 && p.y<2.099)
+        }
+        work.components[0].plans[1].layers[0].offset.x=200
+        let changed=try mesh(work)
+        XCTAssertEqual(changed.joints.filter { distance($0)>0 },front)
+        XCTAssertNotEqual(changed.joints.filter { distance($0)<0 },rear)
+        // wallSolid collects boundary edges in a dictionary: primitive order
+        // is not stable, but changing a rear layout must preserve every face.
+        func canonicalTriangles(_ points:[RoomPoint])->[String] {
+            stride(from:0,to:points.count,by:3).map { index in
+                points[index..<index+3].map { "\($0.x),\($0.y),\($0.z)" }.sorted().joined(separator:";")
+            }.sorted()
+        }
+        XCTAssertEqual(canonicalTriangles(first.triangles),canonicalTriangles(changed.triangles))
+        XCTAssertEqual(snapshot.components[0],component)
+        XCTAssertTrue(SurveyWorkPreview.make(survey:survey,surfaces:surfaces,works:[work],showJoints:false).allSatisfy { $0.joints.isEmpty })
+        work.components[0].plans.removeLast()
+        XCTAssertFalse(try mesh(work).joints.filter { distance($0)<0 }.isEmpty,"Legacy front-only partitions also show a back face")
     }
 
     @MainActor func testWorkPreviewAddsLiningDepthCeilingDropAndSavedJointsWithoutChangingScan() throws {
@@ -2658,6 +2875,129 @@ final class SurveyCaptureTests: XCTestCase {
                 XCTAssertEqual(pans.reduce(0) { $0 + PlaquistoSurfaceGeometry.area(of: $1) }, 6 * sqrt(5), accuracy: 1e-6)
             }
         }
+    }
+
+    func testFourPansRemainEditableWithZeroToThreeSupportingWalls() throws {
+        let original = try WallCeilingEstimate.addingIfMissing(to:ceilingRoom())
+        for wallCount in 0...3 {
+            var partial = original
+            partial.room.walls = Array(partial.room.walls.prefix(wallCount))
+            let proposal = try XCTUnwrap(WallCeilingEstimate.manualProposals(in:partial.room).first)
+            let settings = CeilingAutoFit(room:partial.room,proposal:proposal).suggest(shape:.fourSlopes).settings
+            let edited = try WallCeilingEstimate.applying(to:partial,proposal:proposal,settings:settings,manuallyEdited:true)
+            XCTAssertEqual(edited.room.slopes.count,4)
+            XCTAssertEqual(edited.room.walls.count,wallCount,"No missing wall is invented")
+            let area = edited.room.slopes.reduce(0.0) {
+                $0+PlaquistoSurfaceGeometry.area(of:$1)/sqrt(1+$1.plane.a*$1.plane.a+$1.plane.b*$1.plane.b)
+            }
+            XCTAssertEqual(area,12,accuracy:1e-6)
+        }
+    }
+
+    func testCeilingRejectsInvertedHeightsButAllowsFlatLimit() {
+        XCTAssertFalse(CeilingEstimateSettings(shape:.fourSlopes,lowHeight:3,highHeight:2).isValid)
+        XCTAssertTrue(CeilingEstimateSettings(shape:.fourSlopes,lowHeight:3,highHeight:3).isValid)
+    }
+
+    func testMaximumHeightSliderStopsAtMinimumWithoutLoweringIt() {
+        for shape in [CeilingEstimateSettings.Shape.singleSlope,.twoSlopes,.fourSlopes] {
+            var settings = CeilingEstimateSettings(shape:shape,lowHeight:2.5,highHeight:4)
+            settings.setSliderHeight(1.8,isMinimum:false)
+            XCTAssertEqual(settings.lowHeight,2.5)
+            XCTAssertEqual(settings.highHeight,2.5)
+            XCTAssertTrue(settings.isValid)
+            settings.setSliderHeight(3.12,isMinimum:false)
+            XCTAssertEqual(settings.lowHeight,2.5)
+            XCTAssertEqual(settings.highHeight,3.12)
+        }
+    }
+
+    func testConfiguredRampExtendsWallsAndLayoutsWithoutChangingOriginalMeasurements() throws {
+        let original = ceilingRoom()
+        let proposal = try WallCeilingEstimate.propose(in:original.room)
+        for shape in [CeilingEstimateSettings.Shape.singleSlope,.twoSlopes,.fourSlopes] {
+            let settings = CeilingEstimateSettings(shape:shape,lowHeight:2.5,highHeight:4,extendsWalls:true)
+            let edited = try WallCeilingEstimate.applying(to:original,proposal:proposal,settings:settings,manuallyEdited:true)
+            XCTAssertEqual(edited.room.walls,original.room.walls)
+            XCTAssertEqual(edited.initialRoom,original.initialRoom)
+            let planes = try WallCeilingEstimate.planes(boundary:proposal.boundary,floorElevation:0,settings:settings)
+            for wall in edited.room.walls {
+                let polygon = PlaquistoWallGeometry.outline(wall:wall,room:edited.room)
+                try LayoutGeometry.validate(polygon.map { .init(x:$0.x*1000,y:$0.y*1000) })
+                let analysis = PlaquistoWallGeometry.analyze(wall:wall,room:edited.room)
+                for strip in analysis.strips {
+                    for (x,h) in [(strip.x0,strip.h0),(strip.x1,strip.h1)] {
+                        let p = wall.start+wall.direction*x
+                        let roof = try XCTUnwrap(planes.map { $0.height(x:p.x,z:p.z) }.min())
+                        XCTAssertEqual(h,max(2.5,roof),accuracy:1e-6)
+                    }
+                }
+            }
+            let survey = ProjectSurveyRecord(projectID:UUID(),name:"Rampant",checkpoints:[
+                .init(roomID:edited.room.id,document:edited,spatialLinkState:.sharedWorldSpace,workState:.validated)])
+            let surfaces = SurveyWorkGeometry.surfaces(in:survey).filter { $0.source.kind == .wall }
+            XCTAssertEqual(surfaces.count,4)
+            for surface in surfaces {
+                let wall = try XCTUnwrap(edited.room.walls.first { $0.id == surface.source.surfaceID })
+                XCTAssertEqual(try surface.surface.netMeasuredArea()/1_000_000,
+                    PlaquistoWallGeometry.analyze(wall:wall,room:edited.room).net,accuracy:1e-6)
+            }
+            let exportedWalls = try SurveyDAEExport.meshes(for:survey).filter { $0.kind == "wall" }
+            XCTAssertEqual(exportedWalls.count,4)
+            XCTAssertEqual(exportedWalls.flatMap(\.triangles).map(\.y).max(),
+                surfaces.flatMap(\.triangles).map(\.y).max())
+            XCTAssertEqual(try PlaquistoRoomDocument.decode(edited.encoded()),edited)
+        }
+    }
+
+    func testWallExtensionStaysInsideEditedZoneAndNeverShortensWalls() throws {
+        let original = ceilingRoom()
+        var proposal = try WallCeilingEstimate.propose(in:original.room)
+        proposal.boundary = [.init(x:0,y:0,z:0),.init(x:2,y:0,z:0),.init(x:2,y:0,z:3),.init(x:0,y:0,z:3)]
+        let settings = CeilingEstimateSettings(shape:.singleSlope,lowHeight:3,highHeight:4,extendsWalls:true)
+        var edited = try WallCeilingEstimate.applying(to:original,proposal:proposal,settings:settings,manuallyEdited:true)
+        let wall = edited.room.walls[0]
+        let analysis = PlaquistoWallGeometry.analyze(wall:wall,room:edited.room)
+        XCTAssertEqual(analysis.gross,12,accuracy:1e-6) // 2 × 3.5 + 2 × 2.5
+        try LayoutGeometry.validate(PlaquistoWallGeometry.outline(wall:wall,room:edited.room).map { .init(x:$0.x*1000,y:$0.y*1000) })
+        var upper = wall; upper.id = UUID(); upper.start.y = 5; upper.end.y = 5
+        XCTAssertEqual(PlaquistoWallGeometry.analyze(wall:upper,room:edited.room).gross,10,accuracy:1e-6)
+        let editProposal = try XCTUnwrap(WallCeilingEstimate.manualProposals(in:edited.room).first)
+        edited = try WallCeilingEstimate.applying(to:edited,proposal:editProposal,
+            settings:.init(shape:.singleSlope,lowHeight:1,highHeight:2,extendsWalls:true),manuallyEdited:true)
+        XCTAssertEqual(PlaquistoWallGeometry.outline(wall:wall,room:edited.room),wall.effectiveOutline)
+        XCTAssertEqual(CeilingAutoFit(room:edited.room,proposal:editProposal).suggest(shape:.flat).settings.lowHeight,2.5,accuracy:1e-8)
+    }
+
+    func testRampExtensionKeepsDoorDeduction() throws {
+        let base = ceilingRoom()
+        let original = try SurveyPlanEditing.addingDoor(base,wallID:base.room.walls[0].id,width:0.8,height:2,position:1)
+        let proposal = try WallCeilingEstimate.propose(in:original.room)
+        let edited = try WallCeilingEstimate.applying(to:original,proposal:proposal,
+            settings:.init(shape:.twoSlopes,lowHeight:2.5,highHeight:4,extendsWalls:true),manuallyEdited:true)
+        let analysis = PlaquistoWallGeometry.analyze(wall:edited.room.walls[0],room:edited.room)
+        XCTAssertEqual(analysis.gross,13,accuracy:1e-6)
+        XCTAssertEqual(analysis.openingArea,1.6,accuracy:1e-6)
+        XCTAssertEqual(analysis.net,11.4,accuracy:1e-6)
+        XCTAssertEqual(edited.room.openings,original.room.openings)
+        XCTAssertTrue(analysis.strips.allSatisfy { $0.heightSource == .estimated })
+    }
+
+    @MainActor func testConfiguredCeilingRebuildsExtendedWallsButKeepsPreviewCamera() throws {
+        let original = try WallCeilingEstimate.addingIfMissing(to:ceilingRoom())
+        let proposal = try XCTUnwrap(WallCeilingEstimate.manualProposals(in:original.room).first)
+        let reset = UUID()
+        var scene = RoomDomainScene(room:original.room,selected:.constant(nil),ceilingMode:2,showFloor:true,topView:false,cameraReset:reset)
+        let coordinator = scene.makeCoordinator(), view = SCNView()
+        view.scene = SCNScene(); scene.update(view,coordinator:coordinator)
+        let camera = try XCTUnwrap(view.pointOfView), wall = try XCTUnwrap(coordinator.walls.first)
+        let edited = try WallCeilingEstimate.applying(to:original,proposal:proposal,
+            settings:.init(shape:.singleSlope,lowHeight:2.5,highHeight:4,extendsWalls:true),manuallyEdited:true)
+        scene = RoomDomainScene(room:edited.room,selected:.constant(nil),ceilingMode:2,showFloor:true,topView:false,cameraReset:reset)
+        scene.update(view,coordinator:coordinator)
+        XCTAssertTrue(view.pointOfView === camera)
+        XCTAssertFalse(coordinator.walls.first === wall)
+        XCTAssertEqual(coordinator.walls.count,4)
     }
 
     func testConcaveCeilingStaysConcaveForAllFamiliesAndOrientations() throws {

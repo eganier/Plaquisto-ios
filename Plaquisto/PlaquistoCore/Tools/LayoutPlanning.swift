@@ -1,5 +1,78 @@
 import Foundation
+
+/// A reversible editor projection. The stored order remains the physical skin
+/// order; only the canvas puts the selected skin first. Shared framing keeps
+/// its own world reference and is never persisted on two skins.
+struct LayoutSkinEditing {
+    let source: LayoutDocument
+    let index: Int
+
+    init(_ source: LayoutDocument, selectedID: UUID?) {
+        self.source = source
+        index = source.layers.firstIndex { $0.id == selectedID } ?? 0
+    }
+
+    var document: LayoutDocument {
+        guard index > 0, source.layers.indices.contains(index) else { return source }
+        var copy = source
+        var selected = copy.layers.remove(at: index)
+        if selected.furring == nil, var owner = copy.layers.first, owner.furring != nil {
+            owner.materializeFurringOrientation()
+            if owner.furring?.usesOwnReference != true {
+                owner.furring?.usesOwnReference = true
+                owner.furring?.referenceEdge = owner.referenceEdge
+                owner.furring?.inheritedGridFrame = owner.inheritedGridFrame
+            }
+            selected.furring = owner.furring
+            copy.layers[0].furring = nil
+        }
+        copy.layers.insert(selected, at: 0)
+        return copy
+    }
+
+    func restoring(_ edited: LayoutDocument) -> LayoutDocument {
+        guard index > 0, source.layers.indices.contains(index),
+              edited.surface.id == source.surface.id else { return edited }
+        var copy = edited
+        let order = source.layers.map(\.id)
+        copy.layers.sort { (order.firstIndex(of: $0.id) ?? order.count) < (order.firstIndex(of: $1.id) ?? order.count) }
+        if source.layers[index].furring == nil, source.layers[0].furring != nil,
+           let selected = copy.layers.firstIndex(where: { $0.id == source.layers[index].id }),
+           let owner = copy.layers.firstIndex(where: { $0.id == source.layers[0].id }) {
+            let frame = copy.layers[selected].furring
+            copy.layers[owner].furring = frame == document.layers.first?.furring ? source.layers[0].furring : frame
+            copy.layers[selected].furring = nil
+        }
+        return copy
+    }
+}
 import CryptoKit
+
+/// Local draft operations: editing facing skins must not duplicate the shared frame.
+enum LayoutFacingDraft {
+    static func canApply(_ layers: [LayoutLayer]) -> Bool {
+        !layers.isEmpty && Set(layers.map(\.id)).count == layers.count && layers.allSatisfy {
+            $0.sheetWidth.isFinite && $0.sheetLength.isFinite
+                && (1...100_000).contains($0.sheetWidth) && (1...100_000).contains($0.sheetLength)
+                && ($0.furring == nil || !LayoutPlanning.compatibleSpacings($0).isEmpty)
+        }
+    }
+
+    static func addingSecond(to layers: [LayoutLayer]) -> [LayoutLayer] {
+        guard layers.count == 1, var second = layers.first else { return layers }
+        second.id = UUID()
+        second.offset.x += second.cellWidth / 2
+        second.furring = nil
+        return layers + [second]
+    }
+
+    static func removing(at index: Int, from layers: [LayoutLayer]) -> [LayoutLayer] {
+        guard index > 0, layers.indices.contains(index) else { return layers }
+        var result = layers
+        result.remove(at: index)
+        return result
+    }
+}
 
 /// One readable label per displayed length and direction. Never changes quantities
 /// or editable wall-distance callouts. Preferred indices are the visible segments.
@@ -255,7 +328,7 @@ enum AutomaticSurveyLayout {
         return Prepared(sourceSurfaces: work.components.compactMap(\.surface), configurationFingerprint: fingerprint, components: generated.components, record: record)
     }
 
-    private static func skins(_ payload: WorkConfiguration, opposite: Bool = false) -> [WorkConfiguration] {
+    static func skins(_ payload: WorkConfiguration, opposite: Bool = false) -> [WorkConfiguration] {
         switch payload {
         case .distributionPartition(let c):
             return (0..<c.layers).map { index in
@@ -278,6 +351,76 @@ enum AutomaticSurveyLayout {
         case .peripheralLining(let c): return c.quantities.map { .init(name: $0.name, quantity: $0.quantity, unit: $0.unit) }
         case .distributionPartition(let c): return c.quantities.map { .init(name: $0.name, quantity: $0.quantity, unit: $0.unit) }
         default: return []
+        }
+    }
+}
+
+/// A facing change in the ouvrage form also updates its saved plans. Geometry,
+/// lighting and shared framing are not reconstructed from the form rectangle.
+enum WorkLayoutFacingSync {
+    static func applying(_ configuration: WorkConfiguration, to original: WorkItem) -> WorkItem {
+        var work = original
+        work.payload = configuration
+        var changed = false
+        for c in work.components.indices {
+            for p in work.components[c].plans.indices {
+                let component = work.components[c]
+                let plan = component.plans[p]
+                guard let document = component.document(for: plan), !plan.layers.isEmpty else { continue }
+                let opposite = component.isOppositeSide(plan.sideRoomID)
+                let oldSkins = AutomaticSurveyLayout.skins(original.payload, opposite: opposite)
+                let newSkins = AutomaticSurveyLayout.skins(configuration, opposite: opposite)
+                guard !newSkins.isEmpty else { continue }
+                let oldTemplates = oldSkins.map { WorkLayoutDefaults.document(surface: document.surface, configuration: $0).layers[0] }
+                let templates = newSkins.map { WorkLayoutDefaults.document(surface: document.surface, configuration: $0).layers[0] }
+                // Incomplete or historical allocations remain in the form. Never
+                // replace a known saved product with an unresolved placeholder.
+                guard templates.allSatisfy({ $0.catalogFormatID != nil }) else { continue }
+                let compositionChanged = oldTemplates.count != templates.count || templates.indices.contains { i in
+                    !oldTemplates.indices.contains(i) || !sameFacing(oldTemplates[i], templates[i])
+                }
+                guard compositionChanged else { continue }
+                work.components[c].plans[p].layers = templates.enumerated().map { i, template in
+                    if plan.layers.indices.contains(i), oldTemplates.indices.contains(i), sameFacing(oldTemplates[i], template) {
+                        return plan.layers[i]
+                    }
+                    var layer = plan.layers.indices.contains(i) ? plan.layers[i] : plan.layers[0]
+                    if !plan.layers.indices.contains(i) {
+                        layer.id = UUID()
+                        layer.offset.x += layer.cellWidth / 2
+                    }
+                    layer.sheetWidth = template.sheetWidth
+                    layer.sheetLength = template.sheetLength
+                    layer.catalogFormatID = template.catalogFormatID
+                    layer.fourTaperedEdges = template.fourTaperedEdges
+                    layer.manualFacing = false
+                    layer.furring = nil // Stored once on the component, shared by all skins.
+                    return layer.forSurface(document.surface)
+                }
+                changed = true
+            }
+        }
+        if changed {
+            work.automaticLayout = nil // Do not retain purchases for a removed skin.
+            work.layoutQuantityTakeoff = try? LayoutQuantityCalculator.make(work: work, formats: [])
+        }
+        return work
+    }
+
+    private static func sameFacing(_ a: LayoutLayer, _ b: LayoutLayer) -> Bool {
+        a.catalogFormatID == b.catalogFormatID && a.sheetWidth == b.sheetWidth
+            && a.sheetLength == b.sheetLength && a.fourTaperedEdges == b.fourTaperedEdges
+    }
+}
+
+extension WorkConfiguration {
+    /// The actual ouvrage form is the single source of truth for all its skins.
+    var layoutFacingEntryStep: Int? {
+        switch self {
+        case .ceiling: 5
+        case .railStudCeiling, .peripheralLining, .furringLining: 2
+        case .distributionPartition: 3
+        default: nil
         }
     }
 }
@@ -323,7 +466,7 @@ enum LayoutQuantityCalculator {
         let skins:Int, peripheral:Bool, supportSpacing:Double?, maxSpan:Double?, multiplier:Double
         switch work.payload {
         case .ceiling(let c):
-            skins=c.layers; peripheral=c.perimeterSupport ?? true; supportSpacing=1.2; maxSpan=nil; multiplier=1
+            skins=c.layers; peripheral=c.perimeterSupport ?? true; supportSpacing=c.suspensionSpacingMeters ?? 1.2; maxSpan=nil; multiplier=1
         case .railStudCeiling(let c):
             skins=c.facingLayers; peripheral=true; multiplier=c.assembly == "double" ? 2 : 1
             supportSpacing=c.frameMode == "suspended" ? c.suspensionSpacingMeters : nil
@@ -423,6 +566,7 @@ enum WorkLayoutDefaults {
             formats = value.firstSkin.map { ($0.dimensionID, $0.area) }
             spacing = value.selectedSpacing
             document.layers[0].furring?.peripheralInset = value.perimeterSupport == false ? 100 : nil
+            document.layers[0].furring?.ceilingSuspensionSpacing = value.suspensionSpacingMeters.map { $0 * 1000 }
         case .railStudCeiling(let value):
             formats = value.firstSkin.map { ($0.dimensionID, $0.area) }
             spacing = 0.6 // This configurator uses fixed 60 cm stud centres.
@@ -508,6 +652,9 @@ enum WorkLayoutDefaults {
             // Nil is the legacy/default furring system; do not rewrite otherwise
             // unchanged manual plans just to materialize this default.
             result.furring?.isFurringSystem = nil
+            if result.furring?.ceilingSuspensionSpacing == nil {
+                result.furring?.ceilingSuspensionSpacing = value.suspensionSpacingMeters.map { $0 * 1000 }
+            }
             let peripheral = result.furring?.ceilingPerimeterSupport ?? value.perimeterSupport ?? true
             result.furring?.peripheralInset = peripheral ? nil : 100
         }
@@ -660,6 +807,15 @@ enum LayoutLightingEditError: Error, LocalizedError {
 }
 
 enum LayoutWallLighting {
+    static func positioning(_ lighting: LayoutLighting, index: Int, point: LayoutPoint, surface: Surface2D) throws -> LayoutLighting {
+        guard lighting.positions.indices.contains(index), point.x.isFinite, point.y.isFinite else { throw LayoutLightingEditError.invalidPlacement }
+        var copy = lighting
+        // Keep the predefined rows and every other point unchanged.
+        copy.wallRowHeights = heights(lighting, surface: surface)
+        copy.positions[index] = point
+        guard LayoutPlanning.lightingFits(copy, surface: surface) else { throw LayoutLightingEditError.invalidPlacement }
+        return copy
+    }
     static func heights(_ lighting:LayoutLighting?,surface:Surface2D) -> [Double] {
         let values=lighting?.wallRowHeights ?? lighting?.positions.map { $0.y-surface.bounds.min.y } ?? []
         return Array(Set(values.filter { $0.isFinite && $0>0 && $0<surface.bounds.height })).sorted()
@@ -1199,20 +1355,49 @@ enum LayoutPlanning {
         var copy = settings; copy.positions = best; return copy
     }
 
+    /// Prefer an actual joint over/under the opening, away from its jambs.
+    /// Work in the calculated grid frame, so mirrored partition faces use the
+    /// same rule. A line hidden inside the opening is not a board joint.
+    static func openingJointQuality(surface: Surface2D, result: SheetLayoutResult) -> (misses: Double, centering: Double) {
+        guard surface.kind == .wall else { return (0, 0) }
+        let local = localSurface(surface, frame: result.frame)
+        let vertical = result.joints.filter { abs($0.start.x - $0.end.x) < 0.01 }
+        var misses = 0.0, centering = 0.0
+        for opening in local.openings {
+            let b = opening.bounds
+            let margin = min(150.0, b.width / 2)
+            let adjacent = vertical.filter { joint in
+                let low = min(joint.start.y, joint.end.y), high = max(joint.start.y, joint.end.y)
+                return (low <= b.max.y + 0.1 && high > b.max.y + 0.1)
+                    || (low < b.min.y - 0.1 && high >= b.min.y - 0.1)
+            }
+            let safe = adjacent.filter { $0.start.x >= b.min.x + margin - 0.1 && $0.start.x <= b.max.x - margin + 0.1 }
+            if let distance = safe.map({ abs($0.start.x - b.center.x) }).min() {
+                centering += distance
+            } else { misses += 1 }
+            // A second joint at a corner must not be excused by a centered one.
+            misses += Double(adjacent.filter {
+                min(abs($0.start.x - b.min.x), abs($0.start.x - b.max.x)) < margin - 0.1
+            }.count)
+        }
+        return (misses, centering)
+    }
+
     // Bounded deterministic offset search, not an assertion of global optimality.
     // Once aligned, moving either grid keeps the shared joint phase aligned.
     static func optimize(surface:Surface2D, layer:LayoutLayer, furring:Bool, alignFraming:Bool = false, lockFraming:Bool = false) throws -> LayoutLayer {
         let layer = alignFraming ? alignFurring(to: layer.forSurface(surface)) : layer.forSurface(surface)
         var best = layer
         let initial = try SheetLayoutEngine.calculate(surface:surface,layer:layer)
-        func score(_ result:SheetLayoutResult) -> (Double,Double,Double) {
-            if furring { return (0,result.furring.lines.reduce(0){$0+($1.end-$1.start).length},Double(result.furring.lines.count)) }
-            return (Double(LayoutCutQuality.smallPieces(result).count),Double(result.purchasedSheetCount),result.wasteArea)
+        func score(_ result:SheetLayoutResult) -> [Double] {
+            if furring { return [0,result.furring.lines.reduce(0){$0+($1.end-$1.start).length},Double(result.furring.lines.count)] }
+            let opening = openingJointQuality(surface: surface, result: result)
+            return [Double(LayoutCutQuality.smallPieces(result).count), opening.misses, opening.centering,
+                    Double(result.purchasedSheetCount),result.wasteArea]
         }
-        func better(_ a:(Double,Double,Double), than b:(Double,Double,Double)) -> Bool {
-            if abs(a.0-b.0)>0.01 { return a.0<b.0 }
-            if abs(a.1-b.1)>0.01 { return a.1<b.1 }
-            return a.2+0.01<b.2
+        func better(_ a:[Double], than b:[Double]) -> Bool {
+            for (x,y) in zip(a,b) where abs(x-y)>0.01 { return x<y }
+            return false
         }
         var bestScore = score(initial)
         if furring, let settings=layer.furring {
@@ -1235,7 +1420,10 @@ enum LayoutPlanning {
         let b = localSurface(surface,frame:.make(surface:surface,layer:layer)).bounds
         // Include exact wall-aligned starts in addition to uniform samples.
         let xs = [layer.offset.x,b.min.x,b.max.x,(b.min.x+b.max.x-layer.cellWidth)/2,b.min.x+300,b.max.x-300] + (0..<9).map{Double($0)*layer.cellWidth/9}
-        let ys = [layer.offset.y,b.min.y,b.max.y,(b.min.y+b.max.y-layer.cellHeight)/2,b.min.y+300,b.max.y-300] + (0..<9).map{Double($0)*layer.cellHeight/9}
+        // Single-height wall boards are always seated at the floor by forSurface;
+        // do not calculate the same candidate fifteen times.
+        let ys = surface.kind == .wall && b.height <= layer.cellHeight + 0.001 ? [b.min.y] :
+            [layer.offset.y,b.min.y,b.max.y,(b.min.y+b.max.y-layer.cellHeight)/2,b.min.y+300,b.max.y-300] + (0..<9).map{Double($0)*layer.cellHeight/9}
         for x in xs { for y in ys {
             try Task.checkCancellation()
             var candidate = layer; candidate.offset = .init(x:x,y:y)
@@ -1245,6 +1433,31 @@ enum LayoutPlanning {
             let value = score(result)
             if better(value,than:bestScore) { best = candidate; bestScore = value }
         } }
+        // Exact opening-centered phases are easily missed by uniform sampling.
+        // Search them at the best vertical phase, keeping runtime bounded even
+        // with many openings; every candidate still goes through framing locks.
+        if surface.kind == .wall {
+            let openings = localSurface(surface,frame:.make(surface:surface,layer:layer)).openings
+            var phases: [Double] = []
+            for opening in openings {
+                let b = opening.bounds, margin = min(150.0,b.width/2)
+                for x in [b.center.x,b.min.x+margin,b.max.x-margin] {
+                    let period = layer.cellWidth
+                    let phase = (x.truncatingRemainder(dividingBy:period)+period).truncatingRemainder(dividingBy:period)
+                    if !phases.contains(where:{abs($0-phase)<0.01}) { phases.append(phase) }
+                }
+            }
+            let base = best
+            for x in phases.prefix(96) {
+                try Task.checkCancellation()
+                var candidate=base; candidate.offset.x=x
+                if lockFraming { candidate=alignBoards(to:candidate,support:surface.kind) }
+                if layer.furring != nil && (alignFraming || layer.furring?.usesOwnReference != true) { candidate=alignFurring(to:candidate) }
+                guard let result=try? SheetLayoutEngine.calculate(surface:surface,layer:candidate) else { continue }
+                let value=score(result)
+                if better(value,than:bestScore) { best=candidate; bestScore=value }
+            }
+        }
         // Refine the stagger after the bounded offset search. Test only shifts
         // compatible with the frame, without multiplying the entire search.
         if !furring, layer.staggered == true {

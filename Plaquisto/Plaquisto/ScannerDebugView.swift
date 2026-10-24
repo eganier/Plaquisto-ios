@@ -2,6 +2,7 @@ import SceneKit
 import SwiftUI
 
 struct ScannerDebugView: View {
+    @Environment(\.usesAtlantiqueDesign) private var atlantique
     var quickLayout = false
     var targetProjectID: UUID? = nil
     @Environment(\.dismiss) private var dismiss
@@ -14,10 +15,23 @@ struct ScannerDebugView: View {
     @State private var recoveryError: String?
     @State private var showDiagnostics = false
     @State private var projectSaveError: String?
+    @State private var showingManualModel = false
+    @State private var showingCompatibility = false
 
     var body: some View {
         NavigationStack {
-            List {
+            AtlantiqueForm(bookLayout: true) {
+                if !quickLayout {
+                    Section {
+                        VStack(alignment: .leading, spacing: 14) {
+                            if atlantique { AtlantiqueSymbol(icon: .model, size: 70).frame(width: 70, height: 70).foregroundStyle(Atlantique.Palette.actionInk) }
+                            else { Image(uiImage: ModelingIcon.image).resizable().scaledToFit().frame(width: 70, height: 70).foregroundStyle(.blue) }
+                            Text("Donnez forme à votre projet").font(.title2.bold())
+                            Text("Scannez votre pièce avec un téléphone compatible, ou dessinez-la à partir de vos mesures. Retrouvez votre modèle en 3D pour préparer vos travaux.")
+                                .foregroundStyle(.secondary)
+                        }.padding(.vertical, 10)
+                    }
+                }
                 Section {
                     if let targetProjectID, let project=store.project(id:targetProjectID) {
                         Label(project.name,systemImage:"folder").font(.headline)
@@ -27,24 +41,31 @@ struct ScannerDebugView: View {
                         model.prepareForCapture()
                         showingCapture = true
                     } label: {
-                        Label("Démarrer un relevé", systemImage: "viewfinder")
-                            .frame(maxWidth: .infinity)
+                        Label("Scanner ma pièce", systemImage: "viewfinder")
+                            .font(.headline).frame(maxWidth: .infinity, minHeight: 50)
                     }
-                    .buttonStyle(.borderedProminent)
+                    .atlantiqueActionStyle(.primary)
                     .disabled(!model.canStart || model.needsSaveRetry)
                     .listRowBackground(Color.clear)
+                    if !quickLayout {
+                        Button("Voir la compatibilité du scanner") { showingCompatibility = true }.font(.footnote)
+                        Button { showingManualModel = true } label: {
+                            Label("Dessiner ma pièce", systemImage: "pencil.and.outline")
+                                .font(.headline).frame(maxWidth: .infinity, minHeight: 50)
+                        }.atlantiqueActionStyle(.primary)
+                    }
                     if model.needsSaveRetry {
                         Text("Sauvegardez le relevé en mémoire avant de commencer une nouvelle capture.")
                             .font(.caption).foregroundStyle(.orange)
                         Button("Réessayer la sauvegarde") { model.retryCampaignSave(); reloadDrafts() }
                     }
                 }
-                Section {
+                if quickLayout { Section {
                     Text("Balayez lentement les murs et les ouvertures en suivant le guidage Apple. Touchez « Terminer le scan » pour ouvrir la maquette et le plan modifiables.")
                         .font(.subheadline)
                     Text("Capture native RoomPlan : commencez par une pièce. Le découpage automatique d’une maison en plusieurs pièces n’est pas activé.")
                         .font(.caption).foregroundStyle(.secondary)
-                }
+                } }
                 if !model.campaign.chunks.isEmpty {
                     Section("Dernier relevé") {
                         NavigationLink {
@@ -72,11 +93,11 @@ struct ScannerDebugView: View {
                     }
                 }
                 if let recoveryError { Text(recoveryError).foregroundStyle(.orange) }
-                Section {
+                if !atlantique || Atlantique.Book.showsAdvancedFormControls { Section {
                     Button(showDiagnostics ? "Masquer les détails techniques" : "Détails techniques et diagnostic") {
                         showDiagnostics.toggle()
                     }.font(.footnote)
-                }
+                } }
                 if showDiagnostics {
                 Section {
                     capabilityRow("RoomPlan", available: model.roomPlanSupported)
@@ -165,17 +186,34 @@ struct ScannerDebugView: View {
                 }
 
             }
-            .navigationTitle("Scanner")
+            .navigationTitle(quickLayout ? "Scanner" : "Modéliser")
+            .atlantiqueFormSurface()
+            .atlantiquePage(quickLayout ? "Scanner" : "Modéliser", root: true)
             .onAppear { reloadDrafts() }
             .toolbar {
                 if quickLayout || targetProjectID != nil {
                     ToolbarItem(placement: .cancellationAction) { Button("Fermer") { dismiss() } }
                 } else {
-                    AccountToolbarButton(action: onOpenAccount)
+                    if atlantique { ToolbarItem(placement: .topBarTrailing) { Button(action: onOpenAccount) { AtlantiqueToolbarGlyph(symbol: "gearshape") }.accessibilityLabel("Réglages") }.atlantiqueToolbarBackground() }
+                    else { AccountToolbarButton(action: onOpenAccount) }
                 }
             }
             .navigationDestination(isPresented: $showingWorkspace) {
                 ScannerCampaignWorkspaceView(draft: model.campaign, quickLayout: quickLayout)
+            }
+            .fullScreenCover(isPresented: $showingManualModel, onDismiss: { reloadDrafts() }) {
+                ManualModelingView(targetProjectID: targetProjectID)
+            }
+            .sheet(isPresented: $showingCompatibility) {
+                NavigationStack {
+                    AtlantiqueForm {
+                        Label(model.roomPlanSupported ? "Ce téléphone prend en charge le scan 3D." : "Le scan 3D n’est pas disponible sur cet appareil.",
+                              systemImage: model.roomPlanSupported ? "checkmark.circle" : "info.circle")
+                        Text("Le scanner utilise RoomPlan et nécessite un appareil équipé de LiDAR. La compatibilité est vérifiée directement sur votre appareil.")
+                        Text("Sans scanner compatible, « Dessiner ma pièce » donne accès au même modèle 3D à partir de vos mesures.")
+                    }.navigationTitle("Compatibilité").atlantiqueFormPage("Compatibilité")
+                        .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Fermer") { showingCompatibility = false } } }
+                }.presentationDetents([.medium, .large])
             }
             .fullScreenCover(isPresented: $showingCapture, onDismiss: {
                 if model.didFinish && !model.campaign.chunks.isEmpty { finishProjectCapture() }

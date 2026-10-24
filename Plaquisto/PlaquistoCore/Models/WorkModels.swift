@@ -57,6 +57,8 @@ struct CeilingConfiguration: Codable, Equatable {
     var insulationThickness: Double = 0
     var selectedSpacing: Double = 0.6
     var fixingSystemID: String = ""
+    // nil keeps the automatic catalogue recommendation for existing archives.
+    var hangerModelID: String? = nil
     var layers = 1
     var firstSkin: [FacingSelection] = []
     var secondSkin: [FacingSelection] = []
@@ -73,6 +75,8 @@ struct CeilingConfiguration: Codable, Equatable {
     // Optional so ceilings saved before the direction choice remain decodable.
     var furringDirection: String? = nil
     var perimeterSupport: Bool? = nil
+    // Optional to preserve archives created before the suspension-spacing control.
+    var suspensionSpacingMeters: Double? = nil
 }
 
 struct DoublageFacingSelection: Identifiable, Codable, Equatable, Hashable {
@@ -429,6 +433,7 @@ enum WorkType: String, Codable, CaseIterable, Identifiable {
     case ceilingOnFurring = "plafond-fourrures"
     case ceilingOnRailsAndStuds = "plafond-rails-montants"
     case modularCeiling = "plafond-modulaire"
+    case frenchCeiling = "plafond-a-la-francaise"
     case peripheralLiningStuds = "doublage-peripherique-rails-montants"
     case distributionPartition = "cloison-de-distribution"
     case alveolarPartition = "cloison-de-distribution-alveolaire"
@@ -442,7 +447,7 @@ enum WorkType: String, Codable, CaseIterable, Identifiable {
     var category: WorkCategory {
         switch self {
         case .jointTreatment: .joints
-        case .ceilingOnFurring, .ceilingOnRailsAndStuds, .modularCeiling: .ceilings
+        case .ceilingOnFurring, .ceilingOnRailsAndStuds, .modularCeiling, .frenchCeiling: .ceilings
         case .peripheralLiningStuds, .peripheralLiningBonded, .peripheralLiningFurrings, .peripheralLiningAdhesiveFacing: .wallInsulation
         case .distributionPartition, .alveolarPartition: .partitions
         case .openings: .openings
@@ -455,6 +460,7 @@ enum WorkType: String, Codable, CaseIterable, Identifiable {
         case .ceilingOnFurring: "Plafond sur fourrures"
         case .ceilingOnRailsAndStuds: "Plafond sur ossature rails et montants"
         case .modularCeiling: "Plafond modulaire en dalles (bêta)"
+        case .frenchCeiling: "Plafond à la française (bêta)"
         case .peripheralLiningStuds: "Doublage périphérique — Rails et montants"
         case .distributionPartition: "Cloison de distribution — Rails et montants"
         case .alveolarPartition: "Cloison de distribution alvéolaire"
@@ -471,6 +477,7 @@ enum WorkType: String, Codable, CaseIterable, Identifiable {
         case .ceilingOnFurring: "Plafond sur fourrures"
         case .ceilingOnRailsAndStuds: "Plafond sur ossature rails et montants"
         case .modularCeiling: "Plafond modulaire en dalles"
+        case .frenchCeiling: "Plafond à la française"
         case .peripheralLiningStuds: "Doublage périphérique sur rails et montants"
         case .distributionPartition: "Cloison de distribution"
         case .alveolarPartition: "Cloison de distribution alvéolaire"
@@ -491,6 +498,8 @@ enum WorkType: String, Codable, CaseIterable, Identifiable {
             "Plafond"
         case .modularCeiling:
             "Plafond modulaire"
+        case .frenchCeiling:
+            "Plafond à la française"
         case .peripheralLiningStuds, .peripheralLiningBonded, .peripheralLiningFurrings, .peripheralLiningAdhesiveFacing:
             "Doublage périphérique"
         case .distributionPartition, .alveolarPartition:
@@ -831,6 +840,8 @@ struct ProjectItem: Identifiable, Codable, Equatable {
     var rooms: [ProjectRoomRecord] = []
     // Optional keeps existing v2 archives readable. Relations are explicit, not inferred from lengths.
     var ceilingWallLinks: [CeilingWallLink]? = nil
+    /// Shopping adjustments never replace calculated quantities or inventory.
+    var shoppingLists: [String: ShoppingListEdits]? = nil
 
     func ownedWorks(in roomID: UUID) -> [WorkItem] { works.filter { $0.roomID == roomID } }
     func filteredWorks(roomID: UUID? = nil, level: String? = nil, zone: String? = nil) -> [WorkItem] {
@@ -848,6 +859,43 @@ struct ProjectItem: Identifiable, Codable, Equatable {
     }
     func linkedWorks(in roomID: UUID) -> [WorkItem] {
         works.filter { $0.roomID != roomID && $0.linkedRoomIDs.contains(roomID) }
+    }
+}
+
+struct ShoppingListEdits: Codable, Equatable {
+    struct Edit: Codable, Equatable {
+        var name: String? = nil
+        var quantity: Double? = nil
+        var deductStock = false
+    }
+    struct Product: Codable, Equatable, Identifiable {
+        var id = UUID().uuidString
+        var name: String
+        var quantity: Double
+        var unit: String
+    }
+    var edits: [String: Edit] = [:]
+    var products: [Product] = []
+    /// Source -> destination, always a flat group (no chains or cycles).
+    var replacements: [String: String] = [:]
+
+    mutating func reset(_ id: String) {
+        var group: Set<String> = [id]
+        var previous = Set<String>()
+        while group != previous {
+            previous = group
+            for (source, target) in replacements where group.contains(source) || group.contains(target) {
+                group.insert(source); group.insert(target)
+            }
+        }
+        replacements = replacements.filter { !group.contains($0.key) && !group.contains($0.value) }
+        for key in group { edits.removeValue(forKey: key) }
+        products.removeAll { $0.id == id }
+    }
+    mutating func merge(_ source: String, into target: String) {
+        guard source != target, replacements[source] == nil, replacements[target] == nil else { return }
+        for key in Array(replacements.keys) where replacements[key] == source { replacements[key] = target }
+        replacements[source] = target
     }
 }
 
@@ -897,7 +945,14 @@ struct WorkComponentRecord: Identifiable, Codable, Equatable {
         guard let base = document(for: ComponentLayoutPlan(sideRoomID:sideRoomID)) else { return nil }
         guard let configuration else { return base }
         var result = WorkLayoutDefaults.document(surface:base.surface,configuration:configuration)
-        if framing != nil { result.layers[0].furring = base.layers.first?.furring }
+        let skins = AutomaticSurveyLayout.skins(configuration, opposite: isOppositeSide(sideRoomID))
+        if !skins.isEmpty {
+            result.layers = skins.map { WorkLayoutDefaults.document(surface: base.surface, configuration: $0).layers[0] }
+        }
+        for i in result.layers.indices {
+            result.layers[i] = WorkLayoutDefaults.resolvingSupport(result.layers[i], configuration: configuration)
+            if framing != nil { result.layers[i].furring = base.layers.first?.furring }
+        }
         return result
     }
 }

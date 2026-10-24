@@ -1,5 +1,15 @@
 import Foundation
 
+enum InsulationCatalogueAvailability {
+    static func allows(referenceID: String, lambda: Double? = nil) -> Bool {
+        if ["ISO-BOIS-037", "ISO-BOIS-038"].contains(referenceID) { return false }
+        if ["WALL-INSULATION-LDB", "PARTITION-INSULATION-BOIS"].contains(referenceID), let lambda {
+            return ![0.037, 0.038].contains { abs($0 - lambda) < 0.000001 }
+        }
+        return true
+    }
+}
+
 struct CeilingReferenceRecord: Codable, Identifiable {
     let id: String
     let kind: String
@@ -42,12 +52,17 @@ enum GalvanizedHangerSelection {
     }
 
     static func reference(plenumCM: Double, support: String, catalogue: CeilingCataloguePayload) -> CeilingReferenceRecord? {
-        guard let mm = wholeMillimeters(plenumCM: plenumCM) else { return nil }
+        let matches = compatible(plenumCM: plenumCM, support: support, catalogue: catalogue)
+        return matches.count == 1 ? matches[0] : nil
+    }
+
+    static func compatible(plenumCM: Double, support: String, catalogue: CeilingCataloguePayload) -> [CeilingReferenceRecord] {
+        guard let mm = wholeMillimeters(plenumCM: plenumCM) else { return [] }
         let prefix: String
         switch support {
         case "Plancher bois horizontal": prefix = ""
         case "Plancher hourdis béton": prefix = "hourdis_"
-        default: return nil
+        default: return []
         }
         let matches = catalogue.quantitatifs.filter { record in
             guard record.status == "Publié", record.data["category"]?.string == "galvanized_hanger",
@@ -60,18 +75,20 @@ enum GalvanizedHangerSelection {
                   length.rounded() == length, min.rounded() == min, max.rounded() == max else { return false }
             return Double(mm) >= min && Double(mm) <= max
         }
-        return matches.count == 1 ? matches[0] : nil
+        return matches
     }
 
     static func components(for system: CeilingReferenceRecord, plenumCM: Double,
-                           catalogue: CeilingCataloguePayload) -> [CeilingJSONValue] {
-        let selected = reference(plenumCM: plenumCM, support: system.data["support"]?.string ?? "", catalogue: catalogue)
+                           catalogue: CeilingCataloguePayload, modelID: String? = nil) -> [CeilingJSONValue] {
+        let selected = CeilingHangerComponents.selected(from: compatible(plenumCM: plenumCM,
+            support: system.data["support"]?.string ?? "", catalogue: catalogue), modelID: modelID)
         return (system.data["components"]?.array ?? []).map { value in
             guard var object = value.object,
                   object["selection"]?.string == "galvanized_hanger" else { return value }
             // Old projects outside the new table keep their quantities but no
             // incorrect size or price is silently assigned to them.
             object["name"] = .string(selected?.title ?? "Suspentes acier galvanisées — taille à préciser")
+            object.removeValue(forKey: "reference_id")
             if let selected { object["reference_id"] = .string(selected.id) }
             return .object(object)
         }
@@ -84,8 +101,13 @@ enum CompositeHangerSelection {
     }
 
     static func reference(plenumCM: Double, support: String, catalogue: CeilingCataloguePayload) -> CeilingReferenceRecord? {
+        let matches = compatible(plenumCM: plenumCM, support: support, catalogue: catalogue)
+        return matches.count == 1 ? matches[0] : nil
+    }
+
+    static func compatible(plenumCM: Double, support: String, catalogue: CeilingCataloguePayload) -> [CeilingReferenceRecord] {
         guard support == "Plancher bois horizontal",
-              let mm = GalvanizedHangerSelection.wholeMillimeters(plenumCM: plenumCM) else { return nil }
+              let mm = GalvanizedHangerSelection.wholeMillimeters(plenumCM: plenumCM) else { return [] }
         let matches = catalogue.quantitatifs.filter { record in
             guard record.status == "Publié", record.data["category"]?.string == "composite_hanger",
                   record.data["support"]?.string == support, record.data["unit"]?.string == "unité",
@@ -95,16 +117,44 @@ enum CompositeHangerSelection {
                   min.rounded() == min, max.rounded() == max else { return false }
             return Double(mm) >= min && Double(mm) <= max
         }
-        return matches.count == 1 ? matches[0] : nil
+        return matches
     }
 }
 
 enum CeilingHangerComponents {
+    /// An explicit choice must still match the current support and plenum. Never
+    /// silently substitute another model when reopening an obsolete selection.
+    static func selected(from candidates: [CeilingReferenceRecord], modelID: String?) -> CeilingReferenceRecord? {
+        let unique = candidates.filter { record in candidates.filter { $0.id == record.id }.count == 1 }
+        let matches = modelID.map { id in unique.filter { $0.id == id } } ?? unique
+        return matches.count == 1 ? matches[0] : nil
+    }
+
+    static func models(for system: CeilingReferenceRecord, plenumCM: Double,
+                       catalogue: CeilingCataloguePayload) -> [CeilingReferenceRecord] {
+        let support = system.data["support"]?.string ?? ""
+        let candidates: [CeilingReferenceRecord]
+        if GalvanizedHangerSelection.usesSizing(system) {
+            candidates = GalvanizedHangerSelection.compatible(plenumCM: plenumCM, support: support, catalogue: catalogue)
+        } else if CompositeHangerSelection.usesSizing(system) {
+            candidates = CompositeHangerSelection.compatible(plenumCM: plenumCM, support: support, catalogue: catalogue)
+        } else { return [] }
+        // Duplicate IDs are a catalogue error, not two selectable models.
+        return candidates.filter { record in candidates.filter { $0.id == record.id }.count == 1 }
+            .sorted { $0.title.localizedStandardCompare($1.title) == .orderedAscending }
+    }
+
+    static func modelTitle(_ record: CeilingReferenceRecord) -> String {
+        if let model = record.data["model"]?.string { return model }
+        if let length = record.data["length_mm"]?.number { return "\(Int(length)) mm" }
+        return record.title
+    }
+
     static func resolve(for system: CeilingReferenceRecord, plenumCM: Double,
-                        catalogue: CeilingCataloguePayload) -> [CeilingJSONValue] {
-        let selected = CompositeHangerSelection.reference(plenumCM: plenumCM,
-            support: system.data["support"]?.string ?? "", catalogue: catalogue)
-        return GalvanizedHangerSelection.components(for: system, plenumCM: plenumCM, catalogue: catalogue).map { value in
+                        catalogue: CeilingCataloguePayload, modelID: String? = nil) -> [CeilingJSONValue] {
+        let selected = selected(from: CompositeHangerSelection.compatible(plenumCM: plenumCM,
+            support: system.data["support"]?.string ?? "", catalogue: catalogue), modelID: modelID)
+        return GalvanizedHangerSelection.components(for: system, plenumCM: plenumCM, catalogue: catalogue, modelID: modelID).map { value in
             guard var object = value.object, object["selection"]?.string == "composite_hanger" else { return value }
             object["name"] = .string(selected?.title ?? "Suspente composite pour pare-vapeur — modèle à préciser")
             object.removeValue(forKey: "reference_id")
@@ -230,6 +280,7 @@ final class CeilingReferenceStore: ObservableObject {
             catalogue = decoded
             workSummaryCatalogue = (try? WorkSummaryCatalogue(data: data)) ?? .init()
             UserDefaults.standard.set(data, forKey: cacheKey)
+            UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: cacheKey + ".lastSuccess")
             isUsingOfflineData = false
         } catch {
             if let cachedData = UserDefaults.standard.data(forKey: cacheKey),

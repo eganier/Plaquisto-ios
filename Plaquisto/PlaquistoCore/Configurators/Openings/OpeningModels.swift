@@ -52,8 +52,10 @@ enum SupplyListingConsolidator {
 
     /// Legacy assembly stored as one unit: preserve its count for EACH component.
     static func components(_ entry: SupplyListingEntry) -> [SupplyListingEntry] {
+        // Retired generic allowance: also omit it from previously saved works.
+        if ["Fixations des rails au gros œuvre", "Fixations des rails au gros oeuvre"].contains(entry.name.trimmingCharacters(in: .whitespacesAndNewlines)) { return [] }
         guard entry.name.trimmingCharacters(in: .whitespacesAndNewlines) == "Cheville et piton",
-              ["unité", "unités", "unité(s)"].contains(entry.unit) else { return [entry] }
+              canonicalUnit(entry.unit) == "unités" else { return [entry] }
         return ["Cheville crampon 8 mm", "Piton de suspension 8 mm"].map {
             .init(name: $0, quantity: entry.quantity, unit: "unités")
         }
@@ -124,18 +126,22 @@ enum SupplyListingConsolidator {
         case "vis ttpc · deuxième peau": return "Vis TTPC 35"
         case "suspente hourdis à griffe à serrer": return "Suspente hourdis à serrer"
         case "suspente hourdis", "suspente hourdis à griffe", "suspentes hourdis simples": return "Suspentes hourdis simples"
-        case "cornière d’angle", "cornière d'angle", "cornières périphériques", "cornières", "cornière": return "Cornière"
+        case "cornière d’angle", "cornière d'angle", "cornières périphériques", "cornières", "cornière",
+             "cornière · standard", "cornière · cr2-30x35", "cornière · cr2 -30x35": return "Cornière"
         case "demi collier", "demi-collier": return "Demi-collier"
         case "bande pp grand rouleau", "bande à joint", "bande à joint · papier", "bande à joint papier": return "Bande à joint"
         case "vis ttpc 35 mm (2e parement)", "vis ttpc 35": return "Vis TTPC 35"
         case "vis trpf 13 · solidarisation des montants", "vis trpf 13 · fixation des suspentes",
              "vis trpf 13": return "Vis TRPF 13"
-        case "fourrures f45", "fourrure f45", "fourrures f45/f47", "fourrure f45/f47",
+        case "fourrures f45", "fourrure f45", "fourrures f47", "fourrure f47", "fourrures f45/f47", "fourrure f45/f47",
+             "fourrures f45/f47 · f45", "fourrures f45/f47 · f47", "fourrures f45/f47 · standard",
              "fourrures de renfort", "fourrures latérales", "fourrures transversales",
              "fourrures latérales d’embrasure", "fourrures transversales d’embrasure": return "Fourrures F45/F47"
         case "vis ttpc 25 mm (1er parement)", "vis ttpc 25mm (1er parement)",
              "vis ttpc 25 ou 35", "viss ttpc 25 ou 35", "vis ttpc 25", "vis ttpc 25 mm": return "Vis TTPC 25"
-        case "enduit en poudre", "enduit poudre collage, charge, finition": return "Enduit à joints en poudre"
+        case "enduit en poudre", "enduit poudre collage, charge, finition", "enduit à joints en poudre · standard",
+             "enduit à joints en poudre · lent", "enduit à joints en poudre · prise lente",
+             "enduit à joint prise lente", "enduit à joints prise lente": return "Enduit à joints en poudre"
         case "enduit en pâte", "enduit pâte prêt à l’emploi, collage, charge, finition": return "Enduit à joints en pâte"
         default: break
         }
@@ -190,10 +196,14 @@ enum SupplyListingConsolidator {
     }
 
     static func canonicalUnit(_ rawUnit: String) -> String {
-        switch rawUnit.lowercased() {
-        case "unité", "unités": "unités"
-        case "plaque", "plaques", "plaque(s)": "plaques"
-        default: rawUnit
+        switch rawUnit.trimmingCharacters(in:.whitespacesAndNewlines).lowercased() {
+        case "unité", "unités", "unité(s)", "unite", "unites", "u", "u.", "pièce", "pièces": return "unités"
+        case "plaque", "plaques", "plaque(s)": return "plaques"
+        case "ml", "m.l.", "mètre linéaire", "mètres linéaires": return "ml"
+        case "m2", "m²", "mètre carré", "mètres carrés": return "m²"
+        case "kg", "kilogramme", "kilogrammes": return "kg"
+        case "l", "litre", "litres": return "l"
+        default: return rawUnit.trimmingCharacters(in:.whitespacesAndNewlines)
         }
     }
 

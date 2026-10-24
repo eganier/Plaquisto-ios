@@ -194,6 +194,23 @@ struct ArchPoint: Identifiable, Equatable {
 }
 
 enum ArchCalculator {
+    /// Symmetric superellipse. Amplitude 50% is an ellipse; 0% a pointed profile.
+    /// Values are sampled from the centre so the table never exceeds half the span.
+    static func adjustable(width: Double, rise: Double, amplitude: Double, spacing: Double) -> [ArchPoint] {
+        guard [width, rise, amplitude, spacing].allSatisfy(\.isFinite),
+              width > 0, width <= 100_000, rise > 0, rise <= 100_000,
+              (0...1).contains(amplitude), spacing > 0 else { return [] }
+        let half = width / 2
+        let step = max(spacing, half / 1000) // Bound memory for accidental microscopic steps.
+        var offsets = stride(from: 0.0, through: half, by: step).map { $0 }
+        if offsets.last != half { offsets.append(half) }
+        let exponent = amplitude <= 0.5 ? 1 + amplitude * 2 : 2 + (amplitude - 0.5) * 5
+        let right = offsets.map { offset in
+            ArchPoint(x: half + offset, y: rise * pow(max(0, 1 - pow(offset / half, exponent)), 1 / exponent))
+        }
+        return right.dropFirst().reversed().map { ArchPoint(x: width - $0.x, y: $0.y) } + right
+    }
+
     static func points(kind: ArchKind, width: Double, rise requestedRise: Double, spacing: Double) -> [ArchPoint] {
         guard width > 0, spacing > 0 else { return [] }
         let rise = kind == .semicircle ? width / 2 : requestedRise

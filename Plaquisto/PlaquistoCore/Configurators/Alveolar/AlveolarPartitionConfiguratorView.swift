@@ -1,6 +1,7 @@
 import SwiftUI
 
 struct AlveolarPartitionConfiguratorView: View {
+    @Environment(\.usesAtlantiqueDesign) private var atlantique
     typealias AlveolarPanelAllocation = AlveolarPanelSelection
 
     private enum GeometryMode: String, CaseIterable, Identifiable {
@@ -30,7 +31,7 @@ struct AlveolarPartitionConfiguratorView: View {
     @State private var compound = Compound.powder
     @State private var configurationExpanded = false
 
-    private let green = Color(red: 0.12, green: 0.38, blue: 0.29)
+    private var green: Color { atlantique ? Atlantique.Palette.actionInk : Color(red: 0.12, green: 0.38, blue: 0.29) }
     private let stepNames = ["Dimensions", "Panneaux", "Bandes à joint", "Résultat"]
 
     init(
@@ -72,6 +73,12 @@ struct AlveolarPartitionConfiguratorView: View {
     }
 
     private var canContinue: Bool {
+        isStepValid(step) && (step != 3 || allStepsAreValid)
+    }
+
+    private var allStepsAreValid: Bool { (1...3).allSatisfy(isStepValid) }
+
+    private func isStepValid(_ step: Int) -> Bool {
         switch step {
         case 1:
             height > 0 && height <= references.maximumHeight &&
@@ -89,7 +96,7 @@ struct AlveolarPartitionConfiguratorView: View {
     var body: some View {
         Group {
             if references.isLoading {
-                ProgressView("Chargement depuis Plaquisto Admin…")
+                AtlantiqueLoadingView("Chargement depuis Plaquisto Admin…")
             } else if let error = references.error {
                 VStack(spacing: 18) {
                     ContentUnavailableView(
@@ -98,21 +105,22 @@ struct AlveolarPartitionConfiguratorView: View {
                         description: Text(error)
                     )
                     Button("Réessayer") { Task { await references.load() } }
-                        .buttonStyle(.borderedProminent)
+                        .atlantiqueActionStyle()
                 }
             } else {
                 wizard
             }
         }
         .tint(green)
+        .atlantiqueFormPage(stepNames[min(max(0, step - 1), stepNames.count - 1)])
         .configurationEntry(in:1...3) { step = $0 }
         .onChange(of: references.panels.count, initial: true) { _, _ in initializeAllocations() }
         .onChange(of: height) { _, _ in normalizeFormats() }
         .toolbar {
-            if isEditing, let onSave {
+            if (isEditing || atlantique), let onSave {
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Enregistrer") { onSave(configurationSnapshot()) }
-                }
+                    Button("Enregistrer") { onSave(configurationSnapshot()) }.atlantiqueToolbarAction(primary: true).disabled(!allStepsAreValid)
+                }.atlantiqueToolbarBackground(atlantique)
             }
         }
     }
@@ -132,22 +140,27 @@ struct AlveolarPartitionConfiguratorView: View {
                 .padding(.horizontal, 20)
                 .padding(.vertical, 18)
             }
+            .id(step)
             footer
         }
-        .background(Color(.systemGroupedBackground))
+        .background(atlantique ? Atlantique.Palette.blue : Color(.systemGroupedBackground))
     }
 
-    private var header: some View {
+    @ViewBuilder private var header: some View {
+        if atlantique {
+            if showsCloseButton { Button("Fermer") { if let onClose { onClose() } else { reset() } }.atlantiqueActionStyle(.secondary).padding(.horizontal, 20) }
+            AtlantiqueWizardHeader(title: "Cloison alvéolaire", step: step, total: 4)
+        } else {
         VStack(alignment: .leading, spacing: 10) {
             if showsCloseButton {
                 Button("Fermer") {
                     if let onClose { onClose() } else { reset() }
                 }
-                .buttonStyle(.bordered)
+                .atlantiqueActionStyle(.secondary)
             }
-            Text("OUVRAGE")
+            Text(atlantique ? "" : "OUVRAGE")
                 .font(.caption.bold())
-                .foregroundStyle(.secondary)
+                .foregroundStyle(atlantique ? Color.white.opacity(0.85) : .secondary)
             Text("Cloison de distribution alvéolaire")
                 .font(.title2.bold())
             Label("Données synchronisées avec Plaquisto Admin", systemImage: "checkmark.icloud")
@@ -156,37 +169,39 @@ struct AlveolarPartitionConfiguratorView: View {
             ProgressView(value: Double(step), total: 4)
             Text("Étape \(step) sur 4 · \(stepNames[step - 1])")
                 .font(.caption)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(atlantique ? Color.white.opacity(0.85) : .secondary)
         }
         .padding(.horizontal, 20)
         .padding(.top, 12)
         .padding(.bottom, 14)
-        .background(.background)
+        .background(atlantique ? Atlantique.Palette.blue : Color(.systemBackground))
     }
 
+        }
     private var footer: some View {
         HStack {
             if step > 1 {
                 Button("Retour") { step -= 1 }
-                    .buttonStyle(.borderedProminent)
+                    .atlantiqueActionStyle(.secondary).frame(maxWidth: atlantique ? 112 : nil)
                     .tint(green.opacity(0.18))
                     .foregroundStyle(green)
+                    .formStepMenu(titles: stepNames, selection: $step, firstStep: 1, canShowResult: allStepsAreValid)
             }
             Spacer()
             if step < 4 {
                 Button("Continuer") { continueForm() }
-                    .buttonStyle(.borderedProminent)
+                    .atlantiqueActionStyle()
                     .disabled(!canContinue)
             } else if let onSave {
-                Button("Enregistrer") { onSave(configurationSnapshot()) }
-                    .buttonStyle(.borderedProminent)
+                Button("Enregistrer") { onSave(configurationSnapshot()) }.disabled(!allStepsAreValid)
+                    .atlantiqueActionStyle()
             } else {
                 Button("Recommencer") { reset() }
-                    .buttonStyle(.borderedProminent)
+                    .atlantiqueActionStyle()
             }
         }
         .padding(20)
-        .background(.background)
+        .background(atlantique ? Atlantique.Palette.blue : Color(.systemBackground))
     }
 
     private var dimensionsStep: some View {
@@ -195,10 +210,7 @@ struct AlveolarPartitionConfiguratorView: View {
             formCard {
                 numericRow("Hauteur sous plafond", value: $height, unit: "m")
                 Divider()
-                Picker("Mode de saisie", selection: $geometryMode) {
-                    ForEach(GeometryMode.allCases) { Text($0.rawValue).tag($0) }
-                }
-                .pickerStyle(.segmented)
+                AtlantiqueSegmentedChoice(title: "Mode de saisie", options: GeometryMode.allCases.map { ($0, $0.rawValue) }, selection: $geometryMode)
                 Divider()
                 if geometryMode == .length {
                     numericRow("Longueur de la cloison", value: $enteredLength, unit: "m")
@@ -209,7 +221,7 @@ struct AlveolarPartitionConfiguratorView: View {
 
             formCard {
                 HStack {
-                    Text(geometryMode == .length ? "Surface calculée" : "Longueur calculée")
+                    Text(geometryMode == .length ? "Surface" : "Longueur")
                     Spacer()
                     Text(geometryMode == .length ? format(actualArea, "m²") : format(actualLength, "m"))
                         .foregroundStyle(.secondary)
@@ -223,7 +235,7 @@ struct AlveolarPartitionConfiguratorView: View {
             } else {
                 Text("La hauteur maximale autorisée pour cet ouvrage est de \(format(references.maximumHeight, "m")).")
                     .font(.footnote)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(atlantique ? Color.white.opacity(0.85) : .secondary)
             }
         }
     }
@@ -233,7 +245,7 @@ struct AlveolarPartitionConfiguratorView: View {
             sectionTitle("Panneaux")
             Text("Répartissez la surface entre les panneaux standards et hydrofuges nécessaires à l’ouvrage.")
                 .font(.footnote)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(atlantique ? Color.white.opacity(0.85) : .secondary)
 
             ForEach($allocations) { $allocation in
                 panelCard($allocation)
@@ -241,7 +253,7 @@ struct AlveolarPartitionConfiguratorView: View {
 
             if canAddPanel {
                 Button("Ajouter un autre type de panneau") { addPanel() }
-                    .foregroundStyle(.green)
+                    .atlantiqueActionStyle(.secondary)
             }
 
             Text(allocationStatus)
@@ -257,7 +269,7 @@ struct AlveolarPartitionConfiguratorView: View {
                 Toggle("Prévoir le traitement des bandes à joint", isOn: $jointTreatment)
                 if jointTreatment {
                     Divider()
-                    Picker("Type d’enduit", selection: $compound) {
+                    AtlantiquePicker("Type d’enduit", selection: $compound) {
                         ForEach(Compound.allCases) { Text($0.rawValue).tag($0) }
                     }
                 }
@@ -274,6 +286,9 @@ struct AlveolarPartitionConfiguratorView: View {
                     summaryRow(row.0, row.1)
                 }
             }
+            if atlantique && !Atlantique.Book.showsAdvancedFormControls {
+                AtlantiqueConfigurationEstimate(type: .alveolarPartition, configuration: .alveolarPartition(configurationSnapshot()))
+            } else {
             DisclosureGroup(isExpanded: $configurationExpanded) {
                 formCard {
                     editableConfigurationRow("Hauteur", value: format(height, "m"), targetStep: 1); Divider()
@@ -282,6 +297,7 @@ struct AlveolarPartitionConfiguratorView: View {
                     editableConfigurationRow("Traitement des joints", value: jointTreatment ? compound.rawValue : "Non prévu", targetStep: 3)
                 }.padding(.top, 8)
             } label: { sectionTitle("Configuration retenue") }
+            }
         }
     }
 
@@ -302,27 +318,17 @@ struct AlveolarPartitionConfiguratorView: View {
 
     private func panelCard(_ allocation: Binding<AlveolarPanelAllocation>) -> some View {
         formCard {
-            HStack {
-                Text("Type de panneau")
-                Spacer()
-                Picker("Type de panneau", selection: panelBinding(allocation)) {
+                AtlantiquePicker("Type de panneau", selection: panelBinding(allocation)) {
                     ForEach(references.panels) { panel in
                         Text(panel.functionTitle).tag(panel.id)
                     }
                 }
-                .labelsHidden()
-            }
             Divider()
-            HStack {
-                Text("Dimension")
-                Spacer()
-                Picker("Dimension", selection: formatBinding(allocation)) {
+                AtlantiquePicker("Dimension", selection: formatBinding(allocation)) {
                     ForEach(compatibleFormats(for: allocation.wrappedValue)) { panelFormat in
                         Text(panelFormat.title).tag(panelFormat.id)
                     }
                 }
-                .labelsHidden()
-            }
             Divider()
             numericRow("Surface attribuée", value: allocation.surface, unit: "m²")
             if allocations.count > 1 {
@@ -514,15 +520,15 @@ struct AlveolarPartitionConfiguratorView: View {
 
     private func sectionTitle(_ title: String) -> some View {
         Text(title)
-            .font(.title3.bold())
-            .foregroundStyle(.secondary)
+            .font(atlantique ? Atlantique.Typography.heading : .title3.bold())
+            .foregroundStyle(atlantique ? Color.white : .secondary)
     }
 
     private func formCard<Content: View>(@ViewBuilder content: () -> Content) -> some View {
         VStack(alignment: .leading, spacing: 14, content: content)
             .padding(16)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(.background, in: RoundedRectangle(cornerRadius: 22))
+            .background(.background, in: RoundedRectangle(cornerRadius: atlantique ? Atlantique.Metrics.cardRadius : 22))
     }
 
     private func numericRow(_ title: String, value: Binding<Double>, unit: String) -> some View {

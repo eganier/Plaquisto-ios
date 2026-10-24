@@ -111,10 +111,15 @@ struct WorkSelectionView: View {
 
 struct CombinedQuantityView: View {
     @ObservedObject private var stock = StockStore.shared
-    @State private var deductStock = false
-    @State private var reservingStock = false
-    @State private var reservationProductID:String?
+    @State private var editingSupply: ShoppingSupplyRow?
+    @State private var addingSupply = false
+    @State private var shoppingError: String?
     @State private var choosingSuppliesToExport = false
+    @State private var selectingSupplies = false
+    @State private var selectedSupplies: Set<String> = []
+    @State private var sharedList: StockShareDocument?
+    @State private var copiedList = false
+    @Environment(\.usesAtlantiqueDesign) private var atlantique
     @StateObject private var store = CeilingReferenceStore()
     @StateObject private var prices = SupplyPriceStore()
     @EnvironmentObject private var projectStore: ProjectStore
@@ -144,9 +149,27 @@ struct CombinedQuantityView: View {
     private func stockLines(_ summary:CombinedQuantitySummary) -> [StockTakeoffLine] {
         StockTakeoffLine.make(summary.supplies,stock:stock,projectID:stockProjectID)
     }
+    private var shoppingScope: String { works.map { $0.id.uuidString }.sorted().joined(separator: ":") }
+    private var shoppingEdits: ShoppingListEdits {
+        stockProjectID.flatMap { projectStore.project(id:$0)?.shoppingLists?[shoppingScope] } ?? .init()
+    }
+    private func shoppingRows(_ summary: CombinedQuantitySummary) -> [ShoppingSupplyRow] {
+        let lines=stockLines(summary)
+        var available=Dictionary(uniqueKeysWithValues:lines.map { ($0.id,stock.available($0.id,for:stockProjectID)) })
+        for product in shoppingEdits.products {
+            available[product.id]=stock.available(StockProduct.identity(name:product.name,unit:product.unit),for:stockProjectID)
+        }
+        return ShoppingSupplyRow.make(lines:lines,edits:shoppingEdits,available:available)
+    }
+    private func changeShopping(_ change: (inout ShoppingListEdits) -> Void) {
+        guard let id=stockProjectID else { return }
+        var next=shoppingEdits; change(&next)
+        do { try projectStore.saveShoppingList(projectID:id,scope:shoppingScope,edits:next) }
+        catch { shoppingError="La liste n’a pas pu être enregistrée. Réessayez." }
+    }
     private func pricedSupplies(_ summary:CombinedQuantitySummary) -> [CombinedSupply] {
-        guard isLab && deductStock else { return summary.supplies }
-        return stockLines(summary).map { .init(name:$0.product.name,quantity:$0.toBuy,unit:$0.product.unit) }
+        guard isLab else { return summary.supplies }
+        return shoppingRows(summary).map { .init(name:$0.originalName,quantity:$0.quantity,unit:$0.unit) }
     }
 
     var body: some View {
@@ -155,27 +178,20 @@ struct CombinedQuantityView: View {
                 ContentUnavailableView("Aucun ouvrage à quantifier", systemImage: "sum",
                     description: Text("Cette sélection ne contient aucun ouvrage. Le quantitatif est nul."))
             } else if store.isLoading {
-                ProgressView("Calcul du quantitatif…")
+                AtlantiqueLoadingView("Calcul du quantitatif…")
             } else if let error = store.error {
                 ContentUnavailableView("Référentiel indisponible", systemImage: "wifi.exclamationmark", description: Text(error))
             } else if let summary {
                 List {
+                    if atlantique {
+                        Text("\(currentWorks.count) ouvrage(s) · \(format(summary.totalArea)) m²")
+                            .font(Atlantique.Typography.caption).foregroundStyle(.white)
+                            .listRowBackground(Color.clear).listRowSeparator(.hidden)
+                    }
                     if let catalogue=store.catalogue {
                         SupplyCostSection(estimate:SupplyCostEstimator.estimate(pricedSupplies(summary),prices:prices.catalogue,catalogue:catalogue,day:SupplyCostEstimator.day()),loading:prices.isLoading,message:prices.message)
                     }
-                    if isLab {
-                        Section("Mon stock") {
-                            Toggle("Déduire le stock disponible",isOn:$deductStock).frame(minHeight:48)
-                            if let error = stock.loadError { Text(error).font(.caption).foregroundStyle(.red) }
-                            if deductStock {
-                                Text("Affichage des quantités à acheter. Inclut les réservations de ce chantier, exclut celles des autres. Aucune sortie de stock.").font(.caption).foregroundStyle(.secondary)
-                            }
-                            if stockProjectID != nil {
-                                Button { reservationProductID=nil; reservingStock = true } label: { Label("Réserver pour ce chantier",systemImage:"bookmark").font(.headline).frame(minHeight:48) }
-                                    .disabled(stock.loadError != nil || !stockLines(summary).contains { $0.fromStock > 0 })
-                            } else { Text("Ouvrez le quantitatif d’un seul chantier pour réserver.").font(.caption).foregroundStyle(.secondary) }
-                        }
-                    }
+                    if let error = stock.loadError { Text(error).font(.caption).foregroundStyle(.red) }
                     ForEach(currentWorks.filter { $0.jointTreatmentConfiguration != nil }) { work in
                         if let c = work.jointTreatmentConfiguration {
                             JointTreatmentDeductionSection(configuration: c, works: projectWorks.filter { $0.projectID == work.projectID })
@@ -187,112 +203,243 @@ struct CombinedQuantityView: View {
                     }
                     ForEach(currentWorks.filter { $0.automaticLayout != nil }) { work in
                         if let automatic = work.automaticLayout,
-                           automatic.configurationFingerprint == LayoutQuantityCalculator.configurationFingerprint(work) {
-                            Section("Calepinage automatique · " + work.name) {
-                                Text("Les besoins du plan complètent l’estimation du formulaire uniquement à la hausse. Marge incluse, sans ajout d’une seconde marge.").font(.footnote)
+                           automatic.configurationFingerprint == LayoutQuantityCalculator.configurationFingerprint(work),
+                           !atlantique || Atlantique.Book.showsAdvancedFormControls || !automatic.warnings.isEmpty {
+                            Section {
+                                if atlantique && Atlantique.Book.showsAdvancedFormControls {
+                                    DisclosureGroup("Calepinage automatique · " + work.name) {
+                                        Text("Les besoins du plan complètent l’estimation du formulaire uniquement à la hausse. Marge incluse, sans ajout d’une seconde marge.").font(.footnote)
+                                    }
+                                } else if !atlantique {
+                                    Text("Calepinage automatique · " + work.name).font(.headline)
+                                    Text("Les besoins du plan complètent l’estimation du formulaire uniquement à la hausse. Marge incluse, sans ajout d’une seconde marge.").font(.footnote)
+                                }
                                 ForEach(automatic.warnings, id: \.self) { Text($0).font(.footnote).foregroundStyle(.orange) }
                             }
                         }
                     }
                     let toReview = currentWorks.filter(\.surveySourceNeedsReview)
                     if !toReview.isEmpty {
-                        Section("Quantités à contrôler") {
+                        Section {
                             ForEach(toReview) { work in
                                 VStack(alignment: .leading, spacing: 6) {
                                     Text(work.name).font(.headline)
                                     SurveySourceReviewNotice(work: work)
                                 }
                             }
-                        }
+                        } header: { sectionHeading("Quantités à contrôler") }
                     }
-                    Section("Ouvrages inclus") {
+                    if !atlantique || Atlantique.Book.showsAdvancedFormControls { Section {
                         if isLab {
                             DisclosureGroup("\(currentWorks.count) ouvrage(s)") { includedWorks }
                         } else {
                             includedWorks
                         }
                         LabeledContent("Surface totale", value: format(summary.totalArea) + " m²").fontWeight(.semibold)
-                    }
-                    Section("Fournitures totales indicatives") {
-                        ForEach(currentWorks.filter { $0.layoutQuantityTakeoff != nil || ($0.hasSavedLayout && $0.automaticLayout == nil && ($0.type == .ceilingOnFurring || $0.type == .ceilingOnRailsAndStuds)) }) { work in
-                            if LayoutQuantityCalculator.applicable(work) != nil {
-                                if isLab {
-                                    DisclosureGroup("Calcul affiné · \(work.name)") { takeoffExplanation(work) }
-                                        .font(.subheadline)
-                                } else { takeoffExplanation(work) }
-                            } else {
-                                Label("\(work.name) : le calepinage n’est pas exploitable pour le calcul détaillé. L’estimation du formulaire est affichée.",systemImage:"exclamationmark.triangle")
-                                    .font(.caption).foregroundStyle(.orange)
-                            }
-                        }
-                        if isLab {
-                            ForEach(stockLines(summary)) { line in
-                                stockSupplyRow(line)
-                            }
-                        } else { ForEach(supplyRows(summary.supplies)) { row in
-                            if isLab {
-                                HStack(alignment: .firstTextBaseline, spacing: 20) {
-                                    Text(row.name).frame(maxWidth: .infinity, alignment: .leading)
-                                    Text(row.value).fontWeight(.bold).foregroundStyle(ContrastPalette.blue)
-                                        .multilineTextAlignment(.trailing)
-                                }.padding(.vertical, 8)
-                            } else { LabeledContent(row.name, value: row.value) }
-                        } }
-                    }
+                    } header: { sectionHeading("Ouvrages inclus") } }
+                    supplySection(summary)
                 }
                 .scrollContentBackground(isLab ? .hidden : .visible)
-                .background(isLab ? ContrastPalette.paper : Color(uiColor: .systemGroupedBackground))
+                .background(atlantique ? Atlantique.Palette.blue : isLab ? ContrastPalette.paper : Color(uiColor: .systemGroupedBackground))
                 .safeAreaInset(edge: .bottom) {
+                    if atlantique { exportActions(summary) } else {
                             Button { choosingSuppliesToExport = true } label: {
                                     Label("Partager / copier", systemImage: "square.and.arrow.up")
                                         .font(.headline).frame(maxWidth: .infinity, minHeight: 50)
                                         .foregroundStyle(.white).background(ContrastPalette.ink, in: RoundedRectangle(cornerRadius: 17))
                             }.padding().background(.regularMaterial)
+                    }
                 }
             }
         }
         .navigationTitle(title)
         .navigationBarTitleDisplayMode(.inline)
+        .atlantiquePage(title)
         .task { if !works.isEmpty && store.catalogue == nil { await store.load() } }
         .task { if !works.isEmpty { await prices.load() } }
-        .sheet(isPresented:$reservingStock) {
-            if let summary, let id = stockProjectID {
-                StockReservationView(lines:stockLines(summary).filter { reservationProductID == nil || $0.id == reservationProductID },
-                    projectID:id,projectName:projectStore.project(id:id)?.name ?? "Chantier",onReserved:{ deductStock=true })
+        .alert("Liste de courses",isPresented:Binding(get:{ shoppingError != nil },set:{ if !$0 { shoppingError=nil } })) {
+            Button("OK",role:.cancel) { shoppingError=nil }
+        } message: { Text(shoppingError ?? "") }
+        .sheet(item:$editingSupply) { row in
+            ShoppingSupplyEditor(row:row,targets:summary.map(shoppingRows) ?? [],onSave:{ name,quantity in
+                changeShopping { edits in
+                    var edit=edits.edits[row.id] ?? .init()
+                    edit.name=name == row.originalName ? nil : name
+                    // Quantity is entered before the optional stock deduction.
+                    edit.quantity=quantity == row.originalQuantity ? nil : quantity
+                    edits.edits[row.id]=edit
+                }
+            },onMerge:{ target,name,quantity in
+                changeShopping { edits in
+                    var edit=edits.edits[row.id] ?? .init()
+                    edit.name=name == row.originalName ? nil : name
+                    edit.quantity=quantity == row.originalQuantity ? nil : quantity
+                    edits.edits[row.id]=edit
+                    edits.merge(row.id,into:target)
+                }
+            })
+        }
+        .sheet(isPresented:$addingSupply) {
+            ShoppingProductEditor { product in
+                if let summary,let row=shoppingRows(summary).first(where:{
+                    !$0.replaced && StockProduct.identity(name:$0.originalName,unit:$0.unit) == StockProduct.identity(name:product.name,unit:product.unit)
+                }) {
+                    changeShopping { edits in
+                        var edit=edits.edits[row.id] ?? .init()
+                        edit.quantity=row.ownQuantity+product.quantity; edits.edits[row.id]=edit
+                    }
+                } else { changeShopping { $0.products.append(product) } }
             }
         }
         .sheet(isPresented:$choosingSuppliesToExport) {
             if let summary {
                 SupplyExportSelectionView(projects:projectStore.projects.filter { Set(works.map(\.projectID)).contains($0.id) },
-                    supplies:stockLines(summary).map { .init(name:$0.product.name,quantity:isLab && deductStock ? $0.toBuy : $0.required,unit:$0.product.unit) })
+                    supplies:isLab ? shoppingRows(summary).map { .init(name:$0.name,quantity:$0.quantity,unit:$0.unit) } : summary.supplies)
             }
         }
+        .sheet(item: $sharedList) { file in StockShareSheet(url: file.url) }
     }
 
-    private func stockSupplyRow(_ line:StockTakeoffLine) -> some View {
-        let available=stock.available(line.id,for:stockProjectID)
-        let reserved=stock.reservations.filter { $0.productID==line.id && $0.projectID==stockProjectID }.reduce(0) { $0+$1.quantity }
-        return VStack(alignment:.leading,spacing:7) {
-            HStack(alignment:.firstTextBaseline) {
-                Text(line.product.name).frame(maxWidth:.infinity,alignment:.leading)
-                Text("\(format(deductStock ? line.toBuy : line.required)) \(line.product.unit)").bold().foregroundStyle(ContrastPalette.blue)
+    private func supplySection(_ summary: CombinedQuantitySummary) -> some View {
+        Section {
+            ForEach(currentWorks.filter { $0.layoutQuantityTakeoff != nil || ($0.hasSavedLayout && $0.automaticLayout == nil && ($0.type == .ceilingOnFurring || $0.type == .ceilingOnRailsAndStuds)) }) { work in
+                if LayoutQuantityCalculator.applicable(work) != nil {
+                    if isLab && (!atlantique || Atlantique.Book.showsAdvancedFormControls) {
+                        DisclosureGroup("Calcul affiné · \(work.name)") { takeoffExplanation(work) }.font(.subheadline)
+                    } else if !isLab { takeoffExplanation(work) }
+                } else {
+                    Label("\(work.name) : le calepinage n’est pas exploitable pour le calcul détaillé. L’estimation du formulaire est affichée.", systemImage: "exclamationmark.triangle")
+                        .font(.caption).foregroundStyle(.orange)
+                }
             }
-            if deductStock && line.fromStock>0 {
-                Text("Besoin total : \(format(line.required)) \(line.product.unit)").font(.caption).foregroundStyle(.secondary)
+            if isLab {
+                if atlantique && selectingSupplies {
+                    Button(selectedSupplies.count == exportableRows(summary).count ? "Tout désélectionner" : "Tout sélectionner") {
+                        selectedSupplies = selectedSupplies.count == exportableRows(summary).count ? [] : Set(exportableRows(summary).map(\.id))
+                        copiedList = false
+                    }.frame(minHeight: 44)
+                }
+                ForEach(shoppingRows(summary)) { line in
+                    if atlantique && selectingSupplies { selectableSupply(line) }
+                    else { shoppingSupplyRow(line) }
+                }
+                if stockProjectID != nil && !selectingSupplies {
+                    Button { addingSupply = true } label: {
+                        Label("Ajouter un produit", systemImage: "plus.circle").frame(minHeight: 48)
+                    }
+                }
+            } else {
+                ForEach(supplyRows(summary.supplies)) { row in LabeledContent(row.name, value: row.value) }
             }
-            if available>0 {
+        } header: { sectionHeading(atlantique ? "Fournitures" : "Fournitures totales indicatives") }
+    }
+
+    private func selectableSupply(_ line: ShoppingSupplyRow) -> some View {
+        Button {
+            if !selectedSupplies.insert(line.id).inserted { selectedSupplies.remove(line.id) }
+            copiedList = false
+        } label: {
+            HStack(spacing: 12) {
+                Image(systemName: selectedSupplies.contains(line.id) ? "checkmark.circle.fill" : "circle")
+                    .font(.title2).foregroundStyle(Atlantique.Palette.actionInk)
+                VStack(alignment: .leading, spacing: 7) {
+                    HStack(alignment: .firstTextBaseline) {
+                        Text(line.name).frame(maxWidth: .infinity, alignment: .leading)
+                        Text("\(format(line.quantity)) \(line.unit)").bold().foregroundStyle(Atlantique.Palette.blue)
+                    }.frame(minHeight: 44)
+                    if line.modified {
+                        Text("Initial : \(line.originalName) · \(format(line.originalQuantity)) \(line.unit)")
+                            .font(Atlantique.Typography.caption).foregroundStyle(.secondary)
+                    }
+                }.foregroundStyle(Atlantique.Palette.ink).padding(.vertical, 8)
+            }
+        }.buttonStyle(.plain).disabled(!line.quantity.isFinite || line.quantity <= 0)
+            .accessibilityAddTraits(selectedSupplies.contains(line.id) ? .isSelected : [])
+    }
+
+    private func sectionHeading(_ title: String) -> some View {
+        Text(title).foregroundStyle(atlantique ? Color.white.opacity(0.9) : Color.secondary)
+    }
+
+    private func exportableRows(_ summary: CombinedQuantitySummary) -> [ShoppingSupplyRow] {
+        shoppingRows(summary).filter { $0.quantity.isFinite && $0.quantity > 0 }
+    }
+    private func exportText(_ summary: CombinedQuantitySummary) -> String {
+        let supplies = QuantityTextExport.shoppingSelection(shoppingRows(summary), selected: selectedSupplies)
+        return QuantityTextExport.text(projects: projectStore.projects.filter { Set(works.map(\.projectID)).contains($0.id) },
+                                       supplies: supplies, selected: Set(supplies.map(\.id)))
+    }
+    private func exportActions(_ summary: CombinedQuantitySummary) -> some View {
+        VStack(spacing: 8) {
+            if selectingSupplies {
                 HStack {
-                    Text("\(format(available)) \(line.product.unit) en stock").foregroundStyle(.orange)
+                    Text("\(exportableRows(summary).filter { selectedSupplies.contains($0.id) }.count) fourniture(s)")
+                        .font(Atlantique.Typography.caption).foregroundStyle(.white)
+                    Spacer()
+                    Button("Annuler") { selectingSupplies = false; copiedList = false }
+                        .foregroundStyle(.white).frame(minHeight: 44)
+                }
+                HStack(spacing: 10) {
+                    Button {
+                        do {
+                            let url = FileManager.default.temporaryDirectory.appendingPathComponent("Quantitatif-\(UUID().uuidString.prefix(8)).txt")
+                            try exportText(summary).write(to: url, atomically: true, encoding: .utf8)
+                            sharedList = .init(url: url)
+                        } catch { shoppingError = "Impossible de préparer le partage : \(error.localizedDescription)" }
+                    } label: { Label("Partager", systemImage: "square.and.arrow.up") }
+                        .buttonStyle(AtlantiqueButtonStyle(kind: .primary))
+                    Button {
+                        UIPasteboard.general.string = exportText(summary); copiedList = true
+                    } label: { Label(copiedList ? "Copié" : "Copier le texte", systemImage: copiedList ? "checkmark" : "doc.on.doc") }
+                        .buttonStyle(AtlantiqueButtonStyle(kind: .secondary))
+                }.disabled(!exportableRows(summary).contains { selectedSupplies.contains($0.id) })
+            } else {
+                Button {
+                    selectedSupplies = Set(exportableRows(summary).map(\.id)); selectingSupplies = true; copiedList = false
+                } label: { Label("Partager / copier", systemImage: "square.and.arrow.up") }
+                    .buttonStyle(AtlantiqueButtonStyle(kind: .primary))
+                    .disabled(exportableRows(summary).isEmpty)
+                    .accessibilityIdentifier("quantity.selectForExport")
+            }
+        }.padding(.horizontal, 16).padding(.vertical, 8).background(Atlantique.Palette.blue)
+    }
+
+    private func shoppingSupplyRow(_ line:ShoppingSupplyRow) -> some View {
+        return VStack(alignment:.leading,spacing:7) {
+            Button { editingSupply=line } label: {
+                HStack(alignment:.firstTextBaseline) {
+                    Text(line.name).frame(maxWidth:.infinity,alignment:.leading).foregroundStyle(line.replaced ? Color.secondary : atlantique ? Atlantique.Palette.ink : Color.primary)
+                    Text("\(format(line.quantity)) \(line.unit)").bold().foregroundStyle(line.replaced ? Color.secondary : atlantique ? Atlantique.Palette.blue : ContrastPalette.blue)
+                }.frame(minHeight:44)
+            }.buttonStyle(.plain).disabled(stockProjectID == nil || line.replaced)
+            if line.modified {
+                Text("Initial : \(line.originalName) · \(format(line.originalQuantity)) \(line.unit)")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            if let destination=line.destination {
+                Text("Regroupé avec \(destination)").font(.caption).foregroundStyle(.secondary)
+            }
+            if line.available>0 && !line.replaced {
+                HStack {
+                    Text("\(format(line.available)) \(line.unit) en stock").foregroundStyle(.orange)
                     Spacer(minLength:8)
                     if stockProjectID != nil {
-                        Button(reserved>0 ? "Modifier" : "Réserver") {
-                            reservationProductID=line.id; reservingStock=true
+                        Button(line.deductStock ? "Remettre" : "Déduire") {
+                            changeShopping { edits in
+                                var edit=edits.edits[line.id] ?? .init(); edit.deductStock.toggle(); edits.edits[line.id]=edit
+                            }
                         }.buttonStyle(.borderless).frame(minHeight:44).disabled(stock.loadError != nil)
                     }
                 }.font(.subheadline)
             }
-            if reserved>0 { Text("\(format(reserved)) \(line.product.unit) réservées à ce chantier").font(.caption).foregroundStyle(.orange) }
-        }.padding(.vertical,8)
+            if line.deductStock && line.stockDeduction>0 {
+                Text("−\(format(line.stockDeduction)) \(line.unit) à acheter · stock inchangé").font(.caption).foregroundStyle(.orange)
+            }
+        }.padding(.vertical,8).swipeActions(edge:.trailing,allowsFullSwipe:false) {
+            if line.modified {
+                Button("Réinitialiser",systemImage:"arrow.counterclockwise") { changeShopping { $0.reset(line.id) } }.tint(.orange)
+            }
+        }
     }
 
     private func format(_ value: Double) -> String { value.formatted(.number.precision(.fractionLength(0...2))) }
@@ -318,7 +465,146 @@ struct CombinedQuantityView: View {
     }
 }
 
+struct ShoppingSupplyRow: Identifiable {
+    var id: String
+    var originalName: String
+    var name: String
+    var originalQuantity: Double
+    var ownQuantity: Double
+    var quantity: Double
+    var unit: String
+    var available: Double
+    var deductStock: Bool
+    var stockDeduction: Double = 0
+    var modified: Bool
+    var destination: String? = nil
+    var replaced: Bool { destination != nil }
+    var received: Double = 0
+
+    static func make(lines:[StockTakeoffLine],edits:ShoppingListEdits,available:[String:Double] = [:]) -> [Self] {
+        var rows=lines.map { line in
+            Self(id:line.id,originalName:line.product.name,name:line.product.name,originalQuantity:line.required,
+                 ownQuantity:line.required,quantity:line.required,unit:line.product.unit,available:line.fromStock,
+                 deductStock:false,modified:false)
+        }
+        rows += edits.products.map { product in
+            Self(id:product.id,originalName:product.name,name:product.name,originalQuantity:product.quantity,
+                 ownQuantity:product.quantity,quantity:product.quantity,unit:product.unit,available:0,
+                 deductStock:false,modified:true)
+        }
+        for i in rows.indices {
+            if let value=available[rows[i].id],value.isFinite { rows[i].available=max(0,value) }
+            if let edit=edits.edits[rows[i].id] {
+                rows[i].name=edit.name ?? rows[i].originalName
+                if let quantity=edit.quantity, quantity.isFinite, quantity>=0 { rows[i].ownQuantity=quantity }
+                rows[i].quantity=rows[i].ownQuantity
+                rows[i].deductStock=edit.deductStock
+                rows[i].modified = rows[i].modified || edit.name != nil || edit.quantity != nil || edit.deductStock
+            }
+        }
+        let index=Dictionary(uniqueKeysWithValues:rows.enumerated().map { ($0.element.id,$0.offset) })
+        for (source,target) in edits.replacements {
+            // If a source or destination disappears after recalculation, retain the
+            // remaining calculated row. Never lose supplies to a stale mapping.
+            guard let s=index[source],let t=index[target],s != t,
+                  edits.replacements[target] == nil,rows[s].unit == rows[t].unit else { continue }
+            rows[t].received += rows[s].ownQuantity
+            rows[s].destination=rows[t].name
+            rows[s].quantity=0
+            rows[s].modified=true; rows[t].modified=true
+        }
+        for i in rows.indices where !rows[i].replaced {
+            rows[i].quantity += rows[i].received
+            if rows[i].deductStock {
+                rows[i].stockDeduction=min(rows[i].quantity,rows[i].available)
+                rows[i].quantity -= rows[i].stockDeduction
+            }
+        }
+        return rows
+    }
+}
+
+private struct ShoppingSupplyEditor: View {
+    let row: ShoppingSupplyRow
+    let targets: [ShoppingSupplyRow]
+    let onSave: (String,Double) -> Void
+    let onMerge: (String,String,Double) -> Void
+    @Environment(\.dismiss) private var dismiss
+    @State private var name: String
+    @State private var quantity: String
+    @State private var mergeTarget: String?
+    init(row:ShoppingSupplyRow,targets:[ShoppingSupplyRow],onSave:@escaping (String,Double)->Void,onMerge:@escaping(String,String,Double)->Void) {
+        self.row=row; self.targets=targets; self.onSave=onSave; self.onMerge=onMerge
+        _name=State(initialValue:row.name)
+        _quantity=State(initialValue:StockQuantity.text(row.ownQuantity))
+    }
+    private var amount: Double? { Double(quantity.replacingOccurrences(of:"\u{202f}",with:"").replacingOccurrences(of:" ",with:"").replacingOccurrences(of:",",with:".")) }
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("Liste à acheter") {
+                    TextField("Référence",text:$name)
+                    HStack { TextField("Quantité",text:$quantity).keyboardType(.decimalPad); Text(row.unit) }
+                    Text("Initial : \(StockQuantity.text(row.originalQuantity)) \(row.unit)").font(.caption).foregroundStyle(.secondary)
+                    if row.received>0 { Text("+ \(StockQuantity.text(row.received)) \(row.unit) provenant des références regroupées.").font(.caption) }
+                }
+                Section {
+                    ForEach(targets.filter { $0.id != row.id && !$0.replaced && $0.unit == row.unit }) { target in
+                        Button(target.name) { mergeTarget=target.id }.frame(minHeight:44)
+                            .disabled(name.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty || amount == nil || !(amount?.isFinite ?? false) || (amount ?? -1)<0)
+                    }
+                } header: { Text("Regrouper avec…") }
+                  footer: { Text("La quantité est transférée à la référence choisie. Glissez une des lignes vers la gauche pour annuler le regroupement.") }
+            }
+            .navigationTitle("Modifier la fourniture").navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement:.cancellationAction) { Button("Annuler") { dismiss() } }
+                ToolbarItem(placement:.confirmationAction) {
+                    Button("Enregistrer") { if let amount { onSave(name.trimmingCharacters(in:.whitespacesAndNewlines),amount); dismiss() } }
+                        .disabled(name.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty || amount == nil || !(amount?.isFinite ?? false) || (amount ?? -1)<0)
+                }
+            }
+            .confirmationDialog("Regrouper les fournitures ?",isPresented:Binding(get:{mergeTarget != nil},set:{ if !$0 {mergeTarget=nil} }),titleVisibility:.visible) {
+                Button("Regrouper") {
+                    if let mergeTarget,let amount { onMerge(mergeTarget,name.trimmingCharacters(in:.whitespacesAndNewlines),amount); dismiss() }
+                }
+            } message: { Text("La ligne d’origine restera visible avec une quantité de zéro. Le calcul des ouvrages ne sera pas modifié.") }
+        }
+    }
+}
+
+private struct ShoppingProductEditor: View {
+    let onSave: (ShoppingListEdits.Product) -> Void
+    @Environment(\.dismiss) private var dismiss
+    @State private var name=""
+    @State private var quantity="1"
+    @State private var unit="unité"
+    private var amount: Double? { Double(quantity.replacingOccurrences(of:",",with:".")) }
+    var body: some View {
+        NavigationStack {
+            Form {
+                TextField("Nom du produit",text:$name)
+                TextField("Quantité",text:$quantity).keyboardType(.decimalPad)
+                Picker("Unité",selection:$unit) { ForEach(["unité","ml","m²","kg","l"],id:\.self) { Text($0) } }
+            }.navigationTitle("Ajouter un produit").navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement:.cancellationAction) { Button("Annuler") { dismiss() } }
+                    ToolbarItem(placement:.confirmationAction) {
+                        Button("Ajouter") {
+                            if let amount { onSave(.init(name:name.trimmingCharacters(in:.whitespacesAndNewlines),quantity:amount,unit:unit)); dismiss() }
+                        }.disabled(name.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty || amount == nil || !(amount?.isFinite ?? false) || (amount ?? -1)<0)
+                    }
+                }
+        }
+    }
+}
+
 enum QuantityTextExport {
+    /// Keep selection tied to source identities even after a row is renamed or its stock deduction changes.
+    static func shoppingSelection(_ rows: [ShoppingSupplyRow], selected: Set<String>) -> [CombinedSupply] {
+        rows.filter { selected.contains($0.id) && $0.quantity.isFinite && $0.quantity > 0 }
+            .map { .init(name: $0.name, quantity: $0.quantity, unit: $0.unit) }
+    }
     static func eligible(_ supplies:[CombinedSupply]) -> [CombinedSupply] {
         supplies.filter { $0.quantity.isFinite && $0.quantity>0 }
     }
@@ -586,7 +872,7 @@ enum CombinedQuantityCalculator {
             let prefix = configuration.layers == 1 ? "simple" : "double"
             let key = "\(prefix)_0\(Int((configuration.selectedSpacing * 100).rounded()))"
             let fixingRatio = catalogue.quantitatifs.first(where: { $0.id == "QTY-FIXATION" })?.data["values"]?.object?[key]?.number ?? 0
-            let estimatedFixings=fixingRatio*area+LayoutQuantityCalculator.estimatedAdditionalEndHangers(configuration)
+            let estimatedFixings=fixingRatio*area*(1.2 / max(0.01, configuration.suspensionSpacingMeters ?? 1.2))+LayoutQuantityCalculator.estimatedAdditionalEndHangers(configuration)
             let fixingCount = Double(takeoff?.hangers ?? 0) + estimatedFixings * remainingFraming
 
             for item in catalogue.quantitatifs where !["QTY-FIXATION", "QTY-PLAQUE"].contains(item.id) {
@@ -611,7 +897,7 @@ enum CombinedQuantityCalculator {
                 }
             }
             if let system = catalogue.systemesFixation.first(where: { $0.id == configuration.fixingSystemID }) {
-                for component in CeilingHangerComponents.resolve(for: system, plenumCM: configuration.plenum, catalogue: catalogue) {
+                for component in CeilingHangerComponents.resolve(for: system, plenumCM: configuration.plenum, catalogue: catalogue, modelID: configuration.hangerModelID) {
                     guard let object = component.object,
                           let name = object["name"]?.string,
                           let ratio = object["quantity"]?.number,
@@ -683,6 +969,7 @@ extension WorkItem {
             return configuration.enteredArea ?? configuration.length * configuration.width
         case .ceilingOnRailsAndStuds: return railStudCeilingConfiguration?.effectiveArea ?? 0
         case .modularCeiling: return modularCeilingConfiguration?.area ?? 0
+        case .frenchCeiling: return 0 // Beta placeholder: no configuration or quantities yet.
         case .peripheralLiningStuds: return doublageConfiguration?.area ?? 0
         case .distributionPartition: return cloisonDistributionConfiguration?.area ?? 0
         case .alveolarPartition: return alveolarPartitionConfiguration?.area ?? 0
@@ -699,6 +986,33 @@ extension WorkItem {
 }
 
 enum WorkTechnicalSummary {
+    /// Detail-card presentation only: the compact export summary remains unchanged.
+    static func detailRows(for work: WorkItem, catalogue: WorkSummaryCatalogue) -> [String] {
+        var rows = Array(text(for: work, catalogue: catalogue).components(separatedBy: " • ").dropFirst())
+        func cm(_ meters: Double) -> String {
+            (meters * 100).formatted(.number.locale(Locale(identifier: "fr_FR")).precision(.fractionLength(0...1))) + " cm"
+        }
+        func skins(_ count: Int) { rows.append(count == 1 ? "Simple peau" : "\(count) peaux") }
+        switch work.payload {
+        case .ceiling(let c):
+            rows.append("Entraxe des fourrures · \(cm(c.selectedSpacing))")
+            rows.append("Entraxe des suspentes · \(cm(c.suspensionSpacingMeters ?? 1.2))")
+            skins(c.layers)
+        case .distributionPartition(let c):
+            rows.append("Montants \(c.doubledStuds ? "doublés" : "simples") · entraxe \(cm(c.spacing))")
+            rows.append(c.layers == 1 ? "Simple peau sur chaque face" : "\(c.layers) peaux sur chaque face")
+        case .peripheralLining(let c):
+            rows.append("Montants \(c.doubledStuds ? "doublés" : "simples") · entraxe \(cm(c.spacing))")
+            skins(c.layers)
+        case .furringLining(let c):
+            if let spacing = c.furringSpacing { rows.append("Entraxe des fourrures · \(cm(spacing))") }
+            if let title = c.intermediateSupportTitle, !title.isEmpty { rows.append(title) }
+            skins(c.layers)
+        default: break
+        }
+        return rows
+    }
+
     static func text(for work: WorkItem, catalogue: WorkSummaryCatalogue) -> String {
         var parts = [work.type.title]
         var facingIDs: [String] = []

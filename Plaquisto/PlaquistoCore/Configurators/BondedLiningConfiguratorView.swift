@@ -1,6 +1,14 @@
 import SwiftUI
 
+enum BondedFormSteps {
+    static let compact = [1, 2, 5, 6]
+    static func displayed(_ step: Int) -> Int { step >= 5 ? step - 2 : min(step, 2) }
+    static func next(_ step: Int) -> Int { (2...4).contains(step) ? 5 : step + 1 }
+    static func previous(_ step: Int) -> Int { step == 5 ? 2 : (2...4).contains(step) ? 1 : step - 1 }
+}
+
 struct BondedLiningConfiguratorView: View {
+    @Environment(\.usesAtlantiqueDesign) private var atlantique
     private enum GeometryMode: String, CaseIterable, Identifiable { case length = "Longueur", surface = "Surface totale"; var id: Self { self } }
     private enum RevealMode: String, CaseIterable, Identifiable { case none = "Aucune tapée", required = "Tapée à respecter"; var id: Self { self } }
 
@@ -26,7 +34,7 @@ struct BondedLiningConfiguratorView: View {
     @State private var showPanelHeightWarning = false
     @State private var configurationExpanded = false
 
-    private let green = Color(red: 0.12, green: 0.38, blue: 0.29)
+    private var green: Color { atlantique ? Atlantique.Palette.actionInk : Color(red: 0.12, green: 0.38, blue: 0.29) }
     private let stepNames = ["Dimensions", "Parement", "Isolation et tapée", "Format", "Bandes à joint", "Résultat"]
 
     init(
@@ -68,7 +76,20 @@ struct BondedLiningConfiguratorView: View {
     private var thermalResistance: Double { references.resistance(lambda: selectedLambda, thickness: selectedThicknessMM) ?? 0 }
     private var recommendedThicknessMM: Int { max(0, selectedRevealMM - references.revealOffsetMM) }
     private var panelIsShort: Bool { Double(selectedHeightMM) / 1000 < height }
+    private var bookComposition: Bool { atlantique && !Atlantique.Book.showsAdvancedFormControls && allocations.count == 1 }
+    private var compositionStep: Bool { bookComposition && (2...4).contains(step) }
+    private var displayedStep: Int { bookComposition ? BondedFormSteps.displayed(step) : step }
+    private var nextStep: Int { bookComposition ? BondedFormSteps.next(step) : step + 1 }
+    private var bookStep: Binding<Int> {
+        Binding(get: { displayedStep }, set: { if (1...4).contains($0) { step = BondedFormSteps.compact[$0 - 1] } })
+    }
     private var canContinue: Bool {
+        (compositionStep ? (2...4).allSatisfy(isStepValid) : isStepValid(step)) && (step != 5 || allStepsAreValid)
+    }
+
+    private var allStepsAreValid: Bool { (1...5).allSatisfy(isStepValid) }
+
+    private func isStepValid(_ step: Int) -> Bool {
         switch step {
         case 1: height > 0 && (geometryMode == .length ? enteredLength > 0 : enteredSurface > 0)
         case 2: !allocations.isEmpty && allocations.allSatisfy { $0.surface > 0 } && abs(allocatedArea - actualArea) < 0.01 && !availableLambdas.isEmpty
@@ -80,7 +101,7 @@ struct BondedLiningConfiguratorView: View {
 
     var body: some View {
         Group {
-            if references.isLoading { ProgressView("Synchronisation avec Plaquisto Admin…") }
+            if references.isLoading { AtlantiqueLoadingView("Synchronisation avec Plaquisto Admin…") }
             else if let error = references.error {
                 ContentUnavailableView {
                     Label("Données indisponibles", systemImage: "wifi.exclamationmark")
@@ -88,6 +109,7 @@ struct BondedLiningConfiguratorView: View {
             } else { wizard }
         }
         .tint(green)
+        .atlantiqueFormPage(compositionStep ? "Complexe collé" : stepNames[min(max(0, step - 1), stepNames.count - 1)])
         .configurationEntry(in:1...5) { step = $0 }
         .onChange(of: references.references) { _, _ in normalizeAll() }
         .onChange(of: height) { _, _ in normalizeHeightForWork() }
@@ -103,15 +125,15 @@ struct BondedLiningConfiguratorView: View {
         }
         .onChange(of: selectedRevealMM) { _, _ in applyRecommendedThickness() }
         .toolbar {
-            if isEditing {
+            if isEditing || atlantique {
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Enregistrer") { onSave(configuration) }
-                }
+                    Button("Enregistrer") { onSave(configuration) }.atlantiqueToolbarAction(primary: true).disabled(!allStepsAreValid)
+                }.atlantiqueToolbarBackground(atlantique)
             }
         }
         .alert("Hauteur de panneau insuffisante", isPresented: $showPanelHeightWarning) {
             Button("Revenir au choix", role: .cancel) {}
-            Button("Continuer malgré tout") { step += 1 }
+            Button("Continuer malgré tout") { step = nextStep }
         } message: {
             Text("La hauteur du panneau est inférieure à la hauteur sous plafond de \(format(height, "m")). Des raccords seront nécessaires. Confirmez-vous ce choix ?")
         }
@@ -124,36 +146,47 @@ struct BondedLiningConfiguratorView: View {
                 VStack(alignment: .leading, spacing: 18) {
                     switch step {
                     case 1: dimensionsStep
-                    case 2: facingStep
-                    case 3: thermalStep
-                    case 4: formatStep
+                    case 2: if bookComposition { bookCompositionStep } else { facingStep }
+                    case 3: if bookComposition { bookCompositionStep } else { thermalStep }
+                    case 4: if bookComposition { bookCompositionStep } else { formatStep }
                     case 5: jointsStep
                     default: resultStep
                     }
                 }.padding(.horizontal, 20).padding(.vertical, 18)
             }
+            .id(step)
             footer
-        }.background(Color(.systemGroupedBackground))
+        }.background(atlantique ? Atlantique.Palette.blue : Color(.systemGroupedBackground))
     }
 
-    private var header: some View {
+    @ViewBuilder private var header: some View {
+        if atlantique {
+            if showsCloseButton { Button("Fermer", action: onClose).atlantiqueActionStyle(.secondary).padding(.horizontal, 20) }
+            AtlantiqueWizardHeader(title: "Doublage en complexe collé", step: displayedStep, total: bookComposition ? 4 : 6)
+        } else {
         VStack(alignment: .leading, spacing: 10) {
-            if showsCloseButton { Button("Fermer", action: onClose).buttonStyle(.bordered) }
-            Text("OUVRAGE").font(.caption.bold()).foregroundStyle(.secondary)
-            Text("Doublage périphérique en complexe collé").font(.title2.bold())
+            if showsCloseButton { Button("Fermer", action: onClose).atlantiqueActionStyle(.secondary) }
+            Text(atlantique ? "" : "OUVRAGE").font(.caption.bold()).foregroundStyle(atlantique ? Color.white.opacity(0.85) : .secondary)
+            Text("Doublage périphérique en complexe collé").font(atlantique ? Atlantique.Typography.caption : .title2.bold()).foregroundStyle(atlantique ? Color.white : .primary)
             Label("Données synchronisées avec Plaquisto Admin", systemImage: "icloud.and.arrow.down").font(.caption).foregroundStyle(.green)
             ProgressView(value: Double(step), total: 6)
-            Text("Étape \(step) sur 6 · \(stepNames[step - 1])").font(.caption).foregroundStyle(.secondary)
-        }.padding(.horizontal, 20).padding(.top, 12).padding(.bottom, 14).frame(maxWidth: .infinity, alignment: .leading).background(.background)
+            Text("Étape \(step) sur 6 · \(stepNames[step - 1])").font(.caption).foregroundStyle(atlantique ? Color.white.opacity(0.85) : .secondary)
+        }.padding(.horizontal, 20).padding(.top, 12).padding(.bottom, 14).frame(maxWidth: .infinity, alignment: .leading).background(atlantique ? Atlantique.Palette.blue : Color(.systemBackground))
     }
 
+        }
     private var footer: some View {
         HStack {
-            if step > 1 { Button("Retour") { step -= 1 }.buttonStyle(.borderedProminent).tint(green.opacity(0.18)).foregroundStyle(green) }
+            if step > 1 {
+                Button("Retour") { step = bookComposition ? BondedFormSteps.previous(step) : step - 1 }.atlantiqueActionStyle(.secondary)
+                    .frame(maxWidth: atlantique ? 112 : nil)
+                    .formStepMenu(titles: bookComposition ? ["Dimensions", "Complexe collé", "Bandes à joint", "Résultat"] : stepNames,
+                                  selection: bookComposition ? bookStep : $step, firstStep: 1, canShowResult: allStepsAreValid)
+            }
             Spacer()
-            if step < 6 { Button("Continuer") { continueForm() }.buttonStyle(.borderedProminent).disabled(!canContinue) }
-            else { Button("Enregistrer") { onSave(configuration) }.buttonStyle(.borderedProminent) }
-        }.padding(20).background(.background)
+            if step < 6 { Button("Continuer") { continueForm() }.atlantiqueActionStyle().disabled(!canContinue) }
+            else { Button("Enregistrer") { onSave(configuration) }.atlantiqueToolbarAction(primary: true).disabled(!allStepsAreValid).atlantiqueActionStyle() }
+        }.padding(20).background(atlantique ? Atlantique.Palette.blue : Color(.systemBackground))
     }
 
     private var dimensionsStep: some View {
@@ -168,14 +201,84 @@ struct BondedLiningConfiguratorView: View {
                 else { BondedDecimalRow("Surface totale", value: $enteredSurface, unit: "m²") }
             }
             card { LabeledContent(geometryMode == .length ? "Surface calculée" : "Longueur calculée", value: format(geometryMode == .length ? actualArea : actualLength, geometryMode == .length ? "m²" : "m")) }
-            Text("La hauteur sous plafond est obligatoire. Renseignez ensuite soit la longueur du doublage, soit sa surface totale.").font(.footnote).foregroundStyle(.secondary)
+            if !atlantique || Atlantique.Book.showsAdvancedFormControls {
+                Text("La hauteur sous plafond est obligatoire. Renseignez ensuite soit la longueur du doublage, soit sa surface totale.").font(.footnote).foregroundStyle(atlantique ? Color.white : .secondary)
+            }
+        }
+    }
+
+    private var bookFormats: [String] {
+        availableWidths.flatMap { width in
+            references.commonHeights(for: selectedFacings, lambda: selectedLambda, thickness: selectedThicknessMM, width: width)
+                .map { "\(width)x\($0)" }
+        }
+    }
+    private var bookFormat: Binding<String> {
+        Binding(get: { "\(selectedWidthMM)x\(selectedHeightMM)" }, set: { value in
+            guard bookFormats.contains(value) else { return }
+            let dimensions = value.split(separator: "x").compactMap { Int($0) }
+            guard dimensions.count == 2 else { return }
+            selectedWidthMM = dimensions[0]; selectedHeightMM = dimensions[1]
+        })
+    }
+    private var bookCompositionStep: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            card {
+                Text("Isolant").font(Atlantique.Typography.button)
+                Divider()
+                VStack(alignment: .leading, spacing: 5) {
+                    Text("Type d’isolant").font(.caption).foregroundStyle(.secondary)
+                    Text("Polystyrène expansé").font(Atlantique.Typography.button)
+                }
+                Divider()
+                AtlantiquePicker("Lambda", selection: $selectedLambda) {
+                    ForEach(availableLambdas, id: \.self) { Text("λ \($0.formatted(.number.precision(.fractionLength(3)))) W/(m·K)").tag($0) }
+                }
+                Divider()
+                AtlantiquePicker("Épaisseur", selection: $selectedThicknessMM) {
+                    ForEach(availableThicknesses, id: \.self) { Text("\($0) mm").tag($0) }
+                }
+                Divider()
+                LabeledContent("Résistance thermique", value: "\(thermalResistance.formatted(.number.precision(.fractionLength(2)))) m²·K/W").font(.caption)
+            }
+            card {
+                Text("Parement 1").font(Atlantique.Typography.button)
+                Divider()
+                VStack(alignment: .leading, spacing: 5) {
+                    Text("Type de plaque").font(.caption).foregroundStyle(.secondary)
+                    Text("BA13").font(Atlantique.Typography.button)
+                }
+                Divider()
+                if let allocation = $allocations.first {
+                    AtlantiquePicker("Fonction", selection: allocation.facing) {
+                        ForEach(availableFacings(for: allocation.wrappedValue.id)) { Text($0.title).tag($0) }
+                    }
+                }
+                Divider()
+                AtlantiquePicker("Dimension", selection: bookFormat) {
+                    ForEach(bookFormats, id: \.self) { value in
+                        Text(value.split(separator: "x").compactMap { Double($0) }.map { ($0 / 10).formatted() }.joined(separator: " × ") + " cm").tag(value)
+                    }
+                }
+            }
+            // A saved reveal constraint remains visible and editable. It must
+            // never be silently dropped merely because the book omits it.
+            if revealMode == .required {
+                card {
+                    AtlantiquePicker("Tapée de menuiserie", selection: $selectedRevealMM) {
+                        ForEach(references.revealDepthsMM, id: \.self) { Text("\($0) mm").tag($0) }
+                    }
+                }
+                if selectedThicknessMM != recommendedThicknessMM { warning("Cette épaisseur ne correspond pas à la tapée enregistrée de \(selectedRevealMM) mm.") }
+            }
+            if panelIsShort { warning("La hauteur sélectionnée est inférieure à la hauteur sous plafond de \(format(height, "m")).") }
         }
     }
 
     private var facingStep: some View {
         VStack(alignment: .leading, spacing: 18) {
             sectionTitle("Parement")
-            Text("Répartissez la surface entre les complexes nécessaires.").font(.footnote).foregroundStyle(.secondary)
+            Text("Répartissez la surface entre les complexes nécessaires.").font(.footnote).foregroundStyle(atlantique ? Color.white : .secondary)
             ForEach($allocations) { $allocation in
                 card {
                     LabeledContent("Type de parement") {
@@ -189,7 +292,7 @@ struct BondedLiningConfiguratorView: View {
                     }
                 }
             }
-            if allocations.count < references.facingKinds.count { Button("Ajouter un autre type de parement") { addFacing() }.foregroundStyle(.green) }
+            if allocations.count < references.facingKinds.count { Button("Ajouter un autre type de parement") { addFacing() }.foregroundStyle(atlantique ? Color.white : .green) }
             Text(allocationStatus).font(.footnote).foregroundStyle(abs(allocatedArea - actualArea) < 0.01 ? .green : .orange)
         }
     }
@@ -238,6 +341,9 @@ struct BondedLiningConfiguratorView: View {
         VStack(alignment: .leading, spacing: 18) {
             sectionTitle("Quantitatif indicatif")
             card { ForEach(configuration.quantities) { item in LabeledContent(item.name, value: format(item.quantity, item.unit)); if item.id != configuration.quantities.last?.id { Divider() } } }
+            if atlantique && !Atlantique.Book.showsAdvancedFormControls {
+                AtlantiqueConfigurationEstimate(type: .peripheralLiningBonded, configuration: .bondedLining(configuration))
+            } else {
             DisclosureGroup(isExpanded: $configurationExpanded) {
                 card {
                     editableConfigurationRow("Dimensions", value: "\(format(actualLength, "m")) × \(format(height, "m"))", targetStep: 1); Divider()
@@ -249,6 +355,7 @@ struct BondedLiningConfiguratorView: View {
                     editableConfigurationRow("Format", value: "\(selectedWidthMM) × \(selectedHeightMM) mm", targetStep: 4)
                 }.padding(.top, 8)
             } label: { sectionTitle("Configuration retenue") }
+            }
         }
     }
 
@@ -324,12 +431,12 @@ struct BondedLiningConfiguratorView: View {
     }
     private func continueForm() {
         if step == 1, allocations.count == 1, allocations[0].surface == 0 { allocations[0].surface = actualArea }
-        if step == 4 && panelIsShort { showPanelHeightWarning = true } else { step += 1 }
+        if (step == 4 || compositionStep) && panelIsShort { showPanelHeightWarning = true } else { step = nextStep }
     }
     private func thicknessLabel(_ value: Int) -> String { "\(value) mm — R = \((references.resistance(lambda: selectedLambda, thickness: value) ?? 0).formatted(.number.precision(.fractionLength(2))))" }
-    private func sectionTitle(_ title: String) -> some View { Text(title).font(.title3.bold()).foregroundStyle(.secondary).padding(.horizontal, 12) }
-    private func card<Content: View>(@ViewBuilder content: () -> Content) -> some View { VStack(alignment: .leading, spacing: 14, content: content).padding(16).frame(maxWidth: .infinity, alignment: .leading).background(.background, in: RoundedRectangle(cornerRadius: 22)) }
-    private func warning(_ text: String) -> some View { HStack(alignment: .top, spacing: 10) { Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange); Text(text) }.font(.footnote).padding(14).frame(maxWidth: .infinity, alignment: .leading).background(Color.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 18)) }
+    private func sectionTitle(_ title: String) -> some View { Text(title).font(atlantique ? Atlantique.Typography.heading : .title3.bold()).foregroundStyle(atlantique ? Color.white : .secondary).padding(.horizontal, 12) }
+    private func card<Content: View>(@ViewBuilder content: () -> Content) -> some View { VStack(alignment: .leading, spacing: 14, content: content).padding(16).frame(maxWidth: .infinity, alignment: .leading).background(.background, in: RoundedRectangle(cornerRadius: atlantique ? Atlantique.Metrics.cardRadius : 22)) }
+    private func warning(_ text: String) -> some View { HStack(alignment: .top, spacing: 10) { Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange); Text(text) }.font(.footnote).padding(14).frame(maxWidth: .infinity, alignment: .leading).background(atlantique ? Color.white : Color.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 18)) }
     private func format(_ value: Double, _ unit: String) -> String { "\(value.formatted(.number.precision(.fractionLength(0...2)))) \(unit)" }
 }
 
