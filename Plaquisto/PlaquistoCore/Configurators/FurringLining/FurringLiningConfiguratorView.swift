@@ -312,7 +312,7 @@ struct FurringLiningConfiguratorView: View {
 
     @ViewBuilder private var header: some View {
         if atlantique {
-            if showsCloseButton { Button("Fermer") { onClose?() }.atlantiqueActionStyle(.secondary).padding(.horizontal, 20) }
+            if showsCloseButton && !editsLayout { Button("Fermer") { onClose?() }.atlantiqueActionStyle(.secondary).padding(.horizontal, 20) }
             AtlantiqueWizardHeader(title: "Doublage sur lisses et fourrures", step: step, total: 6)
         } else {
         VStack(alignment: .leading, spacing: 10) {

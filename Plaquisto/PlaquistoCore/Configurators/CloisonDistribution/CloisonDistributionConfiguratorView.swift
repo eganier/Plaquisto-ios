@@ -288,7 +288,7 @@ struct CloisonDistributionConfiguratorView: View {
 
     @ViewBuilder private var header: some View {
         if atlantique {
-            if showsCloseButton { Button("Fermer") { if let onClose { onClose() } else { reset() } }.atlantiqueActionStyle(.secondary).padding(.horizontal, 20) }
+            if showsCloseButton && !editsLayout { Button("Fermer") { if let onClose { onClose() } else { reset() } }.atlantiqueActionStyle(.secondary).padding(.horizontal, 20) }
             AtlantiqueWizardHeader(title: "Cloison de distribution", step: step, total: 7)
         } else {
         VStack(alignment: .leading, spacing: 10) {

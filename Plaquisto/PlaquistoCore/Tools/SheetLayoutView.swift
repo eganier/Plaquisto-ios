@@ -550,6 +550,7 @@ struct SheetLayoutView: View {
     var newDocumentConfiguration: WorkConfiguration? = nil
     var onSaveDocument: ((LayoutDocument) throws -> Void)? = nil
     var editWorkFacing: (() -> Void)? = nil
+    var externalReloadToken: UUID? = nil
     var quantityProposal: (() throws -> LayoutQuantityTakeoff)? = nil
     var saveQuantityProposal: ((LayoutQuantityTakeoff) throws -> Void)? = nil
     @State private var quantityMessage: String?
@@ -567,8 +568,9 @@ struct SheetLayoutView: View {
          workbook: LayoutWorkbookNavigation? = nil, newDocumentConfiguration: WorkConfiguration? = nil,
          quantityProposal: (() throws -> LayoutQuantityTakeoff)? = nil,
          saveQuantityProposal: ((LayoutQuantityTakeoff) throws -> Void)? = nil,
-         editWorkFacing: (() -> Void)? = nil) {
+         editWorkFacing: (() -> Void)? = nil, externalReloadToken: UUID? = nil) {
         self.editWorkFacing = editWorkFacing
+        self.externalReloadToken = externalReloadToken
         self.quantityProposal=quantityProposal; self.saveQuantityProposal=saveQuantityProposal
         self.newDocumentConfiguration = newDocumentConfiguration
         self.workbook = workbook
@@ -809,6 +811,14 @@ struct SheetLayoutView: View {
         }
         .onChange(of:mode) { _,_ in spotGuides = []; spotEditError = nil; addingSpot = false }
         .onAppear { if !loadedInitial { if let initialDocument { model.apply(initialDocument) }; resolveBoardEdges(); initializeCeilingView(); cleanDocument = model.document; loadedInitial = true } }
+        .onChange(of: externalReloadToken) { _, _ in
+            guard loadedInitial, let initialDocument else { return }
+            // Reload only after the ouvrage form closes. Preserve the current
+            // tool and viewport, but never allow Undo to restore an old skin set.
+            model.open(.init(document: initialDocument))
+            resolveBoardEdges()
+            cleanDocument = model.document
+        }
         .onChange(of: catalogue.layoutFormats) { _,_ in resolveBoardEdges() }
         .fullScreenCover(isPresented:$editingShape) {
             if let document = model.document {

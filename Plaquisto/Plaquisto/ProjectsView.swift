@@ -783,8 +783,8 @@ private struct ComponentPlanEditorView: View {
             return try LayoutQuantityCalculator.make(work:work,formats:catalogue.layoutFormats)
         } : nil, saveQuantityProposal: { proposal in
             try store.saveLayoutQuantityTakeoff(projectID:projectID,workID:workID,takeoff:proposal)
-        }, editWorkFacing: configuration?.layoutFacingEntryStep != nil ? { editingFacing = true } : nil)
-        .id(editorRevision)
+        }, editWorkFacing: configuration?.layoutFacingEntryStep != nil ? { editingFacing = true } : nil,
+           externalReloadToken: editorRevision)
         .environmentObject(catalogue)
         .task { await catalogue.load() }
         .sheet(isPresented: $editingFacing, onDismiss: {
@@ -1268,6 +1268,15 @@ struct SavedWorkView: View {
             }
         }
         .navigationTitle(currentWork.name)
+        .toolbar {
+            if opensFacingStep {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button { dismiss() } label: { Image(systemName: "chevron.left") }
+                        .accessibilityLabel("Fermer les réglages de parement")
+                        .atlantiqueToolbarAction()
+                }
+            }
+        }
         .safeAreaInset(edge: .top) {
             if currentWork.surveySourceNeedsReview {
                 SurveySourceReviewNotice(work: currentWork)

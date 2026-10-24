@@ -3,6 +3,25 @@ import SwiftUI
 @testable import Plaquisto
 
 final class WorkLayoutFacingSyncTests: XCTestCase {
+    @MainActor func testExternalFacingReloadCannotUndoBackToAnObsoleteComposition() throws {
+        let work = ceiling()
+        let document = try XCTUnwrap(work.components[0].document(for: work.components[0].plans[0]))
+        let editor = LayoutEditorModel(persistsStandaloneLibrary: false)
+        editor.apply(document)
+        var moved = document; moved.layers[0].offset.x += 150
+        editor.apply(moved)
+        XCTAssertTrue(editor.canUndo)
+        var refreshed = moved
+        var second = moved.layers[0]; second.id = UUID()
+        refreshed.layers.append(second)
+        editor.open(.init(document: refreshed))
+        XCTAssertEqual(editor.document, refreshed)
+        XCTAssertFalse(editor.canUndo)
+        XCTAssertFalse(editor.canRedo)
+        editor.undo()
+        XCTAssertEqual(editor.document?.layers.count, 2)
+    }
+
     func testNewUnsavedComponentStartsWithEveryConfiguredSkin() throws {
         var c = CeilingConfiguration(length: 4, width: 3)
         c.layers = 2

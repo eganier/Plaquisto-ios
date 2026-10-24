@@ -198,7 +198,7 @@ struct DoublageConfiguratorView: View {
 
     @ViewBuilder private var header: some View {
         if atlantique {
-            if showsCloseButton { Button("Fermer") { if let onClose { onClose() } else { reset() } }.atlantiqueActionStyle(.secondary).padding(.horizontal, 20) }
+            if showsCloseButton && !editsLayout { Button("Fermer") { if let onClose { onClose() } else { reset() } }.atlantiqueActionStyle(.secondary).padding(.horizontal, 20) }
             AtlantiqueWizardHeader(title: "Doublage sur rails et montants", step: step, total: 6)
             if references.isUsingOfflineData {
                 Label("Données enregistrées hors connexion", systemImage: "icloud.slash").font(.caption).foregroundStyle(.white).padding(.horizontal, 20)
