@@ -110,9 +110,14 @@ struct ManualModelingView: View {
                 Button("Abandonner le dessin", role: .destructive) { dismiss() }
             }
             .sheet(isPresented: $editingContour) {
-                LayoutManualContourEditor(surface: contour, kind: .ceiling, title: "Dessiner le sol", allowsLayingOffset: false) { updated in
-                    // Vertex indices no longer identify the same corners after an edit.
-                    if contour?.contour != updated.contour { heights = [:]; differentHeights = false }
+                LayoutManualContourEditor(surface: contour, kind: .ceiling, title: "Dessiner le sol", allowsLayingOffset: false,
+                    topologyChangeNotice: heights.isEmpty ? nil : "Les sommets ont changé : les hauteurs particulières devront être renseignées à nouveau. La hauteur commune sera conservée.") { updated in
+                    // A scale or a moved corner keeps vertex identity and its height.
+                    // Rebuilding topology invalidates index-based corner assignments.
+                    if contour?.id != updated.id || contour?.topologyID != updated.topologyID
+                        || contour?.contour.count != updated.contour.count {
+                        heights = [:]; differentHeights = false
+                    }
                     contour = updated; error = nil
                     if atlantique { step = 1; heightTarget = nil }
                 }

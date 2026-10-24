@@ -744,6 +744,27 @@ struct LayoutVisibilitySettings {
 }
 
 extension LayoutDocument {
+    func applyingEditedContour(_ updated: Surface2D, scales: [LayoutPlanScaleStep] = []) -> Self {
+        var copy = self
+        copy.surface = updated
+        if updated.contour.count != surface.contour.count || updated.id != surface.id
+            || updated.topologyID != surface.topologyID || updated.edgeIDs != surface.edgeIDs {
+            for i in copy.layers.indices {
+                copy.layers[i].referenceEdge = nil
+                copy.layers[i].furring?.referenceEdge = nil
+                copy.layers[i].furring?.usesOwnReference = false
+            }
+        }
+        if var lighting = copy.lighting {
+            for step in scales where step.factor.isFinite && step.factor > 0 {
+                lighting.positions = lighting.positions.map(step.apply)
+                lighting.wallRowHeights = lighting.wallRowHeights?.map { $0 * step.factor }
+            }
+            copy.lighting = lighting
+        }
+        return copy
+    }
+
     /// Only new supports receive a starter frame. Saved plans keep their choices,
     /// including an explicitly absent frame, when reopened.
     static func newSupport(_ surface:Surface2D) -> Self {

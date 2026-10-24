@@ -156,6 +156,8 @@ struct PlaquistoLabApp: App {
         case "span": CeilingSpanToolView()
         case "spacing": FurringSpacingToolView()
         case "manual": ManualModelingView()
+        case "drawing-wall": LayoutManualContourEditor(surface: nil, kind: .wall, onSave: { _ in })
+        case "drawing-floor": LayoutManualContourEditor(surface: nil, kind: .ceiling, title: "Dessiner le sol", allowsLayingOffset: false, onSave: { _ in })
         case "stock": StockHomeView()
         case "stock-entry", "stock-exit", "stock-inventory": StockBookAuditView(route: name)
         case "opening": LayoutOpeningForm(support: .ceiling, existing: .init(kind: .hatch,

@@ -1,5 +1,104 @@
 import Foundation
 
+/// Shared, millimetre-based operations for the floor and quick-layout editor.
+/// Camera zoom is deliberately not part of this model.
+enum LayoutPlanDrawing {
+    static func rectangle(width: Double, height: Double, kind: LayoutSupportKind) throws -> Surface2D {
+        guard width.isFinite, height.isFinite, width >= 10, height >= 10,
+              width <= 100_000, height <= 100_000 else { throw LayoutGeometryError.invalidFormat }
+        var result = LayoutFloorDraft.rectangle()
+        result.name = kind.rawValue; result.kind = kind
+        result.contour = LayoutBounds(min: .zero, max: .init(x: width, y: height)).polygon
+        result.contourIntent = .init(sketch: result.contour)
+        result.topologyID = UUID()
+        return result
+    }
+
+    static func close(_ points: [LayoutPoint], kind: LayoutSupportKind) throws -> Surface2D {
+        try LayoutGeometry.validate(points)
+        guard LayoutGeometry.edges(points).allSatisfy({ (10...100_000).contains(($0.b - $0.a).length) }) else { throw LayoutGeometryError.invalidFormat }
+        return Surface2D(name: kind.rawValue, kind: kind, contour: points,
+                         contourIntent: .init(sketch: points), topologyID: UUID())
+    }
+
+    /// Snap to horizontal/vertical and to the previous segment's direction or
+    /// perpendicular. Tolerance is in screen points and does not depend on zoom.
+    static func snapped(_ point: LayoutPoint, after points: [LayoutPoint], screenScale: Double) -> LayoutPoint {
+        guard let last = points.last, screenScale > 0 else { return point }
+        let delta = point - last
+        var directions: [LayoutPoint] = [.init(x: 1, y: 0), .init(x: 0, y: 1)]
+        if points.count > 1 {
+            let prior = last - points[points.count - 2]
+            if prior.length > 0.01 { directions += [prior * (1 / prior.length), .init(x: -prior.y / prior.length, y: prior.x / prior.length)] }
+        }
+        return directions.map { last + $0 * LayoutGeometry.dot(delta, $0) }
+            .filter { ($0 - point).length * screenScale <= 10 }
+            .min(by: { ($0 - point).length < ($1 - point).length }) ?? point
+    }
+
+    static func appending(_ point: LayoutPoint, to points: [LayoutPoint]) throws -> [LayoutPoint] {
+        guard point.finite, points.count < 200 else { throw LayoutGeometryError.invalidContour }
+        if let last = points.last {
+            guard (point - last).length >= 10 else { throw LayoutGeometryError.invalidContour }
+        }
+        let result = points + [point]
+        // Validate the open polyline without inventing a closing side.
+        if result.count >= 4 {
+            let a = result[result.count - 2], b = point
+            for i in 0..<(result.count - 3) {
+                if intersects(a, b, result[i], result[i + 1]) { throw LayoutGeometryError.invalidContour }
+            }
+        }
+        return result
+    }
+
+    private static func intersects(_ a: LayoutPoint, _ b: LayoutPoint, _ c: LayoutPoint, _ d: LayoutPoint) -> Bool {
+        let ab = b - a, cd = d - c, denominator = LayoutGeometry.cross(ab, cd)
+        if abs(denominator) < 0.0001 {
+            return LayoutGeometry.distance(c, to: a, b) < 0.1 || LayoutGeometry.distance(d, to: a, b) < 0.1
+                || LayoutGeometry.distance(a, to: c, d) < 0.1 || LayoutGeometry.distance(b, to: c, d) < 0.1
+        }
+        let t = LayoutGeometry.cross(c - a, cd) / denominator
+        let u = LayoutGeometry.cross(c - a, ab) / denominator
+        return (0...1).contains(t) && (0...1).contains(u)
+    }
+}
+
+struct LayoutPlanScaleStep: Equatable {
+    var origin: LayoutPoint
+    var factor: Double
+    func apply(_ point: LayoutPoint) -> LayoutPoint { origin + (point - origin) * factor }
+}
+
+extension Surface2D {
+    /// An explicit global rescale also rescales entered lengths and openings.
+    /// Angle constraints and edge identities survive. Physical laying clearances
+    /// remain millimetres (a 5 mm clearance must not become a 10 mm clearance).
+    func rescaledPlan(by factor: Double) throws -> Surface2D {
+        guard factor.isFinite, factor >= 0.05, factor <= 20 else { throw LayoutGeometryError.invalidFormat }
+        let origin = bounds.min
+        func scale(_ p: LayoutPoint) -> LayoutPoint { origin + (p - origin) * factor }
+        var copy = self
+        copy.previousContourIntents.append(editableIntent)
+        copy.contour = contour.map(scale)
+        try LayoutGeometry.validate(copy.contour)
+        guard LayoutGeometry.edges(copy.contour).allSatisfy({ (10...100_000).contains(($0.b - $0.a).length) }) else { throw LayoutGeometryError.invalidFormat }
+        copy.openings = openings.map { opening in
+            var next = opening; next.contour = opening.contour.map(scale); return next
+        }
+        var intent = editableIntent
+        intent.sketch = intent.sketch.map(scale)
+        intent.userMeasuredLengths = intent.userMeasuredLengths.map { $0.map { $0 * factor } }
+        intent.userVertexPositions = intent.userVertexPositions.map { $0.map(scale) }
+        copy.contourIntent = intent
+        copy.dimensionCorrections = dimensionCorrections.map {
+            .init(edgeIndex: $0.edgeIndex, original: $0.original * factor, corrected: $0.corrected * factor)
+        }
+        _ = try copy.layingContour()
+        return copy
+    }
+}
+
 /// The rectangle shortcut owns its four right angles until the user explicitly
 /// edits an angle. A side edit therefore changes both opposite sides, not a trapezoid.
 enum LayoutFloorDraft {
@@ -21,7 +120,8 @@ enum LayoutFloorDraft {
             intent.userAnglesDegrees[index] = value
         } else {
             intent.userMeasuredLengths[index] = value
-            if original.provenance == "preset", original.contour.count == 4 {
+            if original.provenance == "preset", original.contour.count == 4,
+               original.contour.indices.allSatisfy({ abs(LayoutPolygonSolver.interiorAngle(at: $0, in: original.contour) - 90) < 0.01 }) {
                 intent.userMeasuredLengths[(index + 2) % 4] = value
                 // Seed the exact rectangle so the generic solver cannot rotate it
                 // or drift the unedited side while distributing the length change.

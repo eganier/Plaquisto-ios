@@ -754,6 +754,7 @@ struct LayoutContourPreview: View {
     var numbered = false
     var alphabetic = false
     var reference: LayoutBounds? = nil
+    var tint: Color = .teal
     var body: some View {
         Canvas { context, size in
             let bounds = reference ?? LayoutBounds(points: contours.flatMap { $0 })
@@ -764,8 +765,8 @@ struct LayoutContourPreview: View {
             }
             var path = Path()
             for loop in contours { path.addPath(layoutPath(loop, transform: transform)) }
-            context.fill(path, with: .color(.teal.opacity(0.16)), style: FillStyle(eoFill: true))
-            context.stroke(path, with: .color(.teal), lineWidth: 2)
+            context.fill(path, with: .color(tint.opacity(0.16)), style: FillStyle(eoFill: true))
+            context.stroke(path, with: .color(tint), lineWidth: 2)
             if numbered {
                 var labels: [CGRect] = []
                 for (j, loop) in contours.enumerated() {
@@ -786,7 +787,7 @@ struct LayoutContourPreview: View {
                         labels.append(CGRect(x: position.x - 12, y: position.y - 8, width: 24, height: 16))
                         var leader = Path(); leader.move(to: anchor); leader.addLine(to: position)
                         context.stroke(leader, with: .color(.secondary.opacity(0.45)), lineWidth: 0.5)
-                        context.fill(Path(ellipseIn: CGRect(x: anchor.x - 2, y: anchor.y - 2, width: 4, height: 4)), with: .color(.teal))
+                        context.fill(Path(ellipseIn: CGRect(x: anchor.x - 2, y: anchor.y - 2, width: 4, height: 4)), with: .color(tint))
                         context.draw(Text(label).font(.caption.bold()).foregroundStyle(.primary), at: position)
                     }
                 }

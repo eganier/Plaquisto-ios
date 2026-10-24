@@ -3,6 +3,107 @@ import SwiftUI
 @testable import Plaquisto
 
 final class SheetLayoutEngineTests: XCTestCase {
+    func testPlanDrawingCreatesDimensionedRectangleAndSquareForBothSupports() throws {
+        for kind in [LayoutSupportKind.wall, .ceiling] {
+            let rectangle = try LayoutPlanDrawing.rectangle(width: 4000, height: 3000, kind: kind)
+            XCTAssertEqual(rectangle.kind, kind)
+            XCTAssertEqual(abs(LayoutGeometry.area(rectangle.contour)), 12_000_000, accuracy: 0.001)
+            for i in 0..<4 { XCTAssertEqual(LayoutPolygonSolver.interiorAngle(at: i, in: rectangle.contour), 90, accuracy: 0.001) }
+            let square = try LayoutPlanDrawing.rectangle(width: 2500, height: 2500, kind: kind)
+            XCTAssertEqual(square.bounds.width, square.bounds.height)
+            let changed = try LayoutFloorDraft.changing(rectangle, index: 0, value: 3255, isAngle: false)
+            XCTAssertEqual(changed.bounds.width, 3255, accuracy: 0.1)
+            XCTAssertEqual(changed.bounds.height, 3000, accuracy: 0.1)
+        }
+        XCTAssertThrowsError(try LayoutPlanDrawing.rectangle(width: .nan, height: 3000, kind: .wall))
+        XCTAssertThrowsError(try LayoutPlanDrawing.rectangle(width: 0, height: 3000, kind: .wall))
+    }
+
+    func testPlanDrawingOpenSegmentsCloseConcaveContourWithoutRescaling() throws {
+        let expected: [LayoutPoint] = [.zero, .init(x: 4000, y: 0), .init(x: 4000, y: 2000),
+            .init(x: 2000, y: 2000), .init(x: 2000, y: 4000), .init(x: 0, y: 4000)]
+        var draft: [LayoutPoint] = []
+        for p in expected { draft = try LayoutPlanDrawing.appending(p, to: draft) }
+        let result = try LayoutPlanDrawing.close(draft, kind: .ceiling)
+        XCTAssertEqual(result.contour, expected)
+        XCTAssertEqual(LayoutPolygonSolver.interiorAngle(at: 3, in: result.contour), 270, accuracy: 0.01)
+        XCTAssertThrowsError(try LayoutPlanDrawing.close(Array(draft.prefix(2)), kind: .ceiling))
+        XCTAssertThrowsError(try LayoutPlanDrawing.appending(expected.last!, to: expected))
+    }
+
+    func testPlanDrawingRefusesCrossingBeforeClosing() throws {
+        let points: [LayoutPoint] = [.zero, .init(x: 4000, y: 0), .init(x: 4000, y: 3000)]
+        XCTAssertThrowsError(try LayoutPlanDrawing.appending(.init(x: 2000, y: -1000), to: points))
+        XCTAssertNoThrow(try LayoutPlanDrawing.appending(.init(x: 0, y: 3000), to: points))
+        XCTAssertThrowsError(try LayoutPlanDrawing.close([.zero, .init(x: 3000, y: 3000), .init(x: 3000, y: 0), .init(x: 0, y: 3000)], kind: .wall))
+    }
+
+    func testPlanDrawingSnapsUsingScreenTolerance() {
+        let points: [LayoutPoint] = [.zero, .init(x: 1000, y: 1000)]
+        let rightAngle = LayoutPlanDrawing.snapped(.init(x: 2000, y: 20), after: points, screenScale: 0.1)
+        XCTAssertEqual(LayoutGeometry.dot(points[1] - points[0], rightAngle - points[1]), 0, accuracy: 0.001)
+        let unchanged = LayoutPlanDrawing.snapped(.init(x: 2300, y: 1600), after: points, screenScale: 0.1)
+        XCTAssertEqual(unchanged, .init(x: 2300, y: 1600))
+    }
+
+    func testExplicitPlanScaleIncludesMeasuredLengthsOpeningsAndPreservesIdentity() throws {
+        var original = try LayoutPlanDrawing.rectangle(width: 4000, height: 3000, kind: .wall)
+        original = try LayoutFloorDraft.changing(original, index: 0, value: 4000, isAngle: false)
+        original.openings = [.init(kind: .window, contour: LayoutBounds(min: .init(x: 1000, y: 1000), max: .init(x: 2000, y: 2000)).polygon)]
+        original.layingOffset.globalMM = 5
+        let scaled = try original.rescaledPlan(by: 1.2)
+        XCTAssertEqual(scaled.id, original.id)
+        XCTAssertEqual(scaled.topologyID, original.topologyID)
+        XCTAssertEqual(scaled.bounds.width, 4800, accuracy: 0.01)
+        XCTAssertEqual(abs(LayoutGeometry.area(scaled.contour)), abs(LayoutGeometry.area(original.contour)) * 1.44, accuracy: 0.01)
+        XCTAssertEqual(scaled.openings[0].contour[0], original.openings[0].contour[0] * 1.2)
+        XCTAssertEqual(scaled.contourIntent?.userMeasuredLengths[0] ?? 0, 4800, accuracy: 0.01)
+        XCTAssertEqual(scaled.layingOffset, original.layingOffset)
+        XCTAssertEqual(LayoutPolygonSolver.interiorAngle(at: 0, in: scaled.contour), 90, accuracy: 0.01)
+        XCTAssertThrowsError(try original.rescaledPlan(by: 0))
+        XCTAssertThrowsError(try original.rescaledPlan(by: .infinity))
+        let reopened = try JSONDecoder().decode(Surface2D.self, from: JSONEncoder().encode(scaled))
+        XCTAssertEqual(reopened, scaled)
+    }
+
+    func testPlanScaleMovesElectricalPointsAndRowsButNotHardwareDiameter() throws {
+        let s = try LayoutPlanDrawing.rectangle(width: 4000, height: 3000, kind: .wall)
+        var document = LayoutDocument.newSupport(s)
+        document.lighting = .init(positions: [.init(x: 1000, y: 1100)], wallRowHeights: [1100])
+        let changed = document.applyingEditedContour(try s.rescaledPlan(by: 1.2), scales: [.init(origin: s.bounds.min, factor: 1.2)])
+        XCTAssertEqual(changed.lighting?.positions, [.init(x: 1200, y: 1320)])
+        XCTAssertEqual(changed.lighting?.wallRowHeights, [1320])
+        XCTAssertEqual(changed.lighting?.diameter, document.lighting?.diameter)
+        XCTAssertEqual(changed.layers, document.layers)
+    }
+
+    func testPlanTopologyChangeResetsReferenceEvenWithSameVertexCount() throws {
+        let original = try LayoutPlanDrawing.rectangle(width: 4000, height: 3000, kind: .ceiling)
+        var document = LayoutDocument.newSupport(original)
+        document.layers[0].referenceEdge = 1
+        document.layers[0].furring?.referenceEdge = 2
+        document.layers[0].furring?.usesOwnReference = true
+        let inserted = try original.changingVertex(insertAfter: 0, point: .init(x: 2000, y: 0))
+        let removed = try inserted.changingVertex(remove: 1)
+        XCTAssertEqual(removed.contour.count, original.contour.count)
+        XCTAssertNotEqual(removed.topologyID, original.topologyID)
+        XCTAssertNil(document.applyingEditedContour(removed).layers[0].referenceEdge)
+        XCTAssertNil(document.applyingEditedContour(removed).layers[0].furring?.referenceEdge)
+        XCTAssertEqual(document.applyingEditedContour(removed).layers[0].furring?.usesOwnReference, false)
+        XCTAssertEqual(document.surface, original)
+    }
+
+    func testPlanMultipleScalesKeepTheirOwnOriginsAndRoundTripDocument() throws {
+        let surface = try LayoutPlanDrawing.rectangle(width: 4000, height: 3000, kind: .wall)
+        var document = LayoutDocument.newSupport(surface)
+        document.lighting = .init(positions: [.init(x: 1000, y: 1000)], wallRowHeights: [1000])
+        let steps: [LayoutPlanScaleStep] = [.init(origin: .zero, factor: 2), .init(origin: .init(x: -500, y: 100), factor: 0.5)]
+        let changed = document.applyingEditedContour(surface, scales: steps)
+        XCTAssertEqual(changed.lighting?.positions, [.init(x: 750, y: 1050)])
+        XCTAssertEqual(changed.lighting?.wallRowHeights, [1000])
+        XCTAssertEqual(try JSONDecoder().decode(LayoutDocument.self, from: JSONEncoder().encode(changed)), changed)
+    }
+
     func testSkinProjectionRoundTripsWithoutChangingStoredOrderOrSharedFrame() throws {
         var first = LayoutLayer()
         first.referenceEdge = 1

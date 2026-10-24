@@ -853,13 +853,9 @@ struct SheetLayoutView: View {
         .onChange(of: catalogue.layoutFormats) { _,_ in resolveBoardEdges() }
         .fullScreenCover(isPresented:$editingShape) {
             if let document = model.document {
-                LayoutManualContourEditor(surface:document.surface,kind:document.surface.kind,title:"Modifier le contour et l’échelle") { surface in
-                    var copy = document; copy.surface = surface
-                    if surface.contour.count != document.surface.contour.count || surface.id != document.surface.id {
-                        for i in copy.layers.indices { copy.layers[i].referenceEdge = nil }
-                    }
-                    model.apply(copy)
-                }
+                LayoutManualContourEditor(surface:document.surface,kind:document.surface.kind,title:"Modifier le contour et l’échelle", onScale: { surface, steps in
+                    model.apply(document.applyingEditedContour(surface, scales: steps))
+                }) { surface in model.apply(document.applyingEditedContour(surface)) }
             }
         }
         .sheet(item:$polygonSelection) { selection in

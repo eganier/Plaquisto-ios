@@ -1,5 +1,15 @@
 # Plaquisto — état du développement
 
+## Éditeur de dessin partagé — 25 octobre 2026
+
+- Existant sauvegardé (`a9c0c38`), branche `codex/audit-fidelite-books` fusionnée dans `main` (`b3e4605`) et publiée sur GitHub avant les modifications. Nouvelle branche dédiée : `codex/editeur-dessin`.
+- Interface conçue avec la revue du sous-agent utilisateur de SketchUp : Sélection, Segment, Rectangle/Carré dimensionné ; ajout/suppression de sommet contextuels ; longueur et angle éditables ; grille, aimantation, annulation et échelle globale distincte du zoom. Même éditeur pour le sol manuel et le calepinage rapide. Ancien éditeur conservé pour les décalages de pose avancés.
+- Échelle explicite : longueurs saisies, ouvertures et positions électriques suivent ; diamètre des spots, dimensions de plaques et jeu de pose inchangés. Changement de topologie : remise à zéro des références de côtés des plaques/ossatures, avertissement avant réinitialisation des hauteurs particulières. Simple déplacement ou échelle : hauteurs conservées.
+- Tests ciblés : **386 réussis, zéro échec** (219 calepinage + 167 relevé/modélisation), dont huit nouveaux cas. Journal `/tmp/plaquisto-drawing-tests.log`, résultat `build-atlantique/Logs/Test/Test-Plaquisto-2026.10.25_01-05-34-+0200.xcresult`. Avertissement de collecte de diagnostics simctl après la suite, sans échec des tests.
+- Recette initiale simulateur : L concave fermé et angle rentrant 270°, carré 250 cm, échelle 120 % donnant 300 cm et 9 m² puis annulation à 6,25 m², ajout/suppression de sommet, transmission aux hauteurs puis enregistrement et affichage 3D dans le projet de test « QA éditeur dessin ». Contrastes des formulaires corrigés après cette recette. Vérification finale Lab et gestes tactiles réels à distinguer ; aucune installation iPhone effectuée pour cet éditeur.
+- Parcours et compatibilité documentés dans `docs/DRAWING_EDITOR.md`.
+- Recette finale iPhone SE simulé : déplacement de sommet, angle 113,1° → 90°, annulations jusqu'au rectangle 400 × 300 cm, formulaires et commandes lisibles. Correction finale des cotes parallèles aux côtés et lettres de sommets contrôlée visuellement. Compilations Lab finales réussies (`/tmp/plaquisto-drawing-lab-final.log`, `/tmp/plaquisto-drawing-lab-labels.log`). La saisie décimale pilotée au clavier reste non confirmée après disparition répétée du processus Simulator ; elle n'est pas comptée comme réussite UI. Aucun problème correspondant dans les tests géométriques. Pincement et ressenti tactile restent à essayer sur iPhone.
+
 ## Dépli des ouvrages sous un relevé — 25 octobre 2026
 
 - `LabProjectView` : remplacement du fondu/glissement d'insertion par un layout animé avec découpe. Les cartes restent derrière le relevé et se dévoilent dans la zone située dessous ; leur hauteur visible et leur déplacement suivent la même progression. Durée inchangée : 0,25 s, easeInOut. Au repli, interaction et accessibilité des ouvrages masqués désactivées.

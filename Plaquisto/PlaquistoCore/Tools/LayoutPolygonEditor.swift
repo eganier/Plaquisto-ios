@@ -231,7 +231,8 @@ struct LayoutConstraintForm: View {
     }
 }
 
-struct LayoutManualContourEditor: View {
+// Retained for the advanced laying-clearance controls and legacy freehand mode.
+struct LayoutLegacyManualContourEditor: View {
     @Environment(\.usesAtlantiqueDesign) private var atlantique
     @Environment(\.dismiss) private var dismiss
     let onSave: (Surface2D) -> Void
@@ -282,7 +283,9 @@ struct LayoutManualContourEditor: View {
             initial?.provenance = "preset"
         }
         self.onSave = onSave; _surface = State(initialValue:initial); _drawing = State(initialValue:surface == nil)
+        _editTopology = State(initialValue: title != "Décalage des bords de plaque")
     }
+    private var offsetsOnly: Bool { title == "Décalage des bords de plaque" }
     private var bookFloor: Bool { atlantique && title == "Dessiner le sol" && !allowsLayingOffset }
     private var bookAngle: Bool { if case .angle = bookSelection { return true }; return false }
     var body: some View {
@@ -302,7 +305,7 @@ struct LayoutManualContourEditor: View {
                         }
                     })).padding(.horizontal, 20)
                     }
-                } else { Text(drawing ? "Dessinez le contour en un geste et revenez près du départ." : "Touchez une cote ou un angle. Glissez les sommets pour ajuster la forme.")
+                } else { Text(offsetsOnly ? "Sélectionnez les bords à décaler." : drawing ? "Dessinez le contour en un geste et revenez près du départ." : "Touchez une cote ou un angle. Glissez les sommets pour ajuster la forme.")
                     .font(.subheadline).foregroundStyle(.secondary).padding(.horizontal)
                 }
                 if kind == .wall { Text("Dessinez le mur de face, avec le sol horizontal en bas du dessin.").font(.caption).foregroundStyle(.secondary).padding(.horizontal) }
@@ -310,7 +313,7 @@ struct LayoutManualContourEditor: View {
                     LayoutSketchPad(kind:kind) { points in bookSelection = nil; accept(points) }
                         .padding(12).background(bookFloor ? Color.white : Color.clear, in: RoundedRectangle(cornerRadius: 16)).padding(bookFloor ? 20 : 0)
                 } else if let surface {
-                    if !bookFloor {
+                    if !bookFloor && !offsetsOnly {
                     HStack(spacing:24) {
                         if atlantique {
                             AtlantiqueChoice(title: "Afficher", options: [(0, "Cotes"), (1, "Angles")], selection: Binding(get: { showAngles ? 1 : 0 }, set: { showAngles = $0 == 1; showDimensions = $0 == 0 })).padding(.horizontal)
@@ -354,7 +357,7 @@ struct LayoutManualContourEditor: View {
                         }
                         .contentShape(Rectangle())
                         .gesture(DragGesture(minimumDistance:3).onChanged { value in
-                            guard !pinching else { return }
+                            guard !pinching, !offsetsOnly else { return }
                             if dragOriginal == nil {
                                 dragOriginal = surface
                                 viewBounds = viewport.bounds
@@ -433,7 +436,7 @@ struct LayoutManualContourEditor: View {
                                 else if let i = topologyEdge { selectBookConstraint(.length(i)) }
                             } else { confirmingTopology = topologyVertex != nil || topologyEdge != nil }
                         })
-                        .overlay { LayoutPolygonAnnotations(surface:surface, viewport:viewport, showAngles:bookFloor ? bookAngle : showAngles, showDimensions:bookFloor ? !bookAngle : atlantique ? !showAngles : showDimensions, showsLocks: !bookFloor, monochrome: bookFloor) { selected in
+                        .overlay { LayoutPolygonAnnotations(surface:surface, viewport:viewport, showAngles:offsetsOnly ? false : bookFloor ? bookAngle : showAngles, showDimensions:offsetsOnly ? false : bookFloor ? !bookAngle : atlantique ? !showAngles : showDimensions, showsLocks: !bookFloor, monochrome: bookFloor) { selected in
                             if bookFloor, case .correction = selected { selection = selected }
                             else if bookFloor { selectBookConstraint(selected) }
                             else { selection = selected }
@@ -470,7 +473,7 @@ struct LayoutManualContourEditor: View {
                             }
                         }.padding(.horizontal, 20)
                     }
-                    if !bookFloor { scaleControls(surface) }
+                    if !bookFloor && !offsetsOnly { scaleControls(surface) }
                     if !editTopology { VStack(alignment:.leading,spacing:6) {
                         HStack {
                             Text("Décalage des bords de plaque").font(.subheadline.bold())
@@ -509,7 +512,7 @@ struct LayoutManualContourEditor: View {
                             Button("Recommencer", systemImage: "arrow.counterclockwise") { bookSelection = nil; drawing = true }.atlantiqueActionStyle(.secondary)
                         }.padding(.horizontal, 20)
                         }
-                    } else { HStack {
+                    } else if !offsetsOnly { HStack {
                         Button("Recommencer le dessin", systemImage:"pencil.tip") { drawing = true }
                         Spacer()
                         Button("Annuler la modification", systemImage:"arrow.uturn.backward") { if let previous = history.popLast() { self.surface = previous; resetScale() } }.disabled(history.isEmpty)
@@ -676,6 +679,534 @@ struct LayoutManualContourEditor: View {
         }
     }
     private func resetScale() { scaleReference = nil; scaleValue = 1; scaleStart = nil; offsetEdges.removeAll() }
+}
+
+/// The same plan editor is used for a floor, a wall and a quick ceiling layout.
+/// All edits stay in a local draft until the user chooses Utiliser / Continuer.
+struct LayoutManualContourEditor: View {
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.usesAtlantiqueDesign) private var atlantique
+    let kind: LayoutSupportKind
+    let title: String?
+    let allowsLayingOffset: Bool
+    let initialSurface: Surface2D?
+    let topologyChangeNotice: String?
+    let onSave: (Surface2D) -> Void
+    var onScale: ((Surface2D, [LayoutPlanScaleStep]) -> Void)? = nil
+    private enum Tool { case select, segment }
+    private struct Snapshot { var surface: Surface2D?; var points: [LayoutPoint]; var scale: [LayoutPlanScaleStep] }
+    @State private var surface: Surface2D?
+    @State private var points: [LayoutPoint] = []
+    @State private var tool: Tool
+    @State private var history: [Snapshot] = []
+    @State private var selected: LayoutPolygonSelection?
+    @State private var constraint: LayoutPolygonSelection?
+    @State private var insertionPoint: LayoutPoint?
+    @State private var showingRectangle = false
+    @State private var showingScale = false
+    @State private var showingAdvanced = false
+    @State private var pendingTool: Tool?
+    @State private var confirmingReplace = false
+    @State private var confirmingDelete = false
+    @State private var confirmingExit = false
+    @State private var confirmingTopologySave = false
+    @State private var error: String?
+    @State private var bounds: LayoutBounds
+    @State private var zoom = 1.0
+    @State private var pan = CGSize.zero
+    @State private var dragViewport: LayoutViewport?
+    @State private var receivedDragPreview = false
+    @State private var dragOriginal: Surface2D?
+    @State private var dragIndex: Int?
+    @State private var cursor: LayoutPoint?
+    @State private var finger: CGPoint?
+    @State private var snap: LayoutContourSnap?
+    @State private var pinchViewport: LayoutViewport?
+    @State private var pinching = false
+    @State private var scaleSteps: [LayoutPlanScaleStep] = []
+
+    init(surface: Surface2D?, kind: LayoutSupportKind = .ceiling, title: String? = nil,
+         allowsLayingOffset: Bool = true, topologyChangeNotice: String? = nil, onScale: ((Surface2D, [LayoutPlanScaleStep]) -> Void)? = nil,
+         onSave: @escaping (Surface2D) -> Void) {
+        self.kind = kind; self.title = title; self.allowsLayingOffset = allowsLayingOffset
+        self.onSave = onSave; self.onScale = onScale
+        self.initialSurface = surface; self.topologyChangeNotice = topologyChangeNotice
+        var copy = surface; copy?.kind = kind
+        _surface = State(initialValue: copy)
+        _tool = State(initialValue: copy == nil ? .segment : .select)
+        _bounds = State(initialValue: Self.fitting(copy?.contour ?? []))
+    }
+    private var isFloor: Bool { !allowsLayingOffset && title == "Dessiner le sol" }
+    private var ink: Color { Atlantique.Palette.ink }
+    private var orange: Color { Atlantique.Palette.orange }
+    private static func fitting(_ points: [LayoutPoint]) -> LayoutBounds {
+        guard !points.isEmpty else { return .init(min: .zero, max: .init(x: 6000, y: 5000)) }
+        let b = LayoutBounds(points: points), margin = max(250, max(b.width, b.height) * 0.12)
+        return .init(min: b.min - .init(x: margin, y: margin), max: b.max + .init(x: margin, y: margin))
+    }
+    var body: some View {
+        NavigationStack {
+            VStack(spacing: 10) {
+                HStack {
+                    Text(isFloor ? "Sol · dimensions en cm" : kind == .wall ? "Mur de face · dimensions en cm" : "Plafond · dimensions en cm")
+                        .font(.caption).foregroundStyle(.white.opacity(0.9))
+                    Spacer()
+                    Button { showingScale = true } label: { Label("Échelle", systemImage: "arrow.up.left.and.arrow.down.right") }
+                        .font(.subheadline.bold()).foregroundStyle(.white).disabled(surface == nil)
+                        .accessibilityIdentifier("drawing.scale")
+                }.frame(minHeight: 34)
+                plan
+                    .background(.white, in: RoundedRectangle(cornerRadius: 18))
+                    .clipShape(RoundedRectangle(cornerRadius: 18))
+                properties.frame(height: 106)
+                HStack(spacing: 8) {
+                    toolButton("Sélection", icon: "cursorarrow", active: tool == .select) { tool = .select; cursor = nil }
+                    toolButton("Segment", icon: "line.diagonal", active: tool == .segment) { chooseSegments() }
+                    toolButton("Rectangle", icon: "rectangle", active: showingRectangle) { showingRectangle = true }
+                }
+                Button(isFloor ? "Continuer" : "Utiliser ce contour") { save() }
+                    .atlantiqueActionStyle().disabled(surface == nil || !points.isEmpty)
+                    .accessibilityIdentifier("drawing.save")
+            }
+            .padding(.horizontal, 16).padding(.bottom, 12)
+            .background(Atlantique.Palette.blue)
+            .navigationTitle(title ?? (kind == .wall ? "Dessiner le mur" : "Dessiner le plafond"))
+            .navigationBarTitleDisplayMode(.inline)
+            .atlantiqueFormPage(title ?? "Dessiner le contour")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Annuler") { if history.isEmpty && points.isEmpty { dismiss() } else { confirmingExit = true } }.atlantiqueToolbarAction()
+                }.atlantiqueToolbarBackground(atlantique)
+                ToolbarItem(placement: .topBarTrailing) {
+                    Menu {
+                        Button("Recommencer le dessin", systemImage: "arrow.counterclockwise") { pendingTool = .segment; confirmingReplace = true }
+                        if allowsLayingOffset, surface != nil {
+                            Button("Décalage des bords de plaque", systemImage: "rectangle.inset.filled") { showingAdvanced = true }
+                        }
+                    } label: { AtlantiqueToolbarGlyph() }.accessibilityLabel("Options du dessin")
+                }.atlantiqueToolbarBackground(atlantique)
+            }
+            .interactiveDismissDisabled(!history.isEmpty || !points.isEmpty)
+            .confirmationDialog("Quitter sans appliquer les modifications ?", isPresented: $confirmingExit, titleVisibility: .visible) {
+                Button("Abandonner les modifications", role: .destructive) { dismiss() }
+            }
+            .confirmationDialog("Appliquer le nouveau contour ?", isPresented: $confirmingTopologySave, titleVisibility: .visible) {
+                Button("Appliquer") { commit() }
+            } message: { Text(topologyChangeNotice ?? "") }
+            .confirmationDialog("Remplacer le contour actuel ?", isPresented: $confirmingReplace, titleVisibility: .visible) {
+                Button("Recommencer", role: .destructive) {
+                    remember(); surface = nil; points = []; selected = nil; error = nil
+                    tool = pendingTool ?? .segment; scaleSteps = []; recenter()
+                }
+            } message: { Text("Les ouvertures de ce contour seront retirées. Vous pourrez annuler cette action.") }
+            .confirmationDialog("Supprimer le sommet sélectionné ?", isPresented: $confirmingDelete, titleVisibility: .visible) {
+                Button("Supprimer le point", role: .destructive) { changePoint(remove: true) }
+            } message: { Text("Ses deux voisins seront reliés. Les contraintes des côtés modifiés seront libérées.") }
+            .sheet(isPresented: $showingRectangle) {
+                LayoutPlanRectangleForm(kind: kind, replacing: surface != nil || !points.isEmpty) { result in
+                    remember(); surface = replacement(result); points = []; selected = nil; tool = .select; scaleSteps = []; error = nil; recenter()
+                }
+            }
+            .sheet(isPresented: $showingScale) {
+                if let surface { LayoutPlanScaleForm(original: surface) { result, factor in
+                    remember(); self.surface = result; scaleSteps.append(.init(origin: surface.bounds.min, factor: factor)); selected = nil; error = nil; recenter()
+                } }
+            }
+            .sheet(item: $constraint) { item in
+                if let surface {
+                    LayoutPlanConstraintForm(surface: surface, selection: item) { result in
+                        remember(); self.surface = result; error = nil
+                    }
+                }
+            }
+            .fullScreenCover(isPresented: $showingAdvanced) {
+                LayoutLegacyManualContourEditor(surface: surface, kind: kind, title: "Décalage des bords de plaque") { result in
+                    remember(); surface = result; selected = nil; error = nil; recenter()
+                }
+            }
+        }
+    }
+
+    private func toolButton(_ name: String, icon: String, active: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            VStack(spacing: 4) { Image(systemName: icon).font(.system(size: 21, weight: .medium)); Text(name).font(.caption.bold()) }
+                .frame(maxWidth: .infinity, minHeight: 58)
+                .foregroundStyle(ink).background(active ? orange : .white, in: RoundedRectangle(cornerRadius: 12))
+        }.buttonStyle(.plain).accessibilityIdentifier("drawing.tool.\(name)")
+    }
+
+    private var plan: some View {
+        GeometryReader { proxy in
+            let viewport = LayoutViewport(bounds: bounds, size: proxy.size, zoom: zoom, pan: pan)
+            Canvas { context, size in
+                drawGrid(context: &context, viewport: viewport)
+                if let surface {
+                    let path = layoutPath(surface.contour, transform: viewport)
+                    context.fill(path, with: .color(Atlantique.Palette.paper))
+                    context.stroke(path, with: .color(ink), lineWidth: 2)
+                    for i in surface.contour.indices {
+                        let a = viewport.screen(surface.contour[i]), b = viewport.screen(surface.contour[(i + 1) % surface.contour.count])
+                        let distance = hypot(b.x - a.x, b.y - a.y)
+                        if distance > 55 {
+                            let p = CGPoint(x: (a.x + b.x) / 2 - (b.y - a.y) / distance * 17,
+                                            y: (a.y + b.y) / 2 + (b.x - a.x) / distance * 17)
+                            var labelContext = context
+                            var angle = atan2(b.y - a.y, b.x - a.x)
+                            if angle > .pi / 2 { angle -= .pi }
+                            if angle < -.pi / 2 { angle += .pi }
+                            labelContext.translateBy(x: p.x, y: p.y)
+                            labelContext.rotate(by: .radians(angle))
+                            labelContext.draw(Text(layoutCM((surface.contour[(i + 1) % surface.contour.count] - surface.contour[i]).length)).font(.system(size: 10, weight: .medium)).foregroundColor(ink), at: .zero)
+                        }
+                    }
+                    for opening in surface.openings {
+                        let hole = layoutPath(opening.contour, transform: viewport)
+                        context.fill(hole, with: .color(.white)); context.stroke(hole, with: .color(orange), style: .init(lineWidth: 1.5, dash: [5, 3]))
+                    }
+                    if case .length(let i) = selected, surface.contour.indices.contains(i) {
+                        var edge = Path(); edge.move(to: viewport.screen(surface.contour[i])); edge.addLine(to: viewport.screen(surface.contour[(i + 1) % surface.contour.count]))
+                        context.stroke(edge, with: .color(orange), lineWidth: 5)
+                    }
+                    drawPoints(surface.contour, viewport: viewport, context: &context)
+                } else {
+                    var line = Path()
+                    for (i, p) in points.enumerated() { if i == 0 { line.move(to: viewport.screen(p)) } else { line.addLine(to: viewport.screen(p)) } }
+                    if let cursor, let last = points.last {
+                        if points.count == 1 { line.move(to: viewport.screen(last)) }
+                        line.addLine(to: viewport.screen(cursor))
+                        let mid = viewport.screen((last + cursor) * 0.5)
+                        context.draw(Text(layoutCM((cursor - last).length)).font(.caption.bold()).foregroundColor(ink), at: .init(x: mid.x, y: mid.y - 18))
+                    }
+                    context.stroke(line, with: .color(ink), style: .init(lineWidth: 2.5, lineCap: .round, lineJoin: .round))
+                    drawPoints(points, viewport: viewport, context: &context)
+                    if points.isEmpty {
+                        context.draw(Text("Placez le premier point").font(.subheadline).foregroundColor(.secondary), at: .init(x: size.width / 2, y: size.height / 2))
+                    }
+                }
+            }
+            .contentShape(Rectangle())
+            .gesture(DragGesture(minimumDistance: 0).onChanged { value in
+                guard !pinching else { return }
+                if dragViewport == nil {
+                    dragViewport = viewport; dragOriginal = surface
+                    receivedDragPreview = false
+                    if let surface, tool == .select, case .angle(let i) = selected,
+                       hypot(viewport.screen(surface.contour[i]).x - value.startLocation.x, viewport.screen(surface.contour[i]).y - value.startLocation.y) < 26 { dragIndex = i }
+                }
+                guard let base = dragViewport else { return }
+                if hypot(value.translation.width, value.translation.height) > 3 { receivedDragPreview = true }
+                if tool == .segment, surface == nil {
+                    cursor = LayoutPlanDrawing.snapped(base.world(value.location), after: points, screenScale: base.scale)
+                } else if let original = dragOriginal, let i = dragIndex {
+                    guard hypot(value.translation.width, value.translation.height) > 3 else { return }
+                    finger = value.location
+                    do {
+                        let result = try LayoutContourSnapping.preview(original: original, vertex: i,
+                            candidate: original.contour[i] + base.worldDelta(value.translation), screenScale: base.scale, latched: snap)
+                        self.surface = result.surface; snap = result.snap; error = nil
+                    } catch { self.error = error.localizedDescription }
+                } else if tool == .select {
+                    pan = .init(width: base.pan.width + value.translation.width, height: base.pan.height + value.translation.height)
+                }
+            }.onEnded { value in
+                defer { dragViewport = nil; dragOriginal = nil; dragIndex = nil; finger = nil; snap = nil; cursor = nil; receivedDragPreview = false }
+                guard !pinching, let base = dragViewport else { return }
+                if tool == .segment, surface == nil {
+                    if let first = points.first, points.count >= 3,
+                       hypot(base.screen(first).x - value.location.x, base.screen(first).y - value.location.y) < 22 {
+                        closeContour(); return
+                    }
+                    do {
+                        let point = (receivedDragPreview ? cursor : nil) ?? LayoutPlanDrawing.snapped(base.world(value.location), after: points, screenScale: base.scale)
+                        let next = try LayoutPlanDrawing.appending(point, to: points)
+                        remember(); points = next; error = nil
+                    } catch { self.error = "Placez un point distinct, sans croiser un autre côté." }
+                } else if let original = dragOriginal, let index = dragIndex {
+                    // Pointer input may deliver only the press and release. On
+                    // touch, preserve the already validated last preview verbatim.
+                    if !receivedDragPreview, hypot(value.translation.width, value.translation.height) > 3 {
+                        do {
+                            self.surface = try LayoutContourSnapping.preview(original: original, vertex: index,
+                                candidate: original.contour[index] + base.worldDelta(value.translation), screenScale: base.scale).surface
+                            error = nil
+                        } catch { self.error = error.localizedDescription }
+                    }
+                    if surface != original { history.append(.init(surface: original, points: points, scale: scaleSteps)) }
+                } else if hypot(value.translation.width, value.translation.height) <= 3 {
+                    select(at: value.location, viewport: base)
+                } else if !receivedDragPreview, tool == .select {
+                    pan = .init(width: base.pan.width + value.translation.width, height: base.pan.height + value.translation.height)
+                }
+            })
+            .simultaneousGesture(MagnifyGesture().onChanged { value in
+                if pinchViewport == nil {
+                    pinchViewport = dragViewport ?? viewport; pinching = true
+                    if let original = dragOriginal { surface = original }
+                    dragViewport = nil; dragOriginal = nil; dragIndex = nil; cursor = nil; finger = nil
+                }
+                guard let base = pinchViewport else { return }
+                let anchor = CGPoint(x: value.startAnchor.x * proxy.size.width, y: value.startAnchor.y * proxy.size.height)
+                let next = base.zoomed(to: min(12, max(0.2, base.zoom * value.magnification)), anchor: anchor)
+                zoom = next.zoom; pan = next.pan
+            }.onEnded { _ in pinchViewport = nil; pinching = false })
+            .overlay(alignment: .topLeading) {
+                HStack(spacing: 8) {
+                    canvasButton("Annuler la dernière modification", symbol: "arrow.uturn.backward", disabled: history.isEmpty) { undo() }
+                    canvasButton("Recentrer la vue", symbol: "arrow.up.left.and.down.right.and.arrow.up.right.and.down.left") { recenter() }
+                }.padding(10)
+            }
+            .overlay(alignment: .bottomTrailing) {
+                Text(surface.map { layoutArea(abs(LayoutGeometry.area($0.contour))) } ?? "\(points.count) points")
+                    .font(.caption.bold()).padding(9).background(.regularMaterial, in: Capsule()).padding(10).allowsHitTesting(false)
+            }
+            .overlay(alignment: .top) {
+                if let error { Text(error).font(.caption).foregroundStyle(.red).padding(8).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8)).padding(.top, 60).padding(.horizontal, 10).allowsHitTesting(false) }
+            }
+            .overlay {
+                if let i = dragIndex, let finger, let surface {
+                    LayoutVertexLoupe(points: surface.contour.map { viewport.screen($0) }, selected: i, finger: finger, available: proxy.size).allowsHitTesting(false)
+                }
+            }
+        }.accessibilityIdentifier("drawing.canvas")
+    }
+
+    private func canvasButton(_ title: String, symbol: String, disabled: Bool = false, action: @escaping () -> Void) -> some View {
+        Button(action: action) { Image(systemName: symbol).frame(width: 44, height: 44).foregroundStyle(disabled ? .gray : orange).background(.regularMaterial, in: Circle()) }
+            .buttonStyle(.plain).disabled(disabled).accessibilityLabel(title)
+    }
+    private func drawPoints(_ points: [LayoutPoint], viewport: LayoutViewport, context: inout GraphicsContext) {
+        let centre = viewport.screen(LayoutBounds(points: points).center)
+        for (i, point) in points.enumerated() {
+            let p = viewport.screen(point)
+            let chosen = selected.map { if case .angle(let index) = $0 { return index == i }; return false } ?? false
+            let radius = chosen ? 9.0 : 5.0
+            context.fill(Path(ellipseIn: .init(x: p.x - radius, y: p.y - radius, width: radius * 2, height: radius * 2)), with: .color(orange))
+            context.draw(Text(vertexName(i)).font(.caption.bold()).foregroundColor(ink), at: .init(x: p.x + (p.x < centre.x ? 13 : -13), y: p.y + (p.y < centre.y ? 15 : -15)))
+        }
+    }
+    private func drawGrid(context: inout GraphicsContext, viewport: LayoutViewport) {
+        let spacing = pow(10, floor(log10(max(1, 45 / viewport.scale))))
+        let step = spacing * (spacing * viewport.scale < 22 ? 5 : 1)
+        let lower = viewport.world(.init(x: 0, y: viewport.size.height)), upper = viewport.world(.init(x: viewport.size.width, y: 0))
+        var path = Path()
+        for x in stride(from: floor(lower.x / step) * step, through: upper.x, by: step) {
+            path.move(to: viewport.screen(.init(x: x, y: lower.y))); path.addLine(to: viewport.screen(.init(x: x, y: upper.y)))
+        }
+        for y in stride(from: floor(lower.y / step) * step, through: upper.y, by: step) {
+            path.move(to: viewport.screen(.init(x: lower.x, y: y))); path.addLine(to: viewport.screen(.init(x: upper.x, y: y)))
+        }
+        context.stroke(path, with: .color(ink.opacity(0.07)), lineWidth: 0.5)
+    }
+    private var properties: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            if let surface, let selected {
+                let i = selected.index
+                if case .angle = selected {
+                    HStack {
+                        Text("Sommet \(vertexName(i))").font(.subheadline.bold()); Spacer()
+                        Button { constraint = selected } label: {
+                            Text("\(LayoutPolygonSolver.interiorAngle(at: i, in: surface.contour).formatted(.number.precision(.fractionLength(0...1))))°").font(.title3.bold())
+                            Image(systemName: "pencil")
+                        }.frame(minHeight: 44).accessibilityLabel("Modifier l’angle \(vertexName(i))")
+                    }
+                    Button("Supprimer le point", systemImage: "minus.circle") { confirmingDelete = true }
+                        .disabled(surface.contour.count <= 3).frame(minHeight: 34)
+                } else {
+                    HStack {
+                        Text("Côté \(vertexName(i))–\(vertexName((i + 1) % surface.contour.count))").font(.subheadline.bold()); Spacer()
+                        Button { constraint = selected } label: {
+                            Text(layoutCM((surface.contour[(i + 1) % surface.contour.count] - surface.contour[i]).length)).font(.title3.bold()); Image(systemName: "pencil")
+                        }.frame(minHeight: 44).accessibilityLabel("Modifier la longueur du côté sélectionné")
+                    }
+                    Button("Ajouter un point", systemImage: "plus.circle") { changePoint(remove: false) }.frame(minHeight: 34)
+                }
+            } else if surface != nil {
+                Text("Sélectionnez un côté ou un angle").font(.subheadline.bold())
+                Text("Déplacez un point après l’avoir sélectionné.").font(.caption).foregroundStyle(.secondary)
+            } else {
+                HStack {
+                    VStack(alignment: .leading, spacing: 5) {
+                        Text(points.isEmpty ? "Dessiner par segments" : "\(points.count) points placés").font(.subheadline.bold())
+                        Text("Touchez le plan pour ajouter un point.").font(.caption).foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Button("Fermer", systemImage: "checkmark") { closeContour() }.frame(minHeight: 44).disabled(points.count < 3)
+                }
+            }
+        }.buttonStyle(.plain).tint(orange).foregroundStyle(ink).padding(12).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+            .background(.white, in: RoundedRectangle(cornerRadius: 14))
+    }
+    private func select(at location: CGPoint, viewport: LayoutViewport) {
+        guard let surface else { return }
+        let points = surface.contour
+        if let i = points.indices.min(by: { (points[$0] - viewport.world(location)).length < (points[$1] - viewport.world(location)).length }),
+           (points[i] - viewport.world(location)).length * viewport.scale < 26 { selected = .angle(i); insertionPoint = nil; return }
+        if let i = points.indices.min(by: { LayoutGeometry.distance(viewport.world(location), to: points[$0], points[($0 + 1) % points.count]) < LayoutGeometry.distance(viewport.world(location), to: points[$1], points[($1 + 1) % points.count]) }),
+           LayoutGeometry.distance(viewport.world(location), to: points[i], points[(i + 1) % points.count]) * viewport.scale < 26 {
+            selected = .length(i)
+            let a = points[i], d = points[(i + 1) % points.count] - a
+            let t = max(0.05, min(0.95, LayoutGeometry.dot(viewport.world(location) - a, d) / LayoutGeometry.dot(d, d)))
+            insertionPoint = a + d * t; return
+        }
+        selected = nil; insertionPoint = nil
+    }
+    private func chooseSegments() {
+        if surface != nil { pendingTool = .segment; confirmingReplace = true }
+        else { tool = .segment; selected = nil }
+    }
+    private func remember() { history.append(.init(surface: surface, points: points, scale: scaleSteps)) }
+    private func undo() {
+        guard let previous = history.popLast() else { return }
+        surface = previous.surface; points = previous.points; scaleSteps = previous.scale
+        tool = surface == nil ? .segment : .select; selected = nil; error = nil; cursor = nil
+        if surface != nil { recenter() }
+    }
+    private func recenter() { bounds = Self.fitting(surface?.contour ?? points); pan = .zero; zoom = 1 }
+    private func closeContour() {
+        do { let result = try LayoutPlanDrawing.close(points, kind: kind); remember(); surface = replacement(result); points = []; tool = .select; selected = nil; error = nil; recenter() }
+        catch { self.error = "Le contour doit être fermé, sans croisement et avec au moins trois points." }
+    }
+    private func changePoint(remove: Bool) {
+        guard let original = surface, let selected else { return }
+        do {
+            var result = try original.changingVertex(remove: remove ? selected.index : nil, insertAfter: remove ? nil : selected.index, point: insertionPoint)
+            result.provenance = "manual"
+            remember(); surface = result; self.selected = nil; error = nil
+        } catch { self.error = error.localizedDescription }
+    }
+    private func save() {
+        if let initialSurface, let surface, topologyChangeNotice != nil,
+           initialSurface.id != surface.id || initialSurface.topologyID != surface.topologyID || initialSurface.contour.count != surface.contour.count {
+            confirmingTopologySave = true; return
+        }
+        commit()
+    }
+    private func replacement(_ result: Surface2D) -> Surface2D {
+        // Retain the scan linkage even when the user explicitly replaces the shape.
+        var next = result
+        if let initialSurface {
+            next.name = initialSurface.name; next.sourceIdentifier = initialSurface.sourceIdentifier
+            next.localFrame = initialSurface.localFrame
+        }
+        return next
+    }
+    private func commit() {
+        guard let surface, points.isEmpty else { return }
+        if let onScale { onScale(surface, scaleSteps) } else { onSave(surface) }
+        dismiss()
+    }
+}
+
+private struct LayoutPlanRectangleForm: View {
+    @Environment(\.dismiss) private var dismiss
+    let kind: LayoutSupportKind
+    let replacing: Bool
+    let onSave: (Surface2D) -> Void
+    @State private var width = 4000.0
+    @State private var height = 3000.0
+    @State private var square = false
+    private var preview: Surface2D? { try? LayoutPlanDrawing.rectangle(width: width, height: square ? width : height, kind: kind) }
+    var body: some View {
+        NavigationStack {
+            AtlantiqueForm(bookLayout: true) {
+                Section {
+                    Picker("Forme", selection: $square) { Text("Rectangle").tag(false); Text("Carré").tag(true) }.pickerStyle(.segmented)
+                    LayoutDimensionField(title: square ? "Côté" : "Largeur", millimetres: $width)
+                    if !square { LayoutDimensionField(title: kind == .wall ? "Hauteur" : "Longueur", millimetres: $height) }
+                }
+                if let preview { Section { LayoutContourPreview(contours: [preview.contour], numbered: true, alphabetic: true, tint: Atlantique.Palette.ink).frame(height: 180); Text(layoutArea(abs(LayoutGeometry.area(preview.contour)))) } }
+                if replacing { Section { Text("Cette forme remplacera le contour et ses ouvertures. L’action reste annulable.").font(.footnote) } }
+            }.atlantiqueFormPage("Rectangle ou carré")
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) { Button("Annuler") { dismiss() }.atlantiqueToolbarAction() }.atlantiqueToolbarBackground()
+                    ToolbarItem(placement: .confirmationAction) { Button(replacing ? "Remplacer" : "Ajouter") { if let preview { onSave(preview); dismiss() } }.atlantiqueToolbarAction(primary: true).disabled(preview == nil) }.atlantiqueToolbarBackground()
+                }
+        }
+    }
+}
+
+private struct LayoutPlanScaleForm: View {
+    @Environment(\.dismiss) private var dismiss
+    let original: Surface2D
+    let onSave: (Surface2D, Double) -> Void
+    @State private var percent = 100.0
+    private var preview: Surface2D? { try? original.rescaledPlan(by: percent / 100) }
+    var body: some View {
+        NavigationStack {
+            AtlantiqueForm(bookLayout: true) {
+                Section("Échelle réelle du contour") {
+                    LayoutDimensionField(title: "Taille", millimetres: $percent, unit: "%", displayScale: 1)
+                    Slider(value: $percent, in: 25...300, step: 1).tint(Atlantique.Palette.orange).accessibilityLabel("Échelle globale")
+                    Text("Toutes les longueurs, les cotes saisies et les ouvertures sont redimensionnées. Les angles restent identiques. Ce n’est pas le zoom de la vue.").font(.footnote).foregroundStyle(.secondary)
+                }
+                if let preview {
+                    Section("Après modification") {
+                        LabeledContent("Largeur", value: layoutCM(preview.bounds.width))
+                        LabeledContent("Hauteur / longueur", value: layoutCM(preview.bounds.height))
+                        LabeledContent("Surface", value: layoutArea(abs(LayoutGeometry.area(preview.contour))))
+                        LayoutContourPreview(contours: [preview.contour], numbered: true, alphabetic: true, tint: Atlantique.Palette.ink).frame(height: 150)
+                    }
+                } else { Text("Saisissez une échelle entre 5 et 2 000 %, avec des côtés compris entre 1 cm et 100 m.").foregroundStyle(.red) }
+            }.atlantiqueFormPage("Échelle globale")
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) { Button("Annuler") { dismiss() }.atlantiqueToolbarAction() }.atlantiqueToolbarBackground()
+                    ToolbarItem(placement: .confirmationAction) { Button("Appliquer") { if let preview { onSave(preview, percent / 100); dismiss() } }.atlantiqueToolbarAction(primary: true).disabled(preview == nil) }.atlantiqueToolbarBackground()
+                }
+        }
+    }
+}
+
+private struct LayoutPlanConstraintForm: View {
+    @Environment(\.dismiss) private var dismiss
+    let surface: Surface2D
+    let selection: LayoutPolygonSelection
+    let onSave: (Surface2D) -> Void
+    @State private var value: Double
+    @State private var error: String?
+    private var angle: Bool { if case .angle = selection { return true }; return false }
+    private var locked: Bool {
+        angle ? surface.editableIntent.userAnglesDegrees[selection.index] != nil
+            : surface.editableIntent.lockedLengthIndices?.contains(selection.index) == true
+    }
+    init(surface: Surface2D, selection: LayoutPolygonSelection, onSave: @escaping (Surface2D) -> Void) {
+        self.surface = surface; self.selection = selection; self.onSave = onSave
+        if case .angle(let i) = selection { _value = State(initialValue: LayoutPolygonSolver.interiorAngle(at: i, in: surface.contour)) }
+        else { _value = State(initialValue: (surface.contour[(selection.index + 1) % surface.contour.count] - surface.contour[selection.index]).length) }
+    }
+    private func resolved() throws -> Surface2D {
+        try LayoutFloorDraft.changing(surface, index: selection.index, value: value, isAngle: angle)
+    }
+    var body: some View {
+        NavigationStack {
+            AtlantiqueForm(bookLayout: true) {
+                Section(angle ? "Sommet \(vertexName(selection.index))" : "Côté \(vertexName(selection.index))–\(vertexName((selection.index + 1) % surface.contour.count))") {
+                    LayoutDimensionField(title: angle ? "Angle intérieur" : "Longueur", millimetres: $value, unit: angle ? "°" : "cm", displayScale: angle ? 1 : 0.1)
+                    if angle { Button("Angle droit · 90°") { value = 90 } }
+                    if locked { Button(angle ? "Libérer cet angle" : "Libérer cette longueur", systemImage: "lock.open") {
+                        var next = surface, intent = surface.editableIntent
+                        if angle { intent.userAnglesDegrees[selection.index] = nil }
+                        else {
+                            intent.userMeasuredLengths[selection.index] = nil
+                            intent.lockedLengthIndices?.removeAll { $0 == selection.index }
+                        }
+                        intent.sketch = surface.contour
+                        do { try next.resolve(intent); onSave(next); dismiss() } catch { self.error = error.localizedDescription }
+                    } }
+                }
+                if let preview = try? resolved() {
+                    Section("Aperçu") { LayoutContourPreview(contours: [preview.contour], numbered: true, alphabetic: true, tint: Atlantique.Palette.ink).frame(height: 230) }
+                } else { Text("Cette valeur est incompatible avec le contour ou une cote verrouillée.").font(.footnote).foregroundStyle(.red) }
+                if let error { Text(error).foregroundStyle(.red) }
+                Section { Text("Les autres cotes déjà verrouillées sont conservées.").font(.footnote).foregroundStyle(.secondary) }
+            }.atlantiqueFormPage(angle ? "Modifier l’angle" : "Modifier la longueur")
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) { Button("Annuler") { dismiss() }.atlantiqueToolbarAction() }.atlantiqueToolbarBackground()
+                    ToolbarItem(placement: .confirmationAction) { Button("Appliquer") {
+                        do { onSave(try resolved()); dismiss() } catch { self.error = error.localizedDescription }
+                    }.atlantiqueToolbarAction(primary: true).disabled((try? resolved()) == nil) }.atlantiqueToolbarBackground()
+                }
+        }
+    }
 }
 
 /// A geometry loupe, not a second interactive viewport. It never alters hit tests.
