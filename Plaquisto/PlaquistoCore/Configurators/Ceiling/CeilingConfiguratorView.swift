@@ -788,7 +788,7 @@ struct CeilingConfiguratorView: View {
 
         case 4:
             if atlantique { plenumControls }
-            AtlantiqueSection(atlantique ? "Type de suspente" : "Système de fixation") {
+            Section {
                 if compatibleSystems.isEmpty {
                     Label("Aucun système publié n’est compatible avec cette configuration.", systemImage: "exclamationmark.triangle.fill")
                         .foregroundStyle(.orange)
@@ -800,6 +800,8 @@ struct CeilingConfiguratorView: View {
                         }
                     }
                 }
+            } header: {
+                if !atlantique { Text("Système de fixation") }
             }
             if let system = selectedFixingSystem {
                 if atlantique || requiresHangerModel {
@@ -1025,23 +1027,41 @@ struct CeilingConfiguratorView: View {
 
     @ViewBuilder private var plenumControls: some View {
             Section {
-                LabeledContent("Plénum minimal", value: "\(format(minimumPlenum * 10)) mm")
-                HStack {
-                    Text("Plénum supplémentaire")
-                    Spacer()
-                    PlaquistoIntegerField(value: additionalPlenumMMBinding)
-                        .multilineTextAlignment(.trailing)
-                        .frame(width: 90)
-                    Text("mm").foregroundStyle(.secondary)
+                LabeledContent {
+                    Text("\(format(minimumPlenum * 10)) mm").font(atlantique ? Atlantique.Typography.button : .body)
+                } label: {
+                    Text("Plénum minimal").font(atlantique ? Atlantique.Typography.caption : .body)
+                        .foregroundStyle(atlantique ? Atlantique.Palette.muted : Color.primary)
                 }
+                if atlantique { Divider() }
+                HStack {
+                    Text("Plénum supplémentaire").font(atlantique ? Atlantique.Typography.button : .body)
+                    Spacer()
+                    if atlantique {
+                        HStack(spacing: 4) {
+                            Text("+")
+                            PlaquistoIntegerField(value: additionalPlenumMMBinding)
+                                .multilineTextAlignment(.trailing).frame(width: 48)
+                                .accessibilityLabel("Plénum supplémentaire en millimètres")
+                            Text("mm")
+                        }
+                        .font(Atlantique.Typography.button).foregroundStyle(Atlantique.Palette.actionInk)
+                        .padding(10).background(Atlantique.Palette.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 10))
+                    } else {
+                        PlaquistoIntegerField(value: additionalPlenumMMBinding)
+                            .multilineTextAlignment(.trailing).frame(width: 90)
+                        Text("mm").foregroundStyle(.secondary)
+                    }
+                }
+                if atlantique { Divider() }
                 LabeledContent("Plénum retenu", value: "\(format(plenum * 10)) mm")
+                    .font(atlantique ? Atlantique.Typography.button : .body)
                 if GalvanizedHangerSelection.wholeMillimeters(plenumCM: plenum) == nil {
                     Text("Renseignez une marge en millimètres entiers pour actualiser le plénum.")
                         .font(.footnote).foregroundStyle(.orange)
                 }
             } header: {
-                Text(plenumSectionTitle)
-                    .foregroundStyle(atlantique ? Color.white : .secondary)
+                if !atlantique { Text(plenumSectionTitle).foregroundStyle(.secondary) }
             }
             if isWoodSupport || !atlantique || Atlantique.Book.showsAdvancedFormControls { Section {
                 if isWoodSupport {
