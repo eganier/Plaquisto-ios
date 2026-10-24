@@ -70,6 +70,7 @@ struct CeilingConfiguratorView: View {
     @State private var showDimensionsWarning = false
     @State private var showVaporBarrierWarning = false
     @State private var fixingSystemID: String
+    @State private var hangerModelID: String?
     @State private var layers: Int
     @State private var firstSkin: [FacingAllocation]
     @State private var secondSkin: [FacingAllocation]
@@ -117,6 +118,7 @@ struct CeilingConfiguratorView: View {
         _perimeterSupport = State(initialValue: initialConfiguration.perimeterSupport ?? true)
         _trackedMinimumPlenum = State(initialValue: nil)
         _fixingSystemID = State(initialValue: initialConfiguration.fixingSystemID)
+        _hangerModelID = State(initialValue: initialConfiguration.hangerModelID)
         _layers = State(initialValue: initialConfiguration.layers)
         _firstSkin = State(initialValue: initialConfiguration.firstSkin)
         _secondSkin = State(initialValue: initialConfiguration.secondSkin)
@@ -322,19 +324,26 @@ struct CeilingConfiguratorView: View {
                   let minimum = system.data["plenum_min_mm"]?.number,
                   let maximum = system.data["plenum_max_mm"]?.number,
                   plenumMM >= minimum - 0.000001, plenumMM <= maximum + 0.000001 else { return false }
-            if GalvanizedHangerSelection.usesSizing(system) {
+            if GalvanizedHangerSelection.usesSizing(system) || CompositeHangerSelection.usesSizing(system) {
                 guard let catalogue,
-                      GalvanizedHangerSelection.reference(plenumCM: plenum, support: support, catalogue: catalogue) != nil else { return false }
-            }
-            if CompositeHangerSelection.usesSizing(system) {
-                guard let catalogue,
-                      CompositeHangerSelection.reference(plenumCM: plenum, support: support, catalogue: catalogue) != nil else { return false }
+                      !CeilingHangerComponents.models(for: system, plenumCM: plenum, catalogue: catalogue).isEmpty else { return false }
             }
             return true
         }
     }
     private var selectedFixingSystem: CeilingReferenceRecord? {
         compatibleSystems.first { $0.id == fixingSystemID }
+    }
+    private var hangerModels: [CeilingReferenceRecord] {
+        guard let system = selectedFixingSystem, let catalogue else { return [] }
+        return CeilingHangerComponents.models(for: system, plenumCM: plenum, catalogue: catalogue)
+    }
+    private var selectedHangerModel: CeilingReferenceRecord? {
+        CeilingHangerComponents.selected(from: hangerModels, modelID: hangerModelID)
+    }
+    private var requiresHangerModel: Bool {
+        guard let system = selectedFixingSystem else { return false }
+        return GalvanizedHangerSelection.usesSizing(system) || CompositeHangerSelection.usesSizing(system)
     }
     private var selectedComponents: [FixingComponent] { components(for: selectedFixingSystem) }
     private var area: Double { enteredArea }
@@ -441,6 +450,9 @@ struct CeilingConfiguratorView: View {
         .onChange(of: vaporBarrier) { _, _ in
             fixingSystemID = CeilingFixingDefaults.preferred(in: compatibleSystems, vaporBarrier: vaporBarrier)?.id ?? ""
         }
+        .onChange(of: fixingSystemID) { _, _ in hangerModelID = nil }
+        .onChange(of: plenum) { _, _ in hangerModelID = nil }
+        .onChange(of: support) { _, _ in hangerModelID = nil }
         .onChange(of: step) { _, newStep in
             if newStep == 5, store.catalogue != nil { ensureFacingAllocations() }
         }
@@ -790,11 +802,26 @@ struct CeilingConfiguratorView: View {
                 }
             }
             if let system = selectedFixingSystem {
-                if atlantique {
-                    AtlantiqueSection("Modèle recommandé") {
-                        Text(fixingSystemTitle(system)).font(Atlantique.Typography.button)
+                if atlantique || requiresHangerModel {
+                    if requiresHangerModel {
+                        Section {
+                            AtlantiquePicker(hangerModelID == nil && selectedHangerModel != nil ? "Modèle · recommandé" : "Modèle", selection: Binding(
+                                get: { selectedHangerModel?.id ?? "" },
+                                set: { hangerModelID = $0.isEmpty ? nil : $0 }
+                            )) {
+                                if selectedHangerModel == nil { Text("Choisir un modèle").tag("") }
+                                ForEach(hangerModels) { model in
+                                    Text(CeilingHangerComponents.modelTitle(model)).tag(model.id)
+                                }
+                            }
+                            if hangerModelID != nil && selectedHangerModel == nil {
+                                Label("Le modèle enregistré n’est plus compatible. Choisissez un modèle disponible.", systemImage: "exclamationmark.triangle.fill")
+                                    .foregroundStyle(.orange)
+                            }
+                        }
                     }
-                } else {
+                }
+                if !atlantique {
                 Section {
                     ForEach(selectedComponents) { component in
                         LabeledContent(component.name, value: componentDescription(component))
@@ -1207,7 +1234,7 @@ struct CeilingConfiguratorView: View {
             let secondLayerIsValid = insulationID.isEmpty || insulationLayers == 1 || (selectedSecondInsulation != nil && selectedSecondInsulationPoint != nil)
             return (insulationID.isEmpty || selectedInsulationPoint != nil) && secondLayerIsValid
         case 3: return suspensionSpacingCM.isFinite && suspensionSpacingCM >= 20 && suspensionSpacingCM <= 120 && (atlantique || plenum >= minimumPlenum) && GalvanizedHangerSelection.wholeMillimeters(plenumCM: plenum) != nil && maximumSpacing != nil && spacingChoices.contains(selectedSpacing)
-        case 4: return selectedFixingSystem != nil && plenum >= minimumPlenum && GalvanizedHangerSelection.wholeMillimeters(plenumCM: plenum) != nil
+        case 4: return selectedFixingSystem != nil && (!requiresHangerModel || selectedHangerModel != nil) && plenum >= minimumPlenum && GalvanizedHangerSelection.wholeMillimeters(plenumCM: plenum) != nil
         case 5: return allocationsAreValid(firstSkin) && (layers == 1 || allocationsAreValid(secondSkin))
         case 6: return !jointTreatment || ["poudre", "pate"].contains(compoundChoice)
         default: return true
@@ -1393,6 +1420,7 @@ struct CeilingConfiguratorView: View {
             insulationThickness: insulationThickness,
             selectedSpacing: selectedSpacing,
             fixingSystemID: fixingSystemID,
+            hangerModelID: requiresHangerModel ? hangerModelID : nil,
             layers: layers,
             firstSkin: firstSkin.map(withEdgeInformation),
             secondSkin: secondSkin.map(withEdgeInformation),
@@ -1497,7 +1525,7 @@ struct CeilingConfiguratorView: View {
 
     private func components(for system: CeilingReferenceRecord?) -> [FixingComponent] {
         guard let system, let catalogue else { return [] }
-        return CeilingHangerComponents.resolve(for: system, plenumCM: plenum, catalogue: catalogue).compactMap { value in
+        return CeilingHangerComponents.resolve(for: system, plenumCM: plenum, catalogue: catalogue, modelID: system.id == fixingSystemID ? hangerModelID : nil).compactMap { value in
             guard let object = value.object,
                   let name = object["name"]?.string,
                   let quantity = object["quantity"]?.number,
@@ -1508,14 +1536,10 @@ struct CeilingConfiguratorView: View {
     }
 
     private func fixingSystemTitle(_ system: CeilingReferenceRecord) -> String {
-        if CompositeHangerSelection.usesSizing(system), let catalogue,
-           let reference = CompositeHangerSelection.reference(plenumCM: plenum, support: support, catalogue: catalogue) {
-            return reference.title
-        }
-        guard GalvanizedHangerSelection.usesSizing(system), let catalogue,
-              let reference = GalvanizedHangerSelection.reference(plenumCM: plenum, support: support, catalogue: catalogue),
-              let length = reference.data["length_mm"]?.number else { return system.title }
-        return "\(system.title) · \(Int(length)) mm"
+        guard let catalogue else { return system.title }
+        let models = CeilingHangerComponents.models(for: system, plenumCM: plenum, catalogue: catalogue)
+        guard let reference = CeilingHangerComponents.selected(from: models, modelID: system.id == fixingSystemID ? hangerModelID : nil) else { return system.title }
+        return reference.title
     }
 
     private func vaporBarrierComponents(for record: CeilingReferenceRecord) -> [VaporBarrierComponent] {

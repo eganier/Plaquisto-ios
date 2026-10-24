@@ -374,6 +374,7 @@ struct CloisonDistributionConfiguratorView: View {
 
     private var facingsStep: some View {
         VStack(alignment: .leading, spacing: 16) {
+            if !atlantique || Atlantique.Book.showsAdvancedFormControls {
             sectionTitle("Nombre de peaux par face")
             card {
                 Picker("Nombre de peaux", selection: $skinCount) {
@@ -381,11 +382,32 @@ struct CloisonDistributionConfiguratorView: View {
                 }
                 .pickerStyle(.segmented)
             }
+            }
 
             faceSection(title: "Face A", first: $faceAFirst, second: $faceASecond)
             faceSection(title: "Face B", first: $faceBFirst, second: $faceBSecond)
 
-            if skinCount == .double {
+            if atlantique && !Atlantique.Book.showsAdvancedFormControls {
+                if skinCount == .single {
+                    Button { skinCount = .double } label: {
+                        card {
+                            HStack {
+                                VStack(alignment: .leading, spacing: 6) {
+                                    Text("Parement 2").font(Atlantique.Typography.button)
+                                    Text("Ajouter une deuxième peau sur chaque face")
+                                        .font(Atlantique.Typography.caption).foregroundStyle(Atlantique.Palette.muted)
+                                }
+                                Spacer()
+                                Image(systemName: "plus").foregroundStyle(Atlantique.Palette.orange)
+                            }
+                        }
+                    }.buttonStyle(.plain)
+                } else {
+                    Button("Retirer la deuxième peau des deux faces", role: .destructive) { skinCount = .single }
+                        .font(Atlantique.Typography.caption).foregroundStyle(.white)
+                        .frame(minHeight: 44)
+                }
+            } else if skinCount == .double {
                 Text("Le nombre de peaux est identique sur les deux faces. Les fonctions des plaques peuvent être différentes entre les faces A et B.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
@@ -436,24 +458,28 @@ struct CloisonDistributionConfiguratorView: View {
     @ViewBuilder
     private func faceSection(title: String, first: Binding<[FacingAllocation]>, second: Binding<[FacingAllocation]>) -> some View {
         sectionTitle(title)
+        if !atlantique {
         Text(skinCount == .single ? "Parement" : "Première peau")
             .font(.subheadline.bold())
             .foregroundStyle(.secondary)
             .padding(.horizontal, 12)
-        allocationList(first)
+        }
+        allocationList(first, title: atlantique ? "Parement 1" : nil)
         if skinCount == .double {
+            if !atlantique {
             Text("Deuxième peau")
                 .font(.subheadline.bold())
                 .foregroundStyle(.secondary)
                 .padding(.horizontal, 12)
-            allocationList(second)
+            }
+            allocationList(second, title: atlantique ? "Parement 2" : nil)
         }
     }
 
     @ViewBuilder
-    private func allocationList(_ allocations: Binding<[FacingAllocation]>) -> some View {
+    private func allocationList(_ allocations: Binding<[FacingAllocation]>, title: String? = nil) -> some View {
         ForEach(allocations.wrappedValue.indices, id: \.self) { index in
-            allocationCard(allocation: allocations[index], canDelete: allocations.wrappedValue.count > 1) {
+            allocationCard(allocation: allocations[index], canDelete: allocations.wrappedValue.count > 1, title: title) {
                 allocations.wrappedValue.remove(at: index)
             }
         }
@@ -467,9 +493,13 @@ struct CloisonDistributionConfiguratorView: View {
         }
     }
 
-    private func allocationCard(allocation: Binding<FacingAllocation>, canDelete: Bool, onDelete: @escaping () -> Void) -> some View {
+    private func allocationCard(allocation: Binding<FacingAllocation>, canDelete: Bool, title: String? = nil, onDelete: @escaping () -> Void) -> some View {
         card {
             if atlantique {
+                if let title {
+                    Text(title).font(Atlantique.Typography.button).foregroundStyle(Atlantique.Palette.ink)
+                    Divider()
+                }
                 AtlantiquePicker("Type de plaque", selection: familyBinding(allocation)) {
                     ForEach(allowedFamilies, id: \.self) { Text($0).tag($0) }
                 }
@@ -686,7 +716,7 @@ struct CloisonDistributionConfiguratorView: View {
                 Toggle("Prévoir le traitement des bandes à joint", isOn: $jointTreatment)
                 if jointTreatment {
                     Divider()
-                    Picker("Type d’enduit", selection: $compound) {
+                    AtlantiquePicker("Type d’enduit", selection: $compound) {
                         ForEach(Compound.allCases) { Text($0.rawValue).tag($0) }
                     }
                 }

@@ -566,17 +566,22 @@ struct FurringLiningConfiguratorView: View {
                 get: { standardFurringSpacing }, set: { chosenFurringSpacing = $0 }))
         }
         card {
-            Toggle("Fixation directe dans la maçonnerie", isOn: Binding(
+            Toggle("Fixation directe des appuis dans la maçonnerie", isOn: Binding(
                 get: { !includesHorizontalSupportFurring }, set: { includesHorizontalSupportFurring = !$0 }))
         }
         card {
             Text("Appuis intermédiaires").font(Atlantique.Typography.heading)
             Divider()
-            if let model = selectedSupportModel { LabeledContent("Modèle", value: model.title) }
-            LabeledContent("Nombre recommandé", value: "\(recommendedSupportLines) ligne(s)")
+            if let model = selectedSupportModel {
+                VStack(alignment: .leading, spacing: 5) {
+                    Text("Modèle pour l’isolant retenu").font(Atlantique.Typography.caption).foregroundStyle(Atlantique.Palette.muted)
+                    Text(model.title).font(Atlantique.Typography.button).fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            LabeledContent("Rangées recommandées", value: "\(recommendedSupportLines)")
             Divider()
             Stepper(value: Binding(get: { selectedSupportLines }, set: { selectedSupportLines = $0; supportLinesWereEdited = true }), in: 0...12) {
-                LabeledContent("Nombre choisi", value: "\(selectedSupportLines)")
+                LabeledContent("Rangées choisies", value: "\(selectedSupportLines)")
             }
         }
         // Safety notices stay visible even when supplementary explanations are hidden.
@@ -676,7 +681,7 @@ struct FurringLiningConfiguratorView: View {
                 Toggle("Prévoir le traitement des bandes", isOn: $jointTreatment)
                 if jointTreatment {
                     Divider()
-                    Picker("Type d’enduit", selection: $compound) { ForEach(Compound.allCases) { Text($0.rawValue).tag($0) } }
+                    AtlantiquePicker("Type d’enduit", selection: $compound) { ForEach(Compound.allCases) { Text($0.rawValue).tag($0) } }
                 }
             }
         }

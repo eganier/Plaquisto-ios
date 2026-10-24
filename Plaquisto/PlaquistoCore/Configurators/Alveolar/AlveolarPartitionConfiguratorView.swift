@@ -271,7 +271,7 @@ struct AlveolarPartitionConfiguratorView: View {
                 Toggle("Prévoir le traitement des bandes à joint", isOn: $jointTreatment)
                 if jointTreatment {
                     Divider()
-                    Picker("Type d’enduit", selection: $compound) {
+                    AtlantiquePicker("Type d’enduit", selection: $compound) {
                         ForEach(Compound.allCases) { Text($0.rawValue).tag($0) }
                     }
                 }

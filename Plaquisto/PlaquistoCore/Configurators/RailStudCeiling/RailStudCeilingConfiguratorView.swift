@@ -757,7 +757,7 @@ struct RailStudCeilingConfiguratorView: View {
         Group {
             AtlantiqueSection("Traitement des bandes à joint") {
                 Toggle("Prévoir le traitement des bandes", isOn: $jointTreatment)
-                if jointTreatment { Picker("Type d’enduit", selection: $compound) { Text("Enduit à joints en poudre").tag("powder"); Text("Enduit à joints en pâte").tag("paste") } }
+                if jointTreatment { AtlantiquePicker("Type d’enduit", selection: $compound) { Text("Enduit à joints en poudre").tag("powder"); Text("Enduit à joints en pâte").tag("paste") } }
             }
             Section { Text(jointTreatment ? "Les bandes et l’enduit seront ajoutés au quantitatif." : "Aucune bande ni aucun enduit ne sera ajouté.").foregroundStyle(.secondary) }
         }

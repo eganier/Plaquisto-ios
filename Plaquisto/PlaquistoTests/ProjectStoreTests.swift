@@ -170,6 +170,82 @@ final class CompositeHangerSelectionTests: XCTestCase {
     }
 }
 
+final class HangerModelOverrideTests: XCTestCase {
+    private func model(_ id: String, min: Double = 61, max: Double = 150, composite: Bool = false, status: String = "Publié") -> CeilingReferenceRecord {
+        .init(id: id, kind: "quantity_item", title: id, summary: "", sourcePage: 0, status: status,
+              data: ["category": .string(composite ? "composite_hanger" : "galvanized_hanger"),
+                     "unit": .string("unité"), "length_mm": .number(180), "model": .string(id),
+                     "support": .string("Plancher bois horizontal"),
+                     "plenum_min_mm": .number(min), "plenum_max_mm": .number(max),
+                     "hourdis_plenum_min_mm": .number(71), "hourdis_plenum_max_mm": .number(170)])
+    }
+    private func system(composite: Bool = false, support: String = "Plancher bois horizontal") -> CeilingReferenceRecord {
+        .init(id: "fix", kind: "fixing_system", title: "Suspentes", summary: "", sourcePage: 0, status: "Publié",
+              data: ["support": .string(support), "components": .array([
+                .object(["selection": .string(composite ? "composite_hanger" : "galvanized_hanger"),
+                         "name": .string("Ancien modèle"), "reference_id": .string("obsolete"),
+                         "quantity": .number(1), "unit": .string("unité"), "calculation": .string("unit")]),
+                .object(["name": .string("Vis de fixation"), "quantity": .number(2), "unit": .string("unité"), "calculation": .string("unit")])])])
+    }
+    private func catalogue(_ models: [CeilingReferenceRecord], composite: Bool = false) -> CeilingCataloguePayload {
+        .init(version: "test", ouvrage: nil, isolation: [], systemesFixation: [system(composite: composite)],
+              parements: [], quantitatifs: models + [.init(id: "QTY-FIXATION", kind: "quantity_item", title: "Fixations", summary: "", sourcePage: 0, status: "Publié",
+                data: ["values": .object(["simple_060": .number(2)])])], pareVapeur: [], regles: [])
+    }
+    func testExplicitCompatibleModelResolvesOverlapWithoutGuessing() {
+        for composite in [false, true] {
+            let cat = catalogue([model("A", composite: composite), model("B", composite: composite)], composite: composite)
+            let candidates = CeilingHangerComponents.models(for: system(composite: composite), plenumCM: 12, catalogue: cat)
+            XCTAssertEqual(candidates.map(\.id), ["A", "B"])
+            XCTAssertNil(CeilingHangerComponents.selected(from: candidates, modelID: nil))
+            let resolved = CeilingHangerComponents.resolve(for: system(composite: composite), plenumCM: 12, catalogue: cat, modelID: "B")
+            XCTAssertEqual(resolved[0].object?["reference_id"]?.string, "B")
+            XCTAssertEqual(resolved[0].object?["name"]?.string, "B")
+            XCTAssertEqual(resolved[1].object?["name"]?.string, "Vis de fixation")
+            XCTAssertEqual(resolved[1].object?["quantity"]?.number, 2)
+        }
+    }
+    func testInvalidArchivedChoiceDoesNotRetainOldReferenceOrSwitchSilently() {
+        for composite in [false, true] {
+            let cat = catalogue([model("A", composite: composite)], composite: composite)
+            for id in ["obsolete", "other"] {
+                let resolved = CeilingHangerComponents.resolve(for: system(composite: composite), plenumCM: 12, catalogue: cat, modelID: id)
+                XCTAssertNil(resolved[0].object?["reference_id"])
+                XCTAssertTrue(resolved[0].object?["name"]?.string?.contains("à préciser") == true)
+            }
+            XCTAssertNil(CeilingHangerComponents.resolve(for: system(composite: composite), plenumCM: 30, catalogue: cat, modelID: "A")[0].object?["reference_id"])
+        }
+    }
+    func testChoicesRespectSupportWholeMillimetersPublicationAndUniqueIDs() {
+        let cat = catalogue([model("A"), model("unpublished", status: "Proposé"), model("duplicate"), model("duplicate")])
+        XCTAssertEqual(CeilingHangerComponents.models(for: system(), plenumCM: 12, catalogue: cat).map(\.id), ["A"])
+        XCTAssertEqual(CeilingHangerComponents.resolve(for: system(), plenumCM: 12, catalogue: cat)[0].object?["reference_id"]?.string, "A")
+        XCTAssertNil(CeilingHangerComponents.resolve(for: system(), plenumCM: 12, catalogue: cat, modelID: "duplicate")[0].object?["reference_id"])
+        XCTAssertTrue(CeilingHangerComponents.models(for: system(), plenumCM: 12.05, catalogue: cat).isEmpty)
+        XCTAssertTrue(CeilingHangerComponents.models(for: system(support: "Dalle béton"), plenumCM: 12, catalogue: cat).isEmpty)
+        XCTAssertTrue(CeilingHangerComponents.models(for: system(), plenumCM: 16, catalogue: cat).isEmpty)
+        XCTAssertEqual(CeilingHangerComponents.models(for: system(support: "Plancher hourdis béton"), plenumCM: 16, catalogue: cat).map(\.id), ["A"])
+    }
+    func testModelRoundTripAndLegacyArchive() throws {
+        var c = CeilingConfiguration(length: 5, width: 4, hangerModelID: "B")
+        XCTAssertEqual(try JSONDecoder().decode(CeilingConfiguration.self, from: JSONEncoder().encode(c)), c)
+        c.hangerModelID = nil
+        let oldData = try JSONEncoder().encode(c)
+        XCTAssertFalse(String(decoding: oldData, as: UTF8.self).contains("hangerModelID"))
+        XCTAssertNil(try JSONDecoder().decode(CeilingConfiguration.self, from: oldData).hangerModelID)
+    }
+    func testCombinedQuantitiesUseSavedModelAndKeepAccessoryCounts() {
+        let c = CeilingConfiguration(length: 5, width: 4, support: "Plancher bois horizontal", plenum: 12,
+                                     fixingSystemID: "fix", hangerModelID: "B")
+        let work = WorkItem(id: UUID(), projectID: UUID(), name: "Plafond", type: .ceilingOnFurring,
+                            configuration: c, createdAt: Date(), updatedAt: Date())
+        let result = CombinedQuantityCalculator.calculate(works: [work], catalogue: catalogue([model("A"), model("B")]))
+        XCTAssertNil(result.supplies.first { $0.name == "A" })
+        XCTAssertEqual(result.supplies.first { $0.name == "B" }?.quantity, 40)
+        XCTAssertEqual(result.supplies.first { $0.name == "Vis de fixation" }?.quantity, 80)
+    }
+}
+
 final class GalvanizedHangerSelectionTests: XCTestCase {
     private var records: [CeilingReferenceRecord] {
         let lengths = [80, 180, 240, 300, 400, 500, 600]

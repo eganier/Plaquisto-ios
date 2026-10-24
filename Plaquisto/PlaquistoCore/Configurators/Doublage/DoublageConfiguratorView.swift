@@ -520,7 +520,7 @@ struct DoublageConfiguratorView: View {
             sectionTitle("Traitement des bandes à joint")
             card {
                 Toggle("Prévoir le traitement des bandes", isOn: $jointTreatment)
-                if jointTreatment { Divider(); Picker("Type d’enduit", selection: $compound) { ForEach(Compound.allCases) { Text($0.rawValue).tag($0) } } }
+                if jointTreatment { Divider(); AtlantiquePicker("Type d’enduit", selection: $compound) { ForEach(Compound.allCases) { Text($0.rawValue).tag($0) } } }
             }
         }
     }

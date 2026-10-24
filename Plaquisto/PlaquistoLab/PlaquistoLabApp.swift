@@ -128,6 +128,8 @@ struct PlaquistoLabApp: App {
     @ViewBuilder private func auditScreen(_ name: String) -> some View {
         switch name {
         case "ceiling": CeilingConfiguratorView(initialConfiguration: CeilingConfiguration(length: 5, width: 4))
+        case "ceiling-fixings": CeilingConfiguratorView(initialConfiguration: CeilingConfiguration(length: 5, width: 4,
+            support: "Plancher bois horizontal", plenum: 12, fixingSystemID: "FIX-BOIS-GALVA"))
         case "furring": FurringLiningConfiguratorView(onSave: { _ in }, showsCloseButton: false)
         case "lining": DoublageConfiguratorView(onSave: { _ in }, showsCloseButton: false)
         case "partition": CloisonDistributionConfiguratorView(onSave: { _ in }, showsCloseButton: false)

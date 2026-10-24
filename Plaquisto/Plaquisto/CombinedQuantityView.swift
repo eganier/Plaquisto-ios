@@ -897,7 +897,7 @@ enum CombinedQuantityCalculator {
                 }
             }
             if let system = catalogue.systemesFixation.first(where: { $0.id == configuration.fixingSystemID }) {
-                for component in CeilingHangerComponents.resolve(for: system, plenumCM: configuration.plenum, catalogue: catalogue) {
+                for component in CeilingHangerComponents.resolve(for: system, plenumCM: configuration.plenum, catalogue: catalogue, modelID: configuration.hangerModelID) {
                     guard let object = component.object,
                           let name = object["name"]?.string,
                           let ratio = object["quantity"]?.number,

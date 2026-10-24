@@ -57,6 +57,8 @@ struct CeilingConfiguration: Codable, Equatable {
     var insulationThickness: Double = 0
     var selectedSpacing: Double = 0.6
     var fixingSystemID: String = ""
+    // nil keeps the automatic catalogue recommendation for existing archives.
+    var hangerModelID: String? = nil
     var layers = 1
     var firstSkin: [FacingSelection] = []
     var secondSkin: [FacingSelection] = []
