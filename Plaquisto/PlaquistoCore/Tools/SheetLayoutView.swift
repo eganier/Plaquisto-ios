@@ -676,9 +676,12 @@ struct SheetLayoutView: View {
             if model.document != nil {
                 if onSaveDocument == nil {
                     ToolbarItem(placement:.topBarLeading) {
-                        Button { model.saveCurrentAndClose() } label: { Image(systemName:"chevron.left") }
+                        Button { model.saveCurrentAndClose() } label: {
+                            if atlantique { AtlantiqueToolbarGlyph(symbol: "chevron.left") }
+                            else { Image(systemName:"chevron.left") }
+                        }
                             .accessibilityLabel("Retour aux calepinages sauvegardés")
-                    }
+                    }.atlantiqueToolbarBackground(atlantique)
                 }
                 ToolbarItemGroup(placement: .topBarTrailing) {
                     Button("Enregistrer") {
@@ -688,7 +691,7 @@ struct SheetLayoutView: View {
                                 pendingSharedFrameSave = document
                             } else { saveLinked(document) }
                         } else { model.saveCurrentAndClose(); selectedVertex = nil }
-                    }.foregroundStyle(atlantique ? Color.white : Color.accentColor)
+                    }.atlantiqueToolbarAction(primary: true)
                     Menu {
                         if onSaveDocument == nil {
                             Button("Retour aux calepinages", systemImage: "list.bullet") { model.saveCurrentAndClose(); selectedVertex = nil }
@@ -1240,7 +1243,8 @@ struct SheetLayoutView: View {
                         }
                     }
                     .overlay(alignment: .bottomTrailing) {
-                        if mode == .grid || (mode == .framing && document.surface.kind == .ceiling) {
+                        if (mode == .grid || mode == .framing) &&
+                            (document.surface.kind == .ceiling || (!atlantique && mode == .grid) || Atlantique.Book.showsAdvancedFormControls) {
                             VStack(spacing:8) {
                                 orientationButton(document)
                                 if document.surface.kind == .ceiling { HStack(spacing: 8) {
@@ -2085,8 +2089,10 @@ struct SheetLayoutView: View {
                 zoom = 1; pan = .zero; selectedVertex = nil
             }
         case .settings:
-            if let document = model.document, let layer = document.layers.first {
-                LayoutSettingsForm(layer: layer, surface:document.surface) { value in var copy = document; copy.layers[0] = value; model.apply(copy) }.environmentObject(catalogue)
+            if let document = model.document, !document.layers.isEmpty {
+                LayoutSettingsForm(layers: document.layers, surface:document.surface) { values in
+                    var copy = document; copy.layers = values; model.apply(copy)
+                }.environmentObject(catalogue)
             }
         case .furring:
             if let document = model.document, let layer = document.layers.first {

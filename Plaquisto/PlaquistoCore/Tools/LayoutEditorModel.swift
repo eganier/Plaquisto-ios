@@ -11,6 +11,18 @@ struct LayoutCatalogFormat: Identifiable, Hashable {
     var fourTaperedEdges = false
     var family = ""
     var function = ""
+    var functionTitle: String {
+        switch function {
+        case "standard": return "Standard"
+        case "hydrofuge": return "Hydrofuge H1"
+        case "incendie": return "Protection incendie"
+        case "phonique": return "Phonique"
+        case "haute_durete": return "Haute dureté"
+        case "quatre_bords_amincis": return "Quatre bords amincis"
+        case "tres_haute_resistance_eau": return "Très haute résistance à l’eau"
+        default: return title // Preserve unrecognized catalog functions instead of labelling them Standard.
+        }
+    }
     static func identifier(productID: String, width: Double, length: Double) -> String {
         "\(productID)-\(width)-\(length)"
     }

@@ -89,7 +89,7 @@ struct PlaquistoLabApp: App {
                             case "partition": await auditPartition.load()
                             case "bonded": await auditBonded.load()
                             case "adhesive": await auditAdhesive.load()
-                            case "partition-height", "lining-height", "span", "spacing": await auditTechnical.load()
+                            case "partition-height", "lining-height", "span", "spacing", "quick-layout", "quick-ceiling": await auditTechnical.load()
                             default: break
                             }
                         }
@@ -155,6 +155,10 @@ struct PlaquistoLabApp: App {
         case "electrical": LayoutWallElectricalForm(surface: auditWall, layer: .init(), lighting: auditLighting, onSave: { _ in })
         case "electrical-point": LayoutWallPointForm(lighting: auditLighting, index: 1, surface: auditWall, onSave: { _ in })
         case "model": ScannerDebugView(onOpenAccount: {})
+        case "quick-layout", "quick-ceiling":
+            SheetLayoutView(initialDocument: .init(surface: .init(name: "Calepinage de test",
+                kind: name == "quick-ceiling" ? .ceiling : .wall,
+                contour: auditWall.contour), layers: [.init(furring: .init())]))
         case "project", "work", "configuration", "quantity", "settings", "catalogue", "about", "survey", "layout":
             AtlantiqueAuditDestination(name: name)
         default: ContrastLabRoot()

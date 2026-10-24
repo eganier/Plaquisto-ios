@@ -426,23 +426,94 @@ struct LayoutVertexForm: View {
 struct LayoutSettingsForm: View {
     @Environment(\.usesAtlantiqueDesign) private var atlantique
     @Environment(\.dismiss) private var dismiss
-    @EnvironmentObject private var catalogue: ToolTechnicalStore
-    let onSave: (LayoutLayer) -> Void
     let surface: Surface2D
-    @State private var layer: LayoutLayer
+    let onSave: ([LayoutLayer]) -> Void
+    @State private var layers: [LayoutLayer]
+
+    init(layers: [LayoutLayer], surface: Surface2D, onSave: @escaping ([LayoutLayer]) -> Void) {
+        self.surface = surface
+        self.onSave = onSave
+        _layers = State(initialValue: layers.map {
+            var copy = $0
+            copy.materializeFurringOrientation()
+            return copy.forSurface(surface)
+        })
+    }
+
+    var body: some View {
+        NavigationStack {
+            AtlantiqueForm(bookLayout: true) {
+                ForEach($layers) { $layer in
+                    let index = layers.firstIndex(where: { $0.id == layer.id }) ?? 0
+                    Section {
+                        LayoutFacingFields(number: index + 1, surface: surface, layer: $layer)
+                        if index > 0 {
+                            Button("Retirer le parement \(index + 1)", role: .destructive) {
+                                layers = LayoutFacingDraft.removing(at: index, from: layers)
+                            }.accessibilityIdentifier("layout.facing.remove.\(index)")
+                        }
+                    }
+                }
+                if layers.count == 1 {
+                    Section {
+                        Button {
+                            layers = LayoutFacingDraft.addingSecond(to: layers)
+                        } label: {
+                            HStack {
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text("Parement 2").font(.headline)
+                                    Text("Ajouter une deuxième peau").font(.caption).foregroundStyle(.secondary)
+                                }
+                                Spacer()
+                                Image(systemName: "plus").foregroundStyle(atlantique ? Atlantique.Palette.actionInk : Color.accentColor)
+                            }.frame(minHeight: 48).contentShape(Rectangle())
+                        }.buttonStyle(.plain).accessibilityIdentifier("layout.facing.add")
+                    }
+                }
+            }
+            .scrollDismissesKeyboard(.interactively)
+            .navigationTitle("Parements").atlantiqueFormPage("Parements").navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Annuler") { dismiss() }.atlantiqueToolbarAction()
+                }.atlantiqueToolbarBackground(atlantique)
+                ToolbarItem(placement: .confirmationAction) {
+                    Button(atlantique ? "Enregistrer" : "Appliquer") { save() }
+                        .atlantiqueToolbarAction(primary: true).disabled(!LayoutFacingDraft.canApply(layers))
+                }.atlantiqueToolbarBackground(atlantique)
+            }
+            .safeAreaInset(edge: .bottom) {
+                if atlantique {
+                    Button("Appliquer") { save() }.atlantiqueActionStyle().disabled(!LayoutFacingDraft.canApply(layers))
+                        .padding(20).background(Atlantique.Palette.blue)
+                }
+            }
+        }
+    }
+
+    private func save() {
+        guard LayoutFacingDraft.canApply(layers) else { return }
+        onSave(layers)
+        dismiss()
+    }
+}
+
+private struct LayoutFacingFields: View {
+    @Environment(\.usesAtlantiqueDesign) private var atlantique
+    @EnvironmentObject private var catalogue: ToolTechnicalStore
+    let number: Int
+    let surface: Surface2D
+    @Binding var layer: LayoutLayer
     @State private var compatibilityMessage: String?
     private var selectedFormat:LayoutCatalogFormat? { catalogue.layoutFormats.first { $0.id == layer.catalogFormatID } }
-    private var canApply: Bool {
-        layer.sheetWidth >= 1 && layer.sheetLength >= 1 && layer.sheetWidth <= 100_000 && layer.sheetLength <= 100_000
-            && (layer.furring == nil || !LayoutPlanning.compatibleSpacings(layer).isEmpty)
-    }
     private var families:[String] { Array(Set(catalogue.layoutFormats.map(\.family))).sorted() }
     private var products:[LayoutCatalogFormat] {
         var seen=Set<String>()
         return catalogue.layoutFormats.filter { $0.family == selectedFormat?.family && seen.insert($0.productID ?? $0.id).inserted }
     }
     private var dimensions:[LayoutCatalogFormat] {
-        guard let product=selectedFormat?.productID else { return [] }
+        guard let selectedFormat else { return [] }
+        guard let product=selectedFormat.productID else { return [selectedFormat] }
         return catalogue.layoutFormats.filter { $0.productID == product }
     }
     private func select(_ format:LayoutCatalogFormat?) {
@@ -451,17 +522,23 @@ struct LayoutSettingsForm: View {
         layer.sheetWidth=format.width; layer.sheetLength=format.length
         layer.fourTaperedEdges=format.fourTaperedEdges
     }
-    init(layer: LayoutLayer, surface: Surface2D, onSave: @escaping (LayoutLayer) -> Void) {
-        self.surface = surface; self.onSave = onSave
-        var copy = layer
-        copy.materializeFurringOrientation()
-        _layer = State(initialValue: copy.forSurface(surface))
+    private var functionSelection: Binding<String> {
+        Binding(get: {
+            guard let format = selectedFormat else { return "" }
+            return format.productID ?? format.id
+        }, set: { product in
+            let candidates = catalogue.layoutFormats.filter { ($0.productID ?? $0.id) == product }
+            select(candidates.first { $0.width == layer.sheetWidth && $0.length == layer.sheetLength } ?? candidates.first)
+        })
+    }
+    private var functionPicker: some View {
+        AtlantiquePicker("Fonction", selection: functionSelection) {
+            ForEach(products) { format in Text(format.functionTitle).tag(format.productID ?? format.id) }
+        }
     }
     var body: some View {
-        NavigationStack {
-            AtlantiqueForm(bookLayout: true) {
-                Section {
-                    if atlantique { Text("Parement 1").font(Atlantique.Typography.button); Divider() }
+        Group {
+                    if atlantique { Text("Parement \(number)").font(Atlantique.Typography.button); Divider() }
                     AtlantiquePicker("Type de plaque",selection:Binding(get:{selectedFormat?.family ?? ""},set:{ family in
                         select(catalogue.layoutFormats.first { $0.family == family && $0.width == layer.sheetWidth && $0.length == layer.sheetLength }
                             ?? catalogue.layoutFormats.first { $0.family == family })
@@ -471,10 +548,7 @@ struct LayoutSettingsForm: View {
                     }
                     if selectedFormat != nil {
                         if atlantique { Divider() }
-                        AtlantiquePicker("Fonction",selection:Binding(get:{selectedFormat?.productID ?? ""},set:{ product in
-                            select(catalogue.layoutFormats.first { $0.productID == product && $0.width == layer.sheetWidth && $0.length == layer.sheetLength }
-                                ?? catalogue.layoutFormats.first { $0.productID == product })
-                        })) { ForEach(products) { Text($0.title).tag($0.productID ?? "") } }
+                        functionPicker
                         if atlantique {
                             Divider()
                             AtlantiquePicker("Dimension", selection: Binding(get: { layer.catalogFormatID ?? "" }, set: { id in
@@ -495,7 +569,6 @@ struct LayoutSettingsForm: View {
                     }
                     if catalogue.layoutFormats.isEmpty { Text("Catalogue indisponible : le parement enregistré est conservé.").font(.footnote).foregroundStyle(.secondary) }
                     if let compatibilityMessage { Label(compatibilityMessage,systemImage:"exclamationmark.triangle.fill").foregroundStyle(.orange) }
-                }
                 if surface.kind == .wall && (!atlantique || Atlantique.Book.showsAdvancedFormControls) { AtlantiqueSection("Pose") {
                     Toggle("Pose en quinconce",isOn:Binding(get:{layer.staggered == true},set:{ value in
                         layer.staggered=value; layer.staggerOffset=nil
@@ -510,22 +583,9 @@ struct LayoutSettingsForm: View {
                     }
                 } }
             }
-            .scrollDismissesKeyboard(.interactively)
-            .onChange(of:layer.sheetLength) { _,_ in reconcileSpacing() }
-            .onChange(of:layer.sheetWidth) { _,_ in reconcileSpacing() }
-            .onChange(of:layer.orientation) { _,_ in reconcileSpacing() }
-            .navigationTitle("Plaques et pose").atlantiqueFormPage(atlantique ? "Parements" : "Plaques et pose").navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button("Annuler") { dismiss() }.atlantiqueToolbarAction() }.atlantiqueToolbarBackground(atlantique)
-                ToolbarItem(placement: .confirmationAction) { Button(atlantique ? "Enregistrer" : "Appliquer") { onSave(layer); dismiss() }.atlantiqueToolbarAction(primary: true).disabled(!canApply) }.atlantiqueToolbarBackground(atlantique)
-            }
-            .safeAreaInset(edge: .bottom) {
-                if atlantique {
-                    Button("Appliquer") { onSave(layer); dismiss() }.atlantiqueActionStyle().disabled(!canApply)
-                        .padding(20).background(Atlantique.Palette.blue)
-                }
-            }
-        }
+        .onChange(of:layer.sheetLength) { _,_ in reconcileSpacing() }
+        .onChange(of:layer.sheetWidth) { _,_ in reconcileSpacing() }
+        .onChange(of:layer.orientation) { _,_ in reconcileSpacing() }
     }
     private func reconcileSpacing() {
         layer.materializeFurringOrientation()

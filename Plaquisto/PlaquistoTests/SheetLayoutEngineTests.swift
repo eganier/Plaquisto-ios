@@ -3,6 +3,71 @@ import SwiftUI
 @testable import Plaquisto
 
 final class SheetLayoutEngineTests: XCTestCase {
+    func testQuickFacingFunctionLabelsDoNotRepeatTheBoardFamily() {
+        var format = LayoutCatalogFormat(id: "test", title: "BA13", width: 1200, length: 2400, function: "standard")
+        XCTAssertEqual(format.functionTitle, "Standard")
+        format.function = "hydrofuge"
+        XCTAssertEqual(format.functionTitle, "Hydrofuge H1")
+        format.function = "quatre_bords_amincis"
+        XCTAssertEqual(format.functionTitle, "Quatre bords amincis")
+        format.function = "future_catalog_function"
+        format.title = "Fonction spéciale du catalogue"
+        XCTAssertEqual(format.functionTitle, format.title)
+    }
+
+    func testQuickFacingDraftAddsDistinctSkinWithoutDuplicatingFrame() throws {
+        var first = LayoutLayer()
+        first.catalogFormatID = "saved-format"
+        first.offset = .init(x: 125, y: 75)
+        first.furring = .init(spacing: 600)
+        let added = LayoutFacingDraft.addingSecond(to: [first])
+        XCTAssertEqual(added.count, 2)
+        XCTAssertEqual(added[0], first)
+        XCTAssertNotEqual(added[0].id, added[1].id)
+        XCTAssertEqual(added[1].catalogFormatID, first.catalogFormatID)
+        XCTAssertEqual(added[1].offset.x, first.offset.x + first.cellWidth / 2)
+        XCTAssertNil(added[1].furring)
+        XCTAssertEqual(LayoutFacingDraft.addingSecond(to: added), added)
+        XCTAssertEqual(LayoutFacingDraft.removing(at: 1, from: added), [first])
+        XCTAssertEqual(LayoutFacingDraft.removing(at: 0, from: added), added)
+        XCTAssertEqual(LayoutFacingDraft.removing(at: 12, from: added), added)
+    }
+
+    func testQuickFacingDraftValidatesEverySkinAndKeepsLegacyLayers() throws {
+        let first = LayoutLayer()
+        var added = LayoutFacingDraft.addingSecond(to: [first])
+        XCTAssertTrue(LayoutFacingDraft.canApply(added))
+        added[1].sheetLength = .nan
+        XCTAssertFalse(LayoutFacingDraft.canApply(added))
+        added[1].sheetLength = 0
+        XCTAssertFalse(LayoutFacingDraft.canApply(added))
+        XCTAssertFalse(LayoutFacingDraft.canApply([]))
+        XCTAssertFalse(LayoutFacingDraft.canApply([first, first]))
+        let legacy = [first, LayoutLayer(), LayoutLayer()]
+        XCTAssertEqual(LayoutFacingDraft.addingSecond(to: legacy), legacy)
+        XCTAssertEqual(LayoutFacingDraft.removing(at: 1, from: legacy), [legacy[0], legacy[2]])
+    }
+
+    @MainActor func testQuickFacingDraftPersistsAllSkinsAndUndoRestoresWholeDocument() throws {
+        let suite = "test.quick-facing.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let editor = LayoutEditorModel(defaults: defaults)
+        var original = LayoutDocument(surface: surface(width: 4000, height: 3000), layers: [LayoutLayer()])
+        original.surface.openings = [.init(kind: .door, contour: [.init(x: 100,y: 0), .init(x: 1000,y: 0), .init(x: 1000,y: 2100), .init(x: 100,y: 2100)])]
+        editor.apply(original)
+        var changed = original
+        changed.layers = LayoutFacingDraft.addingSecond(to: original.layers)
+        editor.apply(changed)
+        editor.undo()
+        XCTAssertEqual(editor.document, original)
+        editor.redo()
+        XCTAssertEqual(editor.document, changed)
+        editor.saveCurrentAndClose()
+        let reopened = LayoutEditorModel(defaults: defaults)
+        XCTAssertEqual(reopened.savedDocuments.last?.document, changed)
+    }
+
     func testBookRectangleKeepsRightAnglesWhenEditingEitherOppositeSide() throws {
         let floor = LayoutFloorDraft.rectangle()
         let wide = try LayoutFloorDraft.changing(floor, index: 0, value: 5000, isAngle: false)

@@ -1,6 +1,32 @@
 import Foundation
 import CryptoKit
 
+/// Local draft operations: editing facing skins must not duplicate the shared frame.
+enum LayoutFacingDraft {
+    static func canApply(_ layers: [LayoutLayer]) -> Bool {
+        !layers.isEmpty && Set(layers.map(\.id)).count == layers.count && layers.allSatisfy {
+            $0.sheetWidth.isFinite && $0.sheetLength.isFinite
+                && (1...100_000).contains($0.sheetWidth) && (1...100_000).contains($0.sheetLength)
+                && ($0.furring == nil || !LayoutPlanning.compatibleSpacings($0).isEmpty)
+        }
+    }
+
+    static func addingSecond(to layers: [LayoutLayer]) -> [LayoutLayer] {
+        guard layers.count == 1, var second = layers.first else { return layers }
+        second.id = UUID()
+        second.offset.x += second.cellWidth / 2
+        second.furring = nil
+        return layers + [second]
+    }
+
+    static func removing(at index: Int, from layers: [LayoutLayer]) -> [LayoutLayer] {
+        guard index > 0, layers.indices.contains(index) else { return layers }
+        var result = layers
+        result.remove(at: index)
+        return result
+    }
+}
+
 /// One readable label per displayed length and direction. Never changes quantities
 /// or editable wall-distance callouts. Preferred indices are the visible segments.
 enum LayoutDimensionLabels {

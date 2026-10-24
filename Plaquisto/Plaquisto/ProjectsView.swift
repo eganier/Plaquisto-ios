@@ -1274,7 +1274,7 @@ struct SavedWorkView: View {
                     Button { dismiss() } label: { Image(systemName: "chevron.left") }
                         .accessibilityLabel("Fermer les réglages de parement")
                         .atlantiqueToolbarAction()
-                }
+                }.atlantiqueToolbarBackground()
             }
         }
         .safeAreaInset(edge: .top) {
