@@ -2,6 +2,132 @@ import XCTest
 import SwiftUI
 @testable import Plaquisto
 
+final class WorkLayoutFacingSyncTests: XCTestCase {
+    func testNewUnsavedComponentStartsWithEveryConfiguredSkin() throws {
+        var c = CeilingConfiguration(length: 4, width: 3)
+        c.layers = 2
+        c.firstSkin = [.init(facingID: "BA13", dimensionID: "1200x2400", area: 12)]
+        c.secondSkin = [.init(facingID: "HYDRO", dimensionID: "1200x2600", area: 12)]
+        let component = WorkLayoutDefaults.firstComponent(name: "Plafond", configuration: .ceiling(c))
+        let document = try XCTUnwrap(component.initialDocument(sideRoomID: nil, configuration: .ceiling(c)))
+        XCTAssertEqual(document.layers.count, 2)
+        XCTAssertTrue(document.layers[0].catalogFormatID?.hasPrefix("BA13-") == true)
+        XCTAssertTrue(try XCTUnwrap(document.layers.dropFirst().first).catalogFormatID?.hasPrefix("HYDRO-") == true)
+        XCTAssertEqual(document.surface, component.surface)
+        XCTAssertTrue(component.plans.isEmpty)
+    }
+
+    private func ceiling() -> WorkItem {
+        var config = CeilingConfiguration(length: 4, width: 3)
+        config.firstSkin = [.init(facingID: "BA13", dimensionID: "1200x2400", area: 12)]
+        let surface = Surface2D(name: "Plafond", kind: .ceiling,
+            contour: LayoutPreset.rectangle.contour(length: 4000, height: 3000, secondaryHeight: 0))
+        let doc = WorkLayoutDefaults.document(surface: surface, configuration: .ceiling(config))
+        var layer = doc.layers[0]; layer.offset = .init(x: 123, y: 456); layer.furring = nil
+        var work = WorkItem(id: UUID(), projectID: UUID(), name: "Plafond", type: .ceilingOnFurring,
+            configuration: config, createdAt: Date(), updatedAt: Date())
+        work.components = [.init(name: "Salon", surface: surface, plans: [.init(layers: [layer])], framing: doc.layers[0].furring)]
+        return work
+    }
+
+    func testAddingAndRemovingSkinPreservesGeometryAndFirstLayoutAndRefreshesQuantities() throws {
+        let original = ceiling()
+        var config = try XCTUnwrap(original.ceilingConfiguration)
+        config.layers = 2
+        config.secondSkin = [.init(facingID: "HYDRO", dimensionID: "1200x2600", area: 12)]
+        let doubled = WorkLayoutFacingSync.applying(.ceiling(config), to: original)
+        let first = original.components[0]
+        let component = doubled.components[0]
+        XCTAssertEqual(component.surface, first.surface)
+        XCTAssertEqual(component.framing, first.framing)
+        XCTAssertEqual(component.geometryRevision, first.geometryRevision)
+        XCTAssertEqual(component.plans[0].layers[0], first.plans[0].layers[0])
+        XCTAssertEqual(component.plans[0].layers.count, 2)
+        XCTAssertNotEqual(component.plans[0].layers[0].id, component.plans[0].layers[1].id)
+        XCTAssertTrue(component.plans[0].layers[1].catalogFormatID?.hasPrefix("HYDRO-") == true)
+        let takeoff = try XCTUnwrap(LayoutQuantityCalculator.validated(doubled))
+        XCTAssertEqual(takeoff.boardCoverage(0), 1)
+        XCTAssertEqual(takeoff.boardCoverage(1), 1)
+        XCTAssertEqual(takeoff.boards.count, 2)
+        config.layers = 1
+        let single = WorkLayoutFacingSync.applying(.ceiling(config), to: doubled)
+        XCTAssertEqual(single.components, original.components)
+        XCTAssertEqual(try XCTUnwrap(LayoutQuantityCalculator.validated(single)).boards.count, 1)
+    }
+
+    func testNonFacingChangesKeepManualPlansAndHistoricalExtraSkinsUntouched() throws {
+        var original = ceiling()
+        original.components[0].plans[0].layers[0].manualFacing = true
+        original.components[0].plans[0].layers[0].catalogFormatID = "custom"
+        var extra = original.components[0].plans[0].layers[0]; extra.id = UUID()
+        original.components[0].plans[0].layers.append(extra)
+        var config = try XCTUnwrap(original.ceilingConfiguration)
+        config.plenum = 25; config.compoundChoice = "pâte"
+        let updated = WorkLayoutFacingSync.applying(.ceiling(config), to: original)
+        XCTAssertEqual(updated.components, original.components)
+    }
+
+    func testChangingFormatPreservesOffsetIdentityAndIncompleteCatalogDoesNotEraseIt() throws {
+        let original = ceiling()
+        var config = try XCTUnwrap(original.ceilingConfiguration)
+        config.firstSkin = [.init(facingID: "HYDRO", dimensionID: "1200x2600", area: 12)]
+        let updated = WorkLayoutFacingSync.applying(.ceiling(config), to: original)
+        let layer = updated.components[0].plans[0].layers[0]
+        XCTAssertEqual(layer.id, original.components[0].plans[0].layers[0].id)
+        XCTAssertEqual(layer.offset, original.components[0].plans[0].layers[0].offset)
+        XCTAssertEqual(layer.sheetLength, 2600)
+        config.firstSkin = []
+        let unresolved = WorkLayoutFacingSync.applying(.ceiling(config), to: updated)
+        XCTAssertEqual(unresolved.components, updated.components)
+    }
+
+    func testPartitionFacesUseTheirOwnProductsAndKeepSharedFrameAndOpenings() throws {
+        var c = CloisonDistributionConfiguration()
+        c.enteredLength = 4; c.height = 3
+        c.faceAFirst = [.init(facingID: "A", formatID: "1200x2400", surface: 12)]
+        c.faceBFirst = [.init(facingID: "B", formatID: "1200x2400", surface: 12)]
+        var work = ceiling()
+        work.type = .distributionPartition; work.payload = .distributionPartition(c)
+        let a = UUID(), b = UUID()
+        work.components[0].surface?.kind = .wall
+        work.components[0].referenceSideRoomID = a
+        work.components[0].localLayoutSideIDs = [a,b]
+        work.components[0].plans = [.init(sideRoomID: a, layers: [.init()]), .init(sideRoomID: b, layers: [.init()])]
+        let before = work.components[0]
+        c.layers = 2
+        c.faceASecond = [.init(facingID: "A2", formatID: "1200x2600", surface: 12)]
+        c.faceBSecond = [.init(facingID: "B2", formatID: "1200x3000", surface: 12)]
+        let updated = WorkLayoutFacingSync.applying(.distributionPartition(c), to: work)
+        XCTAssertEqual(updated.components[0].surface, before.surface)
+        XCTAssertEqual(updated.components[0].framing, before.framing)
+        XCTAssertTrue(updated.components[0].plans[0].layers[1].catalogFormatID?.hasPrefix("A2-") == true)
+        XCTAssertTrue(updated.components[0].plans[1].layers[1].catalogFormatID?.hasPrefix("B2-") == true)
+        XCTAssertEqual(updated.components[0].plans[0].sideRoomID, a)
+        XCTAssertEqual(updated.components[0].plans[1].sideRoomID, b)
+    }
+
+    @MainActor func testStoreSavesBothSkinsAndReopensSamePlans() throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("facing-\(UUID()).json")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let store = ProjectStore(fileURL: url)
+        let project = try store.createProject(name: "Test", client: "", address: "", notes: "")
+        let original = ceiling()
+        var config = try XCTUnwrap(original.ceilingConfiguration)
+        let id = try store.createWork(projectID: project, name: "Plafond", type: .ceilingOnFurring, configuration: config)
+        _ = try store.addComponent(projectID: project, workID: id, name: "Salon")
+        let component = try XCTUnwrap(store.project(id: project)?.works.first?.components.first)
+        let document = try XCTUnwrap(original.components[0].document(for: original.components[0].plans[0]))
+        try store.saveComponentPlan(projectID: project, workID: id, componentID: component.id, sideRoomID: nil, document: document)
+        let saved = try XCTUnwrap(store.project(id: project)?.works.first)
+        config.layers = 2; config.secondSkin = config.firstSkin
+        try store.updateWork(saved, configuration: config)
+        let reopened = try XCTUnwrap(ProjectStore(fileURL: url).project(id: project)?.works.first)
+        XCTAssertEqual(reopened.ceilingConfiguration?.layers, 2)
+        XCTAssertEqual(reopened.components[0].plans[0].layers.count, 2)
+        XCTAssertEqual(try XCTUnwrap(LayoutQuantityCalculator.validated(reopened)).boardCoverage(1), 1)
+    }
+}
+
 final class PartitionRegressionTests: XCTestCase {
     func testInsulationDefaultTracksFrameWidthInsteadOfFirstThinRoll() {
         let wool = CloisonInsulation(id:"wool",title:"Laine de verre phonique",lambda:0.04,thicknessesMM:[30,45,60,70,85],maxOverFrameMM:10)

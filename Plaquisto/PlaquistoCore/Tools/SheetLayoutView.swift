@@ -549,6 +549,7 @@ struct SheetLayoutView: View {
     var initialDocument: LayoutDocument? = nil
     var newDocumentConfiguration: WorkConfiguration? = nil
     var onSaveDocument: ((LayoutDocument) throws -> Void)? = nil
+    var editWorkFacing: (() -> Void)? = nil
     var quantityProposal: (() throws -> LayoutQuantityTakeoff)? = nil
     var saveQuantityProposal: ((LayoutQuantityTakeoff) throws -> Void)? = nil
     @State private var quantityMessage: String?
@@ -565,7 +566,9 @@ struct SheetLayoutView: View {
          saveReviewedDocument: ((LayoutDocument, ComponentAdjacencyReview, ComponentAdjacencyDecision) throws -> Void)? = nil,
          workbook: LayoutWorkbookNavigation? = nil, newDocumentConfiguration: WorkConfiguration? = nil,
          quantityProposal: (() throws -> LayoutQuantityTakeoff)? = nil,
-         saveQuantityProposal: ((LayoutQuantityTakeoff) throws -> Void)? = nil) {
+         saveQuantityProposal: ((LayoutQuantityTakeoff) throws -> Void)? = nil,
+         editWorkFacing: (() -> Void)? = nil) {
+        self.editWorkFacing = editWorkFacing
         self.quantityProposal=quantityProposal; self.saveQuantityProposal=saveQuantityProposal
         self.newDocumentConfiguration = newDocumentConfiguration
         self.workbook = workbook
@@ -1288,7 +1291,11 @@ struct SheetLayoutView: View {
     }
 
     private func summaryCard(_ title:String,detail:String,symbol:String,destination:LayoutEditorSheet) -> some View {
-        Button { sheet = destination } label: {
+        Button {
+            if case .settings = destination, let editWorkFacing {
+                performAfterSaving(editWorkFacing)
+            } else { sheet = destination }
+        } label: {
             HStack(spacing:12) {
                 if !simplifiedInterface { Image(systemName:symbol).font(.title3).foregroundStyle(LayoutPreciseStyle.steel) }
                 VStack(alignment:.leading,spacing:4) {

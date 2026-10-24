@@ -83,7 +83,14 @@ struct WorkConfigurationShortcut: Identifiable, Equatable {
 private struct ConfigurationEntryStepKey: EnvironmentKey {
     static let defaultValue: Int? = nil
 }
+private struct ConfigurationEditsLayoutKey: EnvironmentKey {
+    static let defaultValue = false
+}
 extension EnvironmentValues {
+    var configurationEditsLayout: Bool {
+        get { self[ConfigurationEditsLayoutKey.self] }
+        set { self[ConfigurationEditsLayoutKey.self] = newValue }
+    }
     var configurationEntryStep: Int? {
         get { self[ConfigurationEntryStepKey.self] }
         set { self[ConfigurationEntryStepKey.self] = newValue }

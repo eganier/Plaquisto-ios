@@ -1,6 +1,7 @@
 import SwiftUI
 
 struct FurringLiningConfiguratorView: View {
+    @Environment(\.configurationEditsLayout) private var editsLayout
     @State private var chosenFurringSpacing: Double?
     @Environment(\.usesAtlantiqueDesign) private var atlantique
     @Environment(\.layoutCoveringAreaRatio) private var coveringAreaRatio
@@ -329,6 +330,9 @@ struct FurringLiningConfiguratorView: View {
         }
     private var footer: some View {
         HStack {
+            if editsLayout && allStepsAreValid, let onSave {
+                Button("Appliquer") { onSave(configurationSnapshot()) }.atlantiqueActionStyle()
+            } else {
             if step > 1 {
                 Button("Retour") { step -= 1 }.atlantiqueActionStyle(.secondary).frame(maxWidth: atlantique ? 112 : nil)
                     .formStepMenu(titles: stepNames, selection: $step, firstStep: 1, canShowResult: allStepsAreValid) {
@@ -342,6 +346,7 @@ struct FurringLiningConfiguratorView: View {
                 Button("Enregistrer") { onSave(configurationSnapshot()) }.atlantiqueToolbarAction(primary: true).disabled(!allStepsAreValid).atlantiqueActionStyle()
             } else {
                 Button("Recommencer") { reset() }.atlantiqueActionStyle()
+            }
             }
         }
         .padding(.horizontal, 20).padding(.vertical, 12).background(atlantique ? Atlantique.Palette.blue : Color(.systemBackground))

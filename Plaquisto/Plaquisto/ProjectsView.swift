@@ -752,6 +752,8 @@ private struct ComponentPlanEditorView: View {
     let sharedFraming: Bool
     var workbook: LayoutWorkbookNavigation? = nil
     @State private var openedComponent: WorkComponentRecord
+    @State private var editingFacing = false
+    @State private var editorRevision = UUID()
 
     init(projectID: UUID, workID: UUID, component: WorkComponentRecord, side: UUID?, kind: LayoutSupportKind, sharedFraming: Bool, workbook: LayoutWorkbookNavigation? = nil) {
         self.projectID = projectID; self.workID = workID; self.side = side
@@ -781,9 +783,20 @@ private struct ComponentPlanEditorView: View {
             return try LayoutQuantityCalculator.make(work:work,formats:catalogue.layoutFormats)
         } : nil, saveQuantityProposal: { proposal in
             try store.saveLayoutQuantityTakeoff(projectID:projectID,workID:workID,takeoff:proposal)
-        })
+        }, editWorkFacing: configuration?.layoutFacingEntryStep != nil ? { editingFacing = true } : nil)
+        .id(editorRevision)
         .environmentObject(catalogue)
         .task { await catalogue.load() }
+        .sheet(isPresented: $editingFacing, onDismiss: {
+            refreshOpenedComponent()
+            editorRevision = UUID()
+        }) {
+            if let work = store.project(id: projectID)?.works.first(where: { $0.id == workID }) {
+                NavigationStack {
+                    SavedWorkView(work: work, opensFacingStep: true)
+                }
+            }
+        }
     }
     private func refreshOpenedComponent() {
         if let current = store.project(id: projectID)?.works.first(where: { $0.id == workID })?.components.first(where: { $0.id == openedComponent.id }) {
@@ -1163,6 +1176,7 @@ struct SavedWorkView: View {
     let work: WorkItem
     var opensIsolationStep = false
     var startsAtBeginning = false
+    var opensFacingStep = false
     @State private var errorMessage = ""
     private var currentWork: WorkItem {
         SurveyWorkGeometry.workForRecalculation(store.project(id: work.projectID)?.works.first(where: { $0.id == work.id }) ?? work)
@@ -1263,6 +1277,8 @@ struct SavedWorkView: View {
             }
         }
         .environment(\.layoutCoveringAreaRatio, LayoutWorkGeometry.coveringAreaRatio(currentWork.layoutDocument))
+        .environment(\.configurationEntryStep, opensFacingStep ? currentWork.payload.layoutFacingEntryStep : nil)
+        .environment(\.configurationEditsLayout, opensFacingStep)
         .alert("Enregistrement impossible", isPresented: Binding(get: { !errorMessage.isEmpty }, set: { if !$0 { errorMessage = "" } })) { Button("OK") {} } message: { Text(errorMessage) }
     }
 }

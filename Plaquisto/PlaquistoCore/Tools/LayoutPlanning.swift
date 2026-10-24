@@ -255,7 +255,7 @@ enum AutomaticSurveyLayout {
         return Prepared(sourceSurfaces: work.components.compactMap(\.surface), configurationFingerprint: fingerprint, components: generated.components, record: record)
     }
 
-    private static func skins(_ payload: WorkConfiguration, opposite: Bool = false) -> [WorkConfiguration] {
+    static func skins(_ payload: WorkConfiguration, opposite: Bool = false) -> [WorkConfiguration] {
         switch payload {
         case .distributionPartition(let c):
             return (0..<c.layers).map { index in
@@ -278,6 +278,76 @@ enum AutomaticSurveyLayout {
         case .peripheralLining(let c): return c.quantities.map { .init(name: $0.name, quantity: $0.quantity, unit: $0.unit) }
         case .distributionPartition(let c): return c.quantities.map { .init(name: $0.name, quantity: $0.quantity, unit: $0.unit) }
         default: return []
+        }
+    }
+}
+
+/// A facing change in the ouvrage form also updates its saved plans. Geometry,
+/// lighting and shared framing are not reconstructed from the form rectangle.
+enum WorkLayoutFacingSync {
+    static func applying(_ configuration: WorkConfiguration, to original: WorkItem) -> WorkItem {
+        var work = original
+        work.payload = configuration
+        var changed = false
+        for c in work.components.indices {
+            for p in work.components[c].plans.indices {
+                let component = work.components[c]
+                let plan = component.plans[p]
+                guard let document = component.document(for: plan), !plan.layers.isEmpty else { continue }
+                let opposite = component.isOppositeSide(plan.sideRoomID)
+                let oldSkins = AutomaticSurveyLayout.skins(original.payload, opposite: opposite)
+                let newSkins = AutomaticSurveyLayout.skins(configuration, opposite: opposite)
+                guard !newSkins.isEmpty else { continue }
+                let oldTemplates = oldSkins.map { WorkLayoutDefaults.document(surface: document.surface, configuration: $0).layers[0] }
+                let templates = newSkins.map { WorkLayoutDefaults.document(surface: document.surface, configuration: $0).layers[0] }
+                // Incomplete or historical allocations remain in the form. Never
+                // replace a known saved product with an unresolved placeholder.
+                guard templates.allSatisfy({ $0.catalogFormatID != nil }) else { continue }
+                let compositionChanged = oldTemplates.count != templates.count || templates.indices.contains { i in
+                    !oldTemplates.indices.contains(i) || !sameFacing(oldTemplates[i], templates[i])
+                }
+                guard compositionChanged else { continue }
+                work.components[c].plans[p].layers = templates.enumerated().map { i, template in
+                    if plan.layers.indices.contains(i), oldTemplates.indices.contains(i), sameFacing(oldTemplates[i], template) {
+                        return plan.layers[i]
+                    }
+                    var layer = plan.layers.indices.contains(i) ? plan.layers[i] : plan.layers[0]
+                    if !plan.layers.indices.contains(i) {
+                        layer.id = UUID()
+                        layer.offset.x += layer.cellWidth / 2
+                    }
+                    layer.sheetWidth = template.sheetWidth
+                    layer.sheetLength = template.sheetLength
+                    layer.catalogFormatID = template.catalogFormatID
+                    layer.fourTaperedEdges = template.fourTaperedEdges
+                    layer.manualFacing = false
+                    layer.furring = nil // Stored once on the component, shared by all skins.
+                    return layer.forSurface(document.surface)
+                }
+                changed = true
+            }
+        }
+        if changed {
+            work.automaticLayout = nil // Do not retain purchases for a removed skin.
+            work.layoutQuantityTakeoff = try? LayoutQuantityCalculator.make(work: work, formats: [])
+        }
+        return work
+    }
+
+    private static func sameFacing(_ a: LayoutLayer, _ b: LayoutLayer) -> Bool {
+        a.catalogFormatID == b.catalogFormatID && a.sheetWidth == b.sheetWidth
+            && a.sheetLength == b.sheetLength && a.fourTaperedEdges == b.fourTaperedEdges
+    }
+}
+
+extension WorkConfiguration {
+    /// The actual ouvrage form is the single source of truth for all its skins.
+    var layoutFacingEntryStep: Int? {
+        switch self {
+        case .ceiling: 5
+        case .railStudCeiling, .peripheralLining, .furringLining: 2
+        case .distributionPartition: 3
+        default: nil
         }
     }
 }

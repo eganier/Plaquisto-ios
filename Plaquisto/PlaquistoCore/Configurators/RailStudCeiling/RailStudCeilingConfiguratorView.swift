@@ -317,6 +317,7 @@ private final class RailStudCeilingReferenceStore: ObservableObject {
 }
 
 struct RailStudCeilingConfiguratorView: View {
+    @Environment(\.configurationEditsLayout) private var editsLayout
     @Environment(\.usesAtlantiqueDesign) private var atlantique
     @Environment(\.layoutCoveringAreaRatio) private var coveringAreaRatio
     @StateObject private var references = RailStudCeilingReferenceStore()
@@ -515,6 +516,9 @@ struct RailStudCeilingConfiguratorView: View {
         }
     private var footer: some View {
         HStack {
+            if editsLayout && allStepsAreValid, let onSave {
+                Button("Appliquer") { onSave(configurationSnapshot()) }.atlantiqueActionStyle()
+            } else {
             if step > 0 {
                 Button("Retour") { goBack() }.atlantiqueActionStyle(.secondary).frame(maxWidth: atlantique ? 112 : nil)
                     .formStepMenu(titles: steps, selection: $step, visibleSteps: visibleStepIndices, canShowResult: allStepsAreValid) {
@@ -532,6 +536,7 @@ struct RailStudCeilingConfiguratorView: View {
                 Button("Recommencer") { reset() }.atlantiqueActionStyle()
             } else {
                 Button("Valider la configuration") { showingResult = true }.atlantiqueActionStyle()
+            }
             }
         }.padding().background(atlantique ? Atlantique.Palette.blue : Color(.systemBackground))
     }

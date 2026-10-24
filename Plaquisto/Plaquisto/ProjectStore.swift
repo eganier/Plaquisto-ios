@@ -1153,7 +1153,7 @@ final class ProjectStore: ObservableObject {
         var next = projects
         guard let projectIndex = next.firstIndex(where: { $0.id == work.projectID }),
               let workIndex = next[projectIndex].works.firstIndex(where: { $0.id == work.id }) else { throw StoreError.workNotFound }
-        next[projectIndex].works[workIndex].payload = .ceiling(configuration)
+        next[projectIndex].works[workIndex] = WorkLayoutFacingSync.applying(.ceiling(configuration), to: next[projectIndex].works[workIndex])
         next[projectIndex].works[workIndex].layoutNeedsRecalculation = false
         next[projectIndex].works[workIndex].updatedAt = Date()
         next[projectIndex].updatedAt = Date()
@@ -1164,7 +1164,7 @@ final class ProjectStore: ObservableObject {
         var next = projects
         guard let projectIndex = next.firstIndex(where: { $0.id == work.projectID }),
               let workIndex = next[projectIndex].works.firstIndex(where: { $0.id == work.id }) else { throw StoreError.workNotFound }
-        next[projectIndex].works[workIndex].payload = .railStudCeiling(railStudCeilingConfiguration)
+        next[projectIndex].works[workIndex] = WorkLayoutFacingSync.applying(.railStudCeiling(railStudCeilingConfiguration), to: next[projectIndex].works[workIndex])
         next[projectIndex].works[workIndex].layoutNeedsRecalculation = false
         next[projectIndex].works[workIndex].updatedAt = Date()
         next[projectIndex].updatedAt = Date()
@@ -1213,7 +1213,7 @@ final class ProjectStore: ObservableObject {
         var next = projects
         guard let projectIndex = next.firstIndex(where: { $0.id == work.projectID }),
               let workIndex = next[projectIndex].works.firstIndex(where: { $0.id == work.id }) else { throw StoreError.workNotFound }
-        next[projectIndex].works[workIndex].payload = .peripheralLining(doublageConfiguration)
+        next[projectIndex].works[workIndex] = WorkLayoutFacingSync.applying(.peripheralLining(doublageConfiguration), to: next[projectIndex].works[workIndex])
         next[projectIndex].works[workIndex].layoutNeedsRecalculation = false
         next[projectIndex].works[workIndex].updatedAt = Date()
         next[projectIndex].updatedAt = Date()
@@ -1224,7 +1224,7 @@ final class ProjectStore: ObservableObject {
         var next = projects
         guard let projectIndex = next.firstIndex(where: { $0.id == work.projectID }),
               let workIndex = next[projectIndex].works.firstIndex(where: { $0.id == work.id }) else { throw StoreError.workNotFound }
-        next[projectIndex].works[workIndex].payload = .distributionPartition(cloisonDistributionConfiguration)
+        next[projectIndex].works[workIndex] = WorkLayoutFacingSync.applying(.distributionPartition(cloisonDistributionConfiguration), to: next[projectIndex].works[workIndex])
         next[projectIndex].works[workIndex].layoutNeedsRecalculation = false
         next[projectIndex].works[workIndex].updatedAt = Date()
         next[projectIndex].updatedAt = Date()
@@ -1255,7 +1255,7 @@ final class ProjectStore: ObservableObject {
         var next = projects
         guard let projectIndex = next.firstIndex(where: { $0.id == work.projectID }),
               let workIndex = next[projectIndex].works.firstIndex(where: { $0.id == work.id }) else { throw StoreError.workNotFound }
-        next[projectIndex].works[workIndex].payload = .furringLining(furringLiningConfiguration)
+        next[projectIndex].works[workIndex] = WorkLayoutFacingSync.applying(.furringLining(furringLiningConfiguration), to: next[projectIndex].works[workIndex])
         next[projectIndex].works[workIndex].layoutNeedsRecalculation = false
         next[projectIndex].works[workIndex].updatedAt = Date()
         next[projectIndex].updatedAt = Date()

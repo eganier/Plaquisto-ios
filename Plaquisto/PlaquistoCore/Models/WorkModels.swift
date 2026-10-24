@@ -945,7 +945,14 @@ struct WorkComponentRecord: Identifiable, Codable, Equatable {
         guard let base = document(for: ComponentLayoutPlan(sideRoomID:sideRoomID)) else { return nil }
         guard let configuration else { return base }
         var result = WorkLayoutDefaults.document(surface:base.surface,configuration:configuration)
-        if framing != nil { result.layers[0].furring = base.layers.first?.furring }
+        let skins = AutomaticSurveyLayout.skins(configuration, opposite: isOppositeSide(sideRoomID))
+        if !skins.isEmpty {
+            result.layers = skins.map { WorkLayoutDefaults.document(surface: base.surface, configuration: $0).layers[0] }
+        }
+        for i in result.layers.indices {
+            result.layers[i] = WorkLayoutDefaults.resolvingSupport(result.layers[i], configuration: configuration)
+            if framing != nil { result.layers[i].furring = base.layers.first?.furring }
+        }
         return result
     }
 }

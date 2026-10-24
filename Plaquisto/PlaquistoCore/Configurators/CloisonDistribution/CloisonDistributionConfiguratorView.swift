@@ -1,6 +1,7 @@
 import SwiftUI
 
 struct CloisonDistributionConfiguratorView: View {
+    @Environment(\.configurationEditsLayout) private var editsLayout
     @Environment(\.usesAtlantiqueDesign) private var atlantique
     @Environment(\.layoutCoveringAreaRatio) private var coveringAreaRatio
     enum GeometryMode: String, CaseIterable, Identifiable {
@@ -316,6 +317,9 @@ struct CloisonDistributionConfiguratorView: View {
         }
     private var footer: some View {
         HStack {
+            if editsLayout && allStepsAreValid, let onSave {
+                Button("Appliquer") { onSave(configurationSnapshot()) }.atlantiqueActionStyle()
+            } else {
             if step > 1 {
                 Button("Retour") { step -= 1 }
                     .atlantiqueActionStyle(.secondary).frame(maxWidth: atlantique ? 112 : nil)
@@ -335,6 +339,7 @@ struct CloisonDistributionConfiguratorView: View {
             } else {
                 Button("Recommencer") { reset() }
                     .atlantiqueActionStyle()
+            }
             }
         }
         .padding(.horizontal, 20)

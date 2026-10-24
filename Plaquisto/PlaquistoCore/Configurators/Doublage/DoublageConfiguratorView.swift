@@ -1,6 +1,7 @@
 import SwiftUI
 
 struct DoublageConfiguratorView: View {
+    @Environment(\.configurationEditsLayout) private var editsLayout
     @Environment(\.usesAtlantiqueDesign) private var atlantique
     @Environment(\.layoutCoveringAreaRatio) private var coveringAreaRatio
     enum GeometryMode: String, CaseIterable, Identifiable { case length = "Longueur", surface = "Surface totale"; var id: Self { self } }
@@ -224,6 +225,9 @@ struct DoublageConfiguratorView: View {
         }
     private var footer: some View {
         HStack {
+            if editsLayout && allStepsAreValid, let onSave {
+                Button("Appliquer") { onSave(configurationSnapshot()) }.atlantiqueActionStyle()
+            } else {
             if step > 1 {
                 Button("Retour") { step -= 1 }.atlantiqueActionStyle(.secondary).frame(maxWidth: atlantique ? 112 : nil).tint(.green)
                     .formStepMenu(titles: stepNames, selection: $step, firstStep: 1, canShowResult: allStepsAreValid)
@@ -234,6 +238,7 @@ struct DoublageConfiguratorView: View {
                 Button("Enregistrer") { onSave(configurationSnapshot()) }.atlantiqueToolbarAction(primary: true).disabled(!allStepsAreValid).atlantiqueActionStyle().tint(.green)
             } else {
                 Button("Recommencer") { reset() }.atlantiqueActionStyle().tint(.green)
+            }
             }
         }
         .padding(.horizontal, 20).padding(.vertical, 12).background(atlantique ? Atlantique.Palette.blue : Color(.systemBackground))

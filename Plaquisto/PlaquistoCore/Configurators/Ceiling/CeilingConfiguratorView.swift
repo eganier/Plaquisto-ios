@@ -41,6 +41,7 @@ private struct FacingDimension: Identifiable, Hashable {
 private typealias FacingAllocation = FacingSelection
 
 struct CeilingConfiguratorView: View {
+    @Environment(\.configurationEditsLayout) private var editsLayout
     @Environment(\.usesAtlantiqueDesign) private var atlantique
     @State private var suspensionSpacingCM: Double
     @Environment(\.layoutCoveringAreaRatio) private var coveringAreaRatio
@@ -493,6 +494,9 @@ struct CeilingConfiguratorView: View {
             AtlantiqueForm(bookLayout: true) { stepContent }
 
             HStack {
+                if editsLayout && allStepsAreValid {
+                    Button("Appliquer") { onSave(configuration) }.atlantiqueActionStyle()
+                } else {
                 if step > 0 {
                     Button("Retour") { withAnimation { step -= 1 } }.atlantiqueActionStyle(.secondary)
                         .frame(maxWidth: atlantique ? 112 : nil)
@@ -521,6 +525,7 @@ struct CeilingConfiguratorView: View {
                         .atlantiqueActionStyle()
                         .disabled(!allStepsAreValid)
                     }
+                }
                 }
             }
             .padding()

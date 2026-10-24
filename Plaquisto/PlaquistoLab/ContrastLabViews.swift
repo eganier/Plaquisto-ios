@@ -18,6 +18,10 @@ struct AtlantiqueAuditDestination: View {
                     if let survey = store.surveys(projectID: project.id).first { ProjectSurveyDetailView(surveyID: survey.id) }
                 case "work":
                     if let work = project.visibleWorks.first { LabWorkView(projectID: project.id, workID: work.id) }
+                case "layout":
+                    if let work = project.visibleWorks.first(where: { $0.type == .peripheralLiningFurrings }) {
+                        WorkLayoutWorkbookView(projectID: project.id, workID: work.id)
+                    }
                 default:
                     if let work = project.visibleWorks.first { LabWorkConfigurationView(projectID: project.id, workID: work.id) }
                 }
