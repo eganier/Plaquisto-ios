@@ -3,6 +3,34 @@ import SwiftUI
 @testable import Plaquisto
 
 final class SheetLayoutEngineTests: XCTestCase {
+    func testBookRectangleKeepsRightAnglesWhenEditingEitherOppositeSide() throws {
+        let floor = LayoutFloorDraft.rectangle()
+        let wide = try LayoutFloorDraft.changing(floor, index: 0, value: 5000, isAngle: false)
+        for i in wide.contour.indices { XCTAssertEqual(LayoutPolygonSolver.interiorAngle(at: i, in: wide.contour), 90, accuracy: 0.25) }
+        XCTAssertEqual((wide.contour[1] - wide.contour[0]).length, 5000, accuracy: 0.5)
+        XCTAssertEqual((wide.contour[3] - wide.contour[2]).length, 5000, accuracy: 0.5)
+        XCTAssertEqual(wide.contour[1].y, wide.contour[0].y, accuracy: 0.001, "Changing length must not rotate the rectangle")
+        XCTAssertEqual((wide.contour[2] - wide.contour[1]).length, 3000, accuracy: 0.001)
+        let narrow = try LayoutFloorDraft.changing(wide, index: 2, value: 4500, isAngle: false)
+        XCTAssertEqual((narrow.contour[1] - narrow.contour[0]).length, 4500, accuracy: 0.5)
+        XCTAssertEqual((narrow.contour[3] - narrow.contour[2]).length, 4500, accuracy: 0.5)
+        let taller = try LayoutFloorDraft.changing(narrow, index: 3, value: 3500, isAngle: false)
+        XCTAssertEqual((taller.contour[2] - taller.contour[1]).length, 3500, accuracy: 0.001)
+        XCTAssertEqual((taller.contour[1] - taller.contour[0]).length, 4500, accuracy: 0.001)
+        XCTAssertEqual(taller.contour[1].y, taller.contour[0].y, accuracy: 0.001)
+        XCTAssertEqual(floor.bounds.width, 4000, "The source floor is not mutated")
+    }
+
+    func testBookFloorAllowsExplicitAngleAndRejectsInvalidInput() throws {
+        let floor = LayoutFloorDraft.rectangle()
+        let changed = try LayoutFloorDraft.changing(floor, index: 0, value: 100, isAngle: true)
+        XCTAssertEqual(LayoutPolygonSolver.interiorAngle(at: 0, in: changed.contour), 100, accuracy: 0.25)
+        XCTAssertEqual(changed.provenance, "manual")
+        XCTAssertThrowsError(try LayoutFloorDraft.changing(floor, index: 0, value: .nan, isAngle: false))
+        XCTAssertThrowsError(try LayoutFloorDraft.changing(floor, index: 9, value: 120, isAngle: true))
+        XCTAssertThrowsError(try LayoutFloorDraft.changing(floor, index: 0, value: -1, isAngle: true))
+    }
+
     func testPlacementDimensionsMeasureActualConcaveBoundaryAndRotatedAxes() throws {
         let contour: [LayoutPoint] = [.init(x:0,y:0), .init(x:4000,y:0), .init(x:4000,y:2000),
             .init(x:2000,y:2000), .init(x:2000,y:4000), .init(x:0,y:4000)]

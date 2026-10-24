@@ -3,6 +3,23 @@ import SwiftUI
 @testable import Plaquisto
 
 final class ToolCalculatorTests: XCTestCase {
+    @MainActor func testBookOpeningDimensionsFitSideBySideWithoutChangingValues() throws {
+        for width: CGFloat in [280, 350] {
+            var length = 600.0, height = 1200.0
+            let fields = HStack(spacing: 16) {
+                LayoutDimensionField(title: "Largeur", millimetres: Binding(get: { length }, set: { length = $0 }))
+                Divider()
+                LayoutDimensionField(title: "Longueur", millimetres: Binding(get: { height }, set: { height = $0 }))
+            }.frame(width: width).fixedSize(horizontal: false, vertical: true).atlantiqueDesign()
+            let image = try XCTUnwrap(ImageRenderer(content: fields).uiImage)
+            XCTAssertEqual(image.size.width, width)
+            XCTAssertGreaterThanOrEqual(image.size.height, 44)
+            XCTAssertLessThan(image.size.height, 150)
+            XCTAssertEqual(length, 600)
+            XCTAssertEqual(height, 1200)
+        }
+    }
+
     func testBookFacingPresentationPreservesExceptionalAllocations() {
         XCTAssertTrue(Atlantique.Book.canUseSimpleFacingFields(areas: [20], total: 20))
         XCTAssertTrue(Atlantique.Book.canUseSimpleFacingFields(areas: [20, 20], total: 20))

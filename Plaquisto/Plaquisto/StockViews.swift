@@ -64,10 +64,12 @@ struct StockActionLabel: View {
     @Environment(\.isEnabled) private var isEnabled
     var title:String
     var symbol:String
+    var tone: Color? = nil
     var body: some View {
         Label(title,systemImage:symbol).font(.headline)
             .frame(maxWidth:.infinity,minHeight:56)
-            .foregroundStyle(atlantique ? Atlantique.Palette.ink : .white).background((atlantique ? Atlantique.Palette.orange : Color.blue).opacity(isEnabled ? 1 : 0.35),in:RoundedRectangle(cornerRadius:atlantique ? 12 : 18))
+            .foregroundStyle(atlantique && !isEnabled ? Atlantique.Palette.muted : atlantique && tone == nil ? Atlantique.Palette.ink : .white)
+            .background(atlantique && !isEnabled ? Atlantique.Palette.disabled : (tone ?? (atlantique ? Atlantique.Palette.orange : Color.blue)).opacity(isEnabled ? 1 : 0.35),in:RoundedRectangle(cornerRadius:atlantique ? 12 : 18))
     }
 }
 
@@ -457,6 +459,8 @@ private struct StockMovementView: View {
     }
     var body:some View {
         NavigationStack {
+            Group {
+            if atlantique { bookContent } else {
             AtlantiqueForm {
                 Section {
                     Text(product.name).font(.headline)
@@ -508,6 +512,8 @@ private struct StockMovementView: View {
                     }
                 }
                 if let error { Section { Text(error).foregroundStyle(.red) } }
+            }
+            }
             }.navigationTitle(kind.rawValue).atlantiqueFormPage(kind.rawValue).navigationBarTitleDisplayMode(.inline)
                 .onAppear {
                     if atlantique && packName == "barre" { packName = "unité" }
@@ -516,15 +522,78 @@ private struct StockMovementView: View {
                     }
                     initializedPack = true
                 }
-                .toolbar { ToolbarItem(placement:.cancellationAction) { Button("Annuler") { dismiss() }.atlantiqueToolbarAction() }; ToolbarItemGroup(placement:.keyboard) { Spacer(); Button("Terminé") { focused = false } } }
+                .toolbar {
+                    ToolbarItem(placement:.cancellationAction) { Button("Annuler") { dismiss() }.atlantiqueToolbarAction() }.atlantiqueToolbarBackground(atlantique)
+                    ToolbarItemGroup(placement:.keyboard) { if !atlantique { Spacer(); Button("Terminé") { focused = false } } }
+                }
                 .safeAreaInset(edge:.bottom) {
                     Button {
                         focused = false
                         if kind == .inventory, let amount, amount < stock.reserved(product.id) { confirmInventory = true } else { save() }
-                    } label: { StockActionLabel(title:kind == .inventory ? "Valider le comptage" : "Valider l’\(kind == .entry ? "entrée" : "sortie")",symbol:"checkmark") }
-                        .padding().background(.regularMaterial).disabled(amount == nil || (kind != .inventory && amount == 0))
+                    } label: { StockActionLabel(title:kind == .inventory ? "Valider le comptage" : "Valider l’\(kind == .entry ? "entrée" : "sortie")",symbol:atlantique && kind != .inventory ? (kind == .entry ? "arrow.up" : "arrow.down") : "checkmark", tone: atlantique && kind != .inventory ? (kind == .entry ? Atlantique.Palette.success : Atlantique.Palette.danger) : nil) }
+                        .padding(20).background(atlantique ? AnyShapeStyle(Atlantique.Palette.blue) : AnyShapeStyle(.regularMaterial))
+                        .disabled(amount == nil || (kind != .inventory && amount == 0))
                 }
                 .confirmationDialog("Ce comptage est inférieur aux réservations. Elles seront conservées et signalées comme à ajuster.",isPresented:$confirmInventory,titleVisibility:.visible) { Button("Confirmer le comptage") { save() } }
+        }
+    }
+    private var bookContent: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 18) {
+                AtlantiqueCard {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(product.name).font(Atlantique.Typography.button)
+                        Text("Actuellement : \(StockQuantity.text(stock.entry(product.id)?.quantity ?? 0)) \(product.unit)")
+                            .font(Atlantique.Typography.caption).foregroundStyle(Atlantique.Palette.muted)
+                    }
+                }
+                AtlantiqueSegmentedChoice(title: "Saisie", options: [(false, "Unités"), (true, "Conditionnement")], selection: $usesPack)
+                    .onChange(of: usesPack) { _, _ in quantity = usesPack ? "0" : ""; partialPack = 0 }
+                AtlantiqueCard {
+                    stockInput(usesPack ? "Conditionnements complets" : kind == .inventory ? "Quantité comptée" : "Quantité à \(kind == .entry ? "ajouter" : "sortir")", text: $quantity, unit: usesPack ? packName : product.unit)
+                }
+                if usesPack {
+                    AtlantiqueCard {
+                        stockInput("Contenu d’un conditionnement entier", text: $packSize, unit: product.unit)
+                    }
+                    AtlantiqueCard {
+                        VStack(spacing: 14) {
+                            HStack {
+                                Text("Conditionnement entamé").font(Atlantique.Typography.button)
+                                Spacer()
+                                Text("\(Int((partialPack * 100).rounded())) %").foregroundStyle(Atlantique.Palette.actionInk)
+                            }
+                            Slider(value: $partialPack, in: 0...1, step: 0.01).tint(Atlantique.Palette.orange)
+                                .accessibilityLabel("Remplissage du conditionnement entamé")
+                            HStack { Text("0 % · Vide"); Spacer(); Text("100 % · Complet") }
+                                .font(Atlantique.Typography.caption).foregroundStyle(Atlantique.Palette.muted)
+                        }
+                    }
+                }
+                if let amount {
+                    AtlantiqueCard {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text("Après validation").font(Atlantique.Typography.button)
+                            let current = stock.entry(product.id)?.quantity ?? 0
+                            Text("\(StockQuantity.text(kind == .inventory ? amount : kind == .entry ? current + amount : current - amount)) \(product.unit) en stock")
+                                .font(Atlantique.Typography.heading)
+                            if usesPack { Text("\(StockQuantity.text(amount)) \(product.unit) \(kind == .inventory ? "compté(s)" : kind == .entry ? "ajouté(s)" : "retiré(s)")").font(Atlantique.Typography.caption).foregroundStyle(Atlantique.Palette.muted) }
+                            if kind == .inventory { Text("Ce comptage remplace la quantité du stock.").font(Atlantique.Typography.caption).foregroundStyle(Atlantique.Palette.muted) }
+                        }
+                    }
+                }
+                if let error { AtlantiqueCard { Text(error).foregroundStyle(Atlantique.Palette.danger) } }
+            }.padding(20)
+        }
+    }
+    private func stockInput(_ title: String, text: Binding<String>, unit: String) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(title).font(Atlantique.Typography.caption).foregroundStyle(Atlantique.Palette.muted)
+            HStack {
+                PlaquistoNumericField(text: text).font(Atlantique.Typography.heading).frame(minHeight: 38)
+                    .accessibilityLabel(title)
+                Text(unit).font(Atlantique.Typography.caption).foregroundStyle(Atlantique.Palette.muted)
+            }
         }
     }
     private func save() {
@@ -545,6 +614,17 @@ private struct StockLegacySearch: ViewModifier {
         if enabled { content.searchable(text: $text, prompt: "Chercher une fourniture") } else { content }
     }
 }
+
+#if targetEnvironment(simulator)
+/// Read-only launch fixture; does not create a movement unless explicitly saved.
+struct StockBookAuditView: View {
+    let route: String
+    var body: some View {
+        StockMovementView(kind: route == "stock-exit" ? .exit : route == "stock-inventory" ? .inventory : .entry,
+            product: .init(name: "Vis TTPC 25", unit: "unités"), done: {})
+    }
+}
+#endif
 
 enum StockTextExport {
     static func text(_ entries: [StockEntry]) -> String {

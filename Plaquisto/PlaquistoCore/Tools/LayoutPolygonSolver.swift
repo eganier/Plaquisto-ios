@@ -1,5 +1,46 @@
 import Foundation
 
+/// The rectangle shortcut owns its four right angles until the user explicitly
+/// edits an angle. A side edit therefore changes both opposite sides, not a trapezoid.
+enum LayoutFloorDraft {
+    static func rectangle() -> Surface2D {
+        let points = LayoutBounds(min: .zero, max: .init(x: 4000, y: 3000)).polygon
+        var intent = LayoutContourIntent(sketch: points)
+        intent.userAnglesDegrees = Array(repeating: 90, count: 4)
+        return Surface2D(name: "Sol", kind: .ceiling, contour: points, provenance: "preset", contourIntent: intent)
+    }
+
+    static func changing(_ original: Surface2D, index: Int, value: Double, isAngle: Bool) throws -> Surface2D {
+        guard original.contour.indices.contains(index), value.isFinite, value > 0 else { throw LayoutGeometryError.invalidContour }
+        var updated = original, intent = original.editableIntent
+        if isAngle {
+            if original.provenance == "preset" {
+                intent.userAnglesDegrees = Array(repeating: nil, count: original.contour.count)
+                updated.provenance = "manual"
+            }
+            intent.userAnglesDegrees[index] = value
+        } else {
+            intent.userMeasuredLengths[index] = value
+            if original.provenance == "preset", original.contour.count == 4 {
+                intent.userMeasuredLengths[(index + 2) % 4] = value
+                // Seed the exact rectangle so the generic solver cannot rotate it
+                // or drift the unedited side while distributing the length change.
+                let origin = original.contour[0]
+                let a = original.contour[1] - origin, b = original.contour[3] - origin
+                guard a.length > 0, b.length > 0 else { throw LayoutGeometryError.invalidContour }
+                let u = a * (1 / a.length)
+                let v = LayoutPoint(x: -u.y, y: u.x) * (LayoutGeometry.cross(a, b) >= 0 ? 1 : -1)
+                let width = index % 2 == 0 ? value : a.length
+                let height = index % 2 == 1 ? value : b.length
+                intent.sketch = [origin, origin + u * width, origin + u * width + v * height, origin + v * height]
+            }
+            intent.lockedLengthIndices = Array(Set((intent.lockedLengthIndices ?? []) + [index]))
+        }
+        try updated.resolve(intent)
+        return updated
+    }
+}
+
 /// Transient gesture constraints, never persisted as angle or vertex locks.
 enum LayoutContourSnap: Equatable {
     case straight

@@ -260,6 +260,8 @@ struct LayoutLightingSpacingForm: View {
 }
 
 struct LayoutWallElectricalForm: View {
+    @Environment(\.usesAtlantiqueDesign) private var atlantique
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.dismiss) private var dismiss
     let surface:Surface2D
     let layer:LayoutLayer
@@ -269,11 +271,17 @@ struct LayoutWallElectricalForm: View {
     @State private var count = 3
     @State private var height = 0.0
     @State private var error:String?
+    @State private var selectedPoint: Int?
+    @State private var dimensionID = 0
+    @State private var editingRow = false
+    @State private var previousRow: Double?
     init(surface:Surface2D,layer:LayoutLayer,lighting:LayoutLighting?,onSave:@escaping(LayoutLighting?)->Void) {
         self.surface = surface; self.layer = layer; self.onSave = onSave; _lighting = State(initialValue:lighting)
     }
     var body:some View {
         NavigationStack {
+            Group {
+            if atlantique { bookContent } else {
             AtlantiqueForm {
                 Section {
                     ZStack {
@@ -342,13 +350,167 @@ struct LayoutWallElectricalForm: View {
                 }
                 Section { Text("Plan géométrique d’implantation, sans validation des règles électriques ni des distances réglementaires.").font(.footnote).foregroundStyle(.secondary) }
             }
+            }
+            }
             .scrollDismissesKeyboard(.interactively)
-            .navigationTitle("Prises et lumières").atlantiqueFormPage("Prises et lumières").navigationBarTitleDisplayMode(.inline)
+            .navigationTitle(atlantique ? "Électricité" : "Prises et lumières").atlantiqueFormPage("Électricité").navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement:.cancellationAction) { Button("Annuler") { dismiss() } }
-                ToolbarItem(placement:.confirmationAction) { Button("Appliquer") { onSave(lighting); dismiss() } }
+                ToolbarItem(placement:.cancellationAction) { Button("Annuler") { dismiss() }.atlantiqueToolbarAction() }.atlantiqueToolbarBackground(atlantique)
+                ToolbarItem(placement:.confirmationAction) { Button(atlantique ? "Enregistrer" : "Appliquer") { onSave(lighting); dismiss() }.atlantiqueToolbarAction(primary: true) }.atlantiqueToolbarBackground(atlantique)
+            }
+            .safeAreaInset(edge: .bottom) {
+                if atlantique {
+                    Button(selectedPoint == nil ? "Appliquer" : "Terminer") { onSave(lighting); dismiss() }
+                        .atlantiqueActionStyle().padding(20).background(Atlantique.Palette.blue)
+                }
+            }
+            .sheet(isPresented: $editingRow) { rowEditor }
+        }
+    }
+    private var rows: [Double] { LayoutWallLighting.heights(lighting, surface: surface) }
+    private var pointDimensions: [LayoutPlacementDimensions.Dimension] {
+        guard let i = selectedPoint, let lighting, lighting.positions.indices.contains(i) else { return [] }
+        return LayoutPlacementDimensions.dimensions(contour: surface.contour, center: lighting.positions[i])
+    }
+    private var pointDistance: Binding<Double> {
+        Binding(get: { pointDimensions.first { $0.id == dimensionID }?.distance ?? 0 }, set: { distance in
+            guard let i = selectedPoint, let lighting, lighting.positions.indices.contains(i),
+                  let dimension = pointDimensions.first(where: { $0.id == dimensionID }),
+                  let point = LayoutPlacementDimensions.movedCenter(lighting.positions[i], dimension: dimension, distance: distance) else { return }
+            do { self.lighting = try LayoutWallLighting.positioning(lighting, index: i, point: point, surface: surface); error = nil }
+            catch { self.error = "Cette position rencontre un bord, une ouverture ou un autre point." }
+        })
+    }
+    private var bookContent: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                Text(surface.name).font(Atlantique.Typography.caption).foregroundStyle(.white)
+                if let i = selectedPoint, let lighting, lighting.positions.indices.contains(i) {
+                    AtlantiqueCard {
+                        HStack {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(lighting.kind(at: i).rawValue + " sélectionnée").font(Atlantique.Typography.button)
+                                Text(layoutCM(lighting.positions[i].y - surface.bounds.min.y) + " du sol")
+                                    .font(Atlantique.Typography.caption).foregroundStyle(Atlantique.Palette.muted)
+                            }
+                            Spacer()
+                            Button("Réglages") { selectPoint(nil) }.foregroundStyle(Atlantique.Palette.actionInk)
+                        }.frame(minHeight: 44)
+                    }
+                } else {
+                    AtlantiqueCard {
+                        VStack(spacing: 10) {
+                            HStack {
+                                Text("Rangées").font(Atlantique.Typography.button)
+                                Spacer()
+                                Button { previousRow = nil; height = min(1200, surface.bounds.height / 2); editingRow = true } label: {
+                                    Image(systemName: "plus").frame(width: 44, height: 44)
+                                }.accessibilityLabel("Ajouter une rangée").foregroundStyle(Atlantique.Palette.actionInk)
+                            }
+                            Divider()
+                            if rows.isEmpty { Text("Ajoutez une hauteur avec +").font(Atlantique.Typography.caption).foregroundStyle(Atlantique.Palette.muted) }
+                            ForEach(Array(rows.enumerated()), id: \.element) { index, row in
+                                HStack {
+                                    Text("Rangée \(index + 1)")
+                                    Spacer()
+                                    Button { previousRow = row; height = row; editingRow = true } label: {
+                                        Text(layoutCM(row) + " du sol").font(Atlantique.Typography.caption)
+                                            .padding(12).background(Atlantique.Palette.selected, in: RoundedRectangle(cornerRadius: 10))
+                                    }.foregroundStyle(Atlantique.Palette.actionInk)
+                                }
+                            }
+                        }
+                    }
+                    Text("Équipement à placer").font(Atlantique.Typography.button).foregroundStyle(.white)
+                    AtlantiqueSegmentedChoice(title: "Équipement", options: LayoutElectricalKind.allCases.map { ($0, $0.rawValue) }, selection: $kind)
+                }
+                AtlantiqueCard { electricalPreview.frame(height: selectedPoint == nil ? 270 : 240) }
+                if selectedPoint != nil {
+                    AtlantiqueCard {
+                        VStack(spacing: 14) {
+                            AtlantiqueSegmentedChoice(title: "Cote", options: pointDimensions.map { ($0.id, $0.label) }, selection: $dimensionID)
+                            Divider()
+                            LayoutDimensionField(title: "Distance " + ["A", "B", "C", "D"][dimensionID], millimetres: pointDistance)
+                        }
+                    }
+                } else {
+                    Text(rows.isEmpty ? "Définissez une rangée pour placer vos équipements." : "Touchez le plan pour ajouter un point, ou une prise pour la positionner.")
+                        .font(Atlantique.Typography.caption).foregroundStyle(.white)
+                }
+                if let error { AtlantiqueCard { Text(error).foregroundStyle(Atlantique.Palette.danger) } }
+            }.padding(20)
+        }
+    }
+    private func selectPoint(_ value: Int?) {
+        withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.25)) { selectedPoint = value; error = nil }
+    }
+    private var electricalPreview: some View {
+        GeometryReader { proxy in
+            let viewport = LayoutViewport(bounds: surface.bounds, size: proxy.size, zoom: 1, pan: .zero)
+            Canvas { context, _ in
+                context.fill(layoutPath(surface.contour, transform: viewport), with: .color(Atlantique.Palette.paper))
+                context.stroke(layoutPath(surface.contour, transform: viewport), with: .color(Atlantique.Palette.ink), lineWidth: 1.5)
+                for opening in surface.openings {
+                    context.fill(layoutPath(opening.contour, transform: viewport), with: .color(.white))
+                    context.stroke(layoutPath(opening.contour, transform: viewport), with: .color(Atlantique.Palette.muted), lineWidth: 1)
+                }
+                for row in rows {
+                    for segment in LayoutWallLighting.rowSegments(height: row, surface: surface) {
+                        var path = Path(); path.move(to: viewport.screen(segment.start)); path.addLine(to: viewport.screen(segment.end))
+                        context.stroke(path, with: .color(Atlantique.Palette.blue.opacity(0.5)), style: .init(lineWidth: 1, dash: [4,4]))
+                    }
+                }
+                for dimension in pointDimensions {
+                    let active = dimension.id == dimensionID
+                    var path = Path(); path.move(to: viewport.screen(dimension.start)); path.addLine(to: viewport.screen(dimension.end))
+                    let color = active ? Atlantique.Palette.actionInk : Atlantique.Palette.ink
+                    context.stroke(path, with: .color(color), lineWidth: 1)
+                    let midpoint = viewport.screen((dimension.start + dimension.end) * 0.5)
+                    context.draw(Text("\(dimension.label) · \(layoutCM(dimension.distance))").font(.caption2).foregroundStyle(color), at: .init(x: midpoint.x, y: midpoint.y - 11))
+                }
+                if let lighting {
+                    for i in lighting.positions.indices {
+                        let p = viewport.screen(lighting.positions[i])
+                        let circle = Path(ellipseIn: .init(x: p.x-7, y: p.y-7, width: 14, height: 14))
+                        context.fill(circle, with: .color(i == selectedPoint ? Atlantique.Palette.orange : .white))
+                        context.stroke(circle, with: .color(Atlantique.Palette.blue), lineWidth: 1.2)
+                        context.draw(Text(lighting.kind(at:i) == .socket ? "··" : "+").font(.caption2).foregroundStyle(Atlantique.Palette.ink), at:p)
+                    }
+                }
+            }.contentShape(Rectangle()).onTapGesture { location in
+                if let lighting, let i = lighting.positions.indices.min(by: {
+                    let a = viewport.screen(lighting.positions[$0]), b = viewport.screen(lighting.positions[$1])
+                    return hypot(a.x-location.x, a.y-location.y) < hypot(b.x-location.x, b.y-location.y)
+                }) {
+                    let p = viewport.screen(lighting.positions[i])
+                    if hypot(p.x-location.x, p.y-location.y) < 24 { selectPoint(i); return }
+                }
+                guard selectedPoint == nil, !rows.isEmpty, (lighting?.count ?? 0) < 64 else { return }
+                let point = LayoutWallLighting.snapped(viewport.world(location), lighting: lighting, surface: surface, tolerance: surface.bounds.height)
+                do { lighting = try LayoutPlanning.addingSpot(to: lighting, at: point, surface: surface, kind: kind); error = nil }
+                catch { self.error = "Choisissez une position libre sur une rangée." }
             }
         }
+    }
+    private var rowEditor: some View {
+        NavigationStack {
+            AtlantiqueForm(bookLayout: true) {
+                Section { LayoutDimensionField(title: "Hauteur depuis le sol", millimetres: $height) }
+                if let error { Section { Text(error).foregroundStyle(Atlantique.Palette.danger) } }
+            }.atlantiqueFormPage("Rangée")
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) { Button("Annuler") { editingRow = false }.atlantiqueToolbarAction() }.atlantiqueToolbarBackground(atlantique)
+                }
+                .safeAreaInset(edge: .bottom) {
+                    Button("Appliquer") {
+                        do {
+                            var next = try LayoutWallLighting.addingRow(lighting, height: height, surface: surface)
+                            if let previousRow, previousRow != height { next.wallRowHeights?.removeAll { $0 == previousRow } }
+                            lighting = next; error = nil; editingRow = false
+                        } catch { self.error = "La rangée doit se trouver dans le mur, entre le sol et le plafond." }
+                    }.atlantiqueActionStyle().padding(20).background(Atlantique.Palette.blue)
+                }
+        }.presentationDetents([.medium])
     }
 }
 
@@ -382,11 +544,18 @@ struct LayoutWallPointForm: View {
     }
     var body: some View {
         NavigationStack {
-            AtlantiqueForm {
+            AtlantiqueForm(bookLayout: true) {
                 if atlantique {
-                    Section { preview.frame(height: 300) }
                     Section {
-                        Picker("Cote", selection: $dimensionID) { ForEach(dimensions) { Text($0.label).tag($0.id) } }.pickerStyle(.segmented)
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(lighting.kind(at: index).rawValue + " sélectionnée").font(Atlantique.Typography.button)
+                            Text(layoutCM(point.y - surface.bounds.min.y) + " du sol").font(Atlantique.Typography.caption).foregroundStyle(Atlantique.Palette.muted)
+                        }
+                    }
+                    Section { preview.frame(height: 240) }
+                    Section {
+                        AtlantiqueSegmentedChoice(title: "Cote", options: dimensions.map { ($0.id, $0.label) }, selection: $dimensionID)
+                        Divider()
                         if dimensions.contains(where: { $0.id == dimensionID }) {
                             LayoutDimensionField(title: "Distance " + ["A", "B", "C", "D"][dimensionID], millimetres: dimensionBinding)
                         }
@@ -408,21 +577,24 @@ struct LayoutWallPointForm: View {
             .navigationTitle("Position de \(lighting.label(at: index, wall: true))")
             .atlantiqueFormPage("Électricité").navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button("Annuler") { dismiss() } }
+                ToolbarItem(placement: .cancellationAction) { Button("Annuler") { dismiss() }.atlantiqueToolbarAction() }.atlantiqueToolbarBackground(atlantique)
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Appliquer") {
-                        do {
-                            if atlantique {
-                                onSave(try LayoutWallLighting.positioning(lighting, index: index, point: point, surface: surface))
-                            } else {
-                                onSave(try LayoutWallLighting.positioning(lighting, index: index, distance: distance, fromRight: fromRight, surface: surface))
-                            }
-                            dismiss()
-                        } catch { self.error = error.localizedDescription }
-                    }
+                    Button(atlantique ? "Enregistrer" : "Appliquer", action: apply).atlantiqueToolbarAction(primary: true)
+                }.atlantiqueToolbarBackground(atlantique)
+            }
+            .safeAreaInset(edge: .bottom) {
+                if atlantique {
+                    Button("Terminer", action: apply).atlantiqueActionStyle().padding(20).background(Atlantique.Palette.blue)
                 }
             }
         }
+    }
+    private func apply() {
+        do {
+            if atlantique { onSave(try LayoutWallLighting.positioning(lighting, index: index, point: point, surface: surface)) }
+            else { onSave(try LayoutWallLighting.positioning(lighting, index: index, distance: distance, fromRight: fromRight, surface: surface)) }
+            dismiss()
+        } catch { self.error = error.localizedDescription }
     }
     private var preview: some View {
         Canvas { context, size in
@@ -439,7 +611,8 @@ struct LayoutWallPointForm: View {
             for dimension in dimensions {
                 var line = Path(); line.move(to: screen(dimension.start)); line.addLine(to: screen(dimension.end))
                 context.stroke(line, with: .color(Atlantique.Palette.ink.opacity(0.5)), lineWidth: 1)
-                context.draw(Text("\(dimension.label) · \(layoutCM(dimension.distance))").font(.caption.bold()), at: screen((dimension.start + dimension.end) * 0.5))
+                let midpoint = screen((dimension.start + dimension.end) * 0.5)
+                context.draw(Text("\(dimension.label) · \(layoutCM(dimension.distance))").font(.caption.bold()), at: .init(x: midpoint.x, y: midpoint.y - 11))
             }
             for i in lighting.positions.indices {
                 let p = screen(i == index ? point : lighting.positions[i])

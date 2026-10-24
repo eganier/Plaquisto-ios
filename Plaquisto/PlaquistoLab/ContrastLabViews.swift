@@ -754,10 +754,10 @@ private struct AtlantiqueSettingsView: View {
     @Environment(\.dismiss) private var dismiss
     var body: some View {
         NavigationStack {
-            AtlantiqueForm {
+            AtlantiqueForm(bookLayout: true) {
                 AtlantiqueSection("Application") {
                     NavigationLink("Graphisme 3D") {
-                        AtlantiqueForm { MaquetteRenderingSettingsSection() }.atlantiqueFormPage("Graphisme 3D")
+                        AtlantiqueForm(bookLayout: true) { MaquetteRenderingSettingsSection() }.atlantiqueFormPage("Graphisme 3D")
                     }
                     NavigationLink("Données métier") { AtlantiqueCatalogueSettings() }
                     NavigationLink("À propos de Plaquisto") { AtlantiqueAboutView() }
@@ -770,7 +770,7 @@ private struct AtlantiqueSettingsView: View {
                     Text("Les deux présentations utilisent les mêmes données du Lab, séparées de celles de Plaquisto.").font(.footnote).foregroundStyle(.secondary)
                 }
             }.atlantiqueFormPage("Réglages")
-                .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Fermer") { dismiss() }.atlantiqueToolbarAction() } }
+                .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Fermer") { dismiss() }.atlantiqueToolbarAction() }.atlantiqueToolbarBackground(true) }
         }
     }
 }
@@ -783,7 +783,7 @@ private struct AtlantiqueCatalogueSettings: View {
     @State private var attempted = false
     @AppStorage("plaquisto.catalogue.v3.lastSuccess") private var catalogueTimestamp = 0.0
     var body: some View {
-        AtlantiqueForm {
+        AtlantiqueForm(bookLayout: true) {
             AtlantiqueSection("Source") {
                 LabeledContent("Catalogue", value: "Plaquisto Admin")
                 LabeledContent("Dernière réception réussie", value: catalogueTimestamp > 0
@@ -824,7 +824,7 @@ private struct AtlantiqueCatalogueSettings: View {
 
 private struct AtlantiqueAboutView: View {
     var body: some View {
-        AtlantiqueForm {
+        AtlantiqueForm(bookLayout: true) {
             AtlantiqueSection("Plaquisto Lab") {
                 LabeledContent("Version", value: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "—")
                 LabeledContent("Compilation", value: Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "—")

@@ -27,6 +27,7 @@ struct LayoutPolygonAnnotations: View {
     var showAngles = true
     var showDimensions = true
     var showsLocks = true
+    var monochrome = false
     let onSelect: (LayoutPolygonSelection) -> Void
 
     private var labels: [LayoutPlanLabel] {
@@ -140,7 +141,8 @@ struct LayoutPolygonAnnotations: View {
         }
     }
     private func color(_ i: Int) -> Color {
-        toneColor(surface.edgeTones.indices.contains(i) ? surface.edgeTones[i] : [.blue, .orange, .purple, .green, .teal][i%5])
+        if monochrome { return Atlantique.Palette.ink }
+        return toneColor(surface.edgeTones.indices.contains(i) ? surface.edgeTones[i] : [.blue, .orange, .purple, .green, .teal][i%5])
     }
 }
 
@@ -243,6 +245,10 @@ struct LayoutManualContourEditor: View {
     @State private var lastOffsetValue = 0.0
     @State private var editTopology = true
     @State private var selection: LayoutPolygonSelection?
+    @State private var bookSelection: LayoutPolygonSelection?
+    @State private var bookValue = ""
+    @State private var bookOriginalValue = ""
+    @State private var bookEditingNumber = false
     @State private var dragOriginal: Surface2D?
     @State private var dragVertex: Int?
     @State private var dragLocation: CGPoint?
@@ -277,15 +283,34 @@ struct LayoutManualContourEditor: View {
         }
         self.onSave = onSave; _surface = State(initialValue:initial); _drawing = State(initialValue:surface == nil)
     }
+    private var bookFloor: Bool { atlantique && title == "Dessiner le sol" && !allowsLayingOffset }
+    private var bookAngle: Bool { if case .angle = bookSelection { return true }; return false }
     var body: some View {
         NavigationStack {
             VStack(spacing:12) {
-                Text(drawing ? "Dessinez le contour en un geste et revenez près du départ." : "Touchez une cote ou un angle. Glissez les sommets pour ajuster la forme.")
+                if bookFloor {
+                    if !bookEditingNumber {
+                    Text("1 / 3 · Contour et dimensions").font(Atlantique.Typography.caption).foregroundStyle(.white)
+                        .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 20)
+                    AtlantiqueSegmentedChoice(title: "Sol", options: [(true, "Dessiner"), (false, "Rectangle")], selection: Binding(get: { drawing || surface?.provenance != "preset" }, set: { draw in
+                        bookSelection = nil; error = nil
+                        if draw { drawing = true }
+                        else {
+                            if let surface { history.append(surface) }
+                            surface = LayoutFloorDraft.rectangle()
+                            drawing = false; resetScale()
+                        }
+                    })).padding(.horizontal, 20)
+                    }
+                } else { Text(drawing ? "Dessinez le contour en un geste et revenez près du départ." : "Touchez une cote ou un angle. Glissez les sommets pour ajuster la forme.")
                     .font(.subheadline).foregroundStyle(.secondary).padding(.horizontal)
+                }
                 if kind == .wall { Text("Dessinez le mur de face, avec le sol horizontal en bas du dessin.").font(.caption).foregroundStyle(.secondary).padding(.horizontal) }
                 if drawing {
-                    LayoutSketchPad(kind:kind) { points in accept(points) }.padding(12)
+                    LayoutSketchPad(kind:kind) { points in bookSelection = nil; accept(points) }
+                        .padding(12).background(bookFloor ? Color.white : Color.clear, in: RoundedRectangle(cornerRadius: 16)).padding(bookFloor ? 20 : 0)
                 } else if let surface {
+                    if !bookFloor {
                     HStack(spacing:24) {
                         if atlantique {
                             AtlantiqueChoice(title: "Afficher", options: [(0, "Cotes"), (1, "Angles")], selection: Binding(get: { showAngles ? 1 : 0 }, set: { showAngles = $0 == 1; showDimensions = $0 == 0 })).padding(.horizontal)
@@ -304,12 +329,13 @@ struct LayoutManualContourEditor: View {
                         }.accessibilityLabel(editTopology ? "Activer le décalage des bords de plaque" : "Revenir aux sommets")
                             .accessibilityValue(editTopology ? "Désactivé" : "Activé") }
                     }
+                    }
                     GeometryReader { proxy in
                         let viewport = planViewport(surface:dragOriginal ?? surface, size:proxy.size)
                         Canvas { context,_ in
                             let path = layoutPath(surface.contour, transform:viewport)
-                            context.fill(path, with:.color(.teal.opacity(0.12)))
-                            context.stroke(path, with:.color(.teal), lineWidth:5)
+                            context.fill(path, with:.color(atlantique ? Atlantique.Palette.paper : .teal.opacity(0.12)))
+                            context.stroke(path, with:.color(atlantique ? Atlantique.Palette.ink : .teal), lineWidth:atlantique ? 1.5 : 5)
                             if let laying = try? surface.layingContour() {
                                 context.stroke(layoutPath(laying,transform:viewport),with:.color(.secondary.opacity(0.5)),lineWidth:2)
                                 for i in offsetEdges where laying.indices.contains(i) {
@@ -319,7 +345,7 @@ struct LayoutManualContourEditor: View {
                             }
                             for (i,p) in surface.contour.enumerated() {
                                 let point = viewport.screen(p)
-                                context.fill(Path(ellipseIn:CGRect(x:point.x-7,y:point.y-7,width:14,height:14)),with:.color(.teal))
+                                context.fill(Path(ellipseIn:CGRect(x:point.x-5,y:point.y-5,width:10,height:10)),with:.color(atlantique ? Atlantique.Palette.orange : .teal))
                                 context.draw(Text(vertexName(i)).font(.caption.bold()),at:.init(x:point.x-10,y:point.y-12))
                             }
                             if let snap = dragSnap, let vertex = dragVertex {
@@ -402,9 +428,16 @@ struct LayoutManualContourEditor: View {
                                     }
                                 }
                             }
-                            confirmingTopology = topologyVertex != nil || topologyEdge != nil
+                            if bookFloor {
+                                if let i = topologyVertex { selectBookConstraint(.angle(i)) }
+                                else if let i = topologyEdge { selectBookConstraint(.length(i)) }
+                            } else { confirmingTopology = topologyVertex != nil || topologyEdge != nil }
                         })
-                        .overlay { LayoutPolygonAnnotations(surface:surface, viewport:viewport, showAngles:showAngles, showDimensions:atlantique ? !showAngles : showDimensions) { selection = $0 } }
+                        .overlay { LayoutPolygonAnnotations(surface:surface, viewport:viewport, showAngles:bookFloor ? bookAngle : showAngles, showDimensions:bookFloor ? !bookAngle : atlantique ? !showAngles : showDimensions, showsLocks: !bookFloor, monochrome: bookFloor) { selected in
+                            if bookFloor, case .correction = selected { selection = selected }
+                            else if bookFloor { selectBookConstraint(selected) }
+                            else { selection = selected }
+                        } }
                         .overlay {
                             if let vertex = dragVertex, let finger = dragLocation, surface.contour.indices.contains(vertex) {
                                 LayoutVertexLoupe(points: surface.contour.map { viewport.screen($0) },
@@ -423,8 +456,21 @@ struct LayoutManualContourEditor: View {
                                     .padding(8).allowsHitTesting(false)
                             }
                         }
-                    }.padding(8)
-                    scaleControls(surface)
+                    }.padding(8).background(bookFloor ? Color.white : Color.clear, in: RoundedRectangle(cornerRadius: 16)).padding(.horizontal, bookFloor ? 20 : 0)
+                    if bookFloor, let selected = bookSelection {
+                        AtlantiqueCard {
+                            VStack(alignment: .leading, spacing: 6) {
+                                Text(bookAngle ? "Angle sélectionné · \(vertexName(selected.index))" : "Côté sélectionné · \(vertexName(selected.index))–\(vertexName((selected.index + 1) % surface.contour.count))")
+                                    .font(Atlantique.Typography.caption).foregroundStyle(Atlantique.Palette.muted)
+                                HStack {
+                                    PlaquistoNumericField(text: $bookValue, onEditingChanged: { bookEditingNumber = $0 }, onValidate: { _ = applyBookConstraint(); bookEditingNumber = false })
+                                        .accessibilityLabel(bookAngle ? "Angle" : "Longueur")
+                                    Text(bookAngle ? "°" : "cm")
+                                }.frame(minHeight: 38)
+                            }
+                        }.padding(.horizontal, 20)
+                    }
+                    if !bookFloor { scaleControls(surface) }
                     if !editTopology { VStack(alignment:.leading,spacing:6) {
                         HStack {
                             Text("Décalage des bords de plaque").font(.subheadline.bold())
@@ -454,21 +500,41 @@ struct LayoutManualContourEditor: View {
                         Text("−5 cm : vers l’intérieur · 0 : au mur · +5 cm : vers l’extérieur").font(.caption2).foregroundStyle(.secondary)
                         if let warning = surface.layingWarning { Text(warning).font(.caption).foregroundStyle(.orange) }
                     }.padding(.horizontal) }
-                    HStack {
+                    if bookFloor {
+                        if !bookEditingNumber {
+                        HStack(spacing: 12) {
+                            Button("Annuler", systemImage: "arrow.uturn.backward") {
+                                if let previous = history.popLast() { self.surface = previous; bookSelection = nil; error = nil; resetScale() }
+                            }.atlantiqueActionStyle(.secondary).disabled(history.isEmpty)
+                            Button("Recommencer", systemImage: "arrow.counterclockwise") { bookSelection = nil; drawing = true }.atlantiqueActionStyle(.secondary)
+                        }.padding(.horizontal, 20)
+                        }
+                    } else { HStack {
                         Button("Recommencer le dessin", systemImage:"pencil.tip") { drawing = true }
                         Spacer()
                         Button("Annuler la modification", systemImage:"arrow.uturn.backward") { if let previous = history.popLast() { self.surface = previous; resetScale() } }.disabled(history.isEmpty)
-                    }.font(.subheadline).padding(.horizontal)
+                    }.font(.subheadline).padding(.horizontal) }
                 }
                 // Validation messages must not resize the canvas during a drag.
                 if drawing, let error { Text(error).font(.footnote).foregroundStyle(.red).padding(.horizontal) }
             }
-            .padding(.bottom).background(atlantique ? Atlantique.Palette.paper : Color(.systemGroupedBackground))
+            .padding(.bottom).background(bookFloor ? Atlantique.Palette.blue : atlantique ? Atlantique.Palette.paper : Color(.systemGroupedBackground))
             .navigationTitle(title ?? (kind == .wall ? "Dessiner le mur" : "Dessiner le plafond")).navigationBarTitleDisplayMode(.inline)
             .atlantiqueFormPage(title ?? "Modifier le contour")
             .toolbar {
                 ToolbarItem(placement:.cancellationAction) { Button("Annuler") { dismiss() }.atlantiqueToolbarAction() }.atlantiqueToolbarBackground(atlantique)
-                ToolbarItem(placement:.confirmationAction) { Button("Utiliser") { if let surface { onSave(surface); dismiss() } }.atlantiqueToolbarAction().disabled(surface == nil || drawing) }.atlantiqueToolbarBackground(atlantique)
+                if !bookFloor { ToolbarItem(placement:.confirmationAction) { Button("Utiliser") { if let surface { onSave(surface); dismiss() } }.atlantiqueToolbarAction().disabled(surface == nil || drawing) }.atlantiqueToolbarBackground(atlantique) }
+            }
+            .safeAreaInset(edge: .bottom) {
+                if bookFloor && !bookEditingNumber {
+                    HStack(spacing: 12) {
+                        Button("Retour") { dismiss() }.atlantiqueActionStyle(.secondary).frame(width: 112)
+                        Button("Continuer") {
+                            guard applyBookConstraint(), let surface else { return }
+                            onSave(surface); dismiss()
+                        }.atlantiqueActionStyle().disabled(surface == nil || drawing)
+                    }.padding(20).background(Atlantique.Palette.blue)
+                }
             }
             .alert(topologyVertex != nil ? "Supprimer ce sommet ?" : "Ajouter un sommet ?",isPresented:$confirmingTopology) {
                 Button("Annuler",role:.cancel) {}
@@ -492,6 +558,27 @@ struct LayoutManualContourEditor: View {
                 }
             }
         }
+    }
+    private func selectBookConstraint(_ selected: LayoutPolygonSelection) {
+        guard applyBookConstraint(), let surface else { return }
+        bookSelection = selected
+        let value: Double
+        if case .angle = selected { value = LayoutPolygonSolver.interiorAngle(at: selected.index, in: surface.contour) }
+        else { value = (surface.contour[(selected.index + 1) % surface.contour.count] - surface.contour[selected.index]).length / 10 }
+        bookValue = value.formatted(.number.grouping(.never).precision(.fractionLength(0...2)))
+        bookOriginalValue = bookValue
+    }
+    @discardableResult private func applyBookConstraint() -> Bool {
+        guard let selected = bookSelection, let original = surface else { return true }
+        guard bookValue != bookOriginalValue else { return true }
+        guard let value = Double(bookValue.replacingOccurrences(of: ",", with: ".")), value.isFinite, value > 0 else {
+            error = "Saisissez une valeur positive."; return false
+        }
+        do {
+            let updated = try LayoutFloorDraft.changing(original, index: selected.index, value: bookAngle ? value : value * 10, isAngle: bookAngle)
+            if updated != original { history.append(original); surface = updated; resetScale() }
+            bookOriginalValue = bookValue; error = nil; return true
+        } catch { self.error = error.localizedDescription; return false }
     }
     private func planViewport(surface:Surface2D, size:CGSize) -> LayoutViewport {
         let b = surface.bounds, margin = max(b.width,b.height)*0.25
@@ -564,6 +651,7 @@ struct LayoutManualContourEditor: View {
         guard moved.contour.indices.contains(i), moved != original else { return }
         // The preview already includes constraint resolution. Commit it verbatim.
         history.append(original); resetScale()
+        if bookFloor { bookSelection = nil }
     }
     private func drawSnap(_ snap:LayoutContourSnap, vertex:Int, points:[LayoutPoint],
                           viewport:LayoutViewport, context:inout GraphicsContext) {

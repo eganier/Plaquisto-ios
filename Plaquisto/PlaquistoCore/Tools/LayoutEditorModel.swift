@@ -279,6 +279,7 @@ func layoutArea(_ value: Double) -> String {
 
 // Keeps partial decimal input such as "0," and supports signed offsets.
 struct LayoutDimensionField: View {
+    @Environment(\.usesAtlantiqueDesign) private var atlantique
     let title: String
     @Binding var millimetres: Double
     var signed = false
@@ -289,24 +290,37 @@ struct LayoutDimensionField: View {
     @State private var text = ""
     @State private var editing = false
     var body: some View {
-        HStack {
+        Group {
+            if atlantique {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(title).font(Atlantique.Typography.caption).foregroundStyle(tint ?? Atlantique.Palette.muted)
+                    HStack {
+                        input.font(Atlantique.Typography.heading).frame(minWidth: 32, maxWidth: .infinity, minHeight: 38)
+                        Text(unit).font(Atlantique.Typography.caption).foregroundStyle(Atlantique.Palette.muted)
+                    }
+                }.frame(maxWidth: .infinity, alignment: .leading)
+            } else {
+            HStack {
             Text(title).foregroundStyle(tint ?? Color.primary)
             Spacer(minLength: 12)
-            PlaquistoNumericField(text: $text, signed: signed, onEditingChanged: { active in
+            input.multilineTextAlignment(.trailing).frame(width: 100, height: 34)
+            Text(unit).foregroundStyle(.secondary)
+            }
+            }
+        }
+        .onAppear { synchronize() }
+        .onChange(of: millimetres) { _, _ in if !editing { synchronize() } }
+    }
+    private var input: some View {
+        PlaquistoNumericField(text: $text, signed: signed, onEditingChanged: { active in
                 editing = active
                 if !active { synchronize() }
             })
-                .multilineTextAlignment(.trailing)
-                .frame(width: 100, height: 34)
                 .accessibilityLabel(title)
                 .onChange(of: text) { _, value in
                     if value.isEmpty { millimetres = 0 }
                     else if let number = Double(value.replacingOccurrences(of: ",", with: ".")), number.isFinite { millimetres = number / displayScale }
                 }
-            Text(unit).foregroundStyle(.secondary)
-        }
-        .onAppear { synchronize() }
-        .onChange(of: millimetres) { _, _ in if !editing { synchronize() } }
     }
     private func synchronize() {
         text = millimetres == 0 ? "" : (millimetres * displayScale).formatted(.number.locale(Locale(identifier: "fr_FR")).grouping(.never).precision(.fractionLength(0...3)))

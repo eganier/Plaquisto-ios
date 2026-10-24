@@ -146,11 +146,27 @@ struct PlaquistoLabApp: App {
         case "spacing": FurringSpacingToolView()
         case "manual": ManualModelingView()
         case "stock": StockHomeView()
+        case "stock-entry", "stock-exit", "stock-inventory": StockBookAuditView(route: name)
+        case "opening": LayoutOpeningForm(support: .ceiling, existing: .init(kind: .hatch,
+            contour: LayoutBounds(min: .init(x: 1700, y: 1300), max: .init(x: 2300, y: 1900)).polygon),
+            surfaceContour: auditWall.contour, alignedEdge: 0, onSave: { _ in })
+        case "electrical": LayoutWallElectricalForm(surface: auditWall, layer: .init(), lighting: auditLighting, onSave: { _ in })
+        case "electrical-point": LayoutWallPointForm(lighting: auditLighting, index: 1, surface: auditWall, onSave: { _ in })
         case "model": ScannerDebugView(onOpenAccount: {})
         case "project", "work", "configuration", "quantity", "settings", "catalogue", "about", "survey":
             AtlantiqueAuditDestination(name: name)
         default: ContrastLabRoot()
         }
+    }
+    private var auditWall: Surface2D {
+        .init(name: "Salon · Mur 1", kind: .wall, contour: LayoutBounds(min: .zero, max: .init(x: 4000, y: 2600)).polygon)
+    }
+    private var auditLighting: LayoutLighting {
+        var value = LayoutLighting(count: 3)
+        value.positions = [.init(x: 1000, y: 1200), .init(x: 2000, y: 1200), .init(x: 3000, y: 1200)]
+        value.kinds = [.socket, .socket, .socket]
+        value.wallRowHeights = [1200]
+        return value
     }
     #endif
 }

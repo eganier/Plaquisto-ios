@@ -41,6 +41,7 @@ struct ManualModelingView: View {
     @State private var openingWorkspace = false
     @State private var cameraReset = UUID()
     @State private var confirmingClose = false
+    @State private var startedBookDrawing = false
 
     private struct HeightTarget {
         var indices: [Int]
@@ -58,31 +59,50 @@ struct ManualModelingView: View {
     var body: some View {
         NavigationStack {
             AtlantiqueForm(bookLayout: true) {
-                Section {
+                if !atlantique { Section {
                     Text("Étape \(step+1) sur 3 · \(["Dessiner le sol", "Définir les hauteurs", "Enregistrer le modèle"][step])")
                         .font(.subheadline).foregroundStyle(.secondary)
-                }
+                } }
                 if step == 0 { floorSection }
                 if step == 1 { heightSection }
                 if step == 2 { saveSection }
                 if let error { Section { Text(error).foregroundStyle(.red) } }
-                Section {
+                if !atlantique { Section {
                     Button(step == 2 ? "Enregistrer et ouvrir en 3D" : "Continuer") { advance() }
                         .font(.headline).frame(maxWidth: .infinity, minHeight: 44)
                         .atlantiqueActionStyle()
                         .disabled(savedDraft != nil || contour == nil || plane == nil || (step == 2 && (name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || (projectID == nil && projectName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty))))
-                }.listRowBackground(Color.clear)
+                }.listRowBackground(Color.clear) }
             }
             .navigationTitle(["Dessiner ma pièce", "Hauteurs", "Mon modèle 3D"][step])
             .navigationBarTitleDisplayMode(.inline)
-            .atlantiqueFormPage(["Dessiner le sol", "Hauteurs", "Enregistrer le modèle"][step])
+            .atlantiqueFormPage(["Dessiner le sol", "Définir les hauteurs", "Enregistrer le modèle"][step])
+            .safeAreaInset(edge: .top, spacing: 0) {
+                if atlantique {
+                    Text("\(step + 1) / 3 · \(["Contour et dimensions", "Hauteurs sous plafond", "Enregistrer le modèle"][step])")
+                        .font(Atlantique.Typography.caption).foregroundStyle(.white)
+                        .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 20).padding(.top, 12)
+                        .background(Atlantique.Palette.blue)
+                }
+            }
+            .safeAreaInset(edge: .bottom) {
+                if atlantique {
+                    HStack(spacing: 12) {
+                        Button("Retour", action: goBack).atlantiqueActionStyle(.secondary).frame(width: 112)
+                        Button(step == 2 ? "Enregistrer" : "Continuer", action: advance)
+                            .atlantiqueActionStyle()
+                            .disabled(savedDraft != nil || contour == nil || plane == nil || (step == 2 && (name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || (projectID == nil && projectName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty))))
+                    }.padding(20).background(Atlantique.Palette.blue)
+                }
+            }
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button(step == 0 ? "Fermer" : "Retour") {
-                        if step > 0 { step -= 1; error = nil }
-                        else if contour != nil { confirmingClose = true }
-                        else { dismiss() }
-                    }
+                    Button(step == 0 ? "Fermer" : "Retour", action: goBack).atlantiqueToolbarAction()
+                }.atlantiqueToolbarBackground(atlantique)
+            }
+            .onAppear {
+                if atlantique && !startedBookDrawing && contour == nil {
+                    startedBookDrawing = true; editingContour = true
                 }
             }
             .interactiveDismissDisabled(contour != nil)
@@ -94,6 +114,7 @@ struct ManualModelingView: View {
                     // Vertex indices no longer identify the same corners after an edit.
                     if contour?.contour != updated.contour { heights = [:]; differentHeights = false }
                     contour = updated; error = nil
+                    if atlantique { step = 1; heightTarget = nil }
                 }
             }
             .alert(heightTarget?.label ?? "Hauteur", isPresented: $askingHeight) {
@@ -110,14 +131,21 @@ struct ManualModelingView: View {
                 if let savedDraft {
                     ScannerCampaignWorkspaceView(draft: savedDraft)
                         .navigationBarBackButtonHidden()
-                        .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Fermer") { dismiss() } } }
+                        .toolbar { if !atlantique { ToolbarItem(placement: .cancellationAction) { Button("Fermer") { dismiss() } } } }
                 }
             }
         }
     }
+    private func goBack() {
+        if step > 0 {
+            step -= 1; error = nil
+            if atlantique && step == 0 { editingContour = true }
+        } else if contour != nil { confirmingClose = true }
+        else { dismiss() }
+    }
     @ViewBuilder private var floorSection: some View {
         Section {
-            Text("Tracez le sol de votre pièce, puis renseignez ses dimensions. Les murs et le plafond seront créés à partir de ce contour.")
+            if !atlantique { Text("Tracez le sol de votre pièce, puis renseignez ses dimensions. Les murs et le plafond seront créés à partir de ce contour.") }
             if let contour {
                 ManualHeightPlan(contour: contour.contour, plane: nil, constraints: [:], interactive: false, onVertex: { _ in }, onEdge: { _ in })
                     .frame(height: 260)
@@ -137,28 +165,44 @@ struct ManualModelingView: View {
         }
     }
     @ViewBuilder private var heightSection: some View {
+        if !differentHeights {
+            Section {
+                if atlantique {
+                    ToolNumberField(title: "Hauteur commune", unit: "cm", value: $commonHeightCM)
+                } else {
+                    HStack {
+                        Text("Hauteur commune")
+                        Spacer()
+                        TextField("250", value: $commonHeightCM, format: .number).keyboardType(.decimalPad).multilineTextAlignment(.trailing).frame(width: 90)
+                        Text("cm").foregroundStyle(.secondary)
+                    }
+                }
+            }
+        }
         Section {
-            if !differentHeights { if atlantique {
-                ToolNumberField(title: "Hauteur commune", unit: "cm", value: $commonHeightCM)
-            } else { HStack {
-                Text("Hauteur commune")
-                Spacer()
-                TextField("250", value: $commonHeightCM, format: .number).keyboardType(.decimalPad).multilineTextAlignment(.trailing).frame(width: 90)
-                Text("cm").foregroundStyle(.secondary)
-            } } }
             Toggle("Hauteurs différentes", isOn: $differentHeights)
-                .onChange(of: differentHeights) { _, _ in error = nil }
+                .onChange(of: differentHeights) { _, _ in error = nil; heightTarget = nil }
         }
         if let contour {
             Section {
-                ManualHeightPlan(contour: contour.contour, plane: plane, constraints: effectiveHeights, interactive: differentHeights,
+                ManualHeightPlan(contour: contour.contour, plane: plane, constraints: effectiveHeights, interactive: differentHeights, selectedIndices: heightTarget?.indices ?? [],
                     onVertex: { i in choose(.init(indices: [i], label: "Angle \(vertexName(i))")) },
                     onEdge: { i in choose(.init(indices: [i, (i+1)%contour.contour.count], label: "Mur \(i+1)")) })
-                    .frame(height: 340)
-                if differentHeights {
+                    .frame(height: atlantique ? 270 : 340)
+                if differentHeights && !atlantique {
                     Text("Touchez un angle ou un mur. Deux hauteurs différentes créent un rampant ; les autres hauteurs suivent le même plan.")
                         .font(.footnote).foregroundStyle(.secondary)
                     if !heights.isEmpty { Button("Réinitialiser les hauteurs") { heights = [:]; error = nil } }
+                }
+            }
+            if atlantique, differentHeights, let target = heightTarget {
+                Section {
+                    Text(target.label).font(Atlantique.Typography.caption).foregroundStyle(Atlantique.Palette.muted)
+                    HStack {
+                        PlaquistoNumericField(text: $heightText, onEditingChanged: { editing in if !editing { applyHeight() } }, onValidate: { applyHeight() })
+                            .accessibilityLabel("Hauteur de " + target.label)
+                        Text("cm").font(Atlantique.Typography.caption).foregroundStyle(Atlantique.Palette.muted)
+                    }.frame(minHeight: 44)
                 }
             }
         }
@@ -169,13 +213,14 @@ struct ManualModelingView: View {
             Section {
                 RoomDomainScene(room: room, selected: .constant(nil), ceilingMode: 1, showFloor: true, topView: false, cameraReset: cameraReset)
                     .frame(height: 260).clipShape(RoundedRectangle(cornerRadius: 16))
-                Text("Ajoutez ensuite portes, fenêtres, cloisons et poteaux dans « Modifier le plan ». Les plafonds restent modifiables.")
+                if !atlantique { Text("Ajoutez ensuite portes, fenêtres, cloisons et poteaux dans « Modifier le plan ». Les plafonds restent modifiables.")
                     .font(.footnote).foregroundStyle(.secondary)
+                }
             }
         }
         AtlantiqueSection("Nom du relevé") { TextField("Nom", text: $name) }
         AtlantiqueSection("Projet de destination") {
-            Picker("Projet", selection: $projectID) {
+            AtlantiquePicker("Projet", selection: $projectID) {
                 Text("Nouveau projet").tag(UUID?.none)
                 ForEach(store.projects) { Text($0.name).tag(Optional($0.id)) }
             }
@@ -186,16 +231,18 @@ struct ManualModelingView: View {
         }
     }
     private func choose(_ target: HeightTarget) {
+        if atlantique && heightTarget != nil && !applyHeight() { return }
         guard let contour, let i = target.indices.first else { return }
         let p = ManualRoomModel.floorPoints(contour.contour)[i]
         heightText = ((plane?.height(x: p.x, z: p.z) ?? commonHeightCM/100)*100).formatted(.number.grouping(.never).precision(.fractionLength(0...1)))
-        heightTarget = target; askingHeight = true
+        heightTarget = target; askingHeight = !atlantique
     }
-    private func applyHeight() {
+    @discardableResult private func applyHeight() -> Bool {
         guard let target = heightTarget, let cm = Double(heightText.replacingOccurrences(of: ",", with: ".").trimmingCharacters(in: .whitespacesAndNewlines)) else {
-            error = "Saisissez une hauteur en centimètres."; return
+            error = "Saisissez une hauteur en centimètres."; return false
         }
         var next = heights; target.indices.forEach { next[$0] = cm/100 }; accept(next)
+        return error == nil
     }
     private func accept(_ next: [Int: Double]) {
         guard let contour else { return }
@@ -206,6 +253,7 @@ struct ManualModelingView: View {
     }
     private func advance() {
         guard let contour else { return }
+        if atlantique && step == 1 && differentHeights && heightTarget != nil && !applyHeight() { return }
         do {
             error = nil
             if step == 0 { step = 1; return }
@@ -226,10 +274,12 @@ struct ManualModelingView: View {
 }
 
 private struct ManualHeightPlan: View {
+    @Environment(\.usesAtlantiqueDesign) private var atlantique
     let contour: [LayoutPoint]
     let plane: RoomPlane?
     let constraints: [Int: Double]
     let interactive: Bool
+    var selectedIndices: [Int] = []
     let onVertex: (Int) -> Void
     let onEdge: (Int) -> Void
     var body: some View {
@@ -241,10 +291,11 @@ private struct ManualHeightPlan: View {
             ZStack {
                 Path { path in
                     if let first = points.first { path.move(to: first); points.dropFirst().forEach { path.addLine(to: $0) }; path.closeSubpath() }
-                }.fill(Color.blue.opacity(0.08))
+                }.fill(atlantique ? Atlantique.Palette.paper : Color.blue.opacity(0.08))
                 ForEach(points.indices, id: \.self) { i in
                     let a = points[i], b = points[(i+1)%points.count]
-                    Path { $0.move(to: a); $0.addLine(to: b) }.stroke(Color.blue, lineWidth: 3)
+                    let selected = selectedIndices.contains(i) && selectedIndices.contains((i + 1) % points.count)
+                    Path { $0.move(to: a); $0.addLine(to: b) }.stroke(selected ? Atlantique.Palette.orange : atlantique ? Atlantique.Palette.ink : .blue, lineWidth: selected ? 3 : 1.5)
                         .contentShape(Path { $0.move(to: a); $0.addLine(to: b) }.strokedPath(.init(lineWidth: 30)))
                         .onTapGesture { if interactive { onEdge(i) } }
                     if interactive {
@@ -262,7 +313,7 @@ private struct ManualHeightPlan: View {
                                 Text("\((plane.height(x: contour[i].x/1000, z: -contour[i].y/1000)*100).formatted(.number.precision(.fractionLength(0...1)))) cm")
                                     .font(.caption2.monospacedDigit())
                             }
-                        }.padding(5).foregroundStyle(constraints[i] == nil ? Color.primary : .orange)
+                        }.padding(5).foregroundStyle(selectedIndices.contains(i) || constraints[i] != nil ? Atlantique.Palette.actionInk : atlantique ? Atlantique.Palette.ink : Color.primary)
                             .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
                             .frame(minWidth: 44, minHeight: 44).contentShape(Rectangle())
                     }.buttonStyle(.plain).disabled(!interactive).position(points[i])

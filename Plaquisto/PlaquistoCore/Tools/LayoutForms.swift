@@ -182,8 +182,31 @@ struct LayoutOpeningForm: View {
     }
     var body: some View {
         NavigationStack {
-            AtlantiqueForm {
-                if !atlantique || !positioning { AtlantiqueSection("Ouverture") {
+            AtlantiqueForm(bookLayout: true) {
+                if atlantique {
+                    if positioning {
+                        Section {
+                            HStack {
+                                Text("\(kind.rawValue) · \(layoutCM(width)) × \(layoutCM(height))").font(Atlantique.Typography.button)
+                                Spacer()
+                                Button("Réglages") { setPositioning(false) }.foregroundStyle(Atlantique.Palette.actionInk)
+                            }.frame(minHeight: 44)
+                        }
+                    } else {
+                        Section {
+                            AtlantiquePicker("Type", selection: $kind) {
+                                ForEach(LayoutOpeningKind.available(for: support), id: \.self) { Text($0.rawValue).tag($0) }
+                            }
+                        }
+                        Section {
+                            HStack(spacing: 16) {
+                                LayoutDimensionField(title: "Largeur", millimetres: $width)
+                                Divider()
+                                LayoutDimensionField(title: support == .wall ? "Hauteur" : "Longueur", millimetres: $height)
+                            }
+                        }
+                    }
+                } else { AtlantiqueSection("Ouverture") {
                     Picker("Type", selection: $kind) { ForEach(LayoutOpeningKind.available(for: support), id: \.self) { Text($0.rawValue) } }
                     HStack {
                         LayoutDimensionField(title: "Largeur", millimetres: $width)
@@ -195,21 +218,35 @@ struct LayoutOpeningForm: View {
                     Section {
                         if support == .ceiling {
                             HStack {
-                                Button { changeWall(-1) } label: { Image(systemName: "chevron.left") }.accessibilityLabel("Mur précédent")
+                                Button { changeWall(-1) } label: { Image(systemName: "chevron.left").frame(width: 44, height: 44) }.accessibilityLabel("Mur précédent")
                                 Spacer()
-                                Text(referenceEdge < 0 ? "Orientation actuelle" : "Parallèle au mur \(referenceEdge + 1)").font(.headline)
+                                VStack(spacing: 4) {
+                                    Text("Parallèle à").font(Atlantique.Typography.caption).foregroundStyle(Atlantique.Palette.muted)
+                                    Text(referenceEdge < 0 ? "Orientation actuelle" : "Mur \(referenceEdge + 1)").font(Atlantique.Typography.button)
+                                }
                                 Spacer()
-                                Button { changeWall(1) } label: { Image(systemName: "chevron.right") }.accessibilityLabel("Mur suivant")
+                                Button { changeWall(1) } label: { Image(systemName: "chevron.right").frame(width: 44, height: 44) }.accessibilityLabel("Mur suivant")
                             }.buttonStyle(.borderless)
                         }
-                        openingPreview.frame(height: positioning ? 310 : 220)
-                        Button { withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.25)) { positioning.toggle() } } label: {
-                            Label(positioning ? "Revenir aux dimensions" : "Disposition", systemImage: "move.3d")
-                        }.buttonStyle(.borderless)
+                        // Keep the distance editor visible when the header collapses.
+                        openingPreview.frame(height: 220)
+                    }
+                    if !positioning {
+                        Section {
+                            Button { setPositioning(true) } label: {
+                                HStack {
+                                    Image(systemName: "arrow.up.and.down.and.arrow.left.and.right").foregroundStyle(Atlantique.Palette.actionInk)
+                                    Text("Disposition").foregroundStyle(Atlantique.Palette.ink)
+                                    Spacer()
+                                    Image(systemName: "chevron.right").foregroundStyle(Atlantique.Palette.actionInk)
+                                }.font(Atlantique.Typography.button).frame(minHeight: 44).contentShape(Rectangle())
+                            }.buttonStyle(.plain)
+                        }
                     }
                     if positioning {
                         Section {
-                            Picker("Cote", selection: $dimensionID) { ForEach(placementDimensions) { Text($0.label).tag($0.id) } }.pickerStyle(.segmented)
+                            AtlantiqueSegmentedChoice(title: "Cote", options: placementDimensions.map { ($0.id, $0.label) }, selection: $dimensionID)
+                            Divider()
                             if placementDimensions.contains(where: { $0.id == dimensionID }) {
                                 LayoutDimensionField(title: "Distance " + ["A", "B", "C", "D"][dimensionID], millimetres: dimensionBinding)
                             }
@@ -240,20 +277,37 @@ struct LayoutOpeningForm: View {
             }
             .scrollDismissesKeyboard(.interactively)
             .navigationTitle(existing == nil ? "Nouvelle ouverture" : "Modifier l’ouverture").navigationBarTitleDisplayMode(.inline)
-            .atlantiqueFormPage(existing == nil ? "Nouvelle ouverture" : "Ouverture")
+            .atlantiqueFormPage("Ouverture")
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button("Annuler") { dismiss() } }
+                ToolbarItem(placement: .cancellationAction) { Button("Annuler") { dismiss() }.atlantiqueToolbarAction() }.atlantiqueToolbarBackground(atlantique)
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Appliquer") {
-                        let polygon = openingContour
-                        onSave(.init(id: existing?.id ?? UUID(), kind: kind, contour: polygon,
-                            doorHanding:kind == .door ? existing?.doorHanding : nil,
-                            doorOpeningSide:kind == .door ? existing?.doorOpeningSide : nil)); dismiss()
-                    }.disabled(width <= 0 || height <= 0 || [x, y, width, height].contains { !$0.isFinite || abs($0) > 100_000 })
+                    Button(atlantique ? "Enregistrer" : "Appliquer", action: save)
+                        .disabled(!canApply).atlantiqueToolbarAction(primary: true)
+                }.atlantiqueToolbarBackground(atlantique)
+            }
+            .safeAreaInset(edge: .bottom) {
+                if atlantique {
+                    Button(positioning ? "Terminer" : "Appliquer", action: save)
+                        .atlantiqueActionStyle().disabled(!canApply)
+                        .padding(20).background(Atlantique.Palette.blue)
                 }
             }
             .onChange(of: kind) { _, value in if value == .door { y = 0 } }
         }
+    }
+    private var canApply: Bool {
+        width > 0 && height > 0 && width <= 100_000 && height <= 100_000
+            && [x, y, width, height, angle].allSatisfy { $0.isFinite }
+    }
+    private func save() {
+        guard canApply else { return }
+        onSave(.init(id: existing?.id ?? UUID(), kind: kind, contour: openingContour,
+            doorHanding: kind == .door ? existing?.doorHanding : nil,
+            doorOpeningSide: kind == .door ? existing?.doorOpeningSide : nil))
+        dismiss()
+    }
+    private func setPositioning(_ value: Bool) {
+        withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.25)) { positioning = value }
     }
     private var placementCenter: LayoutPoint {
         support == .ceiling ? .init(x: x, y: y) : .init(x: x + width / 2, y: y + height / 2)
@@ -306,7 +360,8 @@ struct LayoutOpeningForm: View {
                 for dimension in placementDimensions {
                     var line = Path(); line.move(to: screen(dimension.start)); line.addLine(to: screen(dimension.end))
                     context.stroke(line, with: .color(Atlantique.Palette.ink), lineWidth: 1)
-                    context.draw(Text("\(dimension.label) · \(layoutCM(dimension.distance))").font(.caption.bold()).foregroundStyle(Atlantique.Palette.ink), at: screen((dimension.start + dimension.end) * 0.5))
+                    let midpoint = screen((dimension.start + dimension.end) * 0.5)
+                    context.draw(Text("\(dimension.label) · \(layoutCM(dimension.distance))").font(.caption.bold()).foregroundStyle(Atlantique.Palette.ink), at: .init(x: midpoint.x, y: midpoint.y - 10))
                 }
             }
             context.fill(path(openingContour), with: .color(.orange.opacity(0.25)))
