@@ -253,7 +253,7 @@ struct FurringLiningConfiguratorView: View {
             }
         }
         .tint(green)
-        .atlantiqueFormPage(stepNames[min(max(0, step - 1), stepNames.count - 1)])
+        .atlantiqueFormPage(step == 3 ? "Ossature" : stepNames[min(max(0, step - 1), stepNames.count - 1)])
         .configurationEntry(in:1...5) { step = $0 }
         .onChange(of: facings.count, initial: true) { _, _ in initializeFacingsIfNeeded() }
         .onChange(of: insulationFamilies.count, initial: true) { _, _ in initializeInsulationIfNeeded() }

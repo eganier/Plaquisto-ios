@@ -16,12 +16,15 @@ struct LayoutViewport {
     var rotationPivot: LayoutPoint { pivot ?? bounds.center }
     /// Fit into an editing-sized area, even when View has more vertical space.
     /// Keeping this fit afterwards prevents the mode controls from changing zoom.
-    static func initialEditingSize(_ size: CGSize) -> CGSize {
-        .init(width: size.width, height: min(size.height, max(180, size.width * 0.95)))
+    static func initialEditingSize(_ size: CGSize, stableControls: Bool = false) -> CGSize {
+        // The book interface has a fixed dock: use its available height instead
+        // of reserving room for controls that will never expand over the plan.
+        if stableControls { return .init(width: size.width, height: max(1, size.height - min(50, size.height * 0.15))) }
+        return .init(width: size.width, height: min(size.height, max(180, size.width * 0.95)))
     }
-    func upperFramingPan(contour: [LayoutPoint]) -> CGSize {
+    func upperFramingPan(contour: [LayoutPoint], stableControls: Bool = false) -> CGSize {
         guard let top = contour.map({ screen($0).y }).min() else { return .zero }
-        let topMargin = min(60, size.height * 0.15)
+        let topMargin = stableControls ? min(64, size.height * 0.3) : min(60, size.height * 0.15)
         return .init(width: pan.width, height: pan.height + topMargin - top)
     }
     static func rotated(_ p: LayoutPoint, by angle: Double) -> LayoutPoint {
@@ -81,12 +84,12 @@ struct LayoutViewport {
         guard abs(doubledArea) > 0.000_001 else { return LayoutBounds(points: points).center }
         return .init(x: x / (3 * doubledArea), y: y / (3 * doubledArea))
     }
-    static func fittedBounds(_ points: [LayoutPoint], rotation: Double, pivot: LayoutPoint? = nil) -> LayoutBounds {
+    static func fittedBounds(_ points: [LayoutPoint], rotation: Double, pivot: LayoutPoint? = nil, paddingFraction: Double = 0.2) -> LayoutBounds {
         let center = pivot ?? geometricCenter(points)
         let relative = points.map { rotated($0 - center, by: rotation) }
         let halfWidth = relative.map { abs($0.x) }.max() ?? 50
         let halfHeight = relative.map { abs($0.y) }.max() ?? 50
-        let margin = max(halfWidth * 2, halfHeight * 2) * 0.2
+        let margin = max(halfWidth * 2, halfHeight * 2) * paddingFraction
         let half = LayoutPoint(x: max(50, halfWidth + margin), y: max(50, halfHeight + margin))
         return .init(min: center - half, max: center + half)
     }
@@ -601,6 +604,7 @@ struct SheetLayoutView: View {
     @State private var rotationLatch: Double?
     @State private var fittedBounds: LayoutBounds?
     @State private var canvasFitSize: CGSize?
+    @State private var canvasWasInteracted = false
     @State private var fullscreen = false
     @State private var ceilingFromBelow = true
     @State private var recenterToken = 0
@@ -638,6 +642,7 @@ struct SheetLayoutView: View {
     private var navigationContent: some View {
         Group {
             VStack(spacing: 0) {
+                if atlantique && !fullscreen { layoutNavigationBar }
                 if let workbook, !fullscreen {
                     Button { sheet = .parts } label: {
                         HStack {
@@ -659,61 +664,80 @@ struct SheetLayoutView: View {
         .background(atlantique ? Atlantique.Palette.blue : Color(.systemGroupedBackground))
         .atlantiquePage(onSaveDocument == nil ? "Calepinage 2D rapide" : "Calepinage 2D", root: true)
         .toolbar {
-            if workbook != nil {
-                ToolbarItem(placement: .topBarLeading) {
-                    Button { performAfterSaving { dismiss() } } label: {
-                        if atlantique { AtlantiqueToolbarGlyph(symbol: "chevron.left") }
-                        else { Image(systemName: "chevron.left") }
-                    }
-                        .accessibilityLabel("Enregistrer et revenir à l’ouvrage")
-                }.atlantiqueToolbarBackground(atlantique)
-            } else if atlantique && (onSaveDocument != nil || model.document == nil) {
-                ToolbarItem(placement: .topBarLeading) {
-                    Button { performAfterSaving { dismiss() } } label: { AtlantiqueToolbarGlyph(symbol: "chevron.left") }
-                        .accessibilityLabel("Retour")
-                }.atlantiqueToolbarBackground()
-            }
-            if model.document != nil {
-                if onSaveDocument == nil {
-                    ToolbarItem(placement:.topBarLeading) {
-                        Button { model.saveCurrentAndClose() } label: {
-                            if atlantique { AtlantiqueToolbarGlyph(symbol: "chevron.left") }
-                            else { Image(systemName:"chevron.left") }
-                        }
-                            .accessibilityLabel("Retour aux calepinages sauvegardés")
-                    }.atlantiqueToolbarBackground(atlantique)
-                }
-                ToolbarItemGroup(placement: .topBarTrailing) {
-                    Button("Enregistrer") {
-                        afterLinkedSave = nil
-                        if onSaveDocument != nil, let document = model.document {
-                            if sharedPartitionFraming && initialDocument?.layers.first?.furring != document.layers.first?.furring {
-                                pendingSharedFrameSave = document
-                            } else { saveLinked(document) }
-                        } else { model.saveCurrentAndClose(); selectedVertex = nil }
-                    }.atlantiqueToolbarAction(primary: true)
-                    Menu {
-                        if onSaveDocument == nil {
-                            Button("Retour aux calepinages", systemImage: "list.bullet") { model.saveCurrentAndClose(); selectedVertex = nil }
-                            Button("Nouveau support", systemImage: "plus") { sheet = .newSurface }
-                        }
-                        if !simplifiedInterface {
-                            Button("Liste des découpes", systemImage: "list.number") { sheet = .pieces }.disabled(model.result == nil)
-                        }
-                        if !simplifiedInterface {
-                            Button("Modifier le contour et l’échelle",systemImage:"pencil.and.outline") { editingShape = true }
-                            Button("Recentrer le plan",systemImage:"scope") { recenterToken += 1 }
-                        }
-                        Divider()
-                        Button { model.undo(); selectedVertex = nil } label: { Label("Annuler la modification", systemImage: "arrow.uturn.backward") }.disabled(!model.canUndo)
-                        Button { model.redo(); selectedVertex = nil } label: { Label("Rétablir la modification", systemImage: "arrow.uturn.forward") }.disabled(!model.canRedo)
-                    } label: {
-                        if atlantique { AtlantiqueToolbarGlyph() }
-                        else { Image(systemName: "ellipsis.circle") }
-                    }.accessibilityLabel("Options du calepinage")
-                }.atlantiqueToolbarBackground(atlantique)
+            if !atlantique { legacyLayoutToolbar }
+        }
+    }
+
+    @ToolbarContentBuilder private var legacyLayoutToolbar: some ToolbarContent {
+        if workbook != nil {
+            ToolbarItem(placement: .topBarLeading) {
+                Button { performAfterSaving { dismiss() } } label: { Image(systemName: "chevron.left") }
+                    .accessibilityLabel("Enregistrer et revenir à l’ouvrage")
             }
         }
+        if model.document != nil {
+            if onSaveDocument == nil {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button { model.saveCurrentAndClose() } label: { Image(systemName: "chevron.left") }
+                        .accessibilityLabel("Retour aux calepinages sauvegardés")
+                }
+            }
+            ToolbarItemGroup(placement: .topBarTrailing) {
+                Button("Enregistrer", action: saveFromToolbar)
+                layoutOptions
+            }
+        }
+    }
+
+    // A single full-width header avoids UIKit's centred-title constraint, which
+    // truncated the title between Back, Save and Options on compact iPhones.
+    private var layoutNavigationBar: some View {
+        HStack(spacing: 8) {
+            Button {
+                if model.document != nil && onSaveDocument == nil { model.saveCurrentAndClose() }
+                else { performAfterSaving { dismiss() } }
+            } label: { AtlantiqueToolbarGlyph(symbol: "chevron.left") }
+                .accessibilityLabel(workbook != nil ? "Enregistrer et revenir à l’ouvrage" : "Retour")
+            VStack(alignment: .leading, spacing: 0) {
+                Text("Calepinage").font(Atlantique.Typography.font(17, weight: .demi))
+                Text(onSaveDocument == nil ? "2D rapide" : "2D").font(Atlantique.Typography.font(13, weight: .medium))
+            }.foregroundStyle(.white).lineLimit(1).minimumScaleFactor(0.8)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .accessibilityElement(children: .combine).accessibilityAddTraits(.isHeader)
+            if model.document != nil {
+                Button("Enregistrer", action: saveFromToolbar).atlantiqueToolbarAction(primary: true)
+                layoutOptions
+            }
+        }.padding(.horizontal, 16).padding(.vertical, 6)
+    }
+
+    private func saveFromToolbar() {
+        afterLinkedSave = nil
+        if onSaveDocument != nil, let document = model.document {
+            if sharedPartitionFraming && initialDocument?.layers.first?.furring != document.layers.first?.furring {
+                pendingSharedFrameSave = document
+            } else { saveLinked(document) }
+        } else { model.saveCurrentAndClose(); selectedVertex = nil }
+    }
+
+    private var layoutOptions: some View {
+        Menu {
+            if onSaveDocument == nil {
+                Button("Retour aux calepinages", systemImage: "list.bullet") { model.saveCurrentAndClose(); selectedVertex = nil }
+                Button("Nouveau support", systemImage: "plus") { sheet = .newSurface }
+            }
+            if !simplifiedInterface {
+                Button("Liste des découpes", systemImage: "list.number") { sheet = .pieces }.disabled(model.result == nil)
+                Button("Modifier le contour et l’échelle",systemImage:"pencil.and.outline") { editingShape = true }
+                Button("Recentrer le plan",systemImage:"scope") { recenterToken += 1 }
+            }
+            Divider()
+            Button { model.undo(); selectedVertex = nil } label: { Label("Annuler la modification", systemImage: "arrow.uturn.backward") }.disabled(!model.canUndo)
+            Button { model.redo(); selectedVertex = nil } label: { Label("Rétablir la modification", systemImage: "arrow.uturn.forward") }.disabled(!model.canRedo)
+        } label: {
+            if atlantique { AtlantiqueToolbarGlyph() }
+            else { Image(systemName: "ellipsis.circle") }
+        }.accessibilityLabel("Options du calepinage")
     }
     private var dialogContent: some View {
         navigationContent
@@ -799,7 +823,7 @@ struct SheetLayoutView: View {
         .alert("Calepinage enregistré",isPresented:Binding(get:{quantityMessage != nil},set:{if !$0 { quantityMessage=nil }})) {
             Button("OK") { quantityMessage=nil; finishLinkedNavigation() }
         } message: { Text(quantityMessage ?? "") }
-        .toolbar(fullscreen ? .hidden : .visible, for:.navigationBar)
+        .toolbar(fullscreen || atlantique ? .hidden : .visible, for:.navigationBar)
         .toolbar(fullscreen || atlantique ? .hidden : .visible, for:.tabBar)
         .preference(key: AtlantiqueTabBarHiddenKey.self, value: fullscreen)
         .statusBarHidden(fullscreen)
@@ -808,7 +832,7 @@ struct SheetLayoutView: View {
             selectedSpots = []; referenceSpot = nil
             mode = .move; visibility = LayoutVisibilitySettings()
             pinchAnchor = nil; pinching = false
-            rotation = 0; viewAlignedEdge = nil; rotationStart = nil; rotationLatch = nil; fittedBounds = nil; canvasFitSize = nil; zoom = 1; pan = .zero; fullscreen = false
+            rotation = 0; viewAlignedEdge = nil; rotationStart = nil; rotationLatch = nil; fittedBounds = nil; canvasFitSize = nil; canvasWasInteracted = false; zoom = 1; pan = .zero; fullscreen = false
             resolveBoardEdges()
             initializeCeilingView()
         }
@@ -1170,7 +1194,7 @@ struct SheetLayoutView: View {
                     .animation(reduceMotion ? nil : .easeInOut(duration:LayoutPreciseStyle.transitionDuration),value:sharpFraming)
                     .background(Color(.secondarySystemGroupedBackground))
                     .contentShape(Rectangle())
-                    .gesture(DragGesture(minimumDistance: 7).onChanged { value in dragChanged(value, document: document, viewport: viewport) }.onEnded { _ in
+                    .gesture(DragGesture(minimumDistance: 7).onChanged { value in canvasWasInteracted = true; dragChanged(value, document: document, viewport: viewport) }.onEnded { _ in
                         if mode == .lighting, document.surface.kind == .wall, drag != nil { ignoreWallTapUntil=Date().addingTimeInterval(0.2) }
                         if let point=pendingWallPoint, !pinching { addWallPoint(point) }
                         else if let drag { model.finishEditingGesture(from: drag.document) }
@@ -1180,6 +1204,7 @@ struct SheetLayoutView: View {
                     .simultaneousGesture(SpatialTapGesture().onEnded { value in tapped(value.location, document: document, viewport: viewport) })
                     .simultaneousGesture(MagnifyGesture().updating($magnification) { value, state, _ in state = value.magnification }
                         .onChanged { value in
+                            canvasWasInteracted = true
                             if !pinching {
                                 pinching = true
                                 pinchAnchor = CGPoint(x:value.startAnchor.x*proxy.size.width,y:value.startAnchor.y*proxy.size.height)
@@ -1212,7 +1237,7 @@ struct SheetLayoutView: View {
                                     .accessibilityIdentifier("layout.undo")
                                     .disabled(!model.canUndo || drag != nil || pinching || model.isCalculating || model.isOptimizing)
                             }
-                            Button { fullscreen.toggle() } label: {
+                            Button { canvasWasInteracted = true; fullscreen.toggle() } label: {
                                 Image(systemName:fullscreen ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right")
                                     .frame(width:44,height:44).background(.regularMaterial,in:Circle())
                             }.padding(8).accessibilityLabel(fullscreen ? "Quitter le plein écran" : "Afficher le plan en plein écran")
@@ -1226,6 +1251,7 @@ struct SheetLayoutView: View {
                                 var aligned = viewport
                                 aligned.rotation = alignment.angle
                                 rotation = alignment.angle
+                                canvasWasInteracted = true
                                 viewAlignedEdge = alignment.index
                                 pan = aligned.constrainedPan(pan,contour:contour)
                             } label: {
@@ -1285,7 +1311,12 @@ struct SheetLayoutView: View {
                         fitCanvas(document, size:proxy.size, initial:false)
                     }
                     .onChange(of:proxy.size) { oldSize,newSize in
-                        if canvasFitSize == nil { fitCanvas(document, size:newSize, initial:true); return }
+                        // Initial SwiftUI layout can report a temporary, very short
+                        // canvas on compact phones. Refit until the first camera
+                        // interaction; never override a user's pan or zoom later.
+                        if canvasFitSize == nil || (simplifiedInterface && !canvasWasInteracted) {
+                            fitCanvas(document, size:newSize, initial:canvasFitSize == nil); return
+                        }
                         let candidate = CGSize(width:pan.width+(oldSize.width-newSize.width)/2,
                                                height:pan.height+(oldSize.height-newSize.height)/2)
                         pan = viewport.constrainedPan(candidate,contour:document.surface.contour)
@@ -1511,12 +1542,12 @@ struct SheetLayoutView: View {
         guard size.width > 1, size.height > 1 else { return }
         if initial { initializeCeilingView() }
         let contour=document.surface.contour
-        let bounds=LayoutViewport.fittedBounds(contour,rotation:rotation)
-        let fit=LayoutViewport.initialEditingSize(size)
+        let bounds=LayoutViewport.fittedBounds(contour,rotation:rotation,paddingFraction:simplifiedInterface ? 0 : 0.2)
+        let fit=LayoutViewport.initialEditingSize(size,stableControls:simplifiedInterface)
         let viewport=LayoutViewport(bounds:bounds,size:size,zoom:1,pan:.zero,rotation:rotation,
                                     pivot:LayoutViewport.geometricCenter(contour),fittingSize:fit)
         fittedBounds=bounds; canvasFitSize=fit; zoom=1
-        pan=viewport.upperFramingPan(contour:contour)
+        pan=viewport.upperFramingPan(contour:contour,stableControls:simplifiedInterface)
     }
 
     private func referenceWallButton(_ document: LayoutDocument, clockwise: Bool) -> some View {

@@ -666,6 +666,19 @@ final class ProjectStoreTests: XCTestCase {
         XCTAssertEqual(WorkConfigurationShortcut.choices(for: .peripheralLiningFurrings)[3].step, 4)
     }
 
+    func testBondedBookNavigationGroupsCompositionWithoutSkippingJointsOrLosingLegacyEntries() {
+        XCTAssertEqual(BondedFormSteps.compact, [1, 2, 5, 6])
+        XCTAssertEqual(BondedFormSteps.compact.map(BondedFormSteps.displayed), [1, 2, 3, 4])
+        XCTAssertEqual(BondedFormSteps.compact.dropLast().map(BondedFormSteps.next), [2, 5, 6])
+        XCTAssertEqual(BondedFormSteps.compact.dropFirst().map(BondedFormSteps.previous), [1, 2, 5])
+        // Saved shortcuts to thermal/format fields still open the combined card.
+        for legacyStep in 2...4 {
+            XCTAssertEqual(BondedFormSteps.displayed(legacyStep), 2)
+            XCTAssertEqual(BondedFormSteps.previous(legacyStep), 1)
+            XCTAssertEqual(BondedFormSteps.next(legacyStep), 5)
+        }
+    }
+
     func testConfigurationEntryIsOptionalAndRejectsInvalidSteps() async throws {
         for entry: Int? in [nil, -1, 2, 7] {
             var entries: [Int] = []
@@ -1926,6 +1939,77 @@ final class ProjectStoreTests: XCTestCase {
         LayoutDocument(surface: Surface2D(name: "Mur A", kind: kind, contour: [
             .init(x: 0, y: 0), .init(x: 4000, y: 0), .init(x: 4000, y: 2500), .init(x: 0, y: 2500)
         ]), layers: [.init(furring: .init(parallelToBoards: true, spacing: 600, offset: 100))])
+    }
+
+    func testCompleteBookWorkflowsPersistLayoutsAndQuantitiesAcrossFiveFamilies() throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("book-workflows-\(UUID()).json")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let store = ProjectStore(fileURL: url)
+        let project = try store.createProject(name: "Recette complète", client: "", address: "", notes: "")
+        let product = "FACING-BA13-STANDARD"
+        var ceiling = CeilingConfiguration(length: 4, width: 2.5)
+        ceiling.firstSkin = [.init(facingID: product, dimensionID: "1200x2500", area: 10)]
+        var furring = FurringLiningConfiguration()
+        furring.enteredLength = 4; furring.height = 2.5; furring.insulationEnabled = false
+        furring.firstSkin = [.init(facingID: product, formatID: "1200x2500", surface: 10)]
+        furring.quantities = [.init(name: "BA13 · 1200 × 2500 mm", quantity: 10.5, unit: "m²")]
+        var lining = DoublageConfiguration()
+        lining.enteredLength = 4; lining.height = 2.5; lining.insulationEnabled = false
+        lining.firstSkin = [.init(facingID: product, formatID: "1200x2500", surface: 10)]
+        lining.quantities = furring.quantities
+        var partition = CloisonDistributionConfiguration()
+        partition.enteredLength = 4; partition.height = 2.5; partition.insulationEnabled = false
+        partition.faceAFirst = [.init(facingID: product, formatID: "1200x2500", surface: 10)]
+        partition.faceBFirst = partition.faceAFirst
+        partition.quantities = [.init(name: "BA13 · 1200 × 2500 mm", quantity: 21, unit: "m²")]
+        var bonded = BondedLiningConfiguration()
+        bonded.height = 2.5; bonded.enteredLength = 4
+        bonded.allocations = [.init(surface: 10)]
+        bonded.lambda = 0.032; bonded.insulationThicknessMM = 100
+        bonded.widthMM = 1200; bonded.panelHeightMM = 2500
+        bonded.quantities = [.init(name: "Complexe BA13 + PSE 100 mm", quantity: 10.5, unit: "m²")]
+        let cases: [(WorkType, WorkConfiguration)] = [
+            (.ceilingOnFurring, .ceiling(ceiling)), (.peripheralLiningFurrings, .furringLining(furring)),
+            (.peripheralLiningStuds, .peripheralLining(lining)), (.distributionPartition, .distributionPartition(partition)),
+            (.peripheralLiningBonded, .bondedLining(bonded))
+        ]
+        let catalogue = CeilingCataloguePayload(version: "test", ouvrage: nil, isolation: [], systemesFixation: [],
+            parements: [], quantitatifs: [], pareVapeur: [], regles: [])
+        for (type, payload) in cases {
+            let surface = componentDocument(kind: type == .ceilingOnFurring ? .ceiling : .wall).surface
+            let initial = WorkLayoutDefaults.document(surface: surface, configuration: payload)
+            let id = try store.createConfiguredWork(projectID: project, name: type.rawValue, type: type,
+                payload: payload, roomID: nil, newRoomName: nil, document: initial)
+            var work = try XCTUnwrap(store.project(id: project)?.works.first { $0.id == id })
+            let component = try XCTUnwrap(work.components.first)
+            let plan = try XCTUnwrap(component.plans.first)
+            var edited = try XCTUnwrap(component.document(for: plan))
+            edited.layers[0].offset.x += 137
+            edited.surface.openings = [.init(kind: .window, contour: LayoutBounds(min: .init(x: 1500, y: 900), max: .init(x: 2300, y: 1900)).polygon)]
+            let result = try SheetLayoutEngine.calculate(surface: edited.surface, layer: edited.layers[0])
+            XCTAssertGreaterThan(result.purchasedSheetCount, 0)
+            try store.saveComponentPlan(projectID: project, workID: id, componentID: component.id,
+                sideRoomID: plan.sideRoomID, document: edited, expectedGeometryRevision: component.geometryRevision)
+            work = try XCTUnwrap(store.project(id: project)?.works.first { $0.id == id })
+            let quantities = CombinedQuantityCalculator.calculate(works: [work], catalogue: catalogue)
+            XCTAssertFalse(quantities.supplies.isEmpty, type.rawValue)
+            XCTAssertTrue(quantities.supplies.allSatisfy { $0.quantity.isFinite && $0.quantity >= 0 })
+            let reopenedStore = ProjectStore(fileURL: url)
+            XCTAssertNil(reopenedStore.lastError)
+            let reopened = try XCTUnwrap(reopenedStore.project(id: project)?.works.first { $0.id == id })
+            XCTAssertEqual(reopened.payload, work.payload)
+            XCTAssertEqual(reopened.components, work.components)
+            XCTAssertEqual(reopened.layoutQuantityTakeoff, work.layoutQuantityTakeoff)
+            let repeated = CombinedQuantityCalculator.calculate(works: [reopened], catalogue: catalogue)
+            XCTAssertEqual(repeated.supplies.map(\.id), quantities.supplies.map(\.id))
+            XCTAssertEqual(repeated.supplies.map(\.quantity), quantities.supplies.map(\.quantity))
+            XCTAssertEqual(repeated.totalArea, quantities.totalArea)
+            let reopenedComponent = try XCTUnwrap(reopened.components.first)
+            let reopenedDocument = try XCTUnwrap(reopenedComponent.document(for: reopenedComponent.plans[0]))
+            XCTAssertEqual(reopenedDocument.layers[0].offset, edited.layers[0].offset)
+            XCTAssertEqual(reopenedDocument.surface.openings, edited.surface.openings)
+            XCTAssertEqual(try SheetLayoutEngine.calculate(surface: reopenedDocument.surface, layer: reopenedDocument.layers[0]).purchasedSheetCount, result.purchasedSheetCount)
+        }
     }
 
     @MainActor private struct AdjacencyFixture {

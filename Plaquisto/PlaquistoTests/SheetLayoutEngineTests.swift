@@ -1973,6 +1973,33 @@ final class SheetLayoutEngineTests: XCTestCase {
         XCTAssertLessThan(contour.map { placed.screen($0).y }.max()!,size.height)
     }
 
+    func testBookCanvasUsesAvailableSpaceOnCompactAndLargeScreensWithoutClipping() {
+        let contours = [
+            LayoutBounds(min: .zero, max: .init(x: 4000, y: 2600)).polygon,
+            LayoutBounds(min: .zero, max: .init(x: 1200, y: 8000)).polygon,
+            offcutCeiling().contour
+        ]
+        for size in [CGSize(width: 343, height: 230), .init(width: 358, height: 430), .init(width: 398, height: 650)] {
+            for contour in contours {
+                for angle in [0.0, 0.6, Double.pi / 2] {
+                    let bounds = LayoutViewport.fittedBounds(contour, rotation: angle, paddingFraction: 0)
+                    let fit = LayoutViewport.initialEditingSize(size, stableControls: true)
+                    let base = LayoutViewport(bounds: bounds, size: size, zoom: 1, pan: .zero, rotation: angle, fittingSize: fit)
+                    let placed = LayoutViewport(bounds: bounds, size: size, zoom: 1,
+                        pan: base.upperFramingPan(contour: contour, stableControls: true), rotation: angle, fittingSize: fit)
+                    let points = contour.map { placed.screen($0) }
+                    XCTAssertGreaterThanOrEqual(points.map(\.x).min()!, 34.9)
+                    XCTAssertLessThanOrEqual(points.map(\.x).max()!, size.width - 34.9)
+                    XCTAssertGreaterThanOrEqual(points.map(\.y).min()!, 0)
+                    XCTAssertLessThan(points.map(\.y).max()!, size.height - 20)
+                    let old = LayoutViewport(bounds: LayoutViewport.fittedBounds(contour, rotation: angle),
+                        size: size, zoom: 1, pan: .zero, rotation: angle, fittingSize: LayoutViewport.initialEditingSize(size))
+                    XCTAssertGreaterThan(placed.scale, old.scale)
+                }
+            }
+        }
+    }
+
     private var fourEdgeFormat: LayoutCatalogFormat {
         let product = "FACING-BA13-QUATRE-BORDS-AMINCIS"
         return .init(id:LayoutCatalogFormat.identifier(productID:product,width:1200,length:2400),

@@ -591,7 +591,7 @@ struct CloisonDistributionConfiguratorView: View {
                     }
                 }
                 sectionTitle("Montants")
-                AtlantiqueSegmentedChoice(title: "Montants", options: StudMounting.allCases.map { ($0, $0.rawValue) }, selection: $mounting)
+                AtlantiqueSegmentedChoice(title: "Montants", options: StudMounting.allCases.map { ($0, $0 == .simple ? "Simples" : "Doubles") }, selection: $mounting)
                 sectionTitle("Entraxe des montants")
                 AtlantiqueSegmentedChoice(title: "Entraxe", options: availableSpacings.map { ($0, "\(Int($0 * 100)) cm") }, selection: $spacing)
                 if tiledArea {
@@ -637,7 +637,7 @@ struct CloisonDistributionConfiguratorView: View {
                 warning("La surface carrelée doit être supérieure à 0 m² et ne peut pas dépasser la surface de l’ouvrage.")
             }
 
-            if let range = preliminaryHeightRange {
+            if let range = preliminaryHeightRange, !atlantique || Atlantique.Book.showsAdvancedFormControls {
                 card {
                     LabeledContent(
                         "Hauteur maximale",
