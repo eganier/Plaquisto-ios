@@ -140,6 +140,7 @@ struct LabInsulationSeries: Identifiable, Hashable {
     func resistance(for thickness: Int) -> Double { Double(thickness) / 1_000 / lambda }
 
     static func decode(_ record: CeilingReferenceRecord) -> Self? {
+        guard InsulationCatalogueAvailability.allows(referenceID: record.id) else { return nil }
         guard let lambda = ThermalCalculator.catalogueLambda(
             conductivity: record.data["conductivity"]?.string,
             lambda: record.data["lambda_w_mk"]?.number), lambda.isFinite, lambda > 0,
@@ -463,7 +464,8 @@ struct RailStudCeilingConfiguratorView: View {
                 VStack(spacing: 0) {
                     header
                     Divider()
-                    AtlantiqueForm { stepContent }
+                    AtlantiqueForm(bookLayout: true) { stepContent }
+                        .id(step)
                     footer
                 }
             }
@@ -471,7 +473,7 @@ struct RailStudCeilingConfiguratorView: View {
         .navigationBarBackButtonHidden()
         .configurationEntry(in:0...7) { step = visibleStepIndices.contains($0) ? $0 : 3; showingResult = false }
         .tint(atlantique ? Atlantique.Palette.actionInk : Color(red: 0.12, green: 0.38, blue: 0.29))
-        .atlantiqueFormPage("Plafond sur rails et montants")
+        .atlantiqueFormPage(atlantique ? steps[step] : "Plafond sur rails et montants")
         .toolbar {
             if (isEditing || atlantique), let onSave {
                 ToolbarItem(placement: .confirmationAction) {
@@ -531,7 +533,7 @@ struct RailStudCeilingConfiguratorView: View {
             if step < steps.count - 1 {
                 Button("Continuer") { advance() }.atlantiqueActionStyle().disabled(!canContinue)
             } else if let onSave {
-                Button("Enregistrer") { onSave(configurationSnapshot()) }.atlantiqueToolbarAction(primary: true).disabled(!allStepsAreValid).atlantiqueActionStyle()
+                Button("Enregistrer") { onSave(configurationSnapshot()) }.atlantiqueActionStyle().disabled(!allStepsAreValid)
             } else if showingResult {
                 Button("Recommencer") { reset() }.atlantiqueActionStyle()
             } else {
@@ -558,9 +560,15 @@ struct RailStudCeilingConfiguratorView: View {
     private var dimensionsStep: some View {
         Group {
             Section {
-                Picker("Type de plafond", selection: $shape) { ForEach(LabCeilingShape.allCases) { Text($0.title).tag($0) } }.pickerStyle(.segmented)
+                if atlantique {
+                    AtlantiqueSegmentedChoice(title: "Type de plafond", options: LabCeilingShape.allCases.map { ($0, $0.title) }, selection: $shape)
+                        .disabled(lockScannedGeometry)
+                        .onChange(of: shape) { _, _ in normalizeSelections() }
+                } else {
+                    Picker("Type de plafond", selection: $shape) { ForEach(LabCeilingShape.allCases) { Text($0.title).tag($0) } }.pickerStyle(.segmented)
                     .disabled(lockScannedGeometry)
                     .onChange(of: shape) { _, _ in normalizeSelections() }
+                }
             } header: { Text("Type de plafond") }
             Section {
                 Toggle("Préciser la longueur et la largeur", isOn: $dimensionsSpecified)
@@ -569,7 +577,7 @@ struct RailStudCeilingConfiguratorView: View {
                     LabMeasureField(label: "Longueur", value: $length, unit: "m").onChange(of: length) { _, _ in updateArea() }
                     LabMeasureField(label: "Largeur", value: $width, unit: "m").onChange(of: width) { _, _ in updateArea() }
                     if length > 0, width > 0 {
-                        Picker("Sens des montants", selection: $direction) {
+                        AtlantiquePicker("Sens des montants", selection: $direction) {
                             Text("Dans la longueur").tag("length"); Text("Dans la largeur").tag("width")
                         }
                     }
@@ -577,11 +585,13 @@ struct RailStudCeilingConfiguratorView: View {
             } header: {
                 Text("Dimensions de l’ouvrage")
             } footer: {
-                Text(lockScannedGeometry ? "La surface et les contours proviennent du relevé. Corrigez-les dans le plan ; les longueurs utilisées pour le quantitatif restent une estimation." : "Les dimensions calculent précisément les montants et le périmètre des rails.")
+                if !atlantique || Atlantique.Book.showsAdvancedFormControls {
+                    Text(lockScannedGeometry ? "La surface et les contours proviennent du relevé. Corrigez-les dans le plan ; les longueurs utilisées pour le quantitatif restent une estimation." : "Les dimensions calculent précisément les montants et le périmètre des rails.")
+                }
             }
             AtlantiqueSection("Surface de l’ouvrage") {
                 if dimensionsSpecified || lockScannedGeometry {
-                    LabeledContent("Surface calculée", value: "\(format(area)) m²")
+                    LabeledContent("Surface", value: "\(format(area)) m²")
                 } else {
                     LabMeasureField(label: "Surface", value: $area, unit: "m²")
                 }
@@ -613,6 +623,47 @@ struct RailStudCeilingConfiguratorView: View {
 
     private var insulationStep: some View {
         Group {
+            if atlantique && !Atlantique.Book.showsAdvancedFormControls {
+                Section {
+                    HStack {
+                        Text("Couche 1").font(.headline)
+                        Spacer()
+                        Toggle("Prévoir une isolation", isOn: $insulationEnabled).labelsHidden()
+                            .onChange(of: insulationEnabled) { _, enabled in if enabled { normalizeSelections() } }
+                    }
+                    if insulationEnabled {
+                        Divider()
+                        insulationEditor("", $firstInsulation)
+                        LabeledContent(insulationLayers == 2 ? "Résistance thermique totale" : "Résistance thermique", value: "R = \(format(thermalResistance)) m²·K/W")
+                        if insulationWeight > 15 { Label("Le poids dépasse les 15 kg/m² couverts par le tableau de portées.", systemImage: "exclamationmark.triangle.fill").foregroundStyle(.orange) }
+                    }
+                }
+                if insulationEnabled {
+                    Section {
+                        if insulationLayers == 2 {
+                            Text("Couche 2").font(.headline)
+                            Divider()
+                            insulationEditor("", $secondInsulation)
+                            Button("Retirer la deuxième couche") { insulationLayers = 1 }
+                        } else {
+                            Button {
+                                secondInsulation = firstInsulation
+                                secondInsulation.location = "below"
+                                insulationLayers = 2
+                            } label: {
+                                HStack {
+                                    VStack(alignment: .leading, spacing: 6) {
+                                        Text("Couche 2").font(.headline)
+                                        Text("Ajouter une deuxième couche")
+                                    }
+                                    Spacer()
+                                    Image(systemName: "plus").foregroundStyle(Atlantique.Palette.orange)
+                                }.foregroundStyle(Atlantique.Palette.ink)
+                            }.buttonStyle(.plain)
+                        }
+                    }
+                }
+            } else {
             Section {
                 Toggle("Prévoir une isolation", isOn: $insulationEnabled)
                     .onChange(of: insulationEnabled) { _, enabled in if enabled { normalizeSelections() } }
@@ -626,6 +677,7 @@ struct RailStudCeilingConfiguratorView: View {
                     if insulationWeight > 15 { Label("Le poids dépasse les 15 kg/m² couverts par le tableau de portées.", systemImage: "exclamationmark.triangle.fill").foregroundStyle(.orange) }
                 }
             } header: { Text("Isolation") } footer: { Text(shape == .sloped ? "Le lambda 0,040 est exclu en rampant. La deuxième couche reprend par défaut la première mais reste modifiable." : "La deuxième couche reprend par défaut la première mais reste modifiable.") }
+            }
             AtlantiqueSection("Pare-vapeur") {
                 Toggle("Prévoir la pose d’un pare-vapeur", isOn: $vaporBarrier)
                 if shape == .sloped && !vaporBarrier { Label("Pose fortement recommandée en rampant.", systemImage: "exclamationmark.triangle.fill").foregroundStyle(.orange) }
@@ -635,13 +687,13 @@ struct RailStudCeilingConfiguratorView: View {
 
     private func insulationEditor(_ title: String, _ selection: Binding<LabInsulationSelection>) -> some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text(title).font(.headline)
-            Picker("Type d’isolant", selection: materialBinding(selection)) { ForEach(insulationMaterials, id: \.self) { Text($0).tag($0) } }
-            Picker("Lambda", selection: selection.seriesID) {
+            if !title.isEmpty { Text(title).font(.headline) }
+            AtlantiquePicker("Type d’isolant", selection: materialBinding(selection)) { ForEach(insulationMaterials, id: \.self) { Text($0).tag($0) } }
+            AtlantiquePicker("Conductivité thermique", selection: selection.seriesID) {
                 ForEach(seriesForMaterial(material(selection.wrappedValue))) { Text("λ \($0.lambda.formatted(.number.precision(.fractionLength(3)))) W/(m·K)").tag($0.id) }
             }.onChange(of: selection.wrappedValue.seriesID) { _, _ in normalizeInsulation(selection) }
             if let chosen = series(selection.wrappedValue.seriesID) {
-                Picker("Épaisseur", selection: selection.thickness) {
+                AtlantiquePicker("Épaisseur", selection: selection.thickness) {
                     ForEach(chosen.thicknesses, id: \.self) { Text("\($0) mm — R = \(format(chosen.resistance(for: $0)))").tag($0) }
                 }
             }
@@ -666,7 +718,33 @@ struct RailStudCeilingConfiguratorView: View {
         }
     }
 
-    private var facingsStep: some View {
+    @ViewBuilder private var facingsStep: some View {
+        if atlantique && !Atlantique.Book.showsAdvancedFormControls {
+            Section {
+                Text("Parement 1").font(.headline)
+                Divider()
+                ForEach(firstSkin.indices, id: \.self) { bookFacingEditor($firstSkin[$0], mixed: firstSkin.count > 1) }
+            }
+            Section {
+                if facingLayers == 2 {
+                    Text("Parement 2").font(.headline)
+                    Divider()
+                    ForEach(secondSkin.indices, id: \.self) { bookFacingEditor($secondSkin[$0], mixed: secondSkin.count > 1) }
+                    Button("Retirer le deuxième parement") { facingLayers = 1; normalizeFacings() }
+                } else {
+                    Button { facingLayers = 2; normalizeFacings() } label: {
+                        HStack {
+                            VStack(alignment: .leading, spacing: 6) {
+                                Text("Parement 2").font(.headline)
+                                Text("Ajouter une deuxième peau")
+                            }
+                            Spacer()
+                            Image(systemName: "plus").foregroundStyle(Atlantique.Palette.orange)
+                        }.foregroundStyle(Atlantique.Palette.ink)
+                    }.buttonStyle(.plain)
+                }
+            }
+        } else {
         Section {
             VStack(alignment: .leading, spacing: 14) {
                 sectionTitle("Nombre de peaux")
@@ -675,6 +753,20 @@ struct RailStudCeilingConfiguratorView: View {
                 if facingLayers == 2 { skinEditor("Deuxième peau", $secondSkin) }
             }.padding(.vertical, 6)
         }.listRowInsets(EdgeInsets()).listRowBackground(Color.clear).listRowSeparator(.hidden)
+        }
+    }
+
+    private func bookFacingEditor(_ allocation: Binding<LabFacingAllocation>, mixed: Bool) -> some View {
+        VStack(alignment: .leading, spacing: 14) {
+            AtlantiquePicker("Type de plaque", selection: familyBinding(allocation)) { ForEach(facingFamilies, id: \.self) { Text($0).tag($0) } }
+            Divider()
+            AtlantiquePicker("Fonction", selection: allocation.productID) { ForEach(products(family(allocation.wrappedValue))) { Text($0.functionTitle).tag($0.id) } }
+                .onChange(of: allocation.wrappedValue.productID) { _, _ in allocation.wrappedValue.dimensionID = preferredDimension(product(allocation.wrappedValue.productID))?.id ?? "" }
+            Divider()
+            AtlantiquePicker("Dimension", selection: allocation.dimensionID) { ForEach(product(allocation.wrappedValue.productID)?.dimensions ?? []) { Text($0.title).tag($0.id) } }
+            // Existing mixed allocations remain editable; a simple skin uses the support area.
+            if mixed { LabMeasureField(label: "Surface attribuée", value: allocation.area, unit: "m²") }
+        }
     }
 
     private func skinEditor(_ title: String, _ allocations: Binding<[LabFacingAllocation]>) -> some View {
@@ -710,7 +802,7 @@ struct RailStudCeilingConfiguratorView: View {
     private var frameStep: some View {
         Group {
             Section {
-                Picker("Largeur du montant", selection: $stud) {
+                AtlantiquePicker("Largeur du montant", selection: $stud) {
                     ForEach(LabStud.allCases) { option in
                         HStack {
                             Text(option.title)
@@ -723,11 +815,16 @@ struct RailStudCeilingConfiguratorView: View {
                     }
                 }
                     .onChange(of: stud) { _, _ in if !suspensionAllowed { frameMode = .selfSupporting } }
-                Picker("Disposition", selection: $assembly) { ForEach(LabStudAssembly.allCases) { Text($0.title).tag($0) } }.pickerStyle(.segmented)
-                Picker("Type de montage", selection: $frameMode) {
+                if atlantique {
+                    AtlantiqueSegmentedChoice(title: "Disposition", options: LabStudAssembly.allCases.map { ($0, $0.title) }, selection: $assembly)
+                    AtlantiqueSegmentedChoice(title: "Type de montage", options: (suspensionAllowed ? [LabFrameMode.selfSupporting, .suspended] : [.selfSupporting]).map { ($0, $0.title) }, selection: $frameMode)
+                } else {
+                    Picker("Disposition", selection: $assembly) { ForEach(LabStudAssembly.allCases) { Text($0.title).tag($0) } }.pickerStyle(.segmented)
+                    Picker("Type de montage", selection: $frameMode) {
                     Text("Autoportant").tag(LabFrameMode.selfSupporting)
                     if suspensionAllowed { Text("Avec suspentes").tag(LabFrameMode.suspended) }
                 }.pickerStyle(.segmented)
+                }
             } header: { Text("Ossature") }
             Section {
                 LabeledContent("Parement retenu", value: mechanicalFacing.title)
@@ -736,7 +833,9 @@ struct RailStudCeilingConfiguratorView: View {
                 LabeledContent("Portée maximale", value: maximumSpan.map { "\(format($0)) m" } ?? "Non couverte")
                 if frameIsValid { Label(frameMode == .selfSupporting ? "Configuration autoportante compatible" : "Configuration suspendue compatible", systemImage: "checkmark.seal.fill").foregroundStyle(.green) }
                 else { Label(frameWarning, systemImage: "exclamationmark.triangle.fill").foregroundStyle(.orange) }
-            } header: { Text("Vérification du montage") } footer: { Text("La portée dépend du montant, de sa disposition, du parement et du poids total de l’isolation.") }
+            } header: { Text("Vérification du montage") } footer: {
+                if !atlantique || Atlantique.Book.showsAdvancedFormControls { Text("La portée dépend du montant, de sa disposition, du parement et du poids total de l’isolation.") }
+            }
         }
     }
 
@@ -764,14 +863,20 @@ struct RailStudCeilingConfiguratorView: View {
                 Toggle("Prévoir le traitement des bandes", isOn: $jointTreatment)
                 if jointTreatment { AtlantiquePicker("Type d’enduit", selection: $compound) { Text("Enduit à joints en poudre").tag("powder"); Text("Enduit à joints en pâte").tag("paste") } }
             }
-            Section { Text(jointTreatment ? "Les bandes et l’enduit seront ajoutés au quantitatif." : "Aucune bande ni aucun enduit ne sera ajouté.").foregroundStyle(.secondary) }
+            if !atlantique || Atlantique.Book.showsAdvancedFormControls {
+                Section { Text(jointTreatment ? "Les bandes et l’enduit seront ajoutés au quantitatif." : "Aucune bande ni aucun enduit ne sera ajouté.").foregroundStyle(.secondary) }
+            }
         }
     }
 
     private var resultStep: some View {
         Group {
             Section { Label("Configuration compatible", systemImage: "checkmark.seal.fill").font(.headline).foregroundStyle(.green); Text("\(format(effectiveArea)) m² · \(shape.title.lowercased()) · \(stud.title) · \(assembly.title.lowercased())").foregroundStyle(.secondary) }
-            AtlantiqueSection("Quantitatif") { ForEach(quantities) { LabeledContent($0.name, value: quantityTitle($0)) } }
+            AtlantiqueSection("Quantitatif") {
+                ForEach(SupplyListingConsolidator.rows(quantities.map { .init(name: $0.name, quantity: $0.quantity, unit: $0.unit) })) { row in
+                    LabeledContent(row.name, value: row.value)
+                }
+            }
             if atlantique && !Atlantique.Book.showsAdvancedFormControls {
                 Section { AtlantiqueConfigurationEstimate(type: .ceilingOnRailsAndStuds, configuration: .railStudCeiling(configurationSnapshot())) }
                     .listRowBackground(Color.clear).listRowInsets(EdgeInsets())
@@ -970,9 +1075,7 @@ struct RailStudCeilingConfiguratorView: View {
             result.append(.init(name: "\(facing.family) \(facing.functionTitle) · \(dimension.title)", quantity: ceil(allocation.area * coveringAreaRatio * references.quantity("plate_m2_m2", fallback: 1.05) / dimension.area), unit: "plaque(s)"))
         }
         result += [.init(name: "Montant \(stud.title)", quantity: studLength, unit: "ml"), .init(name: "Rails \(stud.railTitle)", quantity: railLength, unit: "ml")]
-        let railFixingSpacing = references.quantity("rail_fixing_spacing_m", fallback: 0.60)
         let railFixingMultiplier = references.studValue(stud, "rail_fixing_multiplier", fallback: Double(stud.railFixingMultiplier))
-        result.append(.init(name: "Fixations des rails au gros œuvre", quantity: ceil(2 * (length + width) / railFixingSpacing) * railFixingMultiplier, unit: "unité"))
         if railFixingMultiplier > 1 { result.append(.init(name: "Vis TRPF 25 · liaison rail/montant", quantity: Double(studPieces * 2), unit: "unité")) }
         if assembly == .double {
             let screwSpacing = references.quantity("double_stud_screw_spacing_m", fallback: 0.40)
@@ -1064,10 +1167,21 @@ struct RailStudCeilingConfiguratorView: View {
 }
 
 private struct LabMeasureField: View {
+    @Environment(\.usesAtlantiqueDesign) private var atlantique
     let label: String
     @Binding var value: Double
     let unit: String
     var body: some View {
+        if atlantique {
+            VStack(alignment: .leading, spacing: 6) {
+                Text(label).font(Atlantique.Typography.caption).foregroundStyle(Atlantique.Palette.muted)
+                HStack {
+                    ZeroEmptyDecimalTextField(value: $value).accessibilityLabel(label)
+                    Text(unit).foregroundStyle(Atlantique.Palette.muted)
+                }
+            }
+        } else {
         HStack { Text(label); Spacer(); ZeroEmptyDecimalTextField(value: $value).multilineTextAlignment(.trailing).frame(width: 90); Text(unit).foregroundStyle(.secondary) }
+        }
     }
 }

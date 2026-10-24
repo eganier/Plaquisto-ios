@@ -20,7 +20,7 @@ struct ScannerDebugView: View {
 
     var body: some View {
         NavigationStack {
-            List {
+            AtlantiqueForm(bookLayout: true) {
                 if !quickLayout {
                     Section {
                         VStack(alignment: .leading, spacing: 14) {
@@ -44,7 +44,7 @@ struct ScannerDebugView: View {
                         Label("Scanner ma pièce", systemImage: "viewfinder")
                             .font(.headline).frame(maxWidth: .infinity, minHeight: 50)
                     }
-                    .buttonStyle(.borderedProminent)
+                    .atlantiqueActionStyle(.primary)
                     .disabled(!model.canStart || model.needsSaveRetry)
                     .listRowBackground(Color.clear)
                     if !quickLayout {
@@ -52,7 +52,7 @@ struct ScannerDebugView: View {
                         Button { showingManualModel = true } label: {
                             Label("Dessiner ma pièce", systemImage: "pencil.and.outline")
                                 .font(.headline).frame(maxWidth: .infinity, minHeight: 50)
-                        }.buttonStyle(.borderedProminent).tint(.orange)
+                        }.atlantiqueActionStyle(.primary)
                     }
                     if model.needsSaveRetry {
                         Text("Sauvegardez le relevé en mémoire avant de commencer une nouvelle capture.")
@@ -93,11 +93,11 @@ struct ScannerDebugView: View {
                     }
                 }
                 if let recoveryError { Text(recoveryError).foregroundStyle(.orange) }
-                Section {
+                if !atlantique || Atlantique.Book.showsAdvancedFormControls { Section {
                     Button(showDiagnostics ? "Masquer les détails techniques" : "Détails techniques et diagnostic") {
                         showDiagnostics.toggle()
                     }.font(.footnote)
-                }
+                } }
                 if showDiagnostics {
                 Section {
                     capabilityRow("RoomPlan", available: model.roomPlanSupported)
@@ -194,7 +194,7 @@ struct ScannerDebugView: View {
                 if quickLayout || targetProjectID != nil {
                     ToolbarItem(placement: .cancellationAction) { Button("Fermer") { dismiss() } }
                 } else {
-                    if atlantique { ToolbarItem(placement: .topBarTrailing) { Button(action: onOpenAccount) { AtlantiqueToolbarGlyph(symbol: "gearshape") }.accessibilityLabel("Réglages") } }
+                    if atlantique { ToolbarItem(placement: .topBarTrailing) { Button(action: onOpenAccount) { AtlantiqueToolbarGlyph(symbol: "gearshape") }.accessibilityLabel("Réglages") }.atlantiqueToolbarBackground() }
                     else { AccountToolbarButton(action: onOpenAccount) }
                 }
             }

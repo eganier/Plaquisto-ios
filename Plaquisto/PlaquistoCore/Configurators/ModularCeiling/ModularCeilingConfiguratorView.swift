@@ -286,18 +286,19 @@ struct ModularCeilingConfiguratorView: View {
             .padding(.horizontal, 20)
             .padding(.vertical, 12)
 
-            AtlantiqueForm { currentStepContent }
+            AtlantiqueForm(bookLayout: true) { currentStepContent }.id(step)
         }
         .configurationEntry(in:0...2) { step = $0 }
         .safeAreaInset(edge: .bottom) {
             HStack(spacing: 12) {
                 if step > 0 {
-                    Button("Précédent") { step -= 1 }
+                    Button("Retour") { step -= 1 }
                         .atlantiqueActionStyle(.secondary)
+                        .frame(maxWidth: atlantique ? 112 : nil)
                         .formStepMenu(titles: ["Dimensions", "Dalles et trame", "Plénum et suspension", "Résultat"], selection: $step, canShowResult: canSave)
                 }
                 Spacer()
-                Button(step == 3 ? "Enregistrer l’ouvrage" : "Suivant") {
+                Button(step == 3 ? "Enregistrer" : "Continuer") {
                     if step == 3 { attemptSave() }
                     else { step += 1 }
                 }
@@ -306,16 +307,16 @@ struct ModularCeilingConfiguratorView: View {
             }
             .padding(.horizontal, 20)
             .padding(.vertical, 12)
-            .background(.bar)
+            .background(atlantique ? Atlantique.Palette.blue : Color(.systemBackground))
         }
-        .navigationTitle("Plafond modulaire (bêta)").atlantiqueFormPage("Plafond modulaire (bêta)")
+        .atlantiqueFormPage(atlantique ? stepTitle : "Plafond modulaire (bêta)")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             if isEditing || atlantique {
                 ToolbarItem(placement: .confirmationAction) {
                 Button("Enregistrer", action: attemptSave).atlantiqueToolbarAction(primary: true)
                     .disabled(!canSave)
-                }
+                }.atlantiqueToolbarBackground(atlantique)
             }
         }
         .alert("Plénum à confirmer", isPresented: $showsPlenumConfirmation) {
@@ -350,7 +351,7 @@ struct ModularCeilingConfiguratorView: View {
         case 2:
             plenumSection
         default:
-            configurationSummarySection
+            if !atlantique || Atlantique.Book.showsAdvancedFormControls { configurationSummarySection }
             quantitySection
         }
     }
@@ -366,22 +367,19 @@ struct ModularCeilingConfiguratorView: View {
                 metricRow("Largeur", value: $configuration.width, unit: "m")
             }
         } header: {
-            Text("Dimensions de la pièce")
+            Text("Dimensions de la pièce").foregroundStyle(atlantique ? Color.white : .secondary)
         } footer: {
+            if !atlantique || Atlantique.Book.showsAdvancedFormControls {
             Text(configuration.surveyedSurfaces == nil
                 ? "Pièce rectangulaire. Les porteurs sont calculés dans le sens de la plus grande longueur."
                 : "Contour et ouvertures repris du relevé. Le quantitatif est recalculé lorsque le plan change.")
+            }
         }
     }
 
     private var tilesSection: some View {
         Section {
-            Picker("Format des dalles", selection: $configuration.tileFormat) {
-                ForEach(ModularCeilingTileFormat.allCases) { format in
-                    Text(format.title).tag(format)
-                }
-            }
-            .pickerStyle(.segmented)
+            AtlantiqueSegmentedChoice(title: "Format des dalles", options: ModularCeilingTileFormat.allCases.map { ($0, $0.title) }, selection: $configuration.tileFormat)
 
             metricRow("Épaisseur des dalles", value: $configuration.tileThicknessMM, unit: "mm")
 
@@ -398,11 +396,12 @@ struct ModularCeilingConfiguratorView: View {
                 }
             }
         } header: {
-            Text("Dalles et trame T24")
+            Text("Dalles et trame T24").foregroundStyle(atlantique ? Color.white : .secondary)
         } footer: {
             Text(configuration.tileFormat == .square600
                  ? "Un luminaire 600 × 600 occupant une maille complète peut être déduit ici."
                  : "Le format 600 × 1200 n’utilise pas d’entretoises de 600 mm. Les équipements intégrés ne sont pas déduits dans cette version simple.")
+                .foregroundStyle(atlantique ? Color.white.opacity(0.85) : .secondary)
         }
     }
 
@@ -424,9 +423,10 @@ struct ModularCeilingConfiguratorView: View {
                 .foregroundStyle(.orange)
             }
         } header: {
-            Text("Passage et démontage des dalles")
+            Text("Passage et démontage des dalles").foregroundStyle(atlantique ? Color.white : .secondary)
         } footer: {
             Text("Le besoin réel dépend de la dalle, de son bord et du système. Plaquisto utilise ici un repère prudent : 15 cm jusqu’à 20 mm d’épaisseur, 20 cm au-delà. La fiche fabricant reste prioritaire.")
+                .foregroundStyle(atlantique ? Color.white.opacity(0.85) : .secondary)
         }
     }
 
@@ -463,9 +463,10 @@ struct ModularCeilingConfiguratorView: View {
             LabeledContent("Suspentes + fixations", value: "\(quantities.hangers) u")
             }
         } header: {
-            Text("Quantitatif")
+            Text("Quantitatif").foregroundStyle(atlantique ? Color.white : .secondary)
         } footer: {
             Text("Quantités calculées sur une trame T24 standard centrée. Les dalles et profils sont arrondis à l’unité supérieure avec la marge choisie.")
+                .foregroundStyle(atlantique ? Color.white.opacity(0.85) : .secondary)
         }
     }
 

@@ -1,5 +1,15 @@
 import Foundation
 
+enum InsulationCatalogueAvailability {
+    static func allows(referenceID: String, lambda: Double? = nil) -> Bool {
+        if ["ISO-BOIS-037", "ISO-BOIS-038"].contains(referenceID) { return false }
+        if ["WALL-INSULATION-LDB", "PARTITION-INSULATION-BOIS"].contains(referenceID), let lambda {
+            return ![0.037, 0.038].contains { abs($0 - lambda) < 0.000001 }
+        }
+        return true
+    }
+}
+
 struct CeilingReferenceRecord: Codable, Identifiable {
     let id: String
     let kind: String

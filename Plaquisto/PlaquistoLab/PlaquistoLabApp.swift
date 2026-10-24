@@ -15,6 +15,7 @@ struct PlaquistoLabApp: App {
     @StateObject private var auditPartition = CloisonDistributionReferenceStore()
     @StateObject private var auditBonded = BondedLiningReferenceStore()
     @StateObject private var auditAdhesive = AdhesiveFacingReferenceStore()
+    @StateObject private var auditAlveolar = AlveolarPartitionReferenceStore()
     @StateObject private var auditTechnical = ToolTechnicalStore()
     #endif
     init() {
@@ -81,6 +82,7 @@ struct PlaquistoLabApp: App {
                         .environmentObject(auditFurring).environmentObject(auditLining)
                         .environmentObject(auditPartition).environmentObject(auditBonded)
                         .environmentObject(auditAdhesive)
+                        .environmentObject(auditAlveolar)
                         .environmentObject(auditTechnical)
                         .task {
                             switch screen {
@@ -89,6 +91,7 @@ struct PlaquistoLabApp: App {
                             case "partition": await auditPartition.load()
                             case "bonded": await auditBonded.load()
                             case "adhesive": await auditAdhesive.load()
+                            case "alveolar": await auditAlveolar.load()
                             case "partition-height", "lining-height", "span", "spacing", "quick-layout", "quick-ceiling", "quick-multiskin": await auditTechnical.load()
                             default: break
                             }
@@ -128,6 +131,8 @@ struct PlaquistoLabApp: App {
     @ViewBuilder private func auditScreen(_ name: String) -> some View {
         switch name {
         case "ceiling": CeilingConfiguratorView(initialConfiguration: CeilingConfiguration(length: 5, width: 4))
+        case "ceiling-rampant": CeilingConfiguratorView(initialConfiguration: CeilingConfiguration(length: 5, width: 4,
+            support: "Plancher bois horizontal", ceilingShape: "rampant"))
         case "ceiling-fixings": CeilingConfiguratorView(initialConfiguration: CeilingConfiguration(length: 5, width: 4,
             support: "Plancher bois horizontal", plenum: 12, fixingSystemID: "FIX-BOIS-GALVA"))
         case "furring": FurringLiningConfiguratorView(onSave: { _ in }, showsCloseButton: false)
@@ -135,9 +140,13 @@ struct PlaquistoLabApp: App {
         case "partition": CloisonDistributionConfiguratorView(onSave: { _ in }, showsCloseButton: false)
         case "bonded": BondedLiningConfiguratorView(onSave: { _ in }, onClose: {}, showsCloseButton: false)
         case "adhesive": AdhesiveFacingConfiguratorView(onSave: { _ in }, showsCloseButton: false)
+        case "alveolar": AlveolarPartitionConfiguratorView(onSave: { _ in }, showsCloseButton: false)
+        case "modular": ModularCeilingConfiguratorView { _ in }
+        case "joints": JointTreatmentConfiguratorView(projectID: projects.projects.first?.id ?? UUID()) { _ in }
         case "rail-ceiling": RailStudCeilingConfiguratorView(onSave: { _ in })
         case "tools": ToolsHomeView()
         case "thermal": ThermalToolView()
+        case "photos": BeforeAfterHomeView()
         case "vat": VATToolView()
         case "arch": ArchTemplateToolView()
         case "angle": WallAngleToolView()

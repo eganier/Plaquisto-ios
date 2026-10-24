@@ -1,5 +1,18 @@
 # Plaquisto — état du développement
 
+## Dépli des ouvrages sous un relevé — 25 octobre 2026
+
+- `LabProjectView` : remplacement du fondu/glissement d'insertion par un layout animé avec découpe. Les cartes restent derrière le relevé et se dévoilent dans la zone située dessous ; leur hauteur visible et leur déplacement suivent la même progression. Durée inchangée : 0,25 s, easeInOut. Au repli, interaction et accessibilité des ouvrages masqués désactivées.
+- Compilations iPhone et simulateur réussies : `/tmp/plaquisto-survey-card-reveal-build.log` et `/tmp/plaquisto-survey-card-reveal-simulator.log`. Vérification UI du repli/dépli dans le projet de démonstration isolé, deux ouvrages : cartes et espacement restaurés, ouvrages absents de l'accessibilité au repli. Captures des états finaux uniquement ; ressenti de l'animation à confirmer sur appareil.
+- Correction installée sur l'iPhone 16 Pro d'Edouard le 25 octobre à 00:34, mise à jour en place sans désinstallation (séquence 4964). Lancement automatique refusé car l'iPhone est verrouillé ; ouverture manuelle après déverrouillage nécessaire. Preuves CoreDevice : `/tmp/plaquisto-reveal-install-20261025.json` et `/tmp/plaquisto-reveal-launch-20261025.json`. Aucun commit ni push.
+
+## Installation Plaquisto Lab — 25 octobre 2026, 00 h 20
+
+- Dernières sources de `codex/audit-fidelite-books` compilées et signées pour iPhone, sans modifier les travaux en cours. Compilation réussie : `/tmp/plaquisto-manual-prices-device-serial-build.log`. La première compilation parallèle a été interrompue pour pression mémoire ; reprise avec `-jobs 1` et `OTHER_SWIFT_FLAGS='$(inherited) -j1 -driver-batch-count 1'`.
+- Binaire : `/tmp/PlaquistoPricesDevice/Build/Products/Debug-iphoneos/Plaquisto Lab.app`, bundle `fr.plaquisto.lab`, équipe U6X2KSN84X, signature du 25 octobre à 00:19:59.
+- Installation confirmée sur l’iPhone 16 Pro d’Edouard, séquence 4956 ; lancement confirmé à 00:20:23. Résultats CoreDevice : `/tmp/plaquisto-lab-install-20261025.json` et `/tmp/plaquisto-lab-launch-20261025.json`. Mise à jour en place, sans désinstallation. Aucun commit, push ou déploiement Admin effectué.
+- Extension macOS Point P vers Plaquisto mise à jour séparément en 0.2.7 : prix manuels sans produit Point.P, sans remise automatique, exports compatibles Admin. Aucune publication de tarif automatique ; 259 associations conservées.
+
 ## Modélisation manuelle et sélection 3D — 18 octobre 2026
 
 - Onglet « Modéliser » (icône de pièce ouverte), deux entrées « Scanner ma pièce » / « Dessiner ma pièce », vérification locale de compatibilité RoomPlan. Le parcours de calepinage rapide reste un scanner sans création de projet.

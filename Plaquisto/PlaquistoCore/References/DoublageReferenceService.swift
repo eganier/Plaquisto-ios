@@ -160,6 +160,7 @@ final class DoublageReferenceStore: ObservableObject {
             let lambdas = record.data["lambdas"]?.array?.compactMap { value -> DoublageInsulationLambda? in
                 guard let object = value.object,
                       let lambda = object["lambda_w_mk"]?.number else { return nil }
+                guard InsulationCatalogueAvailability.allows(referenceID: record.id, lambda: lambda) else { return nil }
                 let thicknesses = object["thicknesses_mm"]?.array?.compactMap(\.number).map(Int.init).filter { $0 != 101 }.sorted() ?? []
                 guard !thicknesses.isEmpty else { return nil }
                 return DoublageInsulationLambda(value: lambda, thicknessesMM: thicknesses)

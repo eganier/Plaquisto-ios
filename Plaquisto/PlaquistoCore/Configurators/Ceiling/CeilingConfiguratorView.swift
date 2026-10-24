@@ -137,7 +137,9 @@ struct CeilingConfiguratorView: View {
     private var workTitle: String {
         isSlopedCeiling ? "Plafond sur fourrures rampant" : (catalogue?.ouvrage?.title ?? "Plafond sur fourrures horizontal")
     }
-    private var insulationSeries: [CeilingReferenceRecord] { catalogue?.isolation ?? [] }
+    private var insulationSeries: [CeilingReferenceRecord] {
+        (catalogue?.isolation ?? []).filter { InsulationCatalogueAvailability.allows(referenceID: $0.id) }
+    }
     private var fixingSystems: [CeilingReferenceRecord] { catalogue?.systemesFixation ?? [] }
     private var facings: [CeilingReferenceRecord] { catalogue?.parements ?? [] }
     private var quantityItems: [CeilingReferenceRecord] { catalogue?.quantitatifs ?? [] }
@@ -392,6 +394,11 @@ struct CeilingConfiguratorView: View {
             return Supply(id: "\(row.name)|\(measurement.unit)", name: row.name, quantity: measurement.quantity, unit: measurement.unit)
         }
     }
+    private var displayedSupplies: [SupplyListingRow] {
+        SupplyListingConsolidator.rows((facingSupplies + vaporBarrierSupplies + otherSupplies).map {
+            .init(name: $0.name, quantity: $0.quantity, unit: $0.unit)
+        })
+    }
     private var vaporBarrierSupplies: [Supply] {
         guard vaporBarrier else { return [] }
         let systemHandlesVaporBarrier = selectedFixingSystem?.data["pare_vapeur_compatible"]?.bool == true
@@ -492,6 +499,7 @@ struct CeilingConfiguratorView: View {
 
             if !atlantique { Divider() }
             AtlantiqueForm(bookLayout: true) { stepContent }
+                .id(step)
 
             HStack {
                 if editsLayout && allStepsAreValid {
@@ -563,11 +571,7 @@ struct CeilingConfiguratorView: View {
         switch step {
         case 0:
             AtlantiqueSection("Type de plafond") {
-                Picker("Type de plafond", selection: $ceilingShape) {
-                    Text("Horizontal").tag("horizontal")
-                    Text("Rampant").tag("rampant")
-                }
-                .pickerStyle(.segmented)
+                AtlantiqueSegmentedChoice(title: "Type de plafond", options: [("horizontal", "Horizontal"), ("rampant", "Rampant")], selection: $ceilingShape)
                 .onChange(of: ceilingShape) { _, _ in normalizeCeilingShapeSelections() }
             }
             .disabled(lockScannedGeometry)
@@ -579,7 +583,7 @@ struct CeilingConfiguratorView: View {
                         .onChange(of: length) { _, _ in updateAreaFromDimensions() }
                     MeasureField(label: "Largeur", value: $width, unit: "m")
                         .onChange(of: width) { _, _ in updateAreaFromDimensions() }
-                    if length > 0, width > 0 {
+                    if length > 0, width > 0, !atlantique || Atlantique.Book.showsAdvancedFormControls {
                         Picker("Sens des fourrures", selection: $furringDirection) {
                             Text("Dans la longueur").tag("length")
                             Text("Dans la largeur").tag("width")
@@ -589,9 +593,9 @@ struct CeilingConfiguratorView: View {
             } header: {
                 Text("Dimensions de l’ouvrage")
             } footer: {
-                Text(specifiesDimensions
+                if !atlantique || Atlantique.Book.showsAdvancedFormControls { Text(specifiesDimensions
                      ? "La longueur et la largeur améliorent la précision des calculs. Si elles sont toutes les deux renseignées, la surface est calculée automatiquement."
-                     : "La longueur et la largeur ne sont pas renseignées. Plaquisto estimera un ouvrage carré et le quantitatif sera légèrement moins précis.")
+                     : "La longueur et la largeur ne sont pas renseignées. Plaquisto estimera un ouvrage carré et le quantitatif sera légèrement moins précis.") }
             }
             }
             AtlantiqueSection("Surface de l’ouvrage") {
@@ -600,7 +604,7 @@ struct CeilingConfiguratorView: View {
                 } else {
                     MeasureField(label: "Surface", value: $enteredArea, unit: "m²")
                 }
-                if lockScannedGeometry {
+                if lockScannedGeometry && (!atlantique || Atlantique.Book.showsAdvancedFormControls) {
                     Text("Surface nette issue des plafonds sélectionnés. Chaque contour est conservé dans un composant de l’ouvrage. Les consommables sont estimés à partir des ratios du système choisi.")
                         .font(.footnote).foregroundStyle(.secondary)
                 }
@@ -608,7 +612,7 @@ struct CeilingConfiguratorView: View {
 
         case 1:
             AtlantiqueSection("Support du plafond") {
-                Picker("Type de support", selection: $support) {
+                AtlantiquePicker("Type de support", selection: $support) {
                     Text("Sélectionner").tag("")
                     ForEach(supports, id: \.self) { Text(supportTitle($0)).tag($0) }
                 }
@@ -623,10 +627,10 @@ struct CeilingConfiguratorView: View {
                     }
                 }
             }
-            Section {
+            if !atlantique || Atlantique.Book.showsAdvancedFormControls { Section {
                 Text("Le support sert à déterminer les systèmes de fixation compatibles. Le plénum sera calculé après le choix de l’isolation.")
                     .foregroundStyle(.secondary)
-            }
+            } }
 
         case 2:
             if atlantique { atlantiqueInsulation } else {
@@ -904,6 +908,14 @@ struct CeilingConfiguratorView: View {
                 }
             }
             }
+            if atlantique {
+                AtlantiqueSection("Fournitures") {
+                    ForEach(Array(displayedSupplies.enumerated()), id: \.element.id) { index, supply in
+                        if index > 0 { Divider() }
+                        LabeledContent(supply.name, value: supply.value)
+                    }
+                }
+            } else {
             AtlantiqueSection("Système de fixation") {
                 LabeledContent("Solution", value: selectedFixingSystem?.title ?? "—")
                 LabeledContent("Nombre de systèmes", value: String(Int(ceil(fixingSystemCount))))
@@ -929,6 +941,7 @@ struct CeilingConfiguratorView: View {
                 ForEach(otherSupplies) { supply in
                     LabeledContent(supply.name, value: "\(formattedQuantity(supply.quantity, unit: supply.unit)) \(supply.unit)")
                 }
+            }
             }
         }
     }
@@ -1693,11 +1706,21 @@ struct WoodCeilingPlenumDiagram: View {
 }
 
 private struct MeasureField: View {
+    @Environment(\.usesAtlantiqueDesign) private var atlantique
     let label: String
     @Binding var value: Double
     let unit: String
 
     var body: some View {
+        if atlantique {
+            VStack(alignment: .leading, spacing: 8) {
+                Text(label).font(Atlantique.Typography.caption).foregroundStyle(Atlantique.Palette.muted)
+                HStack {
+                    ZeroEmptyDecimalTextField(value: $value).accessibilityLabel(label)
+                    Text(unit).foregroundStyle(Atlantique.Palette.muted)
+                }.frame(minHeight: 36)
+            }
+        } else {
         HStack {
             Text(label)
             Spacer()
@@ -1705,6 +1728,7 @@ private struct MeasureField: View {
                 .multilineTextAlignment(.trailing)
                 .frame(width: 90)
             Text(unit).foregroundStyle(.secondary)
+        }
         }
     }
 }

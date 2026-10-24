@@ -779,6 +779,7 @@ private enum LiningSpacingFilter: String, CaseIterable, Identifiable {
 }
 
 struct FurringSpacingToolView: View {
+    @Environment(\.usesAtlantiqueDesign) private var atlantique
     @EnvironmentObject private var store: ToolTechnicalStore
     @State private var material = ""
     @State private var lambda = 0.0
@@ -822,6 +823,9 @@ struct FurringSpacingToolView: View {
                 }
             }
             AtlantiqueSection("Sens de pose des plaques") {
+                if atlantique {
+                    AtlantiqueSegmentedChoice(title: "Sens de pose des plaques", options: SheetDirection.allCases.map { ($0, $0.displayTitle) }, selection: $sheetDirection)
+                } else {
                 HStack(spacing: 3) {
                     ForEach(SheetDirection.allCases) { direction in
                         Button {
@@ -842,6 +846,7 @@ struct FurringSpacingToolView: View {
                 }
                 .padding(3)
                 .background(Color(.secondarySystemFill), in: RoundedRectangle(cornerRadius: 13, style: .continuous))
+                }
             }
             AtlantiqueSection("Résultat") {
                 if let recommendedSpacing {

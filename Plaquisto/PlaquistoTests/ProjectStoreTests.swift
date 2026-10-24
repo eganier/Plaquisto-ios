@@ -996,6 +996,45 @@ final class ProjectStoreTests: XCTestCase {
         XCTAssertEqual(try XCTUnwrap(result.upper),1.2765*1.05,accuracy:0.000001)
         XCTAssertTrue(result.missing.isEmpty)
     }
+    func testApprovedLegacyPowderPriceWorksOfflineWithoutDuplicatingCanonicalTariff() throws {
+        let catalogue = CeilingCataloguePayload(version:"test",ouvrage:nil,isolation:[],systemesFixation:[],parements:[],
+            quantitatifs:[.init(id:"QTY-ENDUIT-POUDRE",kind:"quantity_item",title:"Enduit à joints en poudre",summary:"",sourcePage:0,status:"Publié",data:["unit":.string("kg")])],pareVapeur:[],regles:[])
+        var slow = priceTestTariff()
+        slow.referenceId="QTY-ENDUIT-POUDRE"; slow.variantKey="lent"; slow.unit="kg"; slow.unitPriceHT=2
+        let supplies=[CombinedSupply(name:"Enduit à joints en poudre · standard",quantity:4,unit:"kg")]
+        let first=SupplyCostEstimator.estimate(supplies,prices:priceTestPayload([slow]),catalogue:catalogue,day:"2026-10-09")
+        XCTAssertEqual(first.total,8)
+        var standard=slow; standard.id="canonical"; standard.variantKey="standard"; standard.unitPriceHT=3
+        let both=SupplyCostEstimator.estimate(supplies,prices:priceTestPayload([slow,standard]),catalogue:catalogue,day:"2026-10-09")
+        XCTAssertEqual(both.total,12)
+        var fast=slow; fast.variantKey="rapide"
+        XCTAssertNil(SupplyCostEstimator.estimate(supplies,prices:priceTestPayload([fast]),catalogue:catalogue,day:"2026-10-09").total)
+        var angle=slow; angle.referenceId="QTY-CORNIERE"; angle.variantKey="CR2-30x35"; angle.unit="ml"
+        XCTAssertEqual(angle.key.variantKey,"standard")
+        angle.unit="unité"
+        XCTAssertEqual(angle.key.variantKey,"CR2-30x35")
+        for variant in ["F45", "F47", "standard"] {
+            var furring=slow; furring.referenceId="QTY-FOURRURE"; furring.variantKey=variant; furring.unit="ml"
+            XCTAssertEqual(furring.key.variantKey,"standard")
+            XCTAssertEqual(SupplyListingConsolidator.canonicalName("Fourrures F45/F47 · \(variant)"),"Fourrures F45/F47")
+        }
+    }
+    func testWoodInsulationRetirementAndSharedTariffIdentity() {
+        for lambda in [0.037,0.038] {
+            XCTAssertFalse(InsulationCatalogueAvailability.allows(referenceID:"WALL-INSULATION-LDB",lambda:lambda))
+            XCTAssertTrue(InsulationCatalogueAvailability.allows(referenceID:"WALL-INSULATION-LDV",lambda:lambda))
+        }
+        XCTAssertFalse(InsulationCatalogueAvailability.allows(referenceID:"ISO-BOIS-038"))
+        XCTAssertTrue(InsulationCatalogueAvailability.allows(referenceID:"ISO-BOIS-040"))
+        XCTAssertTrue(InsulationCatalogueAvailability.allows(referenceID:"WALL-INSULATION-LDB",lambda:0.036))
+        for thickness in [40,50,60,80,100] {
+            var price=priceTestTariff(); price.referenceId="PARTITION-INSULATION-BOIS"; price.unit="m²"
+            price.variantKey="lambda=0.036;thickness=\(thickness)"
+            XCTAssertEqual(price.key.referenceId,"WALL-INSULATION-LDB")
+            price.unit="kg"
+            XCTAssertEqual(price.key.referenceId,"PARTITION-INSULATION-BOIS")
+        }
+    }
     func testPriceEstimateResolvesExactBoardFormatAndIncludesREPOnce() throws {
         var price=priceTestTariff(); price.referenceId="FACING-BA13-STANDARD"; price.variantKey="1200x2500"; price.unit="m²"; price.unitPriceHT=2.84; price.repUnitHT=0.19
         let result=SupplyCostEstimator.estimate([
@@ -1707,6 +1746,20 @@ final class ProjectStoreTests: XCTestCase {
         work.components = [component, WorkComponentRecord(name: "Autre")]
         XCTAssertTrue(work.hasSavedLayout)
         XCTAssertNil(work.layoutDocument) // The single-support facade is not an existence flag.
+    }
+
+    func testDetailCardIncludesBothFacesAndStudSettingsWithoutChangingExport() throws {
+        var c = CloisonDistributionConfiguration(height: 2.5, enteredLength: 4)
+        c.layers = 2
+        c.doubledStuds = true
+        c.spacing = 0.4
+        let work = summaryWork(.distributionPartition(c), type: .distributionPartition)
+        let catalogue = try summaryCatalogue()
+        let rows = WorkTechnicalSummary.detailRows(for: work, catalogue: catalogue)
+        XCTAssertTrue(rows.contains("Montants doublés · entraxe 40 cm"))
+        XCTAssertTrue(rows.contains("2 peaux sur chaque face"))
+        XCTAssertFalse(rows.contains(work.type.title))
+        XCTAssertFalse(WorkTechnicalSummary.text(for: work, catalogue: catalogue).contains("peaux sur chaque face"))
     }
 
     func testTechnicalSummaryUsesSavedSelectionsAndCentralThermalCalculation() throws {

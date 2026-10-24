@@ -88,6 +88,7 @@ enum JointTreatmentCalculator {
 }
 
 struct JointTreatmentConfiguratorView: View {
+    @Environment(\.usesAtlantiqueDesign) private var atlantique
     @EnvironmentObject private var store: ProjectStore
     @StateObject private var references = CeilingReferenceStore()
     let projectID: UUID
@@ -105,26 +106,26 @@ struct JointTreatmentConfiguratorView: View {
         return configuration.isValid ? configuration : nil
     }
     var body: some View {
-        Form {
-            Section("Surface à traiter") {
+        AtlantiqueForm(bookLayout: true) {
+            AtlantiqueSection("Surface à traiter") {
                 HStack {
                     Text("Surface totale")
                     ZeroEmptyDecimalTextField(value: $configuration.area).multilineTextAlignment(.trailing).frame(width: 110)
                     Text("m²").foregroundStyle(.secondary)
                 }
-                Picker("Support", selection: $configuration.surface) {
+                AtlantiquePicker("Support", selection: $configuration.surface) {
                     ForEach(JointTreatmentConfiguration.Surface.allCases) { Text($0.title).tag($0) }
                 }
-                Text("Indiquez la surface totale des faces à traiter, y compris celles déjà prévues dans les autres ouvrages.")
+                if !atlantique || Atlantique.Book.showsAdvancedFormControls {
+                    Text("Indiquez la surface totale des faces à traiter, y compris celles déjà prévues dans les autres ouvrages.")
                     .font(.caption).foregroundStyle(.secondary)
+                }
             }
-            Section("Enduit à joints") {
-                Picker("Type", selection: $configuration.compound) {
-                    Text("Poudre").tag("poudre"); Text("Pâte").tag("pate")
-                }.pickerStyle(.segmented)
+            AtlantiqueSection("Enduit à joints") {
+                AtlantiqueSegmentedChoice(title: "Type", options: [("poudre", "Poudre"), ("pate", "Pâte")], selection: $configuration.compound)
             }
             JointTreatmentDeductionSection(configuration: configuration, works: works)
-            Section("Quantitatif") {
+            AtlantiqueSection("Quantitatif") {
                 if let value = resolved {
                     ForEach(Array(JointTreatmentCalculator.quantities(value, works: works).enumerated()), id: \.offset) { _, item in
                         LabeledContent(item.name, value: "\(item.quantity.formatted(.number.precision(.fractionLength(1)))) \(item.unit)")
@@ -134,14 +135,26 @@ struct JointTreatmentConfiguratorView: View {
                     Text(references.error ?? "Les coefficients de jointoiement Admin sont indisponibles.").foregroundStyle(.orange)
                     Button("Réessayer") { Task { await references.load() } }
                 }
-                Text(JointTreatmentCalculator.reminder).font(.footnote).foregroundStyle(.secondary)
+                if !atlantique || Atlantique.Book.showsAdvancedFormControls {
+                    Text(JointTreatmentCalculator.reminder).font(.footnote).foregroundStyle(.secondary)
+                }
             }
             Section {
                 Button("Enregistrer") { if let value = resolved { onSave(value) } }
+                    .atlantiqueActionStyle()
                     .disabled(resolved?.isValid != true)
             }
         }
-        .navigationTitle("Bandes à joint")
+        .atlantiqueFormPage("Bandes à joint")
+        .toolbar {
+            if atlantique {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Enregistrer") { if let value = resolved { onSave(value) } }
+                        .atlantiqueToolbarAction(primary: true)
+                        .disabled(resolved?.isValid != true)
+                }.atlantiqueToolbarBackground(atlantique)
+            }
+        }
         .task { await references.load() }
         .onChange(of: configuration.surface) { _, _ in
             // A wall snapshot must never be reused for a ceiling while offline.
@@ -156,7 +169,7 @@ struct JointTreatmentDeductionSection: View {
     var body: some View {
         let deductions = JointTreatmentCalculator.deductions(configuration, works: works)
         if !deductions.isEmpty {
-            Section("Bandes déjà prévues") {
+            AtlantiqueSection("Bandes déjà prévues") {
                 Text("Ces ouvrages incluent déjà les bandes à joint et l’enduit. Leur surface est déduite de cet ouvrage pour éviter un double comptage ; leurs quantitatifs restent inchangés.")
                     .font(.footnote)
                 ForEach(deductions, id: \.0.id) { work, area in

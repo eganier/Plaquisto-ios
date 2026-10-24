@@ -154,6 +154,7 @@ struct BondedLiningConfiguratorView: View {
                     }
                 }.padding(.horizontal, 20).padding(.vertical, 18)
             }
+            .id(step)
             footer
         }.background(atlantique ? Atlantique.Palette.blue : Color(.systemGroupedBackground))
     }

@@ -2,6 +2,25 @@ import XCTest
 @testable import Plaquisto
 
 final class PaintingTests: XCTestCase {
+    func testApprovedAngleAndSlowCompoundAliasesMergeWithoutTouchingOtherVariants() {
+        let rows = SupplyListingConsolidator.rows([
+            .init(name:"Cornière · standard",quantity:2,unit:"ml"),
+            .init(name:"Cornière · CR2-30x35",quantity:3,unit:"ml"),
+            .init(name:"Enduit à joints en poudre · standard",quantity:4,unit:"kg"),
+            .init(name:"Enduit à joints en poudre · prise lente",quantity:6,unit:"kg"),
+            .init(name:"Enduit à joints en poudre · rapide",quantity:7,unit:"kg"),
+            .init(name:"Enduit à joints en pâte",quantity:8,unit:"kg"),
+            .init(name:"Fixations des rails au gros œuvre",quantity:25,unit:"unité"),
+            .init(name:"Vis TRPF 25 · liaison rail/montant",quantity:10,unit:"unité")
+        ])
+        XCTAssertEqual(rows.count,5)
+        XCTAssertEqual(rows.first(where:{$0.name=="Cornière"})?.measurements.first?.quantity,5)
+        XCTAssertEqual(rows.first(where:{$0.name=="Enduit à joints en poudre"})?.measurements.first?.quantity,10)
+        XCTAssertTrue(rows.contains(where:{$0.name=="Enduit à joints en poudre · rapide"}))
+        XCTAssertTrue(rows.contains(where:{$0.name=="Enduit à joints en pâte"}))
+        XCTAssertTrue(rows.contains(where:{$0.name=="Vis TRPF 25 · liaison rail/montant"}))
+        XCTAssertTrue(SupplyListingConsolidator.components(.init(name:"Fixations des rails au gros œuvre",quantity:25,unit:"unité")).isEmpty)
+    }
     // Contract fixture, not a production fallback: values published by Plaquisto Admin.
     private var rules: PaintingRules {
         .init(schemaVersion: 1, revision: "test", reservePercent: 10, airlessPercent: 5,
@@ -211,6 +230,16 @@ final class PaintingTests: XCTestCase {
         XCTAssertEqual(SupplyListingConsolidator.canonicalName("Vis TTPC 35"),"Vis TTPC 35")
         XCTAssertEqual(SupplyListingConsolidator.canonicalName("Enduit en poudre"),"Enduit à joints en poudre")
         XCTAssertEqual(SupplyListingConsolidator.canonicalName("Enduit en pâte"),"Enduit à joints en pâte")
+    }
+    func testCeilingResultMergesFacingAndHangerScrewsWithoutMergingDifferentLengths() {
+        let rows = SupplyListingConsolidator.rows([
+            .init(name: "Vis TTPC 25", quantity: 260, unit: "unité"),
+            .init(name: "Vis TTPC 35", quantity: 400, unit: "unité"),
+            .init(name: "Vis TTPC 35", quantity: 132, unit: "unités")
+        ])
+        XCTAssertEqual(rows.count, 2)
+        XCTAssertEqual(rows.first(where: { $0.name == "Vis TTPC 35" })?.measurements.first?.quantity, 532)
+        XCTAssertEqual(rows.first(where: { $0.name == "Vis TTPC 25" })?.measurements.first?.quantity, 260)
     }
     func testFurringSupportAliasesSumAndSimplifiedOpeningsDoNotAddRevealSupports() throws {
         let old = "Appuis intermédiaires pour doublage sur fourrure"

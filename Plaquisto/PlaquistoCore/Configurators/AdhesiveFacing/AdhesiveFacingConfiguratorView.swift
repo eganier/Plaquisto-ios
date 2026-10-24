@@ -138,8 +138,9 @@ struct AdhesiveFacingConfiguratorView: View {
                     Button("Enregistrer") {
                         if let configuration { onSave(configuration) }
                     }
+                    .atlantiqueToolbarAction(primary: true)
                     .disabled(configuration == nil || !allStepsAreValid)
-                }
+                }.atlantiqueToolbarBackground(atlantique)
             }
         }
         .alert("Hauteur de plaque insuffisante", isPresented: $showPanelHeightWarning) {
@@ -168,6 +169,7 @@ struct AdhesiveFacingConfiguratorView: View {
                 .padding(.horizontal, 20)
                 .padding(.vertical, 18)
             }
+            .id(step)
             footer
         }
         .background(atlantique ? Atlantique.Palette.blue : Color(.systemGroupedBackground))
@@ -221,21 +223,21 @@ struct AdhesiveFacingConfiguratorView: View {
             card {
                 AdhesiveDecimalRow("Hauteur sous plafond", value: $height, unit: "m")
                 Divider()
-                Picker("Mode de saisie", selection: $geometryMode) {
-                    ForEach(GeometryMode.allCases) { Text($0.rawValue).tag($0) }
-                }.pickerStyle(.segmented)
+                AtlantiqueSegmentedChoice(title: "Mode de saisie", options: GeometryMode.allCases.map { ($0, $0.rawValue) }, selection: $geometryMode)
                 Divider()
                 if geometryMode == .length {
-                    AdhesiveDecimalRow("Longueur du doublage (périmètre)", value: $enteredLength, unit: "m")
+                    AdhesiveDecimalRow("Longueur", value: $enteredLength, unit: "m")
                 } else {
                     AdhesiveDecimalRow("Surface totale", value: $enteredSurface, unit: "m²")
                 }
             }
             card {
-                LabeledContent(geometryMode == .length ? "Surface calculée" : "Longueur calculée", value: format(geometryMode == .length ? actualArea : actualLength, geometryMode == .length ? "m²" : "m"))
+                LabeledContent(geometryMode == .length ? "Surface" : "Longueur", value: format(geometryMode == .length ? actualArea : actualLength, geometryMode == .length ? "m²" : "m"))
             }
-            Text("La hauteur sous plafond est obligatoire. Renseignez ensuite soit la longueur du doublage, soit sa surface totale.")
-                .font(.footnote).foregroundStyle(.secondary)
+            if !atlantique || Atlantique.Book.showsAdvancedFormControls {
+                Text("La hauteur sous plafond est obligatoire. Renseignez ensuite soit la longueur du doublage, soit sa surface totale.")
+                    .font(.footnote).foregroundStyle(atlantique ? Color.white : .secondary)
+            }
         }
     }
 
@@ -243,17 +245,13 @@ struct AdhesiveFacingConfiguratorView: View {
         VStack(alignment: .leading, spacing: 18) {
             sectionTitle("Parement")
             card {
-                LabeledContent("Type de plaque") {
-                    Picker("Type de plaque", selection: $selectedFamily) {
+                    AtlantiquePicker("Type de plaque", selection: $selectedFamily) {
                         ForEach(references.families, id: \.self) { Text($0).tag($0) }
-                    }.labelsHidden()
-                }
+                    }
                 Divider()
-                LabeledContent("Fonction") {
-                    Picker("Fonction", selection: $selectedFunctionID) {
+                    AtlantiquePicker("Fonction", selection: $selectedFunctionID) {
                         ForEach(functions) { Text($0.functionTitle).tag($0.id) }
-                    }.labelsHidden()
-                }
+                    }
             }
             if selectedFamily == "BA6" {
                 Text("Le BA6 est autorisé seul pour cet ouvrage.").font(.footnote).foregroundStyle(.secondary)
@@ -265,11 +263,9 @@ struct AdhesiveFacingConfiguratorView: View {
         VStack(alignment: .leading, spacing: 18) {
             sectionTitle("Dimension du parement")
             card {
-                LabeledContent("Format") {
-                    Picker("Format", selection: $selectedFormatID) {
+                    AtlantiquePicker("Dimension", selection: $selectedFormatID) {
                         ForEach(availableFormats) { Text($0.title).tag($0.id) }
-                    }.labelsHidden()
-                }
+                    }
             }
             if let selectedFormat, selectedFunction?.formats.contains(selectedFormat) == false {
                 Text("Format enregistré conservé, absent du catalogue actuel.").font(.footnote).foregroundStyle(.secondary)
@@ -412,6 +408,7 @@ struct AdhesiveFacingConfiguratorView: View {
 }
 
 private struct AdhesiveDecimalRow: View {
+    @Environment(\.usesAtlantiqueDesign) private var atlantique
     let title: String
     @Binding var value: Double
     let unit: String
@@ -423,12 +420,22 @@ private struct AdhesiveDecimalRow: View {
     }
 
     var body: some View {
+        if atlantique {
+            VStack(alignment: .leading, spacing: 8) {
+                Text(title).font(.subheadline).foregroundStyle(.secondary)
+                HStack {
+                    ZeroEmptyDecimalTextField(value: $value).accessibilityLabel(title)
+                    Text(unit).foregroundStyle(.secondary)
+                }
+            }
+        } else {
         HStack {
             Text(title)
             Spacer()
             ZeroEmptyDecimalTextField(value: $value)
                 .multilineTextAlignment(.trailing).frame(minWidth: 58, maxWidth: 100)
             Text(unit).foregroundStyle(.secondary)
+        }
         }
     }
 }

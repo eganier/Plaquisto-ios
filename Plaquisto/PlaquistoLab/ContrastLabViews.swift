@@ -10,6 +10,7 @@ struct AtlantiqueAuditDestination: View {
             if name == "settings" { AtlantiqueSettingsView() }
             else if name == "catalogue" { AtlantiqueCatalogueSettings() }
             else if name == "about" { AtlantiqueAboutView() }
+            else if name == "survey", let survey = store.surveys.first { ProjectSurveyDetailView(surveyID: survey.id) }
             else if let project = store.projects.first(where: { !$0.visibleWorks.isEmpty }) {
                 switch name {
                 case "project": LabProjectView(projectID: project.id)
@@ -375,6 +376,31 @@ private struct LabWorkPreview: View {
     }
 }
 
+// Keep the works laid out at their natural height while only the exposed part
+// occupies space. Both the slide and the clipping edge follow the same progress,
+// including when the user reverses the animation before it has finished.
+private struct LabSurveyWorksRevealLayout: Layout {
+    var progress: CGFloat
+    var animatableData: CGFloat {
+        get { progress }
+        set { progress = newValue }
+    }
+    private var fraction: CGFloat { min(1, max(0, progress)) }
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        guard let content = subviews.first else { return .zero }
+        let size = content.sizeThatFits(.init(width: proposal.width, height: nil))
+        return CGSize(width: size.width, height: size.height * fraction)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        guard let content = subviews.first else { return }
+        let size = content.sizeThatFits(.init(width: bounds.width, height: nil))
+        content.place(at: CGPoint(x: bounds.minX, y: bounds.minY - size.height * (1 - fraction)),
+                      anchor: .topLeading, proposal: .init(width: bounds.width, height: size.height))
+    }
+}
+
 private struct LabProjectView: View {
     @EnvironmentObject private var store: ProjectStore
     @Environment(\.dismiss) private var dismiss
@@ -407,18 +433,25 @@ private struct LabProjectView: View {
                             VStack(alignment: .leading, spacing: 16) {
                                 Text("Relevés 3D").font(Atlantique.Typography.heading).foregroundStyle(.white)
                                 ForEach(store.surveys(projectID: projectID)) { survey in
-                                    VStack(spacing: 8) {
-                                        surveyCard(survey)
-                                        if !collapsedSurveys.contains(survey.id) && project.visibleWorks.contains(where: { owningSurvey($0) == survey.id }) {
-                                            VStack(spacing: 8) {
-                                                ForEach(project.visibleWorks.filter { owningSurvey($0) == survey.id }) { work in
-                                                    workCard(work)
-                                                }
-                                            }.padding(.leading, 30)
-                                                .overlay(alignment: .leading) {
-                                                    Rectangle().fill(.white.opacity(0.5)).frame(width: 1).padding(.leading, 16)
-                                                }
-                                                .transition(.opacity.combined(with: .move(edge: .top)))
+                                    let expanded = !collapsedSurveys.contains(survey.id)
+                                    VStack(spacing: 0) {
+                                        surveyCard(survey).zIndex(1)
+                                        if project.visibleWorks.contains(where: { owningSurvey($0) == survey.id }) {
+                                            LabSurveyWorksRevealLayout(progress: expanded ? 1 : 0) {
+                                                VStack(spacing: 8) {
+                                                    ForEach(project.visibleWorks.filter { owningSurvey($0) == survey.id }) { work in
+                                                        workCard(work)
+                                                    }
+                                                }.padding(.leading, 30)
+                                                    .overlay(alignment: .leading) {
+                                                        Rectangle().fill(.white.opacity(0.5)).frame(width: 1).padding(.leading, 16)
+                                                    }
+                                                    .padding(.top, 8)
+                                            }
+                                            .clipped()
+                                            .allowsHitTesting(expanded)
+                                            .accessibilityHidden(!expanded)
+                                            .zIndex(0)
                                         }
                                     }.padding(.bottom, 16)
                                 }
@@ -573,8 +606,10 @@ private struct LabWorkView: View {
                         }
                         VStack(alignment: .leading, spacing: 10) {
                             Text("Configuration actuelle").font(Atlantique.Typography.button)
-                            Text(WorkTechnicalSummary.text(for: work, catalogue: references.workSummaryCatalogue))
-                                .font(Atlantique.Typography.font(15, relativeTo: .subheadline))
+                            ForEach(Array(WorkTechnicalSummary.detailRows(for: work, catalogue: references.workSummaryCatalogue).enumerated()), id: \.offset) { _, detail in
+                                Text(detail).font(Atlantique.Typography.font(15, relativeTo: .subheadline))
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
                             let openings = WorkOpeningRelations.summary(for: work, allWorks: store.project(id: projectID)?.works ?? [])
                             if !openings.isEmpty {
                                 Divider()

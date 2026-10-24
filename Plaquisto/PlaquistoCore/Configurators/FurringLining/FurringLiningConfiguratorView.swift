@@ -305,6 +305,7 @@ struct FurringLiningConfiguratorView: View {
                 .padding(.horizontal, 20)
                 .padding(.vertical, 18)
             }
+            .id(step)
             footer
         }
         .background(atlantique ? Atlantique.Palette.blue : Color(.systemGroupedBackground))
@@ -373,13 +374,13 @@ struct FurringLiningConfiguratorView: View {
                 }
             }
             card {
-                LabeledContent(measuredWallRuns != nil ? "Longueur totale relevée" : (geometryMode == .length ? "Surface calculée" : "Longueur calculée"), value: format(geometryMode == .length ? actualArea : actualLength, geometryMode == .length ? "m²" : "m"))
+                LabeledContent(measuredWallRuns != nil ? "Longueur totale relevée" : (geometryMode == .length ? "Surface" : "Longueur"), value: format(geometryMode == .length ? actualArea : actualLength, geometryMode == .length ? "m²" : "m"))
             }
-            Text(measuredWallRuns != nil ? "Dimensions issues des surfaces sélectionnées. Les longueurs de chaque mur restent distinctes et les ouvertures sont déjà déduites. Pour corriger une mesure, modifiez le relevé. La hauteur affichée est la hauteur maximale."
+            if !atlantique || Atlantique.Book.showsAdvancedFormControls { Text(measuredWallRuns != nil ? "Dimensions issues des surfaces sélectionnées. Les longueurs de chaque mur restent distinctes et les ouvertures sont déjà déduites. Pour corriger une mesure, modifiez le relevé. La hauteur affichée est la hauteur maximale."
                  : specifiesWallCount
                  ? "La hauteur sous plafond est obligatoire. Le nombre de murs est prérempli à 4 afin de tenir compte des fourrures placées aux extrémités de chaque mur."
                  : "Le nombre de murs n’est pas renseigné. Le quantitatif des fourrures sera estimé uniquement à partir de la longueur totale et sera légèrement moins précis.")
-                .font(.footnote).foregroundStyle(.secondary)
+                .font(.footnote).foregroundStyle(.secondary) }
             if let runs=measuredWallRuns, runs.contains(where:{$0.openingCount != nil}) {
                 card {
                     LabeledContent("Ouvertures reconnues",value:"\(runs.reduce(0){$0+($1.openingCount ?? 0)})")

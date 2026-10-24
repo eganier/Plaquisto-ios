@@ -986,6 +986,33 @@ extension WorkItem {
 }
 
 enum WorkTechnicalSummary {
+    /// Detail-card presentation only: the compact export summary remains unchanged.
+    static func detailRows(for work: WorkItem, catalogue: WorkSummaryCatalogue) -> [String] {
+        var rows = Array(text(for: work, catalogue: catalogue).components(separatedBy: " • ").dropFirst())
+        func cm(_ meters: Double) -> String {
+            (meters * 100).formatted(.number.locale(Locale(identifier: "fr_FR")).precision(.fractionLength(0...1))) + " cm"
+        }
+        func skins(_ count: Int) { rows.append(count == 1 ? "Simple peau" : "\(count) peaux") }
+        switch work.payload {
+        case .ceiling(let c):
+            rows.append("Entraxe des fourrures · \(cm(c.selectedSpacing))")
+            rows.append("Entraxe des suspentes · \(cm(c.suspensionSpacingMeters ?? 1.2))")
+            skins(c.layers)
+        case .distributionPartition(let c):
+            rows.append("Montants \(c.doubledStuds ? "doublés" : "simples") · entraxe \(cm(c.spacing))")
+            rows.append(c.layers == 1 ? "Simple peau sur chaque face" : "\(c.layers) peaux sur chaque face")
+        case .peripheralLining(let c):
+            rows.append("Montants \(c.doubledStuds ? "doublés" : "simples") · entraxe \(cm(c.spacing))")
+            skins(c.layers)
+        case .furringLining(let c):
+            if let spacing = c.furringSpacing { rows.append("Entraxe des fourrures · \(cm(spacing))") }
+            if let title = c.intermediateSupportTitle, !title.isEmpty { rows.append(title) }
+            skins(c.layers)
+        default: break
+        }
+        return rows
+    }
+
     static func text(for work: WorkItem, catalogue: WorkSummaryCatalogue) -> String {
         var parts = [work.type.title]
         var facingIDs: [String] = []

@@ -21,7 +21,17 @@ struct SupplyPrice: Codable, Identifiable {
     var validUntil: String?
     var status: String
     var updatedAt: String
-    var key: SupplyPriceKey { .init(referenceId:referenceId,variantKey:variantKey,unit:unit) }
+    var key: SupplyPriceKey {
+        if referenceId == "PARTITION-INSULATION-BOIS", unit == "m²",
+           [40,50,60,80,100].contains(where: { variantKey == "lambda=0.036;thickness=\($0)" }) {
+            return .init(referenceId:"WALL-INSULATION-LDB",variantKey:variantKey,unit:unit)
+        }
+        // Owner-approved aliases, including tariffs already cached offline.
+        let merged = (referenceId == "QTY-CORNIERE" && unit == "ml" && variantKey == "CR2-30x35")
+            || (referenceId == "QTY-FOURRURE" && unit == "ml" && ["F45", "F47"].contains(variantKey))
+            || (referenceId == "QTY-ENDUIT-POUDRE" && unit == "kg" && variantKey == "lent")
+        return .init(referenceId:referenceId,variantKey:merged ? "standard" : variantKey,unit:unit)
+    }
     func isUsable(on day: String) -> Bool {
         status == "validated" && unitPriceHT.isFinite && unitPriceHT > 0
             && repUnitHT.isFinite && repUnitHT >= 0
@@ -70,7 +80,12 @@ enum SupplyCostEstimator {
 
     static func estimate(_ supplies: [CombinedSupply], prices: SupplyPriceCatalogue?, catalogue: CeilingCataloguePayload, day: String) -> Estimate {
         let available = prices?.isSupported == true ? prices!.prices.filter { $0.isUsable(on:day) } : []
-        let indexed=Dictionary(grouping:available,by:\.key)
+        let effective = available.filter { price in
+            (price.variantKey == price.key.variantKey && price.referenceId == price.key.referenceId) || !available.contains {
+                $0.key == price.key && $0.variantKey == $0.key.variantKey && $0.referenceId == $0.key.referenceId
+            }
+        }
+        let indexed=Dictionary(grouping:effective,by:\.key)
         return Estimate(lines:supplies.map { supply in
             let resolved=resolve(supply,catalogue:catalogue)
             let candidates=resolved.flatMap { indexed[$0.key] } ?? []

@@ -140,6 +140,7 @@ struct AlveolarPartitionConfiguratorView: View {
                 .padding(.horizontal, 20)
                 .padding(.vertical, 18)
             }
+            .id(step)
             footer
         }
         .background(atlantique ? Atlantique.Palette.blue : Color(.systemGroupedBackground))
@@ -192,7 +193,7 @@ struct AlveolarPartitionConfiguratorView: View {
                     .atlantiqueActionStyle()
                     .disabled(!canContinue)
             } else if let onSave {
-                Button("Enregistrer") { onSave(configurationSnapshot()) }.atlantiqueToolbarAction(primary: true).disabled(!allStepsAreValid)
+                Button("Enregistrer") { onSave(configurationSnapshot()) }.disabled(!allStepsAreValid)
                     .atlantiqueActionStyle()
             } else {
                 Button("Recommencer") { reset() }
@@ -209,10 +210,7 @@ struct AlveolarPartitionConfiguratorView: View {
             formCard {
                 numericRow("Hauteur sous plafond", value: $height, unit: "m")
                 Divider()
-                Picker("Mode de saisie", selection: $geometryMode) {
-                    ForEach(GeometryMode.allCases) { Text($0.rawValue).tag($0) }
-                }
-                .pickerStyle(.segmented)
+                AtlantiqueSegmentedChoice(title: "Mode de saisie", options: GeometryMode.allCases.map { ($0, $0.rawValue) }, selection: $geometryMode)
                 Divider()
                 if geometryMode == .length {
                     numericRow("Longueur de la cloison", value: $enteredLength, unit: "m")
@@ -223,7 +221,7 @@ struct AlveolarPartitionConfiguratorView: View {
 
             formCard {
                 HStack {
-                    Text(geometryMode == .length ? "Surface calculée" : "Longueur calculée")
+                    Text(geometryMode == .length ? "Surface" : "Longueur")
                     Spacer()
                     Text(geometryMode == .length ? format(actualArea, "m²") : format(actualLength, "m"))
                         .foregroundStyle(.secondary)
@@ -237,7 +235,7 @@ struct AlveolarPartitionConfiguratorView: View {
             } else {
                 Text("La hauteur maximale autorisée pour cet ouvrage est de \(format(references.maximumHeight, "m")).")
                     .font(.footnote)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(atlantique ? Color.white.opacity(0.85) : .secondary)
             }
         }
     }
@@ -247,7 +245,7 @@ struct AlveolarPartitionConfiguratorView: View {
             sectionTitle("Panneaux")
             Text("Répartissez la surface entre les panneaux standards et hydrofuges nécessaires à l’ouvrage.")
                 .font(.footnote)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(atlantique ? Color.white.opacity(0.85) : .secondary)
 
             ForEach($allocations) { $allocation in
                 panelCard($allocation)
@@ -255,7 +253,7 @@ struct AlveolarPartitionConfiguratorView: View {
 
             if canAddPanel {
                 Button("Ajouter un autre type de panneau") { addPanel() }
-                    .foregroundStyle(.green)
+                    .atlantiqueActionStyle(.secondary)
             }
 
             Text(allocationStatus)
@@ -320,27 +318,17 @@ struct AlveolarPartitionConfiguratorView: View {
 
     private func panelCard(_ allocation: Binding<AlveolarPanelAllocation>) -> some View {
         formCard {
-            HStack {
-                Text("Type de panneau")
-                Spacer()
-                Picker("Type de panneau", selection: panelBinding(allocation)) {
+                AtlantiquePicker("Type de panneau", selection: panelBinding(allocation)) {
                     ForEach(references.panels) { panel in
                         Text(panel.functionTitle).tag(panel.id)
                     }
                 }
-                .labelsHidden()
-            }
             Divider()
-            HStack {
-                Text("Dimension")
-                Spacer()
-                Picker("Dimension", selection: formatBinding(allocation)) {
+                AtlantiquePicker("Dimension", selection: formatBinding(allocation)) {
                     ForEach(compatibleFormats(for: allocation.wrappedValue)) { panelFormat in
                         Text(panelFormat.title).tag(panelFormat.id)
                     }
                 }
-                .labelsHidden()
-            }
             Divider()
             numericRow("Surface attribuée", value: allocation.surface, unit: "m²")
             if allocations.count > 1 {

@@ -326,6 +326,7 @@ struct StockHomeView: View {
 }
 
 private struct StockProductPicker: View {
+    @Environment(\.usesAtlantiqueDesign) private var atlantique
     let kind:StockMovement
     let products:[StockProduct]
     @ObservedObject private var stock = StockStore.shared
@@ -362,9 +363,17 @@ private struct StockProductPicker: View {
                     if choices.count > limit { Button("Afficher la suite") { limit += 30 } }
                 }
                 if kind == .entry { Button("Référence absente ? Ajouter un produit") { custom = true }.frame(minHeight:48) }
-            }.navigationTitle(kind.rawValue).atlantiqueFormPage(kind.rawValue).searchable(text:$search,prompt:"Nom, dimensions, modèle…")
+            }
+                .scrollContentBackground(atlantique ? .hidden : .automatic)
+                .background(atlantique ? Atlantique.Palette.blue : Color(.systemGroupedBackground))
+                .navigationTitle(kind.rawValue).atlantiqueFormPage(kind.rawValue)
+                .safeAreaInset(edge: .top) {
+                    AtlantiqueSearchField(prompt: "Nom, dimensions, modèle…", text: $search)
+                        .padding(.horizontal, 16).padding(.vertical, 8)
+                        .background(atlantique ? Atlantique.Palette.blue : Color(.systemGroupedBackground))
+                }
                 .onChange(of:search) { _,value in limit = 30; if !value.isEmpty { family = nil; subcategory = "" } }
-                .toolbar { ToolbarItem(placement:.cancellationAction) { Button("Fermer") { dismiss() }.atlantiqueToolbarAction() } }
+                .toolbar { ToolbarItem(placement:.cancellationAction) { Button("Fermer") { dismiss() }.atlantiqueToolbarAction() }.atlantiqueToolbarBackground(atlantique) }
                 .sheet(item:$selected) { product in StockMovementView(kind:kind,product:product) { dismiss() } }
                 .sheet(isPresented:$custom) { StockCustomProductView { product in custom = false; selected = product } }
         }
@@ -530,7 +539,7 @@ private struct StockMovementView: View {
                     Button {
                         focused = false
                         if kind == .inventory, let amount, amount < stock.reserved(product.id) { confirmInventory = true } else { save() }
-                    } label: { StockActionLabel(title:kind == .inventory ? "Valider le comptage" : "Valider l’\(kind == .entry ? "entrée" : "sortie")",symbol:atlantique && kind != .inventory ? (kind == .entry ? "arrow.up" : "arrow.down") : "checkmark", tone: atlantique && kind != .inventory ? (kind == .entry ? Atlantique.Palette.success : Atlantique.Palette.danger) : nil) }
+                    } label: { StockActionLabel(title:kind == .inventory ? "Valider le comptage" : (kind == .entry ? "Valider l’entrée" : "Valider la sortie"),symbol:atlantique && kind != .inventory ? (kind == .entry ? "arrow.up" : "arrow.down") : "checkmark", tone: atlantique && kind != .inventory ? (kind == .entry ? Atlantique.Palette.success : Atlantique.Palette.danger) : nil) }
                         .padding(20).background(atlantique ? AnyShapeStyle(Atlantique.Palette.blue) : AnyShapeStyle(.regularMaterial))
                         .disabled(amount == nil || (kind != .inventory && amount == 0))
                 }

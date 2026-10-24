@@ -10,28 +10,32 @@ struct WallAngleToolView: View {
         AtlantiqueForm(bookLayout: true) {
             Section {
                 WallAngleDiagram(kind:kind,angle:(try? result.get().interiorDegrees) ?? 90)
-                    .frame(height:260)
+                    .frame(height:atlantique ? 210 : 260)
                     .listRowInsets(EdgeInsets(top:12,leading:8,bottom:12,trailing:8))
-            } header: { Text(kind.range) }
+            } header: { if !atlantique { Text(kind.range) } }
             footer: {
-                Text(kind == .interior
+                Text(atlantique ? "Mesurer la ligne droite entre les deux repères." : kind == .interior
                      ? "Mesurez la même distance L sur les deux murs, puis D entre les repères."
                      : "Prolongez les murs dans le vide (pointillés), puis mesurez entre les deux repères.")
             }
             Section {
                 LayoutDimensionField(title:kind.equalSideTitle,millimetres:$equalSide,tint:.blue,unit:"cm",displayScale:1,showsDoneButton:false)
+                if atlantique {
+                    Divider()
+                    LayoutDimensionField(title:"D · Distance entre les repères",millimetres:$oppositeSide,tint:.orange,unit:"cm",displayScale:1,showsDoneButton:false)
+                }
             } footer: {
-                Text(kind == .interior
+                if !atlantique { Text(kind == .interior
                      ? "Depuis l’angle, mesurez la même distance sur chacun des deux murs et faites vos repères."
-                     : "Dans le vide, mesurez la même distance depuis le coin sur chacun des deux alignements prolongés.")
+                     : "Dans le vide, mesurez la même distance depuis le coin sur chacun des deux alignements prolongés.") }
             }
-            Section {
+            if !atlantique { Section {
                 LayoutDimensionField(title:"D · Distance entre les repères",millimetres:$oppositeSide,tint:.orange,unit:"cm",displayScale:1,showsDoneButton:false)
             } footer: {
                 Text(kind == .interior
                      ? "Mesurez la ligne droite entre les deux repères, pas le long des murs."
                      : "Mesurez entre les deux repères dans la zone libre : cette ligne ne traverse aucun mur.")
-            }
+            } }
             AtlantiqueSection("Résultat") {
                 switch result {
                 case .success(let angle):
@@ -390,6 +394,10 @@ struct VATToolView: View {
                         LabeledContent("TVA", value: currency(result.tax))
                     }
                 }
+                Section {
+                    Button("Réinitialiser") { amount = 0; rate = 20; direction = .netToGross }
+                        .atlantiqueActionStyle(.secondary)
+                }
             } else {
             Section {
                 Picker("Sens", selection: $direction) { ForEach(VATDirection.allCases) { Text($0.rawValue).tag($0) } }.pickerStyle(.segmented)
@@ -411,7 +419,7 @@ struct VATToolView: View {
             }
         }
         .navigationTitle("Calcul de TVA").atlantiqueFormPage("Calcul de TVA")
-        .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("Réinitialiser") { amount = 0; rate = 20; direction = .netToGross } } }
+        .toolbar { if !atlantique { ToolbarItem(placement: .topBarTrailing) { Button("Réinitialiser") { amount = 0; rate = 20; direction = .netToGross } } } }
     }
 
     private func currency(_ value: Decimal) -> String {
@@ -464,7 +472,7 @@ struct ArchTemplateToolView: View {
         Group {
             Section {
                 ArchDiagram(points: points, width: width, rise: rise, curve: ArchCalculator.adjustable(width: width, rise: rise, amplitude: amplitude, spacing: max(0.1, width / 160)))
-                    .frame(height: 320)
+                    .frame(height: 260)
             }
             Section {
                 LabeledContent("Hauteur de l’arche", value: format(rise) + " cm")
@@ -495,6 +503,7 @@ struct ArchTemplateToolView: View {
 }
 
 private struct ArchDiagram: View {
+    @Environment(\.usesAtlantiqueDesign) private var atlantique
     let points: [ArchPoint]
     let width: Double
     let rise: Double
@@ -512,7 +521,7 @@ private struct ArchDiagram: View {
                 }
                 var curve = Path(); curve.move(to: mapped(points[0]))
                 (self.curve ?? points).dropFirst().forEach { curve.addLine(to: mapped($0)) }
-                context.stroke(curve, with: .color(.accentColor), lineWidth: 3)
+                context.stroke(curve, with: .color(atlantique ? Atlantique.Palette.blue : .accentColor), lineWidth: 3)
                 var baseline = Path(); baseline.move(to: mapped(.init(x: 0, y: 0))); baseline.addLine(to: mapped(.init(x: width, y: 0)))
                 context.stroke(baseline, with: .color(.secondary), style: .init(lineWidth: 1, dash: [5]))
                 for point in points { context.fill(Path(ellipseIn: CGRect(x: mapped(point).x - 3, y: mapped(point).y - 3, width: 6, height: 6)), with: .color(.orange)) }

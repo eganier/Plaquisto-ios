@@ -281,6 +281,7 @@ struct CloisonDistributionConfiguratorView: View {
                 .padding(.horizontal, 20)
                 .padding(.vertical, 18)
             }
+            .id(step)
             footer
         }
         .background(atlantique ? Atlantique.Palette.blue : Color(.systemGroupedBackground))
@@ -366,14 +367,16 @@ struct CloisonDistributionConfiguratorView: View {
             }
             card {
                 LabeledContent(
-                    geometryMode == .length ? "Surface calculée" : "Longueur calculée",
+                    geometryMode == .length ? "Surface" : "Longueur",
                     value: format(geometryMode == .length ? actualArea : actualLength, geometryMode == .length ? "m²" : "m")
                 )
             }
+            if !atlantique || Atlantique.Book.showsAdvancedFormControls {
             Text("La hauteur sous plafond est obligatoire. Renseignez ensuite soit la longueur de la cloison, soit sa surface totale.")
                 .font(.footnote)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(atlantique ? Color.white : .secondary)
                 .padding(.horizontal, 12)
+            }
         }
     }
 

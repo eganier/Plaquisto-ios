@@ -978,6 +978,7 @@ struct ProjectFormView: View {
 struct NewWorkView: View {
     @EnvironmentObject private var store: ProjectStore
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.usesAtlantiqueDesign) private var atlantique
     let projectID: UUID
     @State private var customName = ""
     @State private var configurationDraft: Draft?
@@ -1003,11 +1004,12 @@ struct NewWorkView: View {
                     if let category {
                         VStack(alignment: .leading, spacing: 10) {
                             Text(category.cardTitle).font(.headline)
+                                .foregroundStyle(atlantique ? Color.white : .primary)
                             ForEach(WorkType.allCases.filter { $0.category == category }) { type in
                                 Button { prepareConfiguration(type) } label: {
                                     HStack(spacing: 12) {
                                         RoundedRectangle(cornerRadius: 3)
-                                            .fill(category.cardColor).frame(width: 5)
+                                            .fill(atlantique ? Atlantique.Palette.orange : category.cardColor).frame(width: 5)
                                         Text(type.title)
                                             .foregroundStyle(.primary)
                                             .multilineTextAlignment(.leading)
@@ -1027,10 +1029,14 @@ struct NewWorkView: View {
                 }
                 .padding(20)
             }
-            .background(Color(.systemGroupedBackground))
-            .navigationTitle("Ajouter un ouvrage")
+            .background(atlantique ? Atlantique.Palette.blue : Color(.systemGroupedBackground))
+            .atlantiqueFormPage("Ajouter un ouvrage")
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button("Annuler") { dismiss() } }
+                ToolbarItem(placement: .cancellationAction) {
+                    if atlantique {
+                        AtlantiqueIconButton(icon: .back) { dismiss() }
+                    } else { Button("Annuler") { dismiss() } }
+                }.atlantiqueToolbarBackground(atlantique)
             }
             .fullScreenCover(item: $configurationDraft) { draft in
                 WorkConfiguratorContainer(projectID: projectID, workName: draft.name, workType: draft.type, onFinished: { dismiss() })
@@ -1080,13 +1086,16 @@ struct NewWorkView: View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .firstTextBaseline) {
                 Text("Nom de l’ouvrage").font(.headline)
+                    .foregroundStyle(atlantique ? Color.white : .primary)
                 Spacer()
+                if !atlantique {
                 Text("Facultatif")
                     .font(.caption.weight(.medium))
                     .foregroundStyle(.secondary)
                     .padding(.horizontal, 9)
                     .padding(.vertical, 4)
                     .background(.thinMaterial, in: Capsule())
+                }
             }
             HStack(spacing: 12) {
                 Image(systemName: "pencil")
@@ -1099,25 +1108,28 @@ struct NewWorkView: View {
             .padding(.horizontal, 16)
             .frame(minHeight: 56)
             .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+            if !atlantique || Atlantique.Book.showsAdvancedFormControls {
             Text("Si vous laissez ce champ vide, un nom sera proposé automatiquement.")
                 .font(.caption)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(atlantique ? Color.white : .secondary)
+            }
         }
     }
 
     private var categoryPicker: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Catégorie d’ouvrage").font(.headline)
+                .foregroundStyle(atlantique ? Color.white : .primary)
             LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {
                 ForEach(WorkCategory.allCases.filter { $0 != .openings }) { item in
                     Button { category = item } label: {
                         Text(item.cardTitle)
                             .font(.headline)
-                            .foregroundStyle(.white)
+                            .foregroundStyle(atlantique ? Atlantique.Palette.ink : .white)
                             .multilineTextAlignment(.center)
-                            .frame(maxWidth: .infinity, minHeight: 90)
+                            .frame(maxWidth: .infinity, minHeight: atlantique ? 60 : 90)
                             .padding(.horizontal, 10)
-                            .background(item.cardColor, in: RoundedRectangle(cornerRadius: 20))
+                            .background(atlantique ? (category == item ? Atlantique.Palette.orange : Atlantique.Palette.surface) : item.cardColor, in: RoundedRectangle(cornerRadius: atlantique ? 12 : 20))
                             .overlay {
                                 RoundedRectangle(cornerRadius: 16)
                                     .stroke(.white, lineWidth: category == item ? 3 : 0)
@@ -1343,6 +1355,7 @@ struct SurveySourceReviewNotice: View {
 struct WorkConfiguratorContainer: View {
     @EnvironmentObject private var store: ProjectStore
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.usesAtlantiqueDesign) private var atlantique
     let projectID: UUID
     let workName: String
     let workType: WorkType
@@ -1400,7 +1413,14 @@ struct WorkConfiguratorContainer: View {
                     }
                 }
             }
-            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Fermer") { dismiss() }.atlantiqueToolbarAction() } }
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    if atlantique {
+                        AtlantiqueIconButton(icon: .back) { dismiss() }
+                            .accessibilityLabel("Fermer le formulaire")
+                    } else { Button("Fermer") { dismiss() } }
+                }.atlantiqueToolbarBackground(atlantique)
+            }
         }
         .environment(\.layoutCoveringAreaRatio, LayoutWorkGeometry.coveringAreaRatio(layoutDocument))
         .alert("Enregistrement impossible", isPresented: Binding(get: { !errorMessage.isEmpty }, set: { if !$0 { errorMessage = "" } })) { Button("OK") {} } message: { Text(errorMessage) }
