@@ -1,4 +1,51 @@
 import Foundation
+
+/// A reversible editor projection. The stored order remains the physical skin
+/// order; only the canvas puts the selected skin first. Shared framing keeps
+/// its own world reference and is never persisted on two skins.
+struct LayoutSkinEditing {
+    let source: LayoutDocument
+    let index: Int
+
+    init(_ source: LayoutDocument, selectedID: UUID?) {
+        self.source = source
+        index = source.layers.firstIndex { $0.id == selectedID } ?? 0
+    }
+
+    var document: LayoutDocument {
+        guard index > 0, source.layers.indices.contains(index) else { return source }
+        var copy = source
+        var selected = copy.layers.remove(at: index)
+        if selected.furring == nil, var owner = copy.layers.first, owner.furring != nil {
+            owner.materializeFurringOrientation()
+            if owner.furring?.usesOwnReference != true {
+                owner.furring?.usesOwnReference = true
+                owner.furring?.referenceEdge = owner.referenceEdge
+                owner.furring?.inheritedGridFrame = owner.inheritedGridFrame
+            }
+            selected.furring = owner.furring
+            copy.layers[0].furring = nil
+        }
+        copy.layers.insert(selected, at: 0)
+        return copy
+    }
+
+    func restoring(_ edited: LayoutDocument) -> LayoutDocument {
+        guard index > 0, source.layers.indices.contains(index),
+              edited.surface.id == source.surface.id else { return edited }
+        var copy = edited
+        let order = source.layers.map(\.id)
+        copy.layers.sort { (order.firstIndex(of: $0.id) ?? order.count) < (order.firstIndex(of: $1.id) ?? order.count) }
+        if source.layers[index].furring == nil, source.layers[0].furring != nil,
+           let selected = copy.layers.firstIndex(where: { $0.id == source.layers[index].id }),
+           let owner = copy.layers.firstIndex(where: { $0.id == source.layers[0].id }) {
+            let frame = copy.layers[selected].furring
+            copy.layers[owner].furring = frame == document.layers.first?.furring ? source.layers[0].furring : frame
+            copy.layers[selected].furring = nil
+        }
+        return copy
+    }
+}
 import CryptoKit
 
 /// Local draft operations: editing facing skins must not duplicate the shared frame.

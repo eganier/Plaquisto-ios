@@ -54,6 +54,43 @@ struct SavedLayoutDocument: Codable, Equatable, Identifiable {
 @MainActor
 final class LayoutEditorModel: ObservableObject {
     @Published private(set) var document: LayoutDocument?
+    @Published private(set) var selectedSkinID: UUID?
+    var editingDocument: LayoutDocument? {
+        document.map { LayoutSkinEditing($0, selectedID: selectedSkinID).document }
+    }
+    func selectSkin(_ id: UUID) {
+        guard !isOptimizing, editingGestureOriginal == nil, document?.layers.contains(where: { $0.id == id }) == true,
+              selectedSkinID != id else { return }
+        selectedSkinID = id
+        result = nil; resultDocument = nil
+        optimizationMessage = nil; optimizationFailed = false
+        recalculate()
+    }
+    private func reconcileSkin() {
+        if document?.layers.contains(where: { $0.id == selectedSkinID }) != true {
+            selectedSkinID = document?.layers.first?.id
+        }
+    }
+    private func storedDocument(from edited: LayoutDocument) -> LayoutDocument {
+        guard let document else { return edited }
+        return LayoutSkinEditing(document, selectedID: selectedSkinID).restoring(edited)
+    }
+    func applyEditing(_ edited: LayoutDocument) { apply(storedDocument(from: edited)) }
+    private var editingGestureOriginal: LayoutDocument?
+    func previewEditing(_ edited: LayoutDocument) {
+        if editingGestureOriginal == nil { editingGestureOriginal = document }
+        preview(storedDocument(from: edited))
+    }
+    func finishEditingGesture(from original: LayoutDocument) {
+        let stored = editingGestureOriginal ?? storedDocument(from: original)
+        editingGestureOriginal = nil
+        finishGesture(from: stored)
+    }
+    func cancelEditingGesture(restoring original: LayoutDocument) {
+        let stored = editingGestureOriginal ?? storedDocument(from: original)
+        editingGestureOriginal = nil
+        cancelGesture(restoring: stored)
+    }
     @Published private(set) var savedDocuments: [SavedLayoutDocument] = []
     @Published private(set) var result: SheetLayoutResult?
     private(set) var resultDocument: LayoutDocument?
@@ -95,18 +132,22 @@ final class LayoutEditorModel: ObservableObject {
     }
 
     func open(_ saved: SavedLayoutDocument) {
+        editingGestureOriginal = nil
         currentSavedID = saved.id
         document = saved.document
         document?.layers = saved.document.layers.map { $0.forSurface(saved.document.surface) }
+        reconcileSkin()
         past = []; future = []; updateHistory(); recalculate()
     }
 
     func startNew() {
+        editingGestureOriginal = nil
         calculation?.cancel()
         calculation = nil
         if persistsStandaloneLibrary { defaults.removeObject(forKey: draftKey) }
         currentSavedID = nil
         document = nil
+        selectedSkinID = nil
         past = []; future = []; result = nil; error = nil; isCalculating = false; updateHistory()
     }
 
@@ -154,11 +195,11 @@ final class LayoutEditorModel: ObservableObject {
         newValue.layers = newValue.layers.map { $0.forSurface(newValue.surface) }
         guard newValue != document else { return }
         let shouldOptimize = newValue.surface.kind == .ceiling && document?.surface.id == newValue.surface.id &&
-            document?.layers.first.map { old in
-                newValue.layers.first.map { old.orientation != $0.orientation || old.referenceEdge != $0.referenceEdge } ?? false
+            document?.layers.first(where: { $0.id == selectedSkinID }).map { old in
+                newValue.layers.first(where: { $0.id == old.id }).map { old.orientation != $0.orientation || old.referenceEdge != $0.referenceEdge } ?? false
             } == true
         if let document { past.append(document); if past.count > 100 { past.removeFirst() } }
-        future = []; document = newValue; updateHistory(); persistDraft(); recalculate()
+        future = []; document = newValue; reconcileSkin(); updateHistory(); persistDraft(); recalculate()
         if shouldOptimize {
             if isOptimizing { pendingBoardOptimization = true } else { optimize(furring:false) }
         }
@@ -174,7 +215,8 @@ final class LayoutEditorModel: ObservableObject {
     }
 
     func optimize(furring:Bool) {
-        guard let original = document, let layer = original.layers.first, !isOptimizing else { return }
+        guard let original = document, let projection = editingDocument, let layer = projection.layers.first, !isOptimizing else { return }
+        let expectedSkinID = selectedSkinID
         isOptimizing = true; optimizationMessage = nil; optimizationFailed = false
         Task {
             defer {
@@ -186,8 +228,8 @@ final class LayoutEditorModel: ObservableObject {
             }
             do {
                 let value = try await worker.value
-                guard document == original else { return }
-                var copy = original; copy.layers[0] = value; apply(copy)
+                guard document == original, selectedSkinID == expectedSkinID else { return }
+                var copy = projection; copy.layers[0] = value; applyEditing(copy)
                 optimizationMessage = value == layer ? "Aucune meilleure disposition trouvée parmi les essais." : "Meilleure disposition testée appliquée. Vous pouvez annuler cette modification."
             } catch { optimizationFailed = true; optimizationMessage = error.localizedDescription }
             isOptimizing = false
@@ -234,11 +276,11 @@ final class LayoutEditorModel: ObservableObject {
 
     func undo() {
         guard let previous = past.popLast(), let document else { return }
-        future.append(document); self.document = previous; updateHistory(); persistDraft(); recalculate()
+        future.append(document); self.document = previous; reconcileSkin(); updateHistory(); persistDraft(); recalculate()
     }
     func redo() {
         guard let next = future.popLast(), let document else { return }
-        past.append(document); self.document = next; updateHistory(); persistDraft(); recalculate()
+        past.append(document); self.document = next; reconcileSkin(); updateHistory(); persistDraft(); recalculate()
     }
     private func updateHistory() { canUndo = !past.isEmpty; canRedo = !future.isEmpty }
     private func persistDraft() {
@@ -257,7 +299,7 @@ final class LayoutEditorModel: ObservableObject {
     }
     private func recalculate(delay: Bool = false) {
         calculation?.cancel(); revision += 1
-        guard let document, let layer = document.layers.first else { return }
+        guard let document = editingDocument, let layer = document.layers.first else { return }
         lightingWarning = document.lighting.map { LayoutPlanning.lightingFits($0,surface:document.surface) } == false
             ? "Un spot empiète sur une ouverture, un bord ou un autre spot. Ouvrez Éclairage pour revoir la répartition." : nil
         let expectedRevision = revision

@@ -3,6 +3,109 @@ import SwiftUI
 @testable import Plaquisto
 
 final class SheetLayoutEngineTests: XCTestCase {
+    func testSkinProjectionRoundTripsWithoutChangingStoredOrderOrSharedFrame() throws {
+        var first = LayoutLayer()
+        first.referenceEdge = 1
+        first.furring = .init(spacing: 600, offset: 75)
+        var layers = LayoutFacingDraft.addingSecond(to: [first])
+        layers[1].orientation = .horizontal
+        layers[1].referenceEdge = 2
+        let original = LayoutDocument(surface: surface(width: 4000, height: 3000), layers: layers)
+        let projection = LayoutSkinEditing(original, selectedID: layers[1].id)
+        XCTAssertEqual(projection.document.layers.first?.id, layers[1].id)
+        XCTAssertEqual(projection.restoring(projection.document), original)
+        let before = LayoutPlanning.worldFurring(surface: original.surface, layer: first)
+        let after = LayoutPlanning.worldFurring(surface: original.surface, layer: projection.document.layers[0])
+        XCTAssertEqual(before.lines.count, after.lines.count)
+        for line in before.lines {
+            XCTAssertTrue(after.lines.contains { LayoutOpeningFraming.same($0, line) }, "Changing skin must not move the shared frame")
+        }
+        var edited = projection.document
+        edited.layers[0].offset.x += 175
+        let saved = projection.restoring(edited)
+        XCTAssertEqual(saved.layers[0], original.layers[0])
+        XCTAssertEqual(saved.layers[1].offset.x, layers[1].offset.x + 175)
+        XCTAssertNil(saved.layers[1].furring)
+        edited.layers[0].furring?.offset = 200
+        let reframed = projection.restoring(edited)
+        XCTAssertEqual(reframed.layers[0].furring?.offset, 200)
+        XCTAssertNil(reframed.layers[1].furring)
+    }
+
+    @MainActor func testSecondSkinGestureUndoCancelAndSelectionFallback() throws {
+        let editor = LayoutEditorModel(persistsStandaloneLibrary: false)
+        var first = LayoutLayer(); first.furring = .init()
+        var original = LayoutDocument(surface: surface(width: 4000, height: 3000), layers: LayoutFacingDraft.addingSecond(to: [first]))
+        original.layers = original.layers.map { $0.forSurface(original.surface) }
+        editor.apply(original)
+        editor.selectSkin(original.layers[1].id)
+        let before = try XCTUnwrap(editor.editingDocument)
+        var moved = before
+        moved.layers[0].offset.x += 215
+        editor.previewEditing(moved)
+        editor.finishEditingGesture(from: before)
+        XCTAssertEqual(editor.document?.layers[0], original.layers[0])
+        XCTAssertEqual(editor.document?.layers[1].offset.x, original.layers[1].offset.x + 215)
+        editor.undo()
+        XCTAssertEqual(editor.document, original)
+        XCTAssertEqual(editor.selectedSkinID, original.layers[1].id)
+        editor.redo()
+        XCTAssertEqual(editor.editingDocument?.layers[0].offset.x, moved.layers[0].offset.x)
+        let committed = try XCTUnwrap(editor.document)
+        let current = try XCTUnwrap(editor.editingDocument)
+        var interrupted = current; interrupted.layers[0].offset.y += 300
+        editor.previewEditing(interrupted)
+        editor.cancelEditingGesture(restoring: current)
+        XCTAssertEqual(editor.document, committed)
+        var single = committed; single.layers.removeLast()
+        editor.apply(single)
+        XCTAssertEqual(editor.selectedSkinID, single.layers[0].id)
+        XCTAssertEqual(editor.editingDocument, single)
+    }
+
+    @MainActor func testSelectedSkinCalculationAndOptimizationAreIsolated() async throws {
+        let editor = LayoutEditorModel(persistsStandaloneLibrary: false)
+        var layers = LayoutFacingDraft.addingSecond(to: [LayoutLayer()])
+        layers[1].sheetWidth = 600
+        layers[1].sheetLength = 1200
+        let original = LayoutDocument(surface: surface(width: 4000, height: 3000), layers: layers)
+        editor.apply(original)
+        editor.selectSkin(layers[1].id)
+        for _ in 0..<500 where editor.isCalculating { try await Task.sleep(nanoseconds: 10_000_000) }
+        XCTAssertFalse(editor.isCalculating)
+        let expected = try SheetLayoutEngine.calculate(surface: original.surface, layer: layers[1])
+        XCTAssertEqual(editor.result?.purchasedSheetCount, expected.purchasedSheetCount)
+        XCTAssertEqual(editor.resultDocument?.layers.first?.id, layers[1].id)
+        editor.optimize(furring: false)
+        for _ in 0..<2000 where editor.isOptimizing { try await Task.sleep(nanoseconds: 10_000_000) }
+        XCTAssertFalse(editor.isOptimizing)
+        XCTAssertFalse(editor.optimizationFailed)
+        XCTAssertEqual(editor.document?.layers.first, layers.first)
+        XCTAssertEqual(editor.document?.layers.last?.id, layers.last?.id)
+        editor.selectSkin(layers[0].id)
+        for _ in 0..<500 where editor.isCalculating { try await Task.sleep(nanoseconds: 10_000_000) }
+        XCTAssertEqual(editor.resultDocument?.layers.first?.id, layers[0].id)
+    }
+
+    @MainActor func testSharedFramingGestureFromSecondSkinRestoresExactArchiveOnUndoAndCancel() throws {
+        let editor = LayoutEditorModel(persistsStandaloneLibrary: false)
+        var first = LayoutLayer(); first.referenceEdge = 1; first.furring = .init()
+        var original = LayoutDocument(surface: surface(width: 4000, height: 3000), layers: LayoutFacingDraft.addingSecond(to: [first]))
+        original.layers = original.layers.map { $0.forSurface(original.surface) }
+        editor.apply(original); editor.selectSkin(original.layers[1].id)
+        let before = try XCTUnwrap(editor.editingDocument)
+        var moved = before; moved.layers[0].furring?.offset = 230
+        editor.previewEditing(moved)
+        editor.cancelEditingGesture(restoring: before)
+        XCTAssertEqual(editor.document, original)
+        editor.previewEditing(moved)
+        editor.finishEditingGesture(from: before)
+        XCTAssertEqual(editor.document?.layers[0].furring?.offset, 230)
+        XCTAssertEqual(editor.document?.layers[1], original.layers[1])
+        editor.undo()
+        XCTAssertEqual(editor.document, original)
+    }
+
     func testQuickFacingFunctionLabelsDoNotRepeatTheBoardFamily() {
         var format = LayoutCatalogFormat(id: "test", title: "BA13", width: 1200, length: 2400, function: "standard")
         XCTAssertEqual(format.functionTitle, "Standard")

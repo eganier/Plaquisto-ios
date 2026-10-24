@@ -650,7 +650,7 @@ struct SheetLayoutView: View {
                             .foregroundStyle(atlantique ? Color.white : Color.accentColor)
                     }.accessibilityLabel("Sous-parties du calepinage")
                 }
-                if let document = model.document { editor(document) }
+                if let document = model.editingDocument { editor(document) }
                 else { entry }
             }
         }
@@ -1008,7 +1008,7 @@ struct SheetLayoutView: View {
                             guard let layer else { return }
                             var copy = document
                             copy.layers[0] = LayoutPlanning.alignOtherLayer(layer,surface:document.surface,framingMode:mode == .framing)
-                            model.apply(copy)
+                            model.applyEditing(copy)
                         })
                 } else if mode == .move {
                     HStack(spacing:8) {
@@ -1055,7 +1055,7 @@ struct SheetLayoutView: View {
                     Button {
                         var copy=document
                         copy.layers[0]=LayoutPlanning.alignOtherLayer(layer,surface:document.surface,framingMode:mode == .framing)
-                        model.apply(copy)
+                        model.applyEditing(copy)
                     } label: {
                         Text(mode == .framing ? "Caler les plaques sur l’ossature" : "Caler les ossatures sur les plaques").frame(maxWidth:.infinity)
                     }.disabled(model.isOptimizing || drag != nil || pinching || !LayoutPlanning.compatibleSpacings(layer).contains(layer.furring?.spacing ?? 0))
@@ -1072,6 +1072,28 @@ struct SheetLayoutView: View {
                     Text(workbook?.tabs.first { $0.id == workbook?.selectedID }?.title ?? document.surface.name).font(.headline).lineLimit(1)
                     Text("\(document.surface.kind.rawValue) · \(layoutCM(document.surface.bounds.width)) × \(layoutCM(document.surface.bounds.height))")
                         .font(.caption).foregroundStyle(.secondary)
+                    if let stored = model.document, stored.layers.count > 1 {
+                        Menu {
+                            ForEach(Array(stored.layers.enumerated()), id: \.element.id) { index, layer in
+                                Button {
+                                    model.selectSkin(layer.id)
+                                } label: {
+                                    if layer.id == model.selectedSkinID {
+                                        Label("Parement \(index + 1)", systemImage: "checkmark")
+                                    } else { Text("Parement \(index + 1)") }
+                                }
+                            }
+                        } label: {
+                            HStack(spacing: 5) {
+                                Text("Parement \((stored.layers.firstIndex { $0.id == model.selectedSkinID } ?? 0) + 1)")
+                                Image(systemName: "chevron.down").font(.caption2)
+                            }.font(.caption.weight(.semibold)).frame(minHeight: 32)
+                                .foregroundStyle(atlantique ? Atlantique.Palette.orange : Color.accentColor)
+                        }.accessibilityLabel("Parement affiché")
+                            .accessibilityValue("Parement \((stored.layers.firstIndex { $0.id == model.selectedSkinID } ?? 0) + 1)")
+                            .accessibilityIdentifier("layout.skin.selector")
+                            .disabled(drag != nil || pinching || model.isOptimizing)
+                    }
                 }
                 Spacer()
                 if model.isCalculating { ProgressView().accessibilityLabel("Calcul des découpes") }
@@ -1151,7 +1173,7 @@ struct SheetLayoutView: View {
                     .gesture(DragGesture(minimumDistance: 7).onChanged { value in dragChanged(value, document: document, viewport: viewport) }.onEnded { _ in
                         if mode == .lighting, document.surface.kind == .wall, drag != nil { ignoreWallTapUntil=Date().addingTimeInterval(0.2) }
                         if let point=pendingWallPoint, !pinching { addWallPoint(point) }
-                        else if let drag { model.finishGesture(from: drag.document) }
+                        else if let drag { model.finishEditingGesture(from: drag.document) }
                         pendingWallPoint=nil; wallDragFinger=nil; drag = nil; spotGuides = []
                         if spotSelectionBox != nil { spotSelectionBox=nil; selectSpotsByBox=false }
                     })
@@ -1162,7 +1184,7 @@ struct SheetLayoutView: View {
                                 pinching = true
                                 pinchAnchor = CGPoint(x:value.startAnchor.x*proxy.size.width,y:value.startAnchor.y*proxy.size.height)
                                 pendingWallPoint=nil; wallDragFinger=nil
-                                if let original = drag { model.cancelGesture(restoring:original.document); pan = original.initialPan; drag = nil; spotGuides = [] }
+                                if let original = drag { model.cancelEditingGesture(restoring:original.document); pan = original.initialPan; drag = nil; spotGuides = [] }
                             }
                         }.onEnded { value in
                                 let nextZoom = min(8, max(0.4, zoom * value.magnification))
@@ -1220,7 +1242,7 @@ struct SheetLayoutView: View {
                                 copy.layers[0].staggered = layer.staggered != true
                                 copy.layers[0].staggerOffset = nil
                                 copy.layers[0] = LayoutPlanning.alignBoards(to:copy.layers[0],support:.ceiling)
-                                model.apply(copy); model.optimize(furring:false)
+                                model.applyEditing(copy); model.optimize(furring:false)
                             } label: {
                                 LayoutStaggerIcon(staggered:layer.staggered == true)
                                     .foregroundStyle(layer.staggered == true ? Color.accentColor : .primary)
@@ -1406,7 +1428,7 @@ struct SheetLayoutView: View {
                                 var copy=document
                                 let frame=document.layers.first.map { LayoutPlanning.framingFrame(surface:document.surface,layer:$0) }
                                 copy.lighting=try LayoutPlanning.arrangedLighting(lighting,selected:selectedSpots,reference:referenceSpot,action:action,surface:document.surface,frame:document.surface.kind == .ceiling ? frame : nil)
-                                model.apply(copy); spotEditError=nil
+                                model.applyEditing(copy); spotEditError=nil
                             } catch { spotEditError=error.localizedDescription }
                         }.disabled(selectedSpots.count<action.minimumCount)
                     }
@@ -1439,7 +1461,7 @@ struct SheetLayoutView: View {
                             value.positions = lighting.positions.enumerated().filter { !selectedSpots.contains($0.offset) }.map(\.element)
                             value.wallRowHeights=LayoutWallLighting.heights(lighting,surface:document.surface)
                             value.count = value.positions.count; copy.lighting = value.count == 0 && value.wallRowHeights?.isEmpty != false ? nil : value
-                            model.apply(copy); selectedSpots = []; referenceSpot = nil
+                            model.applyEditing(copy); selectedSpots = []; referenceSpot = nil
                         }
                     }
                     Divider()
@@ -1451,7 +1473,7 @@ struct SheetLayoutView: View {
                                 var copy = document
                                 let frame=document.layers.first.map { LayoutPlanning.framingFrame(surface:document.surface,layer:$0) }
                                 copy.lighting = try LayoutPlanning.arrangedLighting(lighting,selected:selectedSpots,reference:referenceSpot,action:action,surface:document.surface,frame:document.surface.kind == .ceiling ? frame : nil)
-                                model.apply(copy); spotEditError = nil
+                                model.applyEditing(copy); spotEditError = nil
                             } catch { spotEditError = error.localizedDescription }
                         }.disabled(selectedSpots.count < action.minimumCount)
                     }
@@ -1466,7 +1488,7 @@ struct SheetLayoutView: View {
         do {
             var copy = document
             copy.lighting = try LayoutPlanning.centeredLighting(lighting,selected:selected,surface:document.surface)
-            model.apply(copy); spotEditError = nil
+            model.applyEditing(copy); spotEditError = nil
         } catch { spotEditError = error.localizedDescription }
     }
     private func spotActionTitle(_ action:LayoutSpotArrangement,wall:Bool) -> String {
@@ -1479,7 +1501,7 @@ struct SheetLayoutView: View {
         }
     }
     private func initializeCeilingView() {
-        guard let document=model.document, document.surface.kind == .ceiling,
+        guard let document=model.editingDocument, document.surface.kind == .ceiling,
               let alignment=LayoutViewport.initialCeilingAlignment(document.surface.contour,referenceEdge:document.layers.first?.referenceEdge) else { return }
         rotation=alignment.angle; viewAlignedEdge=alignment.index
         fittedBounds=LayoutViewport.fittedBounds(document.surface.contour,rotation:rotation)
@@ -1518,7 +1540,7 @@ struct SheetLayoutView: View {
                 copy.layers[0].referenceEdge = next
                 copy.layers[0].inheritedGridFrame = nil
             }
-            model.apply(copy)
+            model.applyEditing(copy)
             UISelectionFeedbackGenerator().selectionChanged()
         } label: {
             Image(systemName: clockwise ? "arrow.clockwise" : "arrow.counterclockwise")
@@ -1532,7 +1554,7 @@ struct SheetLayoutView: View {
                 var copy = document
                 if mode == .framing { copy.layers[0].setFurringOrientation(parallel ? .vertical : .horizontal) }
                 else { copy.layers[0].materializeFurringOrientation(); copy.layers[0].orientation = parallel ? .vertical : .horizontal }
-                model.apply(copy)
+                model.applyEditing(copy)
             } label: {
                 LayoutOrientationIcon(parallel:parallel).frame(width:44,height:44).background(.regularMaterial,in:Circle())
             }.accessibilityLabel(parallel ? "Parallèle au mur — passer perpendiculaire" : "Perpendiculaire au mur — passer parallèle")
@@ -1842,10 +1864,10 @@ struct SheetLayoutView: View {
         return LayoutWallLighting.snapped(point,lighting:document.lighting,surface:document.surface,tolerance:14/viewport.scale)
     }
     private func addWallPoint(_ point:LayoutPoint) {
-        guard var copy=model.document else { return }
+        guard var copy=model.editingDocument else { return }
         do {
             copy.lighting=try LayoutPlanning.addingSpot(to:copy.lighting,at:point,surface:copy.surface,kind:addingKind)
-            model.apply(copy); spotEditError=nil
+            model.applyEditing(copy); spotEditError=nil
         } catch { spotEditError=error.localizedDescription }
     }
 
@@ -1908,7 +1930,7 @@ struct SheetLayoutView: View {
             do {
                 var copy = document
                 copy.lighting = try LayoutPlanning.addingSpot(to:document.lighting,at:viewport.world(p),surface:document.surface,kind:addingKind)
-                model.apply(copy); spotEditError = nil
+                model.applyEditing(copy); spotEditError = nil
             } catch { spotEditError = error.localizedDescription }
             return
         }
@@ -1977,7 +1999,7 @@ struct SheetLayoutView: View {
                 updated.lighting=LayoutPlanning.translatedLighting(lighting,indices:[i],delta:target-lighting.positions[i])
                 updated.lighting?.wallRowHeights=LayoutWallLighting.heights(lighting,surface:updated.surface)
                 wallDragFinger=value.location
-                model.preview(updated)
+                model.previewEditing(updated)
                 return
             }
             let snapped = snapSpots ? LayoutPlanning.snappedLightingDelta(lighting,selected:drag.spots,anchor:i,delta:delta,tolerance:8/drag.viewport.scale) : (delta:delta,guides:[])
@@ -2020,7 +2042,7 @@ struct SheetLayoutView: View {
             pan = drag.viewport.constrainedPan(candidate,contour:drag.document.surface.contour)
             return
         }
-        model.preview(updated)
+        model.previewEditing(updated)
     }
 
     private func nearestSpot(_ point:CGPoint, document:LayoutDocument, viewport:LayoutViewport) -> Int? {
@@ -2037,17 +2059,17 @@ struct SheetLayoutView: View {
     @ViewBuilder private func sheetContent(_ destination: LayoutEditorSheet) -> some View {
         switch destination {
         case .wallPoint(let i):
-            if let document=model.document, let lighting=document.lighting, lighting.positions.indices.contains(i) {
+            if let document=model.editingDocument, let lighting=document.lighting, lighting.positions.indices.contains(i) {
                 LayoutWallPointForm(lighting:lighting,index:i,surface:document.surface) { value in
-                    var copy=document; copy.lighting=value; model.apply(copy)
+                    var copy=document; copy.lighting=value; model.applyEditing(copy)
                 }
             }
         case .framingDistance(let dimension):
-            if let document=model.document, let layer=document.layers.first {
+            if let document=model.editingDocument, let layer=document.layers.first {
                 LayoutFurringDistanceForm(value:dimension.distance) { value in
                     var copy=document
                     copy.layers[0]=try LayoutPlanning.settingFurringDistance(layer,surface:document.surface,dimension:dimension,distance:value)
-                    model.apply(copy)
+                    model.applyEditing(copy)
                 }
             }
         case .parts:
@@ -2095,60 +2117,60 @@ struct SheetLayoutView: View {
                 }.environmentObject(catalogue)
             }
         case .furring:
-            if let document = model.document, let layer = document.layers.first {
+            if let document = model.editingDocument, let layer = document.layers.first {
                 let allowsSimplifiedCeiling:Bool = {
                     guard let configuration=newDocumentConfiguration else { return true }
                     if case .ceiling = configuration { return true }
                     return false
                 }()
                 LayoutFurringForm(surface:document.surface,layer:layer,allowsSimplifiedCeiling:allowsSimplifiedCeiling) { value in
-                    var copy = document; copy.layers[0] = value; model.apply(copy)
+                    var copy = document; copy.layers[0] = value; model.applyEditing(copy)
                 }.environmentObject(catalogue)
             }
         case .lighting:
-            if let document = model.document, let layer = document.layers.first {
+            if let document = model.editingDocument, let layer = document.layers.first {
                 if document.surface.kind == .wall {
                     LayoutWallElectricalForm(surface:document.surface,layer:layer,lighting:document.lighting) { value in
-                        var copy = document; copy.lighting = value; model.apply(copy)
+                        var copy = document; copy.lighting = value; model.applyEditing(copy)
                         mode = .lighting; selectedSpots = []; referenceSpot = nil
                     }
                 } else {
                 LayoutLightingForm(surface:document.surface,layer:layer,settings:document.lighting) { value in
-                    var copy = document; copy.lighting = value; model.apply(copy)
+                    var copy = document; copy.lighting = value; model.applyEditing(copy)
                     mode = .lighting; selectedSpots = []; referenceSpot = nil
                 }
                 }
             }
         case .lightingSpacing(let selected):
-            if let document = model.document, let layer = document.layers.first, let lighting = document.lighting {
+            if let document = model.editingDocument, let layer = document.layers.first, let lighting = document.lighting {
                 LayoutLightingSpacingForm(surface:document.surface,layer:layer,lighting:lighting,selected:selected) { value in
-                    var copy = document; copy.lighting = value; model.apply(copy)
+                    var copy = document; copy.lighting = value; model.applyEditing(copy)
                 }
             }
         case .opening(let id):
-            if let document = model.document {
+            if let document = model.editingDocument {
                 LayoutOpeningForm(support: document.surface.kind, existing: document.surface.openings.first { $0.id == id }, surfaceContour: document.surface.contour, alignedEdge: viewAlignedEdge, displayRotation: rotation) { opening in
                     var copy = document
                     if let i = copy.surface.openings.firstIndex(where: { $0.id == opening.id }) { copy.surface.openings[i] = opening }
                     else { copy.surface.openings.append(opening) }
-                    model.apply(copy)
+                    model.applyEditing(copy)
                 } onDelete: {
-                    var copy = document; copy.surface.openings.removeAll { $0.id == id }; model.apply(copy)
+                    var copy = document; copy.surface.openings.removeAll { $0.id == id }; model.applyEditing(copy)
                 }
             }
         case .vertex(let index):
-            if let document = model.document, document.surface.contour.indices.contains(index) {
+            if let document = model.editingDocument, document.surface.contour.indices.contains(index) {
                 LayoutVertexForm(index: index, contour: document.surface.contour) { p in model.editVertices(p); selectedVertex = nil }
             }
         case .correction(let index):
-            if let correction = model.document?.surface.dimensionCorrections.first(where: { $0.edgeIndex == index }) {
-                LayoutCorrectionDetail(correction: correction, edgeCount: model.document?.surface.contour.count ?? 1)
+            if let correction = model.editingDocument?.surface.dimensionCorrections.first(where: { $0.edgeIndex == index }) {
+                LayoutCorrectionDetail(correction: correction, edgeCount: model.editingDocument?.surface.contour.count ?? 1)
             }
         case .cut(let selection): LayoutCutDetail(selection: selection)
         case .furringDimensions:
             NavigationStack {
                 List {
-                    if let document = model.document, let result = model.result {
+                    if let document = model.editingDocument, let result = model.result {
                         Section {
                             Text("Distances cumulées depuis le premier angle de chaque mur, en centimètres. Les fourrures sont interrompues aux ouvertures. Repérage géométrique, sans validation de l’ossature.").font(.footnote)
                         }
@@ -2183,7 +2205,7 @@ struct SheetLayoutView: View {
                               ForEach(result.sheets) { placement in
                                 ForEach(placement.pieces.filter { ($0.stock?.number ?? placement.number)==number }) { piece in
                                     Button {
-                                        sheet = .cut(.make(sheet:placement,piece:piece,lighting:model.document?.lighting,frame:result.frame,wall:model.document?.surface.kind == .wall,placements:result.sheets))
+                                        sheet = .cut(.make(sheet:placement,piece:piece,lighting:model.editingDocument?.lighting,frame:result.frame,wall:model.editingDocument?.surface.kind == .wall,placements:result.sheets))
                                     } label: {
                                         VStack(alignment: .leading) {
                                             Text("\(placement.label(for:piece)) · \(layoutArea(piece.area))")

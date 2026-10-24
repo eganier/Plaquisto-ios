@@ -89,7 +89,7 @@ struct PlaquistoLabApp: App {
                             case "partition": await auditPartition.load()
                             case "bonded": await auditBonded.load()
                             case "adhesive": await auditAdhesive.load()
-                            case "partition-height", "lining-height", "span", "spacing", "quick-layout", "quick-ceiling": await auditTechnical.load()
+                            case "partition-height", "lining-height", "span", "spacing", "quick-layout", "quick-ceiling", "quick-multiskin": await auditTechnical.load()
                             default: break
                             }
                         }
@@ -159,6 +159,8 @@ struct PlaquistoLabApp: App {
             SheetLayoutView(initialDocument: .init(surface: .init(name: "Calepinage de test",
                 kind: name == "quick-ceiling" ? .ceiling : .wall,
                 contour: auditWall.contour), layers: [.init(furring: .init())]))
+        case "quick-multiskin":
+            SheetLayoutView(initialDocument: auditMultiSkin)
         case "project", "work", "configuration", "quantity", "settings", "catalogue", "about", "survey", "layout":
             AtlantiqueAuditDestination(name: name)
         default: ContrastLabRoot()
@@ -173,6 +175,19 @@ struct PlaquistoLabApp: App {
         value.kinds = [.socket, .socket, .socket]
         value.wallRowHeights = [1200]
         return value
+    }
+    private var auditMultiSkin: LayoutDocument {
+        var surface = auditWall
+        surface.openings = [.init(kind: .door,
+            contour: LayoutBounds(min: .init(x: 1700, y: 0), max: .init(x: 2600, y: 2100)).polygon)]
+        var layers = LayoutFacingDraft.addingSecond(to: [.init(furring: .init())])
+        layers[1].sheetWidth = 600
+        layers[1].sheetLength = 1200
+        var lighting = auditLighting
+        lighting.positions.remove(at: 1)
+        lighting.kinds = [.socket, .socket]
+        lighting.count = 2
+        return .init(surface: surface, layers: layers, lighting: lighting)
     }
     #endif
 }
