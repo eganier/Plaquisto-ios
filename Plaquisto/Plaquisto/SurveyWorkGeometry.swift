@@ -607,6 +607,27 @@ enum SurveyWorkGeometry {
                     for i in surface.openings.indices {
                         surface.openings[i].id = projectedID(identity, hole: holeIndices[i])
                     }
+                    // A full-height column occupies the ceiling too. Intersect its
+                    // vertical footprint with the actual plane (not the screen axes),
+                    // then let the layout boolean clip it at edges and existing holes.
+                    if let frame = surface.localFrame {
+                        for column in (room.columns ?? []).filter(\.isValid) {
+                            let contour = column.corners.map { corner -> LayoutPoint in
+                                let top = vector(.init(x: corner.x,
+                                    y: slope.plane.height(x: corner.x, z: corner.z), z: corner.z))
+                                let delta = top - frame.origin
+                                return .init(x: delta.dot(frame.axisX) * 1000,
+                                             y: delta.dot(frame.axisY) * 1000)
+                            }
+                            let opening = LayoutOpening(id: column.id, kind: .other, contour: contour)
+                            var probe = surface
+                            probe.openings = [opening]
+                            if let remaining = try? probe.netMeasuredArea(),
+                               abs(LayoutGeometry.area(surface.contour)) - remaining > 0.01 {
+                                surface.openings.append(opening)
+                            }
+                        }
+                    }
                     results.append(.init(source: source(slope.id, .ceiling, boundaryIndex), roomID: checkpoint.roomID, roomName: roomName,
                         name: name, surface: surface, triangles: ceilingTriangles(surface), sourceDocument: checkpoint.document))
                 }

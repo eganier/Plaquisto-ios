@@ -1693,6 +1693,14 @@ final class ProjectStore: ObservableObject {
                 var result = component
                 var surface = selected.surface
                 surface.id = component.surface?.id ?? surface.id
+                // A column update must not erase a manually added ceiling hatch.
+                // Source openings are regenerated; independent layout openings stay
+                // in their existing frame when that frame has not changed.
+                if source.kind == .ceiling, let existing = component.surface,
+                   let previous, existing.localFrame == surface.localFrame {
+                    let generated = Set(previous.surface.openings.map(\.id) + surface.openings.map(\.id))
+                    surface.openings += existing.openings.filter { !generated.contains($0.id) }
+                }
                 if let existing = component.surface, existing.contour.count == surface.contour.count {
                     surface.edgeIDs = existing.edgeIDs
                     surface.layingOffset = existing.layingOffset

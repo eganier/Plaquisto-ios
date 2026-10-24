@@ -7,6 +7,41 @@ import SwiftUI
 
 final class ManualRoomModelTests: XCTestCase {
     private let rectangle: [LayoutPoint] = [.init(x: 0, y: 0), .init(x: 5000, y: 0), .init(x: 5000, y: 4000), .init(x: 0, y: 4000)]
+    func testColumnCreatesStableRotatedCeilingCutoutAndNetArea() throws {
+        var room = try ManualRoomModel.room(contour: rectangle, commonHeight: 2.5, constraints: [:], name: "Salon")
+        let column = PlaquistoColumn(center: .init(x: 2, y: 0, z: -2), sideA: 0.4, sideB: 0.6, angle: .pi/4, height: 2.5)
+        room.columns = [column]
+        let survey = ProjectSurveyRecord(projectID: UUID(), name: "Poteau", checkpoints: [
+            .init(roomID: room.id, document: .init(room: room), spatialLinkState: .sharedWorldSpace)])
+        let ceilings = SurveyWorkGeometry.surfaces(in: survey).filter { $0.source.kind == .ceiling }
+        let ceiling = try XCTUnwrap(ceilings.first)
+        XCTAssertEqual(ceiling.surface.openings.map(\.id), [column.id])
+        XCTAssertEqual(ceiling.netArea, 20 - 0.24, accuracy: 0.00001)
+        let opening = try XCTUnwrap(ceiling.surface.openings.first)
+        XCTAssertEqual(abs(LayoutGeometry.area(opening.contour)), 240_000, accuracy: 0.01)
+        XCTAssertEqual(ceilings.map(\.surface), SurveyWorkGeometry.surfaces(in: survey).filter { $0.source.kind == .ceiling }.map(\.surface))
+    }
+    func testColumnCutoutUsesSlopedCeilingPlane() throws {
+        var room = try ManualRoomModel.room(contour: rectangle, commonHeight: 2.5,
+            constraints: [0:2.5, 1:2.5, 2:3.5, 3:3.5], name: "Rampant")
+        room.columns = [.init(center: .init(x: 2, y: 0, z: -2), sideA: 0.4, sideB: 0.6, angle: 0, height: 3)]
+        let survey = ProjectSurveyRecord(projectID: UUID(), name: "Rampant", checkpoints: [
+            .init(roomID: room.id, document: .init(room: room), spatialLinkState: .sharedWorldSpace)])
+        let ceiling = try XCTUnwrap(SurveyWorkGeometry.surfaces(in: survey).first { $0.source.kind == .ceiling })
+        XCTAssertEqual(ceiling.netArea, (20 - 0.24) * sqrt(1 + 0.25 * 0.25), accuracy: 0.00001)
+    }
+    func testColumnCutoutsClipAtBoundaryAndDoNotDoubleDeductOverlaps() throws {
+        var room = try ManualRoomModel.room(contour: rectangle, commonHeight: 2.5, constraints: [:], name: "Salon")
+        let edge = PlaquistoColumn(center: .init(x: 0, y: 0, z: -2), sideA: 0.4, sideB: 0.6, angle: 0, height: 2.5)
+        var duplicate = edge; duplicate.id = UUID()
+        var outside = edge; outside.id = UUID(); outside.center.x = 8
+        room.columns = [edge, duplicate, outside]
+        let survey = ProjectSurveyRecord(projectID: UUID(), name: "Bord", checkpoints: [
+            .init(roomID: room.id, document: .init(room: room), spatialLinkState: .sharedWorldSpace)])
+        let ceiling = try XCTUnwrap(SurveyWorkGeometry.surfaces(in: survey).first { $0.source.kind == .ceiling })
+        XCTAssertEqual(ceiling.surface.openings.count, 2)
+        XCTAssertEqual(ceiling.netArea, 20 - 0.12, accuracy: 0.00001)
+    }
     @MainActor func testSelectionIsImmediateAndDoubleTapRestoresOriginalSelection() {
         var events: [String] = []
         let coordinator = SurveySurfaceScene.Coordinator { events.append($0) }

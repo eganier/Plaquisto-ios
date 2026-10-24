@@ -1096,6 +1096,47 @@ final class ProjectStoreTests: XCTestCase {
         XCTAssertEqual(try work.components.reduce(0.0) { $0+(try XCTUnwrap($1.surface).netMeasuredArea()) },configuration.area*1_000_000,accuracy:0.01)
     }
 
+    func testCeilingLayoutTracksColumnAdditionMoveResizeAndRemovalWithoutLosingHatch() throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID()).json")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let store = ProjectStore(fileURL: url)
+        let room = try ManualRoomModel.room(contour: [.init(x:0,y:0), .init(x:5000,y:0),
+            .init(x:5000,y:4000), .init(x:0,y:4000)], commonHeight: 2.5, constraints: [:], name: "Salon")
+        let saved = try store.saveScannedRoom(projectID:nil, newProjectName:"Poteau", surveyID:nil,
+            surveyName:"Relevé", roomID:nil, roomName:"Salon", document:.init(room:room))
+        try validateAllCheckpoints(in: store, surveyID: saved.surveyID)
+        let survey = try XCTUnwrap(store.surveys.first)
+        let checkpoint = try XCTUnwrap(survey.checkpoints.first)
+        let selected = SurveyWorkGeometry.surfaces(in: survey).filter { $0.source.kind == .ceiling }
+        let workID = try store.createSurveyWork(surveyID: survey.id, selections: selected, name:"Plafond",
+            type:.ceilingOnFurring, payload:.ceiling(SurveyWorkGeometry.ceiling(selected)), roomID:nil)
+        let component = try XCTUnwrap(store.project(id:saved.projectID)?.works.first?.components.first)
+        var layout = LayoutDocument.newSupport(try XCTUnwrap(component.surface))
+        let hatch = LayoutOpening(kind:.hatch, contour:[.init(x:500,y:500), .init(x:1000,y:500),
+            .init(x:1000,y:1000), .init(x:500,y:1000)])
+        layout.surface.openings.append(hatch)
+        layout.layers[0].offset = .init(x:127,y:311)
+        try store.saveComponentPlan(projectID:saved.projectID, workID:workID, componentID:component.id, sideRoomID:nil, document:layout)
+        var before = checkpoint.document
+        var column = PlaquistoColumn(center:.init(x:2,y:0,z:-2), sideA:0.4, sideB:0.6, angle:0, height:2.5)
+        for operation in 0..<3 {
+            if operation == 1 { column.center.x += 0.5; column.sideA = 0.8; column.angle = .pi/4 }
+            var after = try SurveyPlanEditing.placingColumn(before, column:column)
+            if operation == 2 { after.room.columns = [] }
+            try store.updateSurveyRoom(surveyID:survey.id, checkpointID:checkpoint.id, expectedDocument:before, document:after)
+            let reloaded = ProjectStore(fileURL:url)
+            let work = try XCTUnwrap(reloaded.project(id:saved.projectID)?.works.first)
+            let updated = try XCTUnwrap(work.components.first)
+            let surface = try XCTUnwrap(updated.surface)
+            XCTAssertTrue(surface.openings.contains { $0.id == hatch.id })
+            XCTAssertEqual(surface.openings.contains { $0.id == column.id }, operation != 2)
+            XCTAssertEqual(updated.plans.first?.layers.first?.offset, layout.layers[0].offset)
+            let occupied = operation == 2 ? 0 : column.sideA * column.sideB
+            XCTAssertEqual(try surface.netMeasuredArea() / 1_000_000, 20 - 0.25 - occupied, accuracy:0.00001)
+            before = after
+        }
+    }
+
     func testBentPartitionSplitInheritsCeilingLayoutInSameWork() throws {
         let url=FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID()).json")
         defer { try? FileManager.default.removeItem(at:url) }
