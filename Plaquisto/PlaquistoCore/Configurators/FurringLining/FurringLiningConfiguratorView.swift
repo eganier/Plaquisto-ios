@@ -1,6 +1,7 @@
 import SwiftUI
 
 struct FurringLiningConfiguratorView: View {
+    @State private var chosenFurringSpacing: Double?
     @Environment(\.usesAtlantiqueDesign) private var atlantique
     @Environment(\.layoutCoveringAreaRatio) private var coveringAreaRatio
     private enum GeometryMode: String, CaseIterable, Identifiable {
@@ -73,6 +74,7 @@ struct FurringLiningConfiguratorView: View {
     @State private var configurationExpanded = false
 
     init(initialConfiguration: FurringLiningConfiguration? = nil, startsAtResult: Bool = false, initialStep: Int? = nil, onSave: ((FurringLiningConfiguration) -> Void)? = nil, onClose: (() -> Void)? = nil, showsCloseButton: Bool = true) {
+        _chosenFurringSpacing = State(initialValue: initialConfiguration?.furringSpacing)
         let configuration = initialConfiguration ?? FurringLiningConfiguration()
         self.onSave = onSave; self.onClose = onClose; self.showsCloseButton = showsCloseButton; self.isEditing = initialConfiguration != nil
         self.measuredWallRuns = configuration.measuredWallRuns
@@ -130,7 +132,13 @@ struct FurringLiningConfiguratorView: View {
         }
     }
 
-    private var standardFurringSpacing: Double { containsBA18Width900 ? catalogue.ba18Width900FurringSpacing : catalogue.normalFurringSpacing }
+    private var standardFurringSpacing: Double {
+        if containsBA18Width900 { return catalogue.ba18Width900FurringSpacing }
+        if atlantique, let chosenFurringSpacing, chosenFurringSpacing.isFinite, chosenFurringSpacing > 0 {
+            return chosenFurringSpacing
+        }
+        return catalogue.normalFurringSpacing
+    }
     private var tiledAreaRequires40CM: Bool {
         guard tiledArea, effectiveTiledArea > 0, skinCount == .single else { return false }
         return firstSkin.contains { selection in
@@ -236,7 +244,7 @@ struct FurringLiningConfiguratorView: View {
     var body: some View {
         Group {
             if catalogue.isLoading {
-                ProgressView("Chargement depuis Plaquisto Admin…")
+                AtlantiqueLoadingView("Chargement depuis Plaquisto Admin…")
             } else if let error = catalogue.error {
                 ContentUnavailableView("Données indisponibles", systemImage: "exclamationmark.icloud", description: Text(error))
             } else {
@@ -260,8 +268,8 @@ struct FurringLiningConfiguratorView: View {
         .toolbar {
             if (isEditing || atlantique), let onSave {
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Enregistrer") { onSave(configurationSnapshot()) }.atlantiqueToolbarAction().disabled(!allStepsAreValid)
-                }
+                    Button("Enregistrer") { onSave(configurationSnapshot()) }.atlantiqueToolbarAction(primary: true).disabled(!allStepsAreValid)
+                }.atlantiqueToolbarBackground(atlantique)
             }
         }
         .alert("Hauteur de plaque insuffisante", isPresented: $showPlateHeightWarning) {
@@ -301,7 +309,11 @@ struct FurringLiningConfiguratorView: View {
         .background(atlantique ? Atlantique.Palette.blue : Color(.systemGroupedBackground))
     }
 
-    private var header: some View {
+    @ViewBuilder private var header: some View {
+        if atlantique {
+            if showsCloseButton { Button("Fermer") { onClose?() }.atlantiqueActionStyle(.secondary).padding(.horizontal, 20) }
+            AtlantiqueWizardHeader(title: "Doublage sur lisses et fourrures", step: step, total: 6)
+        } else {
         VStack(alignment: .leading, spacing: 10) {
             if showsCloseButton { Button("Fermer") { onClose?() }.atlantiqueActionStyle(.secondary) }
             Text(atlantique ? "" : "OUVRAGE").font(.caption.bold()).foregroundStyle(atlantique ? Color.white.opacity(0.85) : .secondary)
@@ -311,13 +323,14 @@ struct FurringLiningConfiguratorView: View {
             ProgressView(value: Double(step), total: 6)
             Text("Étape \(step) sur 6 · \(stepNames[step - 1])").font(.caption).foregroundStyle(atlantique ? Color.white.opacity(0.85) : .secondary)
         }
-        .padding(.horizontal, 20).padding(.top, 12).padding(.bottom, 14).background(.background)
+        .padding(.horizontal, 20).padding(.top, 12).padding(.bottom, 14).background(atlantique ? Atlantique.Palette.blue : Color(.systemBackground))
     }
 
+        }
     private var footer: some View {
         HStack {
             if step > 1 {
-                Button("Retour") { step -= 1 }.atlantiqueActionStyle(.secondary)
+                Button("Retour") { step -= 1 }.atlantiqueActionStyle(.secondary).frame(maxWidth: atlantique ? 112 : nil)
                     .formStepMenu(titles: stepNames, selection: $step, firstStep: 1, canShowResult: allStepsAreValid) {
                         if step == 1 { initializeLayerSurfaces() }
                     }
@@ -326,12 +339,12 @@ struct FurringLiningConfiguratorView: View {
             if step < 6 {
                 Button("Continuer") { advance() }.atlantiqueActionStyle().disabled(!canContinue)
             } else if let onSave {
-                Button("Enregistrer") { onSave(configurationSnapshot()) }.atlantiqueToolbarAction().disabled(!allStepsAreValid).atlantiqueActionStyle()
+                Button("Enregistrer") { onSave(configurationSnapshot()) }.atlantiqueToolbarAction(primary: true).disabled(!allStepsAreValid).atlantiqueActionStyle()
             } else {
                 Button("Recommencer") { reset() }.atlantiqueActionStyle()
             }
         }
-        .padding(.horizontal, 20).padding(.vertical, 12).background(.background)
+        .padding(.horizontal, 20).padding(.vertical, 12).background(atlantique ? Atlantique.Palette.blue : Color(.systemBackground))
     }
 
     private var dimensionsStep: some View {
@@ -374,6 +387,7 @@ struct FurringLiningConfiguratorView: View {
 
     private var facingsStep: some View {
         VStack(alignment: .leading, spacing: 14) {
+            if !atlantique || Atlantique.Book.showsAdvancedFormControls || skinCount == .triple || tiledArea {
             sectionTitle("Nombre de peaux")
             card {
                 Picker("Nombre de peaux", selection: $skinCount) {
@@ -386,6 +400,7 @@ struct FurringLiningConfiguratorView: View {
                     FurringDecimalRow("Surface carrelée", value: $tiledAreaSurface, unit: "m²")
                 }
             }
+            }
             if tiledArea {
                 infoCard("Avec un parement simple BA13 ou BA15, la surface carrelée sera réalisée avec des fourrures espacées de 40 cm au lieu de 60 cm. Le reste de l’ouvrage conserve son entraxe normal.", icon: "square.grid.3x3.fill", color: .orange)
             }
@@ -395,7 +410,22 @@ struct FurringLiningConfiguratorView: View {
             skinSection(title: "Première peau", selections: $firstSkin, layer: 1)
             if skinCount.rawValue >= 2 { skinSection(title: "Deuxième peau", selections: $secondSkin, layer: 2) }
             if skinCount == .triple { skinSection(title: "Troisième peau", selections: $thirdSkin, layer: 3) }
-            if skinCount != .single {
+            if atlantique && !Atlantique.Book.showsAdvancedFormControls && skinCount != .triple {
+                if skinCount == .single {
+                    card {
+                        Button { skinCount = .double } label: {
+                            HStack {
+                                VStack(alignment: .leading, spacing: 5) {
+                                    Text("Parement 2").font(Atlantique.Typography.button)
+                                    Text("Ajouter une deuxième peau").font(Atlantique.Typography.caption)
+                                }.foregroundStyle(Atlantique.Palette.ink)
+                                Spacer(); Image(systemName: "plus").foregroundStyle(Atlantique.Palette.actionInk)
+                            }.frame(minHeight: 48)
+                        }.buttonStyle(.plain)
+                    }
+                } else { Button("Retirer le deuxième parement", role: .destructive) { skinCount = .single } }
+            }
+            if skinCount != .single && (!atlantique || Atlantique.Book.showsAdvancedFormControls) {
                 Text("L’ordre des parements n’a aucune incidence.").font(.footnote).foregroundStyle(.secondary).padding(.horizontal, 12)
             }
             if selectedRule == nil && allLayerSurfacesAreComplete {
@@ -406,17 +436,34 @@ struct FurringLiningConfiguratorView: View {
 
     @ViewBuilder
     private func skinSection(title: String, selections: Binding<[FurringFacingSelection]>, layer: Int) -> some View {
-        sectionTitle(title)
+        if !atlantique { sectionTitle(title) }
         ForEach(selections.wrappedValue.indices, id: \.self) { index in
             facingCard(selection: selections[index], layer: layer, canDelete: selections.wrappedValue.count > 1)
         }
-        Button("Ajouter un autre type de parement") { addFacing(to: selections, layer: layer) }
-            .buttonStyle(.borderless).padding(.horizontal, 12)
-        allocationStatus(selections.wrappedValue)
+        if !atlantique || Atlantique.Book.showsAdvancedFormControls || selections.wrappedValue.count > 1 {
+            Button("Ajouter un autre type de parement") { addFacing(to: selections, layer: layer) }
+                .buttonStyle(.borderless).padding(.horizontal, 12)
+            allocationStatus(selections.wrappedValue)
+        }
     }
 
     private func facingCard(selection: Binding<FurringFacingSelection>, layer: Int, canDelete: Bool) -> some View {
         card {
+            if atlantique {
+                Text("Parement \(layer)").font(Atlantique.Typography.heading)
+                Divider()
+                AtlantiquePicker("Type de plaque", selection: familyBinding(selection)) {
+                    ForEach(availableFamilies(layer: layer), id: \.self) { Text($0).tag($0) }
+                }
+                Divider()
+                AtlantiquePicker("Fonction", selection: facingBinding(selection)) {
+                    ForEach(availableFunctions(for: selection.wrappedValue, layer: layer)) { Text($0.functionTitle).tag($0.id) }
+                }
+                Divider()
+                AtlantiquePicker("Dimension", selection: selection.formatID) {
+                    ForEach(availableFormats(for: selection.wrappedValue)) { Text($0.title).tag($0.id) }
+                }
+            } else {
             LabeledContent("Type de plaque") {
                 Picker("Type de plaque", selection: familyBinding(selection)) {
                     ForEach(availableFamilies(layer: layer), id: \.self) { Text($0).tag($0) }
@@ -434,8 +481,11 @@ struct FurringLiningConfiguratorView: View {
                     ForEach(availableFormats(for: selection.wrappedValue)) { Text($0.title).tag($0.id) }
                 }.labelsHidden().fixedSize(horizontal: true, vertical: false)
             }.frame(height: 28)
-            Divider()
-            FurringDecimalRow("Surface attribuée", value: selection.surface, unit: "m²")
+            }
+            if !atlantique || Atlantique.Book.showsAdvancedFormControls || canDelete || !Atlantique.Book.canUseSimpleFacingFields(areas: [selection.wrappedValue.surface], total: actualArea) {
+                Divider()
+                FurringDecimalRow("Surface attribuée", value: selection.surface, unit: "m²")
+            }
             if height > 0, let formatChoice = selectedFormat(selection.wrappedValue), Double(formatChoice.lengthMM) / 1000 < height {
                 Label("Cette hauteur est inférieure à la hauteur sous plafond de \(format(height, "m")).", systemImage: "exclamationmark.triangle.fill")
                     .font(.footnote).foregroundStyle(.orange)
@@ -450,6 +500,9 @@ struct FurringLiningConfiguratorView: View {
 
     private var framingStep: some View {
         VStack(alignment: .leading, spacing: 14) {
+            if atlantique && !Atlantique.Book.showsAdvancedFormControls {
+                bookFramingStep
+            } else {
             sectionTitle("Lisses et fourrures")
             card {
                 LabeledContent("Technique", value: "Lisses et fourrures")
@@ -499,7 +552,39 @@ struct FurringLiningConfiguratorView: View {
             if let selectedRule, height > selectedRule.maximumHeight {
                 warningCard("La hauteur sous plafond de \(format(height, "m")) dépasse la hauteur maximale autorisée de \(format(selectedRule.maximumHeight, "m")) pour ce montage.")
             }
+            }
         }
+    }
+
+    @ViewBuilder private var bookFramingStep: some View {
+        sectionTitle("Entraxe des fourrures")
+        if containsBA18Width900 {
+            card { LabeledContent("Entraxe adapté au BA18 de 900 mm", value: "\(Int(standardFurringSpacing * 100)) cm") }
+        } else {
+            let choices = Array(Set([0.4, 0.6, standardFurringSpacing])).sorted()
+            AtlantiqueChoice(title: "Entraxe des fourrures", options: choices.map { ($0, "\(Int($0 * 100)) cm") }, selection: Binding(
+                get: { standardFurringSpacing }, set: { chosenFurringSpacing = $0 }))
+        }
+        card {
+            Toggle("Fixation directe dans la maçonnerie", isOn: Binding(
+                get: { !includesHorizontalSupportFurring }, set: { includesHorizontalSupportFurring = !$0 }))
+        }
+        card {
+            Text("Appuis intermédiaires").font(Atlantique.Typography.heading)
+            Divider()
+            if let model = selectedSupportModel { LabeledContent("Modèle", value: model.title) }
+            LabeledContent("Nombre recommandé", value: "\(recommendedSupportLines) ligne(s)")
+            Divider()
+            Stepper(value: Binding(get: { selectedSupportLines }, set: { selectedSupportLines = $0; supportLinesWereEdited = true }), in: 0...12) {
+                LabeledContent("Nombre choisi", value: "\(selectedSupportLines)")
+            }
+        }
+        // Safety notices stay visible even when supplementary explanations are hidden.
+        if selectedSupportLines < recommendedSupportLines { warningCard(supportWarningText) }
+        if let selectedRule, height > selectedRule.maximumHeight {
+            warningCard("La hauteur sous plafond dépasse la hauteur maximale de \(format(selectedRule.maximumHeight, "m")) pour ce montage.")
+        }
+        if tiledAreaRequires40CM { infoCard("Zone carrelée : entraxe de 40 cm.", icon: "ruler", color: .orange) }
     }
 
     private var insulationStep: some View {
@@ -542,6 +627,23 @@ struct FurringLiningConfiguratorView: View {
 
     private func insulationCard(selection: Binding<FurringInsulationSelection>) -> some View {
         card {
+            if atlantique {
+                AtlantiquePicker("Type d’isolant", selection: insulationFamilyBinding(selection)) {
+                    ForEach(insulationFamilies) { Text($0.title).tag($0.id) }
+                }
+                Divider()
+                AtlantiquePicker("Épaisseur", selection: selection.thicknessMM) {
+                    ForEach(insulationThicknesses(selection.wrappedValue), id: \.self) { thickness in
+                        Text("\(thickness) mm").tag(thickness)
+                    }
+                }
+                Divider()
+                AtlantiquePicker("Conductivité thermique", selection: insulationLambdaBinding(selection)) {
+                    ForEach(insulationLambdas(selection.wrappedValue)) { option in
+                        Text("λ \(option.value.formatted(.number.precision(.fractionLength(3)))) W/(m·K)").tag(option.value)
+                    }
+                }
+            } else {
             LabeledContent("Type d’isolant") {
                 Picker("Type d’isolant", selection: insulationFamilyBinding(selection)) {
                     ForEach(insulationFamilies) { Text($0.title).tag($0.id) }
@@ -562,6 +664,7 @@ struct FurringLiningConfiguratorView: View {
                         Text("\(thickness) mm — R = \(thermalResistance(thicknessMM: thickness, lambda: selection.wrappedValue.lambda).formatted(.number.precision(.fractionLength(2))))").tag(thickness)
                     }
                 }.labelsHidden().fixedSize(horizontal: true, vertical: false)
+            }
             }
         }
     }
@@ -589,6 +692,9 @@ struct FurringLiningConfiguratorView: View {
                     LabeledContent(SupplyListingConsolidator.canonicalName(row.0), value: row.1)
                 }
             }
+            if atlantique && !Atlantique.Book.showsAdvancedFormControls {
+                AtlantiqueConfigurationEstimate(type: .peripheralLiningFurrings, configuration: .furringLining(configurationSnapshot()))
+            } else {
             DisclosureGroup(isExpanded: $configurationExpanded) {
                 card {
                     editableConfigurationRow("Dimensions", value: "\(format(actualLength, "m")) × \(format(height, "m"))", targetStep: 1)
@@ -603,6 +709,7 @@ struct FurringLiningConfiguratorView: View {
                     Divider(); editableConfigurationRow("Pare-vapeur", value: vaporBarrier ? vaporBarrierInstallation.rawValue : "Non", targetStep: 4)
                 }.padding(.top, 8)
             } label: { sectionTitle("Configuration retenue") }
+            }
             if skinCount == .triple {
                 infoCard("La quantité de vis de troisième peau est estimée avec le ratio d’une peau supplémentaire. La longueur exacte de la vis devra être définie dans Plaquisto Admin.", icon: "info.circle", color: .orange)
             }
@@ -973,6 +1080,7 @@ struct FurringLiningConfiguratorView: View {
     }
 
     private func reset() {
+        chosenFurringSpacing = nil
         step = 1; geometryMode = .length; height = 0; enteredLength = 0; enteredSurface = 0; specifiesWallCount = true; wallCount = max(1, catalogue.defaultWallCount)
         finishedDepthMM = 0
         skinCount = .single; firstSkin = [.init()]; secondSkin = [.init()]; thirdSkin = [.init()]
@@ -983,13 +1091,13 @@ struct FurringLiningConfiguratorView: View {
     }
 
     private func sectionTitle(_ title: String) -> some View {
-        Text(title).font(.title3.bold()).foregroundStyle(.secondary).padding(.horizontal, 12)
+        Text(title).font(atlantique ? Atlantique.Typography.heading : .title3.bold()).foregroundStyle(atlantique ? Color.white : .secondary).padding(.horizontal, 12)
     }
 
     private func card<Content: View>(@ViewBuilder content: () -> Content) -> some View {
         VStack(alignment: .leading, spacing: 14, content: content)
             .padding(16).frame(maxWidth: .infinity, alignment: .leading)
-            .background(.background, in: RoundedRectangle(cornerRadius: 22))
+            .background(.background, in: RoundedRectangle(cornerRadius: atlantique ? Atlantique.Metrics.cardRadius : 22))
     }
 
     private func warningCard(_ text: String) -> some View {
@@ -999,7 +1107,7 @@ struct FurringLiningConfiguratorView: View {
     private func infoCard(_ text: String, icon: String, color: Color) -> some View {
         HStack(alignment: .top, spacing: 10) { Image(systemName: icon).foregroundStyle(color); Text(text) }
             .font(.footnote).padding(14).frame(maxWidth: .infinity, alignment: .leading)
-            .background(color.opacity(0.10), in: RoundedRectangle(cornerRadius: 18))
+            .background(atlantique ? Color.white : color.opacity(0.10), in: RoundedRectangle(cornerRadius: 18))
     }
 
     private func format(_ value: Double, _ unit: String, rounded: Bool = false) -> String {

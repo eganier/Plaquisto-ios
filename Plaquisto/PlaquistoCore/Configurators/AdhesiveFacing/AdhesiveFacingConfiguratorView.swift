@@ -108,7 +108,7 @@ struct AdhesiveFacingConfiguratorView: View {
     var body: some View {
         Group {
             if references.isLoading {
-                ProgressView("Synchronisation avec Plaquisto Admin…")
+                AtlantiqueLoadingView("Synchronisation avec Plaquisto Admin…")
             } else if let error = references.error {
                 ContentUnavailableView {
                     Label("Données indisponibles", systemImage: "wifi.exclamationmark")
@@ -173,7 +173,11 @@ struct AdhesiveFacingConfiguratorView: View {
         .background(atlantique ? Atlantique.Palette.blue : Color(.systemGroupedBackground))
     }
 
-    private var header: some View {
+    @ViewBuilder private var header: some View {
+        if atlantique {
+            if showsCloseButton { Button("Fermer", action: onClose).atlantiqueActionStyle(.secondary).padding(.horizontal, 20) }
+            AtlantiqueWizardHeader(title: "Doublage en parement collé", step: step, total: 5)
+        } else {
         VStack(alignment: .leading, spacing: 10) {
             if showsCloseButton { Button("Fermer", action: onClose).atlantiqueActionStyle(.secondary) }
             Text(atlantique ? "" : "OUVRAGE").font(.caption.bold()).foregroundStyle(atlantique ? Color.white.opacity(0.85) : .secondary)
@@ -185,14 +189,16 @@ struct AdhesiveFacingConfiguratorView: View {
         }
         .padding(.horizontal, 20).padding(.top, 18).padding(.bottom, 14)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.background)
+        .background(atlantique ? Atlantique.Palette.blue : Color(.systemBackground))
     }
 
+        }
     private var footer: some View {
         HStack {
             if step > 1 {
                 Button("Retour") { step -= 1 }
-                    .atlantiqueActionStyle().tint(green.opacity(0.18)).foregroundStyle(green)
+                    .atlantiqueActionStyle(.secondary)
+                    .frame(maxWidth: atlantique ? 112 : nil)
                     .formStepMenu(titles: stepNames, selection: $step, firstStep: 1, canShowResult: allStepsAreValid)
             }
             Spacer()
@@ -206,7 +212,7 @@ struct AdhesiveFacingConfiguratorView: View {
                 }.atlantiqueActionStyle().disabled(configuration == nil || !allStepsAreValid)
             }
         }
-        .padding(20).background(.background)
+        .padding(20).background(atlantique ? Atlantique.Palette.blue : Color(.systemBackground))
     }
 
     private var dimensionsStep: some View {
@@ -293,6 +299,9 @@ struct AdhesiveFacingConfiguratorView: View {
                     if index < quantityRows.count - 1 { Divider() }
                 }
             }
+            if atlantique && !Atlantique.Book.showsAdvancedFormControls, let configuration {
+                AtlantiqueConfigurationEstimate(type: .peripheralLiningAdhesiveFacing, configuration: .adhesiveFacing(configuration))
+            } else {
             DisclosureGroup(isExpanded: $configurationExpanded) {
                 card {
                     editableConfigurationRow("Dimensions", value: "\(format(actualLength, "m")) × \(format(height, "m"))", targetStep: 1)
@@ -301,6 +310,7 @@ struct AdhesiveFacingConfiguratorView: View {
                     Divider(); editableConfigurationRow("Format", value: selectedFormat?.title ?? "À sélectionner", targetStep: 3)
                 }.padding(.top, 8)
             } label: { sectionTitle("Configuration retenue") }
+            }
         }
     }
 
@@ -378,13 +388,13 @@ struct AdhesiveFacingConfiguratorView: View {
     }
 
     private func sectionTitle(_ title: String) -> some View {
-        Text(title).font(.title3.bold()).foregroundStyle(.secondary).padding(.horizontal, 12)
+        Text(title).font(atlantique ? Atlantique.Typography.heading : .title3.bold()).foregroundStyle(atlantique ? Color.white : .secondary).padding(.horizontal, 12)
     }
 
     private func card<Content: View>(@ViewBuilder content: () -> Content) -> some View {
         VStack(alignment: .leading, spacing: 14, content: content)
             .padding(16).frame(maxWidth: .infinity, alignment: .leading)
-            .background(.background, in: RoundedRectangle(cornerRadius: 22))
+            .background(.background, in: RoundedRectangle(cornerRadius: atlantique ? Atlantique.Metrics.cardRadius : 22))
     }
 
     private func warning(_ text: String) -> some View {
@@ -393,7 +403,7 @@ struct AdhesiveFacingConfiguratorView: View {
             Text(text)
         }
         .font(.footnote).padding(14).frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 18))
+        .background(atlantique ? Color.white : Color.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 18))
     }
 
     private func format(_ value: Double, _ unit: String) -> String {

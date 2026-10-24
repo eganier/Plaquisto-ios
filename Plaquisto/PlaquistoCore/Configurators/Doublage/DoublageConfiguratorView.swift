@@ -145,7 +145,7 @@ struct DoublageConfiguratorView: View {
 
     var body: some View {
         Group {
-            if references.isLoading { ProgressView("Chargement depuis Plaquisto Admin…") }
+            if references.isLoading { AtlantiqueLoadingView("Chargement depuis Plaquisto Admin…") }
             else if let error = references.error { ContentUnavailableView("Données indisponibles", systemImage: "exclamationmark.icloud", description: Text(error)) }
             else { wizard }
         }
@@ -160,8 +160,8 @@ struct DoublageConfiguratorView: View {
         .toolbar {
             if (isEditing || atlantique), let onSave {
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Enregistrer") { onSave(configurationSnapshot()) }.atlantiqueToolbarAction().disabled(!allStepsAreValid)
-                }
+                    Button("Enregistrer") { onSave(configurationSnapshot()) }.atlantiqueToolbarAction(primary: true).disabled(!allStepsAreValid)
+                }.atlantiqueToolbarBackground(atlantique)
             }
         }
         .alert("Hauteur de plaque insuffisante", isPresented: $showPlateHeightWarning) {
@@ -195,7 +195,14 @@ struct DoublageConfiguratorView: View {
         .background(atlantique ? Atlantique.Palette.blue : Color(.systemGroupedBackground))
     }
 
-    private var header: some View {
+    @ViewBuilder private var header: some View {
+        if atlantique {
+            if showsCloseButton { Button("Fermer") { if let onClose { onClose() } else { reset() } }.atlantiqueActionStyle(.secondary).padding(.horizontal, 20) }
+            AtlantiqueWizardHeader(title: "Doublage sur rails et montants", step: step, total: 6)
+            if references.isUsingOfflineData {
+                Label("Données enregistrées hors connexion", systemImage: "icloud.slash").font(.caption).foregroundStyle(.white).padding(.horizontal, 20)
+            }
+        } else {
         VStack(alignment: .leading, spacing: 10) {
             if showsCloseButton {
                 Button("Fermer") {
@@ -211,24 +218,25 @@ struct DoublageConfiguratorView: View {
             Text("Étape \(step) sur 6 · \(stepNames[step - 1])").font(.caption).foregroundStyle(atlantique ? Color.white.opacity(0.85) : .secondary)
         }
         .padding(.horizontal, 20).padding(.top, 12).padding(.bottom, 14)
-        .background(.background)
+        .background(atlantique ? Atlantique.Palette.blue : Color(.systemBackground))
     }
 
+        }
     private var footer: some View {
         HStack {
             if step > 1 {
-                Button("Retour") { step -= 1 }.atlantiqueActionStyle(.secondary).tint(.green)
+                Button("Retour") { step -= 1 }.atlantiqueActionStyle(.secondary).frame(maxWidth: atlantique ? 112 : nil).tint(.green)
                     .formStepMenu(titles: stepNames, selection: $step, firstStep: 1, canShowResult: allStepsAreValid)
             }
             Spacer()
             if step < 6 { Button("Continuer") { advance() }.atlantiqueActionStyle().tint(.green).disabled(!canContinue) }
             else if let onSave {
-                Button("Enregistrer") { onSave(configurationSnapshot()) }.atlantiqueToolbarAction().disabled(!allStepsAreValid).atlantiqueActionStyle().tint(.green)
+                Button("Enregistrer") { onSave(configurationSnapshot()) }.atlantiqueToolbarAction(primary: true).disabled(!allStepsAreValid).atlantiqueActionStyle().tint(.green)
             } else {
                 Button("Recommencer") { reset() }.atlantiqueActionStyle().tint(.green)
             }
         }
-        .padding(.horizontal, 20).padding(.vertical, 12).background(.background)
+        .padding(.horizontal, 20).padding(.vertical, 12).background(atlantique ? Atlantique.Palette.blue : Color(.systemBackground))
     }
 
     private var dimensionsStep: some View {
@@ -268,6 +276,7 @@ struct DoublageConfiguratorView: View {
 
     private var facingsStep: some View {
         VStack(alignment: .leading, spacing: 14) {
+            if !atlantique || Atlantique.Book.showsAdvancedFormControls || tiledArea {
             sectionTitle("Nombre de peaux")
             card {
                 Picker("Nombre de parements", selection: $skinCount) { ForEach(SkinCount.allCases) { Text($0.rawValue).tag($0) } }.pickerStyle(.segmented)
@@ -278,36 +287,69 @@ struct DoublageConfiguratorView: View {
                     DecimalRow("Surface carrelée", value: $tiledAreaSurface, unit: "m²")
                 }
             }
+            }
             if tiledArea {
                 info("Avec un parement simple BA13 ou BA15, la surface carrelée sera réalisée avec des montants espacés de 40 cm au lieu de 60 cm. Le reste de l’ouvrage conserve son entraxe normal.", icon: "square.grid.3x3.fill", color: .orange)
             }
             if tiledArea && !tiledAreaSurfaceIsValid {
                 Text("La surface carrelée doit être supérieure à 0 m² et ne peut pas dépasser la surface de l’ouvrage.").font(.footnote).foregroundStyle(.red).padding(.horizontal, 12)
             }
-            sectionTitle("Première peau")
+            if !atlantique { sectionTitle("Première peau") }
             ForEach(firstSkin.indices, id: \.self) { index in
                 allocationCard(allocation: $firstSkin[index], secondLayer: false, canDelete: firstSkin.count > 1)
             }
+            if !atlantique || Atlantique.Book.showsAdvancedFormControls || firstSkin.count > 1 {
             Button("Ajouter un autre type de parement") { addAllocation(secondLayer: false) }
                 .buttonStyle(.borderless).tint(.green).padding(.horizontal, 12)
                 .disabled(availableChoices(for: nil, secondLayer: false).isEmpty)
             allocationStatus(firstSkin)
+            }
             if skinCount == .double {
-                sectionTitle("Deuxième peau")
+                if !atlantique { sectionTitle("Deuxième peau") }
                 ForEach(secondSkin.indices, id: \.self) { index in
                     allocationCard(allocation: $secondSkin[index], secondLayer: true, canDelete: secondSkin.count > 1)
                 }
+                if !atlantique || Atlantique.Book.showsAdvancedFormControls || secondSkin.count > 1 {
                 Button("Ajouter un autre type de parement") { addAllocation(secondLayer: true) }
                     .buttonStyle(.borderless).tint(.green).padding(.horizontal, 12)
                     .disabled(availableChoices(for: nil, secondLayer: true).isEmpty)
                 allocationStatus(secondSkin)
                 Text("L’ordre des deux parements n’a aucune incidence.").font(.footnote).foregroundStyle(.secondary).padding(.horizontal, 12)
+                }
+                if atlantique { Button("Retirer le deuxième parement", role: .destructive) { skinCount = .single } }
+            } else if atlantique {
+                card {
+                    Button { skinCount = .double } label: {
+                        HStack {
+                            VStack(alignment: .leading, spacing: 5) {
+                                Text("Parement 2").font(Atlantique.Typography.button)
+                                Text("Ajouter une deuxième peau").font(Atlantique.Typography.caption)
+                            }.foregroundStyle(Atlantique.Palette.ink)
+                            Spacer(); Image(systemName: "plus").foregroundStyle(Atlantique.Palette.actionInk)
+                        }.frame(minHeight: 48)
+                    }.buttonStyle(.plain)
+                }
             }
         }
     }
 
     private func allocationCard(allocation: Binding<FacingAllocation>, secondLayer: Bool, canDelete: Bool) -> some View {
         card {
+            if atlantique {
+                Text(secondLayer ? "Parement 2" : "Parement 1").font(Atlantique.Typography.heading)
+                Divider()
+                AtlantiquePicker("Type de plaque", selection: familyBinding(allocation, secondLayer: secondLayer)) {
+                    ForEach(availableFamilies(for: allocation.wrappedValue.id, secondLayer: secondLayer), id: \.self) { Text($0).tag($0) }
+                }
+                Divider()
+                AtlantiquePicker("Fonction", selection: facingBinding(allocation, secondLayer: secondLayer)) {
+                    ForEach(availableFunctions(for: allocation.wrappedValue, secondLayer: secondLayer)) { Text($0.functionTitle).tag($0.id) }
+                }
+                Divider()
+                AtlantiquePicker("Dimension", selection: allocation.formatID) {
+                    ForEach(availableFormats(for: allocation.wrappedValue, secondLayer: secondLayer)) { Text($0.title).tag($0.id) }
+                }
+            } else {
             LabeledContent("Type de plaque") {
                 Picker("Type de plaque", selection: familyBinding(allocation, secondLayer: secondLayer)) {
                     ForEach(availableFamilies(for: allocation.wrappedValue.id, secondLayer: secondLayer), id: \.self) { Text($0).tag($0) }
@@ -331,8 +373,11 @@ struct DoublageConfiguratorView: View {
                 .labelsHidden().fixedSize(horizontal: true, vertical: false)
             }
             .frame(height: 28)
-            Divider()
-            DecimalRow("Surface attribuée", value: allocation.surface, unit: "m²")
+            }
+            if !atlantique || Atlantique.Book.showsAdvancedFormControls || canDelete || !Atlantique.Book.canUseSimpleFacingFields(areas: [allocation.wrappedValue.surface], total: actualArea) {
+                Divider()
+                DecimalRow("Surface attribuée", value: allocation.surface, unit: "m²")
+            }
             if height > 0, let plateFormat = selectedFormat(allocation.wrappedValue), Double(plateFormat.lengthMM) / 1000 < height {
                 Label("Cette hauteur est inférieure à la hauteur sous plafond de \(format(height, "m")).", systemImage: "exclamationmark.triangle.fill")
                     .font(.footnote).foregroundStyle(.orange)
@@ -342,7 +387,7 @@ struct DoublageConfiguratorView: View {
                 Button("Supprimer ce type", role: .destructive) { removeAllocation(allocation.wrappedValue.id, secondLayer: secondLayer) }
                     .buttonStyle(.borderless)
             }
-        }.tint(Color(red: 0.12, green: 0.38, blue: 0.29))
+        }.tint(atlantique ? Atlantique.Palette.actionInk : Color(red: 0.12, green: 0.38, blue: 0.29))
     }
 
     private func allocationStatus(_ allocations: [FacingAllocation]) -> some View {
@@ -362,11 +407,11 @@ struct DoublageConfiguratorView: View {
         VStack(alignment: .leading, spacing: 14) {
             sectionTitle("Technique et ossature")
             card {
-                Picker("Technique utilisée", selection: $technique) { Text("Rails et montants").tag("Rails et montants") }
-                Divider()
-                Picker("Type de montage", selection: $mounting) { ForEach(StudMounting.allCases) { Text($0.rawValue).tag($0) } }
-                Divider()
-                Picker("Rails et montants", selection: $frame) {
+                if !atlantique || Atlantique.Book.showsAdvancedFormControls {
+                    Picker("Technique utilisée", selection: $technique) { Text("Rails et montants").tag("Rails et montants") }
+                    Divider()
+                }
+                AtlantiquePicker("Rails et montants", selection: $frame) {
                     ForEach(frames, id: \.self) { candidate in
                         HStack {
                             Text(frameDisplayName(candidate))
@@ -375,7 +420,9 @@ struct DoublageConfiguratorView: View {
                     }
                 }
                 Divider()
-                Picker("Entraxe des montants", selection: $spacing) { ForEach(spacings, id: \.self) { Text("\(Int($0 * 100)) cm").tag($0) } }
+                AtlantiqueSegmentedChoice(title: "Montants", options: StudMounting.allCases.map { ($0, $0.rawValue) }, selection: $mounting)
+                Divider()
+                AtlantiqueSegmentedChoice(title: "Entraxe des montants", options: spacings.map { ($0, "\(Int($0 * 100)) cm") }, selection: $spacing)
                 Divider()
                 Toggle("Ajouter des appuis intermédiaires pour montant sur mur support", isOn: $intermediateSupports)
             }
@@ -388,7 +435,7 @@ struct DoublageConfiguratorView: View {
                 info("La hauteur maximale de ce montage est de \(format(maxHeight, "m")). Prévoyez une ligne d’appuis intermédiaires tous les \(format(maxHeight, "m")) de hauteur.", icon: "info.circle", color: .green)
             } else if isExceeded {
                 warning("La configuration sélectionnée n’est pas compatible avec la hauteur sous plafond renseignée de \(format(height, "m")). Sa hauteur maximale est de \(format(maxHeight, "m")). Choisissez une ossature plus résistante, passez en montants doubles ou ajoutez des appuis intermédiaires.")
-            } else {
+            } else if !atlantique || Atlantique.Book.showsAdvancedFormControls {
                 info("Configuration compatible : hauteur maximale \(format(maxHeight, "m")) pour une hauteur sous plafond de \(format(height, "m")).", icon: "checkmark.circle", color: .green)
             }
         }
@@ -426,6 +473,23 @@ struct DoublageConfiguratorView: View {
 
     private func insulationCard(selection: Binding<InsulationSelection>) -> some View {
         card {
+            if atlantique {
+                AtlantiquePicker("Type d’isolant", selection: insulationFamilyBinding(selection)) {
+                    ForEach(insulationFamilies) { Text($0.title).tag($0.id) }
+                }
+                Divider()
+                AtlantiquePicker("Épaisseur", selection: selection.thicknessMM) {
+                    ForEach(insulationThicknesses(for: selection.wrappedValue), id: \.self) { thickness in
+                        Text("\(thickness) mm").tag(thickness)
+                    }
+                }
+                Divider()
+                AtlantiquePicker("Conductivité thermique", selection: insulationLambdaBinding(selection)) {
+                    ForEach(insulationLambdas(for: selection.wrappedValue)) { option in
+                        Text("λ \(option.value.formatted(.number.precision(.fractionLength(3)))) W/(m·K)").tag(option.value)
+                    }
+                }
+            } else {
             LabeledContent("Type d’isolant") {
                 Picker("Type d’isolant", selection: insulationFamilyBinding(selection)) {
                     ForEach(insulationFamilies) { Text($0.title).tag($0.id) }
@@ -446,6 +510,7 @@ struct DoublageConfiguratorView: View {
                         Text("\(thickness) mm — R = \(thermalResistance(thicknessMM: thickness, lambda: selection.wrappedValue.lambda).formatted(.number.precision(.fractionLength(2))))").tag(thickness)
                     }
                 }.labelsHidden().fixedSize(horizontal: true, vertical: false)
+            }
             }
         }.tint(Color(red: 0.12, green: 0.38, blue: 0.29))
     }
@@ -470,6 +535,9 @@ struct DoublageConfiguratorView: View {
                     LabeledContent(row.0, value: row.1)
                 }
             }
+            if atlantique && !Atlantique.Book.showsAdvancedFormControls {
+                AtlantiqueConfigurationEstimate(type: .peripheralLiningStuds, configuration: .peripheralLining(configurationSnapshot()))
+            } else {
             DisclosureGroup(isExpanded: $configurationExpanded) {
                 card {
                     editableConfigurationRow("Technique", value: technique, targetStep: 3)
@@ -483,6 +551,7 @@ struct DoublageConfiguratorView: View {
                     Divider(); editableConfigurationRow("Pare-vapeur", value: vaporBarrier ? "Oui" : "Non", targetStep: 4)
                 }.padding(.top, 8)
             } label: { sectionTitle("Configuration retenue") }
+            }
             if spacing != 0.4 && spacing != 0.6 { info("La visserie pour les entraxes de 45 et 90 cm reste à compléter dans Plaquisto Admin. Elle n’est pas estimée ici.", icon: "info.circle", color: .secondary) }
         }
     }
@@ -957,10 +1026,10 @@ struct DoublageConfiguratorView: View {
         return number.formatted(.number.precision(.fractionLength(rounded ? 0 : 2))) + " " + unit
     }
 
-    private func sectionTitle(_ text: String) -> some View { Text(text).font(.headline).foregroundStyle(.secondary).padding(.horizontal, 12) }
-    private func card<Content: View>(@ViewBuilder content: () -> Content) -> some View { VStack(alignment: .leading, spacing: 14, content: content).padding(16).frame(maxWidth: .infinity, alignment: .leading).background(.background, in: RoundedRectangle(cornerRadius: 22)) }
+    private func sectionTitle(_ text: String) -> some View { Text(text).font(atlantique ? Atlantique.Typography.button : .headline).foregroundStyle(atlantique ? Color.white : .secondary).padding(.horizontal, 12) }
+    private func card<Content: View>(@ViewBuilder content: () -> Content) -> some View { VStack(alignment: .leading, spacing: 14, content: content).padding(16).frame(maxWidth: .infinity, alignment: .leading).background(.background, in: RoundedRectangle(cornerRadius: atlantique ? Atlantique.Metrics.cardRadius : 22)) }
     private func warning(_ text: String) -> some View { info(text, icon: "exclamationmark.triangle.fill", color: .orange) }
-    private func info(_ text: String, icon: String, color: Color) -> some View { HStack(alignment: .top, spacing: 14) { Image(systemName: icon).foregroundStyle(color); Text(text).fixedSize(horizontal: false, vertical: true) }.padding(16).frame(maxWidth: .infinity, alignment: .leading).background(.background, in: RoundedRectangle(cornerRadius: 22)) }
+    private func info(_ text: String, icon: String, color: Color) -> some View { HStack(alignment: .top, spacing: 14) { Image(systemName: icon).foregroundStyle(color); Text(text).fixedSize(horizontal: false, vertical: true) }.padding(16).frame(maxWidth: .infinity, alignment: .leading).background(.background, in: RoundedRectangle(cornerRadius: atlantique ? Atlantique.Metrics.cardRadius : 22)) }
 }
 
 private struct DecimalRow: View {

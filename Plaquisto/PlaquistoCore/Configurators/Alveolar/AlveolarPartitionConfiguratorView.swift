@@ -96,7 +96,7 @@ struct AlveolarPartitionConfiguratorView: View {
     var body: some View {
         Group {
             if references.isLoading {
-                ProgressView("Chargement depuis Plaquisto Admin…")
+                AtlantiqueLoadingView("Chargement depuis Plaquisto Admin…")
             } else if let error = references.error {
                 VStack(spacing: 18) {
                     ContentUnavailableView(
@@ -119,8 +119,8 @@ struct AlveolarPartitionConfiguratorView: View {
         .toolbar {
             if (isEditing || atlantique), let onSave {
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Enregistrer") { onSave(configurationSnapshot()) }.atlantiqueToolbarAction().disabled(!allStepsAreValid)
-                }
+                    Button("Enregistrer") { onSave(configurationSnapshot()) }.atlantiqueToolbarAction(primary: true).disabled(!allStepsAreValid)
+                }.atlantiqueToolbarBackground(atlantique)
             }
         }
     }
@@ -145,7 +145,11 @@ struct AlveolarPartitionConfiguratorView: View {
         .background(atlantique ? Atlantique.Palette.blue : Color(.systemGroupedBackground))
     }
 
-    private var header: some View {
+    @ViewBuilder private var header: some View {
+        if atlantique {
+            if showsCloseButton { Button("Fermer") { if let onClose { onClose() } else { reset() } }.atlantiqueActionStyle(.secondary).padding(.horizontal, 20) }
+            AtlantiqueWizardHeader(title: "Cloison alvéolaire", step: step, total: 4)
+        } else {
         VStack(alignment: .leading, spacing: 10) {
             if showsCloseButton {
                 Button("Fermer") {
@@ -169,14 +173,15 @@ struct AlveolarPartitionConfiguratorView: View {
         .padding(.horizontal, 20)
         .padding(.top, 12)
         .padding(.bottom, 14)
-        .background(.background)
+        .background(atlantique ? Atlantique.Palette.blue : Color(.systemBackground))
     }
 
+        }
     private var footer: some View {
         HStack {
             if step > 1 {
                 Button("Retour") { step -= 1 }
-                    .atlantiqueActionStyle()
+                    .atlantiqueActionStyle(.secondary).frame(maxWidth: atlantique ? 112 : nil)
                     .tint(green.opacity(0.18))
                     .foregroundStyle(green)
                     .formStepMenu(titles: stepNames, selection: $step, firstStep: 1, canShowResult: allStepsAreValid)
@@ -187,7 +192,7 @@ struct AlveolarPartitionConfiguratorView: View {
                     .atlantiqueActionStyle()
                     .disabled(!canContinue)
             } else if let onSave {
-                Button("Enregistrer") { onSave(configurationSnapshot()) }.atlantiqueToolbarAction().disabled(!allStepsAreValid)
+                Button("Enregistrer") { onSave(configurationSnapshot()) }.atlantiqueToolbarAction(primary: true).disabled(!allStepsAreValid)
                     .atlantiqueActionStyle()
             } else {
                 Button("Recommencer") { reset() }
@@ -195,7 +200,7 @@ struct AlveolarPartitionConfiguratorView: View {
             }
         }
         .padding(20)
-        .background(.background)
+        .background(atlantique ? Atlantique.Palette.blue : Color(.systemBackground))
     }
 
     private var dimensionsStep: some View {
@@ -283,6 +288,9 @@ struct AlveolarPartitionConfiguratorView: View {
                     summaryRow(row.0, row.1)
                 }
             }
+            if atlantique && !Atlantique.Book.showsAdvancedFormControls {
+                AtlantiqueConfigurationEstimate(type: .alveolarPartition, configuration: .alveolarPartition(configurationSnapshot()))
+            } else {
             DisclosureGroup(isExpanded: $configurationExpanded) {
                 formCard {
                     editableConfigurationRow("Hauteur", value: format(height, "m"), targetStep: 1); Divider()
@@ -291,6 +299,7 @@ struct AlveolarPartitionConfiguratorView: View {
                     editableConfigurationRow("Traitement des joints", value: jointTreatment ? compound.rawValue : "Non prévu", targetStep: 3)
                 }.padding(.top, 8)
             } label: { sectionTitle("Configuration retenue") }
+            }
         }
     }
 
@@ -523,15 +532,15 @@ struct AlveolarPartitionConfiguratorView: View {
 
     private func sectionTitle(_ title: String) -> some View {
         Text(title)
-            .font(.title3.bold())
-            .foregroundStyle(.secondary)
+            .font(atlantique ? Atlantique.Typography.heading : .title3.bold())
+            .foregroundStyle(atlantique ? Color.white : .secondary)
     }
 
     private func formCard<Content: View>(@ViewBuilder content: () -> Content) -> some View {
         VStack(alignment: .leading, spacing: 14, content: content)
             .padding(16)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(.background, in: RoundedRectangle(cornerRadius: 22))
+            .background(.background, in: RoundedRectangle(cornerRadius: atlantique ? Atlantique.Metrics.cardRadius : 22))
     }
 
     private func numericRow(_ title: String, value: Binding<Double>, unit: String) -> some View {

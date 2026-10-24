@@ -313,7 +313,7 @@ struct ModularCeilingConfiguratorView: View {
         .toolbar {
             if isEditing || atlantique {
                 ToolbarItem(placement: .confirmationAction) {
-                Button("Enregistrer", action: attemptSave).atlantiqueToolbarAction()
+                Button("Enregistrer", action: attemptSave).atlantiqueToolbarAction(primary: true)
                     .disabled(!canSave)
                 }
             }

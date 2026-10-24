@@ -31,7 +31,7 @@ struct ToolsHomeView: View {
                     ToolbarItem(placement: .topBarTrailing) {
                         Button(action: onOpenAccount) { if atlantique { AtlantiqueToolbarGlyph(symbol: "gearshape") } else { Image(systemName: "person.crop.circle") } }
                             .accessibilityLabel("Réglages")
-                    }
+                    }.atlantiqueToolbarBackground(atlantique)
                 }
             }
         }
@@ -60,6 +60,19 @@ private struct ToolCard: View {
     let tool: ToolDefinition
     let isAvailable: Bool
 
+    private var displayTitle: String {
+        atlantique && tool.destination == .furringSpacing ? "Entraxe des fourrures" : tool.title
+    }
+    private var displayDescription: String {
+        guard atlantique else { return tool.shortDescription }
+        switch tool.destination {
+        case .furringSpacing: return "Selon la masse surfacique de l’isolant."
+        case .partitionHeight: return "Rechercher une configuration compatible."
+        case .ceilingSpan: return "Trouver les montages compatibles."
+        default: return tool.shortDescription
+        }
+    }
+
     var body: some View {
         HStack(spacing: 14) {
             Group {
@@ -78,12 +91,12 @@ private struct ToolCard: View {
                 .background(Color.accentColor.opacity(isAvailable ? 0.12 : 0.05), in: RoundedRectangle(cornerRadius: 12))
             VStack(alignment: .leading, spacing: 4) {
                 HStack {
-                    Text(tool.title).font(.headline)
+                    Text(displayTitle).font(atlantique ? Atlantique.Typography.button : .headline)
                 }
-                Text(tool.shortDescription).font(.subheadline).foregroundStyle(.secondary)
+                Text(displayDescription).font(atlantique ? Atlantique.Typography.caption : .subheadline).foregroundStyle(.secondary)
             }
             Spacer()
-            if isAvailable { Image(systemName: "chevron.right").font(.caption.bold()).foregroundStyle(.tertiary) }
+            if isAvailable { Image(systemName: "chevron.right").font(.caption.bold()).foregroundStyle(atlantique ? Atlantique.Palette.actionInk : .secondary) }
         }
         .padding(14)
         .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: atlantique ? 17 : 18))
@@ -112,28 +125,43 @@ private struct ToolDestinationView: View {
 }
 
 struct ToolNumberField: View {
+    @Environment(\.usesAtlantiqueDesign) private var atlantique
     let title: String
     let unit: String
     @Binding var value: Double
     @State private var text = ""
 
     var body: some View {
-        HStack {
+        Group {
+            if atlantique {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(title).font(Atlantique.Typography.caption).foregroundStyle(Atlantique.Palette.muted)
+                    HStack {
+                        numericInput.font(Atlantique.Typography.heading)
+                            .accessibilityLabel(title)
+                        Text(unit).font(Atlantique.Typography.caption).foregroundStyle(Atlantique.Palette.muted)
+                    }.frame(minHeight: 36)
+                }
+            } else { HStack {
             Text(title)
             Spacer()
-            PlaquistoNumericField(text: $text)
+            numericInput
                 .multilineTextAlignment(.trailing)
                 .frame(maxWidth: 110)
-                .onChange(of: text) { _, newValue in
-                    let normalized = newValue.replacingOccurrences(of: ",", with: ".")
-                    value = Double(normalized) ?? 0
-                }
             Text(unit).foregroundStyle(.secondary)
+            } }
         }
         .onAppear { text = value == 0 ? "" : value.formatted(.number.locale(Locale(identifier: "fr_FR")).grouping(.never).precision(.fractionLength(0...3))) }
         .onChange(of: value) { _, newValue in
             if newValue == 0 { if !text.isEmpty { text = "" } }
         }
+    }
+    private var numericInput: some View {
+        PlaquistoNumericField(text: $text)
+            .onChange(of: text) { _, newValue in
+                let normalized = newValue.replacingOccurrences(of: ",", with: ".")
+                value = Double(normalized) ?? 0
+            }
     }
 }
 

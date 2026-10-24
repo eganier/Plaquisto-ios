@@ -3,6 +3,18 @@ import UIKit
 
 /// Approved Atlantique × Orange books. Presentation only: no catalogue, pricing or storage.
 enum Atlantique {
+    /// Presentation switches only. Existing configurations and calculation rules are
+    /// deliberately untouched; the historical controls can be restored for QA.
+    enum Book {
+        static var showsAdvancedFormControls: Bool {
+            ProcessInfo.processInfo.arguments.contains("-atlantique-advanced-form-controls")
+        }
+        static func canUseSimpleFacingFields(areas: [Double], total: Double) -> Bool {
+            total.isFinite && total >= 0 && !areas.isEmpty && areas.allSatisfy {
+                $0.isFinite && abs($0 - total) < 0.01
+            }
+        }
+    }
     enum Palette {
         static let blue = color(0x285982)
         static let orange = color(0xFF8A1F)
@@ -65,7 +77,7 @@ extension EnvironmentValues {
 }
 
 extension View {
-    func atlantiqueToolbarAction() -> some View { modifier(AtlantiqueToolbarActionModifier()) }
+    func atlantiqueToolbarAction(primary: Bool = false) -> some View { modifier(AtlantiqueToolbarActionModifier(primary: primary)) }
     func atlantiqueActionStyle(_ kind: AtlantiqueButtonKind = .primary) -> some View { modifier(AtlantiqueActionModifier(kind: kind)) }
     func atlantiqueFormSurface() -> some View { modifier(AtlantiqueFormSurfaceModifier()) }
     /// Keep the caller's cancellation/save actions; only theme its navigation chrome.
@@ -84,19 +96,21 @@ extension View {
 }
 
 private struct AtlantiqueToolbarActionModifier: ViewModifier {
+    let primary: Bool
     @Environment(\.usesAtlantiqueDesign) private var enabled
     func body(content: Content) -> some View {
-        if enabled { content.buttonStyle(AtlantiqueToolbarTextStyle()) } else { content }
+        if enabled { content.buttonStyle(AtlantiqueToolbarTextStyle(primary: primary)) } else { content }
     }
 }
 private struct AtlantiqueToolbarTextStyle: ButtonStyle {
+    let primary: Bool
     @Environment(\.isEnabled) private var enabled
     func makeBody(configuration: Configuration) -> some View {
         configuration.label.font(Atlantique.Typography.font(15, weight: .demi))
             .lineLimit(1).fixedSize(horizontal: true, vertical: false)
-            .foregroundStyle(enabled ? Atlantique.Palette.actionInk : Atlantique.Palette.muted)
+            .foregroundStyle(enabled ? (primary ? Atlantique.Palette.ink : Atlantique.Palette.actionInk) : Atlantique.Palette.muted)
             .padding(.horizontal, 12).frame(minHeight: 44)
-            .background(enabled ? Atlantique.Palette.surface : Atlantique.Palette.disabled, in: RoundedRectangle(cornerRadius: 12))
+            .background(enabled ? (primary ? Atlantique.Palette.orange : Atlantique.Palette.surface) : Atlantique.Palette.disabled, in: RoundedRectangle(cornerRadius: 12))
             .opacity(configuration.isPressed ? 0.8 : 1)
             .fixedSize(horizontal: true, vertical: false)
     }
@@ -114,8 +128,108 @@ private struct AtlantiqueActionModifier: ViewModifier {
 
 struct AtlantiqueForm<Content: View>: View {
     private let content: Content
-    init(@ViewBuilder content: () -> Content) { self.content = content() }
-    var body: some View { Form { content }.atlantiqueFormSurface() }
+    private let bookLayout: Bool
+    @Environment(\.usesAtlantiqueDesign) private var enabled
+    init(bookLayout: Bool = false, @ViewBuilder content: () -> Content) {
+        self.bookLayout = bookLayout
+        self.content = content()
+    }
+    var body: some View {
+        if enabled, bookLayout, #available(iOS 18.0, *) {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 20) {
+                    ForEach(sections: content) { section in
+                        VStack(alignment: .leading, spacing: 10) {
+                            if !section.header.isEmpty {
+                                section.header
+                                    .font(Atlantique.Typography.button)
+                                    .foregroundStyle(.white)
+                            }
+                            AtlantiqueCard {
+                                VStack(alignment: .leading, spacing: 14) {
+                                    ForEach(subviews: section.content) { row in
+                                        row.frame(maxWidth: .infinity, alignment: .leading)
+                                    }
+                                }
+                            }
+                            if !section.footer.isEmpty {
+                                section.footer.font(Atlantique.Typography.caption)
+                                    .foregroundStyle(.white)
+                            }
+                        }
+                    }
+                }.padding(20)
+            }
+            .scrollDismissesKeyboard(.interactively)
+            .background(Atlantique.Palette.blue)
+            .tint(Atlantique.Palette.orange)
+        } else {
+            Form { content }.atlantiqueFormSurface()
+        }
+    }
+}
+
+/// Book field hierarchy: caption above the selected value, not two competing
+/// columns. The native picker retains selection semantics and accessibility.
+struct AtlantiquePicker<Value: Hashable, Options: View>: View {
+    let title: String
+    @Binding var selection: Value
+    private let options: Options
+    @Environment(\.usesAtlantiqueDesign) private var enabled
+    init(_ title: String, selection: Binding<Value>, @ViewBuilder content: () -> Options) {
+        self.title = title
+        self._selection = selection
+        self.options = content()
+    }
+    var body: some View {
+        if enabled {
+            VStack(alignment: .leading, spacing: 5) {
+                Text(title).font(Atlantique.Typography.caption).foregroundStyle(Atlantique.Palette.muted)
+                Picker(title, selection: $selection) { options }
+                    .pickerStyle(.menu).labelsHidden()
+                    .font(Atlantique.Typography.button)
+                    .tint(Atlantique.Palette.ink)
+                    .frame(maxWidth: .infinity, minHeight: 32, alignment: .leading)
+                    .accessibilityLabel(title)
+            }
+        } else {
+            Picker(title, selection: $selection) { options }
+        }
+    }
+}
+
+struct AtlantiqueWizardHeader: View {
+    let title: String
+    let step: Int
+    let total: Int
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("\(title) · étape \(step)")
+                .font(Atlantique.Typography.caption).foregroundStyle(.white)
+                .fixedSize(horizontal: false, vertical: true)
+            ProgressView(value: Double(step), total: Double(total))
+                .tint(Atlantique.Palette.orange)
+                .accessibilityLabel("Progression du formulaire")
+                .accessibilityValue("Étape \(step) sur \(total)")
+        }.padding(.horizontal, 20).padding(.vertical, 12)
+            .background(Atlantique.Palette.blue)
+    }
+}
+
+struct AtlantiqueLoadingView: View {
+    let title: String
+    @Environment(\.usesAtlantiqueDesign) private var enabled
+    init(_ title: String) { self.title = title }
+    var body: some View {
+        if enabled {
+            VStack(spacing: 16) {
+                ProgressView().tint(Atlantique.Palette.orange).controlSize(.large)
+                Text(title).font(Atlantique.Typography.body)
+                    .foregroundStyle(.white).multilineTextAlignment(.center)
+            }.padding(24).frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(Atlantique.Palette.blue.ignoresSafeArea())
+        } else { ProgressView(title) }
+    }
 }
 
 struct AtlantiqueSection<Content: View>: View {
@@ -135,7 +249,7 @@ private struct AtlantiqueFormSurfaceModifier: ViewModifier {
     @Environment(\.usesAtlantiqueDesign) private var enabled
     func body(content: Content) -> some View {
         if enabled {
-            content.scrollContentBackground(.hidden)
+            content.listStyle(.insetGrouped).scrollContentBackground(.hidden)
                 .background(Atlantique.Palette.blue.ignoresSafeArea())
                 .font(Atlantique.Typography.body).tint(Atlantique.Palette.actionInk)
                 .foregroundStyle(Atlantique.Palette.ink)
@@ -148,7 +262,8 @@ private struct AtlantiqueFormPageModifier: ViewModifier {
     @Environment(\.usesAtlantiqueDesign) private var enabled
     func body(content: Content) -> some View {
         if enabled {
-            content.navigationTitle(title).navigationBarTitleDisplayMode(.inline)
+            content.frame(maxWidth: .infinity, maxHeight: .infinity)
+                .navigationTitle(title).navigationBarTitleDisplayMode(.inline)
                 .toolbarBackground(Atlantique.Palette.blue, for: .navigationBar)
                 .toolbarBackground(.visible, for: .navigationBar)
                 .toolbarColorScheme(.dark, for: .navigationBar)

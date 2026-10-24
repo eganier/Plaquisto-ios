@@ -64,21 +64,21 @@ struct CeilingSpanToolView: View {
             if !atlantique { Section { Picker("Mode", selection: $mode) { ForEach(TechnicalSearchMode.allCases) { Text($0.rawValue).tag($0) } }.pickerStyle(.segmented) } }
             AtlantiqueSection("Portée") { ToolNumberField(title: "Portée à franchir", unit: "m", value: $requestedSpan) }
             AtlantiqueSection("Isolant") {
-                Picker("Type d’isolant", selection: $material) {
+                AtlantiquePicker("Type d’isolant", selection: $material) {
                     ForEach(materials, id: \.self) { Text($0).tag($0) }
                 }
-                Picker("Lambda", selection: $lambda) {
+                AtlantiquePicker("Lambda", selection: $lambda) {
                     ForEach(lambdas, id: \.self) { value in
                         Text("λ \(value.formatted(.number.precision(.fractionLength(3)))) W/(m·K)").tag(value)
                     }
                 }
-                Picker("Épaisseur", selection: $thicknessMM) {
+                AtlantiquePicker("Épaisseur", selection: $thicknessMM) {
                     ForEach(thicknesses, id: \.self) { Text("\($0) mm").tag($0) }
                 }
             }
             if mode == .verify && !atlantique {
                 AtlantiqueSection("Configuration") {
-                    Picker("Système rail / montant", selection: $stud) {
+                    AtlantiquePicker("Système rail / montant", selection: $stud) {
                         ForEach(studs, id: \.self) { value in
                             compatibilityPickerLabel("R\(value) + M\(value)", compatible: ceilingCompatible(stud: value))
                                 .tag(value)
@@ -98,7 +98,7 @@ struct CeilingSpanToolView: View {
                                 .tag(value)
                         }
                     }
-                    Picker("Type de parement", selection: $facing) {
+                    AtlantiquePicker("Type de parement", selection: $facing) {
                         ForEach(availableFacings, id: \.self) { code in
                             compatibilityPickerLabel(ceilingFacingLabel(code, options: options), compatible: ceilingCompatible(facing: code))
                                 .tag(code)
@@ -116,7 +116,7 @@ struct CeilingSpanToolView: View {
             } else {
                 Section {
                     if atlantique {
-                        Picker("Type de parement", selection: $facing) { ForEach(availableFacings, id: \.self) { Text(ceilingFacingLabel($0, options: options)).tag($0) } }
+                        AtlantiquePicker("Type de parement", selection: $facing) { ForEach(availableFacings, id: \.self) { Text(ceilingFacingLabel($0, options: options)).tag($0) } }
                         AtlantiqueSegmentedChoice(title: "Configuration", options: availableLayers.map { ($0, liningLayerTitle($0)) }, selection: $layers)
                     }
                     selectorTitle("Configuration des montants") {
@@ -267,14 +267,14 @@ struct PartitionHeightToolView: View {
         Group {
             AtlantiqueSection("Hauteur") { ToolNumberField(title: "Hauteur sous plafond", unit: "m", value: $height) }
             AtlantiqueSection("Système rail / montant") {
-                Picker("Système", selection: $selectedFrame) { ForEach(frames, id: \.self) { Text($0).tag($0) } }
+                AtlantiquePicker("Système", selection: $selectedFrame) { ForEach(frames, id: \.self) { Text($0).tag($0) } }
             }
             AtlantiqueSection("Montants") {
                 AtlantiqueSegmentedChoice(title: "Configuration des montants", options: [(false, "Simples"), (true, "Doublés")], selection: $doubled)
                 AtlantiqueSegmentedChoice(title: "Entraxe des montants", options: [(0.4, "40 cm"), (0.6, "60 cm")], selection: $spacing)
             }
             AtlantiqueSection("Parement") {
-                Picker("Type de parement", selection: $facing) { ForEach(verifyFacings, id: \.self) { Text($0).tag($0) } }
+                AtlantiquePicker("Type de parement", selection: $facing) { ForEach(verifyFacings, id: \.self) { Text($0).tag($0) } }
                 AtlantiqueSegmentedChoice(title: "Configuration", options: verifyLayers.map { ($0, layerTitle($0)) }, selection: $layers)
             }
             compatibility(maximum: selectedMaximum, requested: height)
@@ -285,7 +285,7 @@ struct PartitionHeightToolView: View {
     private var verifyContent: some View {
         Group {
             AtlantiqueSection("Configuration") {
-                Picker("Système rail / montant", selection: $selectedFrame) {
+                AtlantiquePicker("Système rail / montant", selection: $selectedFrame) {
                     ForEach(frames, id: \.self) { value in
                         compatibilityPickerLabel(value, compatible: partitionCompatible(frame: value))
                             .tag(value)
@@ -315,7 +315,7 @@ struct PartitionHeightToolView: View {
                             .tag(value)
                     }
                 }
-                Picker("Type de parement", selection: $facing) {
+                AtlantiquePicker("Type de parement", selection: $facing) {
                     ForEach(verifyFacings, id: \.self) { value in
                         compatibilityPickerLabel(value, compatible: partitionCompatible(facing: value))
                             .tag(value)
@@ -333,7 +333,7 @@ struct PartitionHeightToolView: View {
                 Picker("Parements", selection: $layers) {
                     ForEach(findLayers, id: \.self) { Text(layerTitle($0)).tag($0) }
                 }
-                Picker("Type de parement", selection: $facing) {
+                AtlantiquePicker("Type de parement", selection: $facing) {
                     ForEach(findFacings, id: \.self) { Text($0).tag($0) }
                 }
             }
@@ -581,7 +581,7 @@ struct LiningHeightToolView: View {
                         .tag(value)
                     }
                 }
-                Picker("Type de parement", selection: $facing) {
+                AtlantiquePicker("Type de parement", selection: $facing) {
                     ForEach(availableFacings, id: \.self) { value in
                         compatibilityPickerLabel(
                             value,
@@ -613,7 +613,7 @@ struct LiningHeightToolView: View {
             AtlantiqueSection("Hauteur") { ToolNumberField(title: "Hauteur de doublage", unit: "m", value: $height) }
             AtlantiqueSection("Système") {
                 AtlantiqueSegmentedChoice(title: "Ossature", options: [(0, "Lisses / fourrures"), (1, "Rails / montants")], selection: $system)
-                if system == 1 { Picker("Système rail / montant", selection: $liningFrame) { ForEach(liningFrames, id: \.self) { Text($0).tag($0) } } }
+                if system == 1 { AtlantiquePicker("Système rail / montant", selection: $liningFrame) { ForEach(liningFrames, id: \.self) { Text($0).tag($0) } } }
             }
             if system == 1 {
                 AtlantiqueSection("Montants") {
@@ -622,7 +622,7 @@ struct LiningHeightToolView: View {
                 }
             }
             AtlantiqueSection("Parement") {
-                Picker("Type de parement", selection: $facing) { ForEach(availableFacings, id: \.self) { Text($0).tag($0) } }
+                AtlantiquePicker("Type de parement", selection: $facing) { ForEach(availableFacings, id: \.self) { Text($0).tag($0) } }
                 AtlantiqueSegmentedChoice(title: "Configuration", options: availableLayers.map { ($0, liningLayerTitle($0)) }, selection: $layers)
             }
             if system == 0 { furringContent }
@@ -674,7 +674,7 @@ struct LiningHeightToolView: View {
     @ViewBuilder private var liningContent: some View {
         if mode == .verify {
             AtlantiqueSection("Configuration de l’ossature") {
-                Picker("Système rail / montant", selection: $liningFrame) {
+                AtlantiquePicker("Système rail / montant", selection: $liningFrame) {
                     ForEach(liningFrames, id: \.self) { value in
                         compatibilityPickerLabel(value, compatible: liningFrameCompatible(value))
                             .tag(value)
@@ -809,15 +809,15 @@ struct FurringSpacingToolView: View {
     var body: some View {
         TechnicalToolForm(title: "Entraxe des fourrures", store: store) {
             AtlantiqueSection("Isolant") {
-                Picker("Type d’isolant", selection: $material) {
+                AtlantiquePicker("Type d’isolant", selection: $material) {
                     ForEach(materials, id: \.self) { Text($0).tag($0) }
                 }
-                Picker("Lambda", selection: $lambda) {
+                AtlantiquePicker("Lambda", selection: $lambda) {
                     ForEach(lambdas, id: \.self) { value in
                         Text("λ \(value.formatted(.number.precision(.fractionLength(3)))) W/(m·K)").tag(value)
                     }
                 }
-                Picker("Épaisseur", selection: $thicknessMM) {
+                AtlantiquePicker("Épaisseur", selection: $thicknessMM) {
                     ForEach(thicknesses, id: \.self) { Text("\($0) mm").tag($0) }
                 }
             }
@@ -910,7 +910,7 @@ private struct TechnicalToolForm<Content: View>: View {
     }
 
     var body: some View {
-        AtlantiqueForm {
+        AtlantiqueForm(bookLayout: true) {
             if store.isLoading { Section { HStack { ProgressView(); Text("Chargement du référentiel…") } } }
             if let error = store.error { Section { Label(error, systemImage: "exclamationmark.triangle.fill").foregroundStyle(.orange) } }
             if store.isOffline { Section { Label("Référentiel local hors connexion", systemImage: "arrow.triangle.2.circlepath").foregroundStyle(.secondary) } }

@@ -165,7 +165,7 @@ struct StockHomeView: View {
                                     .padding(.horizontal, atlantique ? 12 : 0)
                                     .background(atlantique ? Color.white : Color.clear, in: RoundedRectangle(cornerRadius: 12))
                             }
-                            if filteredProducts.isEmpty { Text("Aucune référence pour cette recherche.").foregroundStyle(.secondary) }
+                            if filteredProducts.isEmpty { Text("Aucune référence pour cette recherche.").foregroundStyle(atlantique ? Color.white : .secondary) }
                             LazyVStack(spacing:10) {
                                 ForEach(filteredProducts.prefix(limit)) { product in
                                     VStack(spacing:8) {
@@ -176,7 +176,7 @@ struct StockHomeView: View {
                                         }.padding(.horizontal,14).padding(.bottom,12)
                                     }.background(.background,in:RoundedRectangle(cornerRadius:18))
                                 }
-                                if filteredProducts.count > limit { Button("Afficher la suite") { limit += 30 }.frame(minHeight:48) }
+                                if filteredProducts.count > limit { Button("Afficher la suite") { limit += 30 }.atlantiqueActionStyle(.secondary).frame(minHeight:48) }
                             }
                         }
                     } else {
@@ -221,7 +221,7 @@ struct StockHomeView: View {
                             Button("Actualiser les références et prix",systemImage:"arrow.clockwise") { Task { await references.load(); await prices.load() } }
                             Button("Annuler la dernière opération",systemImage:"arrow.uturn.backward") { do { try stock.undoLast() } catch { self.error = error.localizedDescription } }.disabled(!stock.canUndo)
                         } label: { if atlantique { AtlantiqueToolbarGlyph() } else { Image(systemName:"ellipsis.circle") } }.accessibilityLabel("Options du stock")
-                    }
+                    }.atlantiqueToolbarBackground(atlantique)
                 }
                 .safeAreaInset(edge:.bottom) {
                     movementActions

@@ -215,7 +215,7 @@ struct CloisonDistributionConfiguratorView: View {
     var body: some View {
         Group {
             if references.isLoading {
-                ProgressView("Chargement depuis Plaquisto Admin…")
+                AtlantiqueLoadingView("Chargement depuis Plaquisto Admin…")
             } else if let error = references.error {
                 ContentUnavailableView(
                     "Données indisponibles",
@@ -249,9 +249,9 @@ struct CloisonDistributionConfiguratorView: View {
         .toolbar {
             if (isEditing || atlantique), let onSave {
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Enregistrer") { onSave(configurationSnapshot()) }.atlantiqueToolbarAction().disabled(!allStepsAreValid)
+                    Button("Enregistrer") { onSave(configurationSnapshot()) }.atlantiqueToolbarAction(primary: true).disabled(!allStepsAreValid)
                         .disabled(!allRequiredLayersAreComplete || actualArea<=0)
-                }
+                }.atlantiqueToolbarBackground(atlantique)
             }
         }
         .alert("Hauteur de plaque insuffisante", isPresented: $showPlateHeightWarning) {
@@ -285,7 +285,11 @@ struct CloisonDistributionConfiguratorView: View {
         .background(atlantique ? Atlantique.Palette.blue : Color(.systemGroupedBackground))
     }
 
-    private var header: some View {
+    @ViewBuilder private var header: some View {
+        if atlantique {
+            if showsCloseButton { Button("Fermer") { if let onClose { onClose() } else { reset() } }.atlantiqueActionStyle(.secondary).padding(.horizontal, 20) }
+            AtlantiqueWizardHeader(title: "Cloison de distribution", step: step, total: 7)
+        } else {
         VStack(alignment: .leading, spacing: 10) {
             if showsCloseButton {
                 Button("Fermer") {
@@ -306,14 +310,15 @@ struct CloisonDistributionConfiguratorView: View {
         .padding(.horizontal, 20)
         .padding(.top, 12)
         .padding(.bottom, 14)
-        .background(.background)
+        .background(atlantique ? Atlantique.Palette.blue : Color(.systemBackground))
     }
 
+        }
     private var footer: some View {
         HStack {
             if step > 1 {
                 Button("Retour") { step -= 1 }
-                    .atlantiqueActionStyle(.secondary)
+                    .atlantiqueActionStyle(.secondary).frame(maxWidth: atlantique ? 112 : nil)
                     .formStepMenu(titles: stepNames, selection: $step, firstStep: 1, canShowResult: allStepsAreValid) {
                         if step == 1 { populateSurfacesIfNeeded(); normalizeSystem() }
                     }
@@ -324,7 +329,7 @@ struct CloisonDistributionConfiguratorView: View {
                     .atlantiqueActionStyle()
                     .disabled(!canContinue)
             } else if let onSave {
-                Button("Enregistrer") { onSave(configurationSnapshot()) }.atlantiqueToolbarAction().disabled(!allStepsAreValid)
+                Button("Enregistrer") { onSave(configurationSnapshot()) }.atlantiqueToolbarAction(primary: true).disabled(!allStepsAreValid)
                     .atlantiqueActionStyle()
                     .disabled(!allRequiredLayersAreComplete || actualArea<=0)
             } else {
@@ -334,7 +339,7 @@ struct CloisonDistributionConfiguratorView: View {
         }
         .padding(.horizontal, 20)
         .padding(.vertical, 12)
-        .background(.background)
+        .background(atlantique ? Atlantique.Palette.blue : Color(.systemBackground))
     }
 
     private var dimensionsStep: some View {
@@ -452,16 +457,31 @@ struct CloisonDistributionConfiguratorView: View {
                 allocations.wrappedValue.remove(at: index)
             }
         }
+        if !atlantique || Atlantique.Book.showsAdvancedFormControls || allocations.wrappedValue.count > 1 {
         Button("Ajouter un autre type de parement") {
             addAllocation(to: allocations)
         }
         .buttonStyle(.borderless)
         .padding(.horizontal, 12)
         allocationStatus(allocations.wrappedValue)
+        }
     }
 
     private func allocationCard(allocation: Binding<FacingAllocation>, canDelete: Bool, onDelete: @escaping () -> Void) -> some View {
         card {
+            if atlantique {
+                AtlantiquePicker("Type de plaque", selection: familyBinding(allocation)) {
+                    ForEach(allowedFamilies, id: \.self) { Text($0).tag($0) }
+                }
+                Divider()
+                AtlantiquePicker("Fonction", selection: facingBinding(allocation)) {
+                    ForEach(functionChoices(for: allocation.wrappedValue)) { Text($0.functionTitle).tag($0.id) }
+                }
+                Divider()
+                AtlantiquePicker("Dimension", selection: allocation.formatID) {
+                    ForEach(formatChoices(for: allocation.wrappedValue)) { Text($0.title).tag($0.id) }
+                }
+            } else {
             LabeledContent("Type de plaque") {
                 Picker("Type de plaque", selection: familyBinding(allocation)) {
                     ForEach(allowedFamilies, id: \.self) { Text($0).tag($0) }
@@ -492,8 +512,11 @@ struct CloisonDistributionConfiguratorView: View {
                 .fixedSize(horizontal: true, vertical: false)
             }
             .frame(minHeight: 28)
-            Divider()
-            LabDecimalRow("Surface attribuée", value: allocation.surface, unit: "m²")
+            }
+            if !atlantique || Atlantique.Book.showsAdvancedFormControls || canDelete || !Atlantique.Book.canUseSimpleFacingFields(areas: [allocation.wrappedValue.surface], total: actualArea) {
+                Divider()
+                LabDecimalRow("Surface attribuée", value: allocation.surface, unit: "m²")
+            }
             if let plateFormat = selectedFormat(allocation.wrappedValue), Double(plateFormat.lengthMM) / 1000 < height {
                 Label("Cette plaque est moins haute que la hauteur sous plafond de \(format(height, "m")).", systemImage: "exclamationmark.triangle.fill")
                     .font(.footnote)
@@ -524,6 +547,25 @@ struct CloisonDistributionConfiguratorView: View {
 
     private var framingStep: some View {
         VStack(alignment: .leading, spacing: 14) {
+            if atlantique && !Atlantique.Book.showsAdvancedFormControls {
+                card {
+                    Text("Ossature").font(Atlantique.Typography.button)
+                    Divider()
+                    AtlantiquePicker("Rails et montants", selection: $selectedFrame) {
+                        ForEach(availableFrames, id: \.self) { Text(frameLabel($0)).tag($0) }
+                    }
+                }
+                sectionTitle("Montants")
+                AtlantiqueSegmentedChoice(title: "Montants", options: StudMounting.allCases.map { ($0, $0.rawValue) }, selection: $mounting)
+                sectionTitle("Entraxe des montants")
+                AtlantiqueSegmentedChoice(title: "Entraxe", options: availableSpacings.map { ($0, "\(Int($0 * 100)) cm") }, selection: $spacing)
+                if tiledArea {
+                    card {
+                        Toggle("Une partie de la surface sera carrelée", isOn: $tiledArea)
+                        LabDecimalRow("Surface carrelée", value: $tiledAreaSurface, unit: "m²")
+                    }
+                }
+            } else {
             sectionTitle("Ossature métallique")
             card {
                 Picker("Largeur du montant", selection: $selectedFrame) {
@@ -549,6 +591,7 @@ struct CloisonDistributionConfiguratorView: View {
                 }
             }
 
+            }
             if tiledArea {
                 info("Avec un parement simple BA13 ou BA15, la surface carrelée sera réalisée avec des montants espacés de 40 cm au lieu de 60 cm. Le reste de l’ouvrage conserve son entraxe normal.", icon: "square.grid.3x3.fill", color: .orange)
             }
@@ -582,6 +625,19 @@ struct CloisonDistributionConfiguratorView: View {
             }
             if insulationEnabled {
                 card {
+                    if atlantique {
+                        AtlantiquePicker("Type d’isolant", selection: $insulationID) {
+                            ForEach(references.insulations) { Text($0.title).tag($0.id) }
+                        }
+                        if let selectedInsulation {
+                            Divider()
+                            AtlantiquePicker("Épaisseur", selection: $insulationThicknessMM) {
+                                ForEach(compatibleInsulationThicknesses, id: \.self) { Text("\($0) mm").tag($0) }
+                            }
+                            Divider()
+                            LabeledContent("Conductivité thermique", value: "λ \(selectedInsulation.lambda.formatted(.number.precision(.fractionLength(3)))) W/(m·K)")
+                        }
+                    } else {
                     LabeledContent("Type d’isolant") {
                         Picker("Type d’isolant", selection: $insulationID) {
                             ForEach(references.insulations) { insulation in
@@ -606,6 +662,7 @@ struct CloisonDistributionConfiguratorView: View {
                             .fixedSize(horizontal: true, vertical: false)
                         }
                     }
+                    }
                 }
                 if compatibleInsulationThicknesses.isEmpty {
                     warning("Aucune épaisseur de cet isolant n’est compatible avec l’ossature \(selectedSystem?.frame ?? "sélectionnée"). Choisissez un autre isolant ou une ossature plus large.")
@@ -614,10 +671,10 @@ struct CloisonDistributionConfiguratorView: View {
                         LabeledContent("Résistance thermique", value: "R = \(thermalResistance.formatted(.number.precision(.fractionLength(2)))) m²·K/W")
                     }
                 }
-                Text("L’épaisseur peut dépasser la largeur du rail de 10 mm, sauf pour la laine de bois qui ne doit pas dépasser la largeur du rail.")
+                if !atlantique || Atlantique.Book.showsAdvancedFormControls { Text("L’épaisseur peut dépasser la largeur du rail de 10 mm, sauf pour la laine de bois qui ne doit pas dépasser la largeur du rail.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
-                    .padding(.horizontal, 12)
+                    .padding(.horizontal, 12) }
             }
         }
     }
@@ -646,6 +703,9 @@ struct CloisonDistributionConfiguratorView: View {
                     LabeledContent(row.0, value: row.1)
                 }
             }
+            if atlantique && !Atlantique.Book.showsAdvancedFormControls {
+                AtlantiqueConfigurationEstimate(type: .distributionPartition, configuration: .distributionPartition(configurationSnapshot()))
+            } else {
             DisclosureGroup(isExpanded: $configurationExpanded) {
                 card {
                     editableConfigurationRow("Dimensions", value: "\(format(actualLength, "m")) × \(format(height, "m"))", targetStep: 1)
@@ -659,6 +719,7 @@ struct CloisonDistributionConfiguratorView: View {
                     Divider(); editableConfigurationRow("Isolation", value: insulationEnabled ? insulationSummary : "Non", targetStep: 5)
                 }.padding(.top, 8)
             } label: { sectionTitle("Configuration retenue") }
+            }
         }
     }
 
@@ -1041,14 +1102,14 @@ struct CloisonDistributionConfiguratorView: View {
     }
 
     private func sectionTitle(_ text: String) -> some View {
-        Text(text).font(.headline).foregroundStyle(.secondary).padding(.horizontal, 12)
+        Text(text).font(atlantique ? Atlantique.Typography.button : .headline).foregroundStyle(atlantique ? Color.white : .secondary).padding(.horizontal, 12)
     }
 
     private func card<Content: View>(@ViewBuilder content: () -> Content) -> some View {
         VStack(alignment: .leading, spacing: 14, content: content)
             .padding(16)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(.background, in: RoundedRectangle(cornerRadius: 22))
+            .background(.background, in: RoundedRectangle(cornerRadius: atlantique ? Atlantique.Metrics.cardRadius : 22))
     }
 
     private func warning(_ text: String) -> some View {
@@ -1062,7 +1123,7 @@ struct CloisonDistributionConfiguratorView: View {
         }
         .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.background, in: RoundedRectangle(cornerRadius: 22))
+        .background(.background, in: RoundedRectangle(cornerRadius: atlantique ? Atlantique.Metrics.cardRadius : 22))
     }
 }
 

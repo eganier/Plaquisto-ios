@@ -3,6 +3,16 @@ import SwiftUI
 @testable import Plaquisto
 
 final class ToolCalculatorTests: XCTestCase {
+    func testBookFacingPresentationPreservesExceptionalAllocations() {
+        XCTAssertTrue(Atlantique.Book.canUseSimpleFacingFields(areas: [20], total: 20))
+        XCTAssertTrue(Atlantique.Book.canUseSimpleFacingFields(areas: [20, 20], total: 20))
+        XCTAssertFalse(Atlantique.Book.canUseSimpleFacingFields(areas: [12, 20], total: 20))
+        XCTAssertFalse(Atlantique.Book.canUseSimpleFacingFields(areas: [], total: 20))
+        XCTAssertFalse(Atlantique.Book.canUseSimpleFacingFields(areas: [.nan], total: 20))
+        XCTAssertFalse(Atlantique.Book.canUseSimpleFacingFields(areas: [20], total: .infinity))
+        XCTAssertFalse(Atlantique.Book.canUseSimpleFacingFields(areas: [-1], total: -1))
+    }
+
     @MainActor func testToolbarTextDoesNotCompressToIconWidth() throws {
         for title in ["Fermer", "Annuler", "Utiliser", "Enregistrer"] {
             let renderer = ImageRenderer(content: Button(title) {}.atlantiqueToolbarAction().atlantiqueDesign())
@@ -10,6 +20,31 @@ final class ToolCalculatorTests: XCTestCase {
             let image = try XCTUnwrap(renderer.uiImage)
             XCTAssertGreaterThan(image.size.width, 60, title)
             XCTAssertGreaterThanOrEqual(image.size.height, 44, title)
+        }
+    }
+
+    @MainActor func testBookSaveActionKeepsReadableSizeInBothStates() throws {
+        for enabled in [true, false] {
+            let renderer = ImageRenderer(content: Button("Enregistrer") {}
+                .atlantiqueToolbarAction(primary: true).disabled(!enabled).atlantiqueDesign())
+            renderer.proposedSize = ProposedViewSize(width: 44, height: 44)
+            let image = try XCTUnwrap(renderer.uiImage)
+            XCTAssertGreaterThan(image.size.width, 90)
+            XCTAssertGreaterThanOrEqual(image.size.height, 44)
+        }
+    }
+
+    @MainActor func testBookPickerRendersLongReferenceWithoutChangingSelection() throws {
+        for width: CGFloat in [280, 350] {
+            var selected = "biosource"
+            let field = AtlantiquePicker("Type d’isolant", selection: Binding(get: { selected }, set: { selected = $0 })) {
+                Text("Biosourcé · chanvre, lin, coton").tag("biosource")
+                Text("Laine de verre").tag("verre")
+            }.frame(width: width).atlantiqueDesign()
+            let image = try XCTUnwrap(ImageRenderer(content: field).uiImage)
+            XCTAssertEqual(image.size.width, width)
+            XCTAssertGreaterThan(image.size.height, 44)
+            XCTAssertEqual(selected, "biosource")
         }
     }
 

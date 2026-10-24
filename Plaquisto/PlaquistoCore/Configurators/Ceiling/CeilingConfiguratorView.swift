@@ -402,7 +402,7 @@ struct CeilingConfiguratorView: View {
     var body: some View {
         Group {
             if store.isLoading {
-                ProgressView("Synchronisation avec Plaquisto Admin…")
+                AtlantiqueLoadingView("Synchronisation avec Plaquisto Admin…")
             } else if let error = store.error {
                 ContentUnavailableView("Référentiel indisponible", systemImage: "wifi.exclamationmark", description: Text(error))
                     .overlay(alignment: .bottom) {
@@ -424,6 +424,7 @@ struct CeilingConfiguratorView: View {
             plenum = max(plenum, minimumPlenum)
             trackedMinimumPlenum = minimumPlenum
             normalizeFacingAllocations()
+            if step == 5 { ensureFacingAllocations() }
         }
         .task { if atlantique { await prices.load() } }
         .onChange(of: minimumPlenum) { _, newValue in
@@ -440,14 +441,17 @@ struct CeilingConfiguratorView: View {
         .onChange(of: vaporBarrier) { _, _ in
             fixingSystemID = CeilingFixingDefaults.preferred(in: compatibleSystems, vaporBarrier: vaporBarrier)?.id ?? ""
         }
+        .onChange(of: step) { _, newStep in
+            if newStep == 5, store.catalogue != nil { ensureFacingAllocations() }
+        }
         .configurationEntry(in:0...6) { step = $0; showingSavedResult = false }
         .atlantiqueFormPage(stepNames[step])
         .tint(atlantique ? Atlantique.Palette.actionInk : Color(red: 0.12, green: 0.38, blue: 0.29))
         .toolbar {
             if isEditing || atlantique {
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Enregistrer") { onSave(configuration) }.atlantiqueToolbarAction().disabled(!allStepsAreValid)
-                }
+                    Button("Enregistrer") { onSave(configuration) }.atlantiqueToolbarAction(primary: true).disabled(!allStepsAreValid)
+                }.atlantiqueToolbarBackground(atlantique)
             }
         }
     }
@@ -456,7 +460,7 @@ struct CeilingConfiguratorView: View {
         VStack(spacing: 0) {
             VStack(alignment: .leading, spacing: 10) {
                 if !atlantique { Text("OUVRAGE").font(.caption2.weight(.bold)).foregroundStyle(.secondary) }
-                Text(workTitle).font(atlantique ? Atlantique.Typography.caption : .title2.bold()).foregroundStyle(atlantique ? Color.white : .primary)
+                Text(atlantique ? "\(workTitle) · étape \(step + 1)" : workTitle).font(atlantique ? Atlantique.Typography.caption : .title2.bold()).foregroundStyle(atlantique ? Color.white : .primary)
                 if store.isUsingOfflineData {
                     Label("Mode hors connexion · dernières données synchronisées", systemImage: "icloud.slash")
                         .font(.caption).foregroundStyle(.orange)
@@ -465,17 +469,21 @@ struct CeilingConfiguratorView: View {
                         .font(.caption).foregroundStyle(.green)
                 }
                 ProgressView(value: Double(step + 1), total: Double(stepNames.count))
-                Text("Étape \(step + 1) sur \(stepNames.count) · \(stepNames[step])")
-                    .font(.caption).foregroundStyle(atlantique ? Color.white : .secondary)
+                    .tint(atlantique ? Atlantique.Palette.orange : .accentColor)
+                if !atlantique {
+                    Text("Étape \(step + 1) sur \(stepNames.count) · \(stepNames[step])")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
             }
             .padding()
 
-            Divider()
-            AtlantiqueForm { stepContent }
+            if !atlantique { Divider() }
+            AtlantiqueForm(bookLayout: true) { stepContent }
 
             HStack {
                 if step > 0 {
                     Button("Retour") { withAnimation { step -= 1 } }.atlantiqueActionStyle(.secondary)
+                        .frame(maxWidth: atlantique ? 112 : nil)
                         .formStepMenu(titles: stepNames, selection: $step, canShowResult: allStepsAreValid) {
                             prepareDefaults()
                             showingSavedResult = false
@@ -504,7 +512,7 @@ struct CeilingConfiguratorView: View {
                 }
             }
             .padding()
-            .background(.bar)
+            .background(atlantique ? Atlantique.Palette.blue : Color(.systemBackground))
         }
         .navigationBarTitleDisplayMode(.inline)
         .alert("Entraxe supérieur à la valeur recommandée", isPresented: $showSpacingWarning) {
@@ -623,12 +631,12 @@ struct CeilingConfiguratorView: View {
                         .font(.headline)
                     Divider().padding(.bottom, 8)
                     if isWoodSupport {
-                        Picker("Emplacement", selection: $firstInsulationLocation) {
+                    AtlantiquePicker("Emplacement", selection: $firstInsulationLocation) {
                             Text(betweenStructureTitle).tag("between")
                             Text(belowStructureTitle).tag("below")
                         }
                     }
-                    Picker("Type d’isolant", selection: insulationTypeBinding) {
+                    AtlantiquePicker("Type d’isolant", selection: insulationTypeBinding) {
                         ForEach(insulationTypes, id: \.self) { Text($0).tag($0) }
                     }
                     .onChange(of: insulationID) { _, _ in
@@ -636,12 +644,12 @@ struct CeilingConfiguratorView: View {
                         selectedSpacing = recommendedSelectableSpacing
                         fixingSystemID = ""
                     }
-                    Picker("Lambda", selection: $insulationID) {
+                    AtlantiquePicker("Conductivité thermique", selection: $insulationID) {
                         ForEach(insulationOptions(for: selectedInsulationType)) { option in
                             Text(insulationLambdaTitle(option)).tag(option.id)
                         }
                     }
-                    Picker("Épaisseur", selection: $insulationThickness) {
+                    AtlantiquePicker("Épaisseur", selection: $insulationThickness) {
                         ForEach(insulationPoints) { point in
                             if let lambda = insulationLambda, lambda > 0 {
                                 Text("\(Int(point.thickness)) mm — R = \(((point.thickness / 1000) / lambda).formatted(.number.precision(.fractionLength(2))))").tag(point.thickness)
@@ -662,12 +670,12 @@ struct CeilingConfiguratorView: View {
                         Text(atlantique ? "Couche 2" : "Deuxième couche")
                             .font(.headline)
                         if isWoodSupport {
-                            Picker("Emplacement", selection: $secondInsulationLocation) {
+                            AtlantiquePicker("Emplacement", selection: $secondInsulationLocation) {
                                 Text(betweenStructureTitle).tag("between")
                                 Text(belowStructureTitle).tag("below")
                             }
                         }
-                        Picker("Type d’isolant", selection: secondInsulationTypeBinding) {
+                        AtlantiquePicker("Type d’isolant", selection: secondInsulationTypeBinding) {
                             ForEach(insulationTypes, id: \.self) { Text($0).tag($0) }
                         }
                         .onChange(of: secondInsulationID) { _, _ in
@@ -675,12 +683,12 @@ struct CeilingConfiguratorView: View {
                             selectedSpacing = recommendedSelectableSpacing
                             fixingSystemID = ""
                         }
-                        Picker("Lambda", selection: $secondInsulationID) {
+                        AtlantiquePicker("Conductivité thermique", selection: $secondInsulationID) {
                             ForEach(insulationOptions(for: selectedSecondInsulationType)) { option in
                                 Text(insulationLambdaTitle(option)).tag(option.id)
                             }
                         }
-                        Picker("Épaisseur", selection: $secondInsulationThickness) {
+                        AtlantiquePicker("Épaisseur", selection: $secondInsulationThickness) {
                             ForEach(secondInsulationPoints) { point in
                                 if let lambda = secondInsulationLambda, lambda > 0 {
                                     Text("\(Int(point.thickness)) mm — R = \(((point.thickness / 1000) / lambda).formatted(.number.precision(.fractionLength(2))))").tag(point.thickness)
@@ -724,10 +732,20 @@ struct CeilingConfiguratorView: View {
                     AtlantiqueChoice(title: "Entraxe", options: spacingChoices.map { (value: $0, title: "\(Int($0 * 100)) cm") }, selection: $selectedSpacing)
                 }
                 AtlantiqueSection("Périphérie") {
-                    Picker("Appui en périphérie", selection: $perimeterSupport) {
-                        Text("Cornière périphérique").tag(true)
-                        Text("2 fourrures à 10 cm des bords").tag(false)
-                    }.pickerStyle(.inline).labelsHidden()
+                    ForEach([true, false], id: \.self) { option in
+                        Button { perimeterSupport = option } label: {
+                            HStack(spacing: 12) {
+                                Image(systemName: perimeterSupport == option ? "checkmark.circle.fill" : "circle")
+                                    .foregroundStyle(Atlantique.Palette.actionInk)
+                                Text(option ? "Cornière périphérique" : "2 fourrures à 10 cm des bords")
+                                    .foregroundStyle(Atlantique.Palette.ink)
+                                Spacer(minLength: 0)
+                            }.font(Atlantique.Typography.button).frame(minHeight: 48)
+                                .contentShape(Rectangle())
+                        }.buttonStyle(.plain)
+                            .accessibilityAddTraits(perimeterSupport == option ? .isSelected : [])
+                        if option { Divider() }
+                    }
                 }
                 Section { MeasureField(label: "Entraxe des suspentes", value: $suspensionSpacingCM, unit: "cm") }
             } else {
@@ -763,7 +781,7 @@ struct CeilingConfiguratorView: View {
                     Label("Aucun système publié n’est compatible avec cette configuration.", systemImage: "exclamationmark.triangle.fill")
                         .foregroundStyle(.orange)
                 } else {
-                    Picker("Système", selection: $fixingSystemID) {
+                    AtlantiquePicker(atlantique ? "Type de suspente" : "Système", selection: $fixingSystemID) {
                         Text("Sélectionner").tag("")
                         ForEach(compatibleSystems) { system in
                             Text(atlantique ? system.title : fixingSystemTitle(system)).tag(system.id)
@@ -790,31 +808,36 @@ struct CeilingConfiguratorView: View {
             }
 
         case 5:
+            if atlantique && !Atlantique.Book.showsAdvancedFormControls && firstSkin.count == 1 && (layers == 1 || secondSkin.count == 1)
+                && Atlantique.Book.canUseSimpleFacingFields(areas: firstSkin.map(\.area) + (layers == 2 ? secondSkin.map(\.area) : []), total: area) {
+                bookFacingsStep
+            } else {
             Section {
                 ceilingFacingsStep
             }
             .listRowInsets(EdgeInsets())
             .listRowBackground(Color.clear)
             .listRowSeparator(.hidden)
+            }
 
         case 6:
             AtlantiqueSection("Traitement des bandes à joint") {
                 Toggle("Prévoir le traitement des bandes", isOn: $jointTreatment)
                 if jointTreatment {
-                    Picker("Type d’enduit", selection: $compoundChoice) {
+                    AtlantiquePicker("Type d’enduit", selection: $compoundChoice) {
                         Text("Enduit à joints en poudre").tag("poudre")
                         Text("Enduit à joints en pâte").tag("pate")
                     }
                 }
             }
-            Section {
+            if !atlantique || Atlantique.Book.showsAdvancedFormControls { Section {
                 if jointTreatment {
                     Label("La bande à joint et l’enduit choisi seront ajoutés au quantitatif.", systemImage: "checkmark.circle")
                 } else {
                     Text("Aucune bande à joint ni aucun enduit ne sera ajouté au quantitatif.")
                         .foregroundStyle(.secondary)
                 }
-            }
+            } }
 
         default:
             Section {
@@ -878,19 +901,21 @@ struct CeilingConfiguratorView: View {
 
 
     @ViewBuilder private var atlantiqueInsulation: some View {
-        Section { Toggle("Prévoir une isolation", isOn: insulationEnabledBinding) }
         if !insulationID.isEmpty {
             Section {
-                    Text(atlantique ? "Couche 1" : "Première couche")
-                        .font(.headline)
+                    HStack {
+                        Text("Couche 1").font(Atlantique.Typography.heading)
+                        Spacer()
+                        Toggle("Prévoir une isolation", isOn: insulationEnabledBinding).labelsHidden()
+                    }
                     Divider().padding(.bottom, 8)
                     if isWoodSupport {
-                        Picker("Emplacement", selection: $firstInsulationLocation) {
+                        AtlantiquePicker("Emplacement", selection: $firstInsulationLocation) {
                             Text(betweenStructureTitle).tag("between")
                             Text(belowStructureTitle).tag("below")
                         }
                     }
-                    Picker("Type d’isolant", selection: insulationTypeBinding) {
+                    AtlantiquePicker("Type d’isolant", selection: insulationTypeBinding) {
                         ForEach(insulationTypes, id: \.self) { Text($0).tag($0) }
                     }
                     .onChange(of: insulationID) { _, _ in
@@ -898,23 +923,19 @@ struct CeilingConfiguratorView: View {
                         selectedSpacing = recommendedSelectableSpacing
                         fixingSystemID = ""
                     }
-                    Picker("Lambda", selection: $insulationID) {
-                        ForEach(insulationOptions(for: selectedInsulationType)) { option in
-                            Text(insulationLambdaTitle(option)).tag(option.id)
-                        }
-                    }
-                    Picker("Épaisseur", selection: $insulationThickness) {
+                    AtlantiquePicker("Épaisseur", selection: $insulationThickness) {
                         ForEach(insulationPoints) { point in
-                            if let lambda = insulationLambda, lambda > 0 {
-                                Text("\(Int(point.thickness)) mm — R = \(((point.thickness / 1000) / lambda).formatted(.number.precision(.fractionLength(2))))").tag(point.thickness)
-                            } else {
-                                Text("\(Int(point.thickness)) mm").tag(point.thickness)
-                            }
+                            Text("\(Int(point.thickness)) mm").tag(point.thickness)
                         }
                     }
                     .onChange(of: insulationThickness) { _, _ in
                         selectedSpacing = recommendedSelectableSpacing
                         fixingSystemID = ""
+                    }
+                    AtlantiquePicker("Conductivité thermique", selection: $insulationID) {
+                        ForEach(insulationOptions(for: selectedInsulationType)) { option in
+                            Text(insulationLambdaTitle(option)).tag(option.id)
+                        }
                     }
                     if let insulationThermalResistance {
                         LabeledContent("Résistance thermique", value: "R = \(insulationThermalResistance.formatted(.number.precision(.fractionLength(2)))) m²·K/W")
@@ -927,12 +948,12 @@ struct CeilingConfiguratorView: View {
                         Text(atlantique ? "Couche 2" : "Deuxième couche")
                             .font(.headline)
                         if isWoodSupport {
-                            Picker("Emplacement", selection: $secondInsulationLocation) {
+                            AtlantiquePicker("Emplacement", selection: $secondInsulationLocation) {
                                 Text(betweenStructureTitle).tag("between")
                                 Text(belowStructureTitle).tag("below")
                             }
                         }
-                        Picker("Type d’isolant", selection: secondInsulationTypeBinding) {
+                        AtlantiquePicker("Type d’isolant", selection: secondInsulationTypeBinding) {
                             ForEach(insulationTypes, id: \.self) { Text($0).tag($0) }
                         }
                         .onChange(of: secondInsulationID) { _, _ in
@@ -940,12 +961,12 @@ struct CeilingConfiguratorView: View {
                             selectedSpacing = recommendedSelectableSpacing
                             fixingSystemID = ""
                         }
-                        Picker("Lambda", selection: $secondInsulationID) {
+                        AtlantiquePicker("Conductivité thermique", selection: $secondInsulationID) {
                             ForEach(insulationOptions(for: selectedSecondInsulationType)) { option in
                                 Text(insulationLambdaTitle(option)).tag(option.id)
                             }
                         }
-                        Picker("Épaisseur", selection: $secondInsulationThickness) {
+                        AtlantiquePicker("Épaisseur", selection: $secondInsulationThickness) {
                             ForEach(secondInsulationPoints) { point in
                                 if let lambda = secondInsulationLambda, lambda > 0 {
                                     Text("\(Int(point.thickness)) mm — R = \(((point.thickness / 1000) / lambda).formatted(.number.precision(.fractionLength(2))))").tag(point.thickness)
@@ -970,6 +991,8 @@ struct CeilingConfiguratorView: View {
                     }
                 }
             }
+        } else {
+            Section { Toggle("Prévoir une isolation", isOn: insulationEnabledBinding) }
         }
     }
 
@@ -993,7 +1016,7 @@ struct CeilingConfiguratorView: View {
                 Text(plenumSectionTitle)
                     .foregroundStyle(atlantique ? Color.white : .secondary)
             }
-            Section {
+            if isWoodSupport || !atlantique || Atlantique.Book.showsAdvancedFormControls { Section {
                 if isWoodSupport {
                     WoodCeilingPlenumDiagram(plenumCM: plenum)
                         .listRowSeparator(.hidden)
@@ -1001,9 +1024,11 @@ struct CeilingConfiguratorView: View {
                     Label("Sur ce support, le plénum minimal intègre toute l’épaisseur d’isolant sélectionnée.",
                           systemImage: "info.circle")
                 }
-                Text("Vous pouvez ajouter une marge pour le passage de gaines, de canalisations ou l’installation de spots.")
+                if !atlantique || Atlantique.Book.showsAdvancedFormControls {
+                    Text("Vous pouvez ajouter une marge pour le passage de gaines, de canalisations ou l’installation de spots.")
                     .foregroundStyle(.secondary)
-            }
+                }
+            } }
 
     }
 
@@ -1023,6 +1048,53 @@ struct CeilingConfiguratorView: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+    }
+
+    @ViewBuilder private var bookFacingsStep: some View {
+        Section {
+            Text("Parement 1").font(Atlantique.Typography.heading)
+            Divider()
+            bookFacingFields($firstSkin[0])
+        }
+        if layers == 2, !secondSkin.isEmpty {
+            Section {
+                Text("Parement 2").font(Atlantique.Typography.heading)
+                Divider()
+                bookFacingFields($secondSkin[0])
+                Button("Retirer le deuxième parement", role: .destructive) { layers = 1 }
+            }
+        } else {
+            Section {
+                Button { layers = 2; ensureFacingAllocations() } label: {
+                    HStack {
+                        VStack(alignment: .leading, spacing: 5) {
+                            Text("Parement 2").font(Atlantique.Typography.button)
+                            Text("Ajouter une deuxième peau").font(Atlantique.Typography.caption)
+                        }.foregroundStyle(Atlantique.Palette.ink)
+                        Spacer()
+                        Image(systemName: "plus").foregroundStyle(Atlantique.Palette.actionInk)
+                    }.frame(minHeight: 48)
+                }.buttonStyle(.plain)
+            }
+        }
+    }
+
+    @ViewBuilder private func bookFacingFields(_ allocation: Binding<FacingAllocation>) -> some View {
+        AtlantiquePicker("Type de plaque", selection: familyBinding(allocation)) {
+            ForEach(facingFamilies, id: \.self) { Text($0).tag($0) }
+        }
+        Divider()
+        AtlantiquePicker("Fonction", selection: allocation.facingID) {
+            ForEach(functionChoices(for: allocation.wrappedValue)) { facing in
+                Text(functionTitle(for: facing)).tag(facing.id)
+            }
+        }.onChange(of: allocation.wrappedValue.facingID) { _, _ in
+            allocation.wrappedValue.dimensionID = preferredDimension(for: allocation.wrappedValue.facingID)?.id ?? ""
+        }
+        Divider()
+        AtlantiquePicker("Dimension", selection: allocation.dimensionID) {
+            ForEach(dimensions(for: allocation.wrappedValue.facingID)) { Text($0.label).tag($0.id) }
+        }
     }
 
     private var ceilingFacingsStep: some View {
@@ -1118,7 +1190,7 @@ struct CeilingConfiguratorView: View {
         VStack(alignment: .leading, spacing: 14, content: content)
             .padding(16)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(.background, in: RoundedRectangle(cornerRadius: 22))
+            .background(.background, in: RoundedRectangle(cornerRadius: atlantique ? Atlantique.Metrics.cardRadius : 22))
     }
 
     private var canContinue: Bool {

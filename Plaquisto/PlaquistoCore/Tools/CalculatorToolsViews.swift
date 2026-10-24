@@ -7,7 +7,7 @@ struct WallAngleToolView: View {
     @State private var oppositeSide = 0.0
     private var result: Result<WallAngleResult,Error> { Result { try WallAngleCalculator.calculate(equalSide:equalSide,oppositeSide:oppositeSide) } }
     var body: some View {
-        AtlantiqueForm {
+        AtlantiqueForm(bookLayout: true) {
             Section {
                 WallAngleDiagram(kind:kind,angle:(try? result.get().interiorDegrees) ?? 90)
                     .frame(height:260)
@@ -48,7 +48,7 @@ struct WallAngleToolView: View {
                     } else { Label(error.localizedDescription,systemImage:"exclamationmark.triangle").foregroundStyle(.orange) }
                 }
             }
-            Section {
+            if !atlantique || Atlantique.Book.showsAdvancedFormControls { Section {
                 DisclosureGroup("Comment mesurer ?") {
                     Text(kind == .interior
                          ? "Depuis le coin, reportez la même distance L sur les deux murs, puis mesurez D entre les repères."
@@ -56,7 +56,7 @@ struct WallAngleToolView: View {
                     Text("Gardez les deux repères à la même hauteur. Des repères plus éloignés améliorent la précision à erreur de mesure égale.")
                         .foregroundStyle(.secondary)
                 }
-            }
+            } }
         }
         .navigationTitle(kind.title).navigationBarTitleDisplayMode(.inline).atlantiqueFormPage(kind.title)
         .scrollDismissesKeyboard(.interactively)
@@ -257,6 +257,7 @@ struct WallAngleIcon: View {
 }
 
 struct ThermalToolView: View {
+    @Environment(\.usesAtlantiqueDesign) private var atlantique
     @State private var thickness = 0.0
     @State private var lambda = 0.0
     @State private var resistance = 0.0
@@ -281,7 +282,16 @@ struct ThermalToolView: View {
     }
 
     var body: some View {
-        AtlantiqueForm {
+        AtlantiqueForm(bookLayout: true) {
+            if atlantique {
+                Section {
+                    thermalRow(.thickness)
+                    Divider()
+                    thermalRow(.lambda)
+                }
+                Section { thermalRow(.resistance) }
+                Section { Button("Réinitialiser") { reset() }.atlantiqueActionStyle(.secondary) }
+            } else {
             Section {
                 thermalRow(.thickness)
                 thermalRow(.lambda)
@@ -291,9 +301,10 @@ struct ThermalToolView: View {
             } footer: {
                 Text("Renseignez deux valeurs : la troisième est calculée automatiquement.")
             }
+            }
         }
         .navigationTitle("Résistance thermique").atlantiqueFormPage("Résistance thermique")
-        .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("Réinitialiser") { reset() } } }
+        .toolbar { if !atlantique { ToolbarItem(placement: .topBarTrailing) { Button("Réinitialiser") { reset() } } } }
     }
 
     private func reset() { thickness = 0; lambda = 0; resistance = 0 }
@@ -301,11 +312,19 @@ struct ThermalToolView: View {
     @ViewBuilder
     private func thermalRow(_ kind: ValueKind) -> some View {
         if let value = computedValue(for: kind) {
+            if atlantique {
+                VStack(alignment: .leading, spacing: 12) {
+                    Text(title(for: kind)).font(Atlantique.Typography.caption).foregroundStyle(Atlantique.Palette.muted)
+                    Text(formatted(value, for: kind)).font(Atlantique.Typography.font(28, weight: .demi, relativeTo: .title))
+                        .foregroundStyle(Atlantique.Palette.ink).fixedSize(horizontal: false, vertical: true)
+                }.padding(.vertical, 8)
+            } else {
             LabeledContent(title(for: kind), value: formatted(value, for: kind))
                 .font(.headline)
                 .foregroundStyle(.green)
+            }
         } else if kind == .lambda {
-            Picker("Lambda λ", selection: $lambda) {
+            AtlantiquePicker("Conductivité λ · W/(m·K)", selection: $lambda) {
                 Text("Sélectionner").tag(0.0)
                 ForEach(stride(from: 0.030, through: 0.0401, by: 0.002).map { $0 }, id: \.self) { value in
                     Text(value.formatted(.number.locale(Locale(identifier: "fr_FR")).precision(.fractionLength(3))))
@@ -340,6 +359,7 @@ struct ThermalToolView: View {
 }
 
 struct VATToolView: View {
+    @Environment(\.usesAtlantiqueDesign) private var atlantique
     @State private var direction = VATDirection.netToGross
     @State private var amount = 0.0
     @State private var rate = 20.0
@@ -349,7 +369,28 @@ struct VATToolView: View {
     }
 
     var body: some View {
-        AtlantiqueForm {
+        AtlantiqueForm(bookLayout: true) {
+            if atlantique {
+                Section { AtlantiqueChoice(title: "Sens du calcul", options: VATDirection.allCases.map { ($0, $0.rawValue) }, selection: $direction) }
+                Section { ToolNumberField(title: direction == .netToGross ? "Montant HT" : "Montant TTC", unit: "€", value: $amount) }
+                AtlantiqueSection("Taux de TVA") {
+                    AtlantiqueChoice(title: "Taux de TVA", options: [(5.5, "5,5 %"), (10.0, "10 %"), (20.0, "20 %")], selection: $rate)
+                }
+                if let result {
+                    Section {
+                        VStack(alignment: .leading, spacing: 12) {
+                            Text(direction == .netToGross ? "Montant TTC" : "Montant HT").font(Atlantique.Typography.caption).foregroundStyle(Atlantique.Palette.muted)
+                            Text(currency(direction == .netToGross ? result.gross : result.net))
+                                .font(Atlantique.Typography.font(30, weight: .demi, relativeTo: .title)).fixedSize(horizontal: false, vertical: true)
+                        }.padding(.vertical, 8)
+                    }
+                    Section {
+                        LabeledContent("Montant HT", value: currency(result.net))
+                        Divider()
+                        LabeledContent("TVA", value: currency(result.tax))
+                    }
+                }
+            } else {
             Section {
                 Picker("Sens", selection: $direction) { ForEach(VATDirection.allCases) { Text($0.rawValue).tag($0) } }.pickerStyle(.segmented)
             }
@@ -366,6 +407,7 @@ struct VATToolView: View {
                     LabeledContent("TVA", value: currency(result.tax))
                     LabeledContent("Montant TTC", value: currency(result.gross)).font(.headline)
                 }
+            }
             }
         }
         .navigationTitle("Calcul de TVA").atlantiqueFormPage("Calcul de TVA")
@@ -391,7 +433,7 @@ struct ArchTemplateToolView: View {
     private var points: [ArchPoint] { atlantique ? ArchCalculator.adjustable(width: width, rise: rise, amplitude: amplitude, spacing: spacing) : ArchCalculator.points(kind: kind, width: width, rise: rise, spacing: spacing) }
 
     var body: some View {
-        AtlantiqueForm {
+        AtlantiqueForm(bookLayout: true) {
             if atlantique { atlantiqueControls } else {
             AtlantiqueSection("Forme") {
                 Picker("Type d’arche", selection: $kind) { ForEach(ArchKind.allCases) { Text($0.rawValue).tag($0) } }

@@ -9,9 +9,17 @@ struct PlaquistoLabApp: App {
     @UIApplicationDelegateAdaptor(LabOrientationDelegate.self) private var orientationDelegate
     // fr.plaquisto.lab has its own sandbox. No production container or App Group.
     @StateObject private var projects: ProjectStore
+    #if targetEnvironment(simulator)
+    @StateObject private var auditFurring = FurringLiningReferenceStore()
+    @StateObject private var auditLining = DoublageReferenceStore()
+    @StateObject private var auditPartition = CloisonDistributionReferenceStore()
+    @StateObject private var auditBonded = BondedLiningReferenceStore()
+    @StateObject private var auditAdhesive = AdhesiveFacingReferenceStore()
+    @StateObject private var auditTechnical = ToolTechnicalStore()
+    #endif
     init() {
         #if targetEnvironment(simulator)
-        if ProcessInfo.processInfo.arguments.contains("-atlantique-lot1-fixture") {
+        if ProcessInfo.processInfo.arguments.contains("-atlantique-lot1-fixture") || ProcessInfo.processInfo.arguments.contains("-atlantique-audit-screen") {
             // Explicit QA launch only. Never seeds or replaces the user's archive.
             let url = FileManager.default.temporaryDirectory.appendingPathComponent("AtlantiqueLot1QA-v2/projects.json")
             let store = ProjectStore(fileURL: url)
@@ -64,11 +72,33 @@ struct PlaquistoLabApp: App {
     var body: some Scene {
         WindowGroup {
             Group {
-                if ProcessInfo.processInfo.arguments.contains("-atlantique-gallery") {
-                    AtlantiqueGallery()
+                #if targetEnvironment(simulator)
+                if let screen = Self.argument(after: "-atlantique-audit-screen") {
+                    NavigationStack {
+                        auditScreen(screen)
+                            .environment(\.configurationEntryStep, Self.argument(after: "-atlantique-audit-step").flatMap(Int.init))
+                    }.atlantiqueDesign()
+                        .environmentObject(auditFurring).environmentObject(auditLining)
+                        .environmentObject(auditPartition).environmentObject(auditBonded)
+                        .environmentObject(auditAdhesive)
+                        .environmentObject(auditTechnical)
+                        .task {
+                            switch screen {
+                            case "furring": await auditFurring.load()
+                            case "lining": await auditLining.load()
+                            case "partition": await auditPartition.load()
+                            case "bonded": await auditBonded.load()
+                            case "adhesive": await auditAdhesive.load()
+                            case "partition-height", "lining-height", "span", "spacing": await auditTechnical.load()
+                            default: break
+                            }
+                        }
                 } else {
-                    ContrastLabRoot()
+                    ordinaryRoot
                 }
+                #else
+                ordinaryRoot
+                #endif
             }.environmentObject(projects)
                 .task { try? await ScanEvidenceStore.shared.prune() }
                 .environment(\.interfacePresentation, .contrastLab)
@@ -77,4 +107,50 @@ struct PlaquistoLabApp: App {
                 .environment(\.beforeAfterAccount,BeforeAfterAccountContext(allowsLabWatermarkControl:true))
         }
     }
+
+    @ViewBuilder private var ordinaryRoot: some View {
+                if ProcessInfo.processInfo.arguments.contains("-atlantique-gallery") {
+                    AtlantiqueGallery()
+                } else {
+                    ContrastLabRoot()
+                }
+    }
+
+    #if targetEnvironment(simulator)
+    // Deterministic visual QA entry points. No saves, no writes to normal projects,
+    // and no screen/step override is included on a physical device.
+    private static func argument(after flag: String) -> String? {
+        let arguments = ProcessInfo.processInfo.arguments
+        guard let index = arguments.firstIndex(of: flag), arguments.indices.contains(index + 1) else { return nil }
+        return arguments[index + 1]
+    }
+
+    @ViewBuilder private func auditScreen(_ name: String) -> some View {
+        switch name {
+        case "ceiling": CeilingConfiguratorView(initialConfiguration: CeilingConfiguration(length: 5, width: 4))
+        case "furring": FurringLiningConfiguratorView(onSave: { _ in }, showsCloseButton: false)
+        case "lining": DoublageConfiguratorView(onSave: { _ in }, showsCloseButton: false)
+        case "partition": CloisonDistributionConfiguratorView(onSave: { _ in }, showsCloseButton: false)
+        case "bonded": BondedLiningConfiguratorView(onSave: { _ in }, onClose: {}, showsCloseButton: false)
+        case "adhesive": AdhesiveFacingConfiguratorView(onSave: { _ in }, showsCloseButton: false)
+        case "rail-ceiling": RailStudCeilingConfiguratorView(onSave: { _ in })
+        case "tools": ToolsHomeView()
+        case "thermal": ThermalToolView()
+        case "vat": VATToolView()
+        case "arch": ArchTemplateToolView()
+        case "angle": WallAngleToolView()
+        case "angle-exterior": WallAngleToolView(kind: .exterior)
+        case "partition-height": PartitionHeightToolView()
+        case "lining-height": LiningHeightToolView()
+        case "span": CeilingSpanToolView()
+        case "spacing": FurringSpacingToolView()
+        case "manual": ManualModelingView()
+        case "stock": StockHomeView()
+        case "model": ScannerDebugView(onOpenAccount: {})
+        case "project", "work", "configuration", "quantity", "settings", "catalogue", "about", "survey":
+            AtlantiqueAuditDestination(name: name)
+        default: ContrastLabRoot()
+        }
+    }
+    #endif
 }

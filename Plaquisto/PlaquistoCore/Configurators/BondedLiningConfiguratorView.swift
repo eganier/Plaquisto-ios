@@ -87,7 +87,7 @@ struct BondedLiningConfiguratorView: View {
 
     var body: some View {
         Group {
-            if references.isLoading { ProgressView("Synchronisation avec Plaquisto Admin…") }
+            if references.isLoading { AtlantiqueLoadingView("Synchronisation avec Plaquisto Admin…") }
             else if let error = references.error {
                 ContentUnavailableView {
                     Label("Données indisponibles", systemImage: "wifi.exclamationmark")
@@ -113,8 +113,8 @@ struct BondedLiningConfiguratorView: View {
         .toolbar {
             if isEditing || atlantique {
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Enregistrer") { onSave(configuration) }.atlantiqueToolbarAction().disabled(!allStepsAreValid)
-                }
+                    Button("Enregistrer") { onSave(configuration) }.atlantiqueToolbarAction(primary: true).disabled(!allStepsAreValid)
+                }.atlantiqueToolbarBackground(atlantique)
             }
         }
         .alert("Hauteur de panneau insuffisante", isPresented: $showPanelHeightWarning) {
@@ -144,7 +144,11 @@ struct BondedLiningConfiguratorView: View {
         }.background(atlantique ? Atlantique.Palette.blue : Color(.systemGroupedBackground))
     }
 
-    private var header: some View {
+    @ViewBuilder private var header: some View {
+        if atlantique {
+            if showsCloseButton { Button("Fermer", action: onClose).atlantiqueActionStyle(.secondary).padding(.horizontal, 20) }
+            AtlantiqueWizardHeader(title: "Doublage en complexe collé", step: step, total: 6)
+        } else {
         VStack(alignment: .leading, spacing: 10) {
             if showsCloseButton { Button("Fermer", action: onClose).atlantiqueActionStyle(.secondary) }
             Text(atlantique ? "" : "OUVRAGE").font(.caption.bold()).foregroundStyle(atlantique ? Color.white.opacity(0.85) : .secondary)
@@ -152,19 +156,21 @@ struct BondedLiningConfiguratorView: View {
             Label("Données synchronisées avec Plaquisto Admin", systemImage: "icloud.and.arrow.down").font(.caption).foregroundStyle(.green)
             ProgressView(value: Double(step), total: 6)
             Text("Étape \(step) sur 6 · \(stepNames[step - 1])").font(.caption).foregroundStyle(atlantique ? Color.white.opacity(0.85) : .secondary)
-        }.padding(.horizontal, 20).padding(.top, 12).padding(.bottom, 14).frame(maxWidth: .infinity, alignment: .leading).background(.background)
+        }.padding(.horizontal, 20).padding(.top, 12).padding(.bottom, 14).frame(maxWidth: .infinity, alignment: .leading).background(atlantique ? Atlantique.Palette.blue : Color(.systemBackground))
     }
 
+        }
     private var footer: some View {
         HStack {
             if step > 1 {
-                Button("Retour") { step -= 1 }.atlantiqueActionStyle().tint(green.opacity(0.18)).foregroundStyle(green)
+                Button("Retour") { step -= 1 }.atlantiqueActionStyle(.secondary)
+                    .frame(maxWidth: atlantique ? 112 : nil)
                     .formStepMenu(titles: stepNames, selection: $step, firstStep: 1, canShowResult: allStepsAreValid)
             }
             Spacer()
             if step < 6 { Button("Continuer") { continueForm() }.atlantiqueActionStyle().disabled(!canContinue) }
-            else { Button("Enregistrer") { onSave(configuration) }.atlantiqueToolbarAction().disabled(!allStepsAreValid).atlantiqueActionStyle() }
-        }.padding(20).background(.background)
+            else { Button("Enregistrer") { onSave(configuration) }.atlantiqueToolbarAction(primary: true).disabled(!allStepsAreValid).atlantiqueActionStyle() }
+        }.padding(20).background(atlantique ? Atlantique.Palette.blue : Color(.systemBackground))
     }
 
     private var dimensionsStep: some View {
@@ -249,6 +255,9 @@ struct BondedLiningConfiguratorView: View {
         VStack(alignment: .leading, spacing: 18) {
             sectionTitle("Quantitatif indicatif")
             card { ForEach(configuration.quantities) { item in LabeledContent(item.name, value: format(item.quantity, item.unit)); if item.id != configuration.quantities.last?.id { Divider() } } }
+            if atlantique && !Atlantique.Book.showsAdvancedFormControls {
+                AtlantiqueConfigurationEstimate(type: .peripheralLiningBonded, configuration: .bondedLining(configuration))
+            } else {
             DisclosureGroup(isExpanded: $configurationExpanded) {
                 card {
                     editableConfigurationRow("Dimensions", value: "\(format(actualLength, "m")) × \(format(height, "m"))", targetStep: 1); Divider()
@@ -260,6 +269,7 @@ struct BondedLiningConfiguratorView: View {
                     editableConfigurationRow("Format", value: "\(selectedWidthMM) × \(selectedHeightMM) mm", targetStep: 4)
                 }.padding(.top, 8)
             } label: { sectionTitle("Configuration retenue") }
+            }
         }
     }
 
@@ -338,9 +348,9 @@ struct BondedLiningConfiguratorView: View {
         if step == 4 && panelIsShort { showPanelHeightWarning = true } else { step += 1 }
     }
     private func thicknessLabel(_ value: Int) -> String { "\(value) mm — R = \((references.resistance(lambda: selectedLambda, thickness: value) ?? 0).formatted(.number.precision(.fractionLength(2))))" }
-    private func sectionTitle(_ title: String) -> some View { Text(title).font(.title3.bold()).foregroundStyle(.secondary).padding(.horizontal, 12) }
-    private func card<Content: View>(@ViewBuilder content: () -> Content) -> some View { VStack(alignment: .leading, spacing: 14, content: content).padding(16).frame(maxWidth: .infinity, alignment: .leading).background(.background, in: RoundedRectangle(cornerRadius: 22)) }
-    private func warning(_ text: String) -> some View { HStack(alignment: .top, spacing: 10) { Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange); Text(text) }.font(.footnote).padding(14).frame(maxWidth: .infinity, alignment: .leading).background(Color.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 18)) }
+    private func sectionTitle(_ title: String) -> some View { Text(title).font(atlantique ? Atlantique.Typography.heading : .title3.bold()).foregroundStyle(atlantique ? Color.white : .secondary).padding(.horizontal, 12) }
+    private func card<Content: View>(@ViewBuilder content: () -> Content) -> some View { VStack(alignment: .leading, spacing: 14, content: content).padding(16).frame(maxWidth: .infinity, alignment: .leading).background(.background, in: RoundedRectangle(cornerRadius: atlantique ? Atlantique.Metrics.cardRadius : 22)) }
+    private func warning(_ text: String) -> some View { HStack(alignment: .top, spacing: 10) { Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange); Text(text) }.font(.footnote).padding(14).frame(maxWidth: .infinity, alignment: .leading).background(atlantique ? Color.white : Color.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 18)) }
     private func format(_ value: Double, _ unit: String) -> String { "\(value.formatted(.number.precision(.fractionLength(0...2)))) \(unit)" }
 }
 

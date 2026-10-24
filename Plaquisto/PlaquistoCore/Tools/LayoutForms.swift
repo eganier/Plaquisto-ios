@@ -369,6 +369,7 @@ struct LayoutVertexForm: View {
 }
 
 struct LayoutSettingsForm: View {
+    @Environment(\.usesAtlantiqueDesign) private var atlantique
     @Environment(\.dismiss) private var dismiss
     @EnvironmentObject private var catalogue: ToolTechnicalStore
     let onSave: (LayoutLayer) -> Void
@@ -376,6 +377,10 @@ struct LayoutSettingsForm: View {
     @State private var layer: LayoutLayer
     @State private var compatibilityMessage: String?
     private var selectedFormat:LayoutCatalogFormat? { catalogue.layoutFormats.first { $0.id == layer.catalogFormatID } }
+    private var canApply: Bool {
+        layer.sheetWidth >= 1 && layer.sheetLength >= 1 && layer.sheetWidth <= 100_000 && layer.sheetLength <= 100_000
+            && (layer.furring == nil || !LayoutPlanning.compatibleSpacings(layer).isEmpty)
+    }
     private var families:[String] { Array(Set(catalogue.layoutFormats.map(\.family))).sorted() }
     private var products:[LayoutCatalogFormat] {
         var seen=Set<String>()
@@ -399,9 +404,10 @@ struct LayoutSettingsForm: View {
     }
     var body: some View {
         NavigationStack {
-            AtlantiqueForm {
-                AtlantiqueSection("Format de plaque") {
-                    Picker("Type de parement",selection:Binding(get:{selectedFormat?.family ?? ""},set:{ family in
+            AtlantiqueForm(bookLayout: true) {
+                Section {
+                    if atlantique { Text("Parement 1").font(Atlantique.Typography.button); Divider() }
+                    AtlantiquePicker("Type de plaque",selection:Binding(get:{selectedFormat?.family ?? ""},set:{ family in
                         select(catalogue.layoutFormats.first { $0.family == family && $0.width == layer.sheetWidth && $0.length == layer.sheetLength }
                             ?? catalogue.layoutFormats.first { $0.family == family })
                     })) {
@@ -409,23 +415,33 @@ struct LayoutSettingsForm: View {
                         ForEach(families,id:\.self) { Text($0).tag($0) }
                     }
                     if selectedFormat != nil {
-                        Picker("Fonction",selection:Binding(get:{selectedFormat?.productID ?? ""},set:{ product in
+                        if atlantique { Divider() }
+                        AtlantiquePicker("Fonction",selection:Binding(get:{selectedFormat?.productID ?? ""},set:{ product in
                             select(catalogue.layoutFormats.first { $0.productID == product && $0.width == layer.sheetWidth && $0.length == layer.sheetLength }
                                 ?? catalogue.layoutFormats.first { $0.productID == product })
                         })) { ForEach(products) { Text($0.title).tag($0.productID ?? "") } }
+                        if atlantique {
+                            Divider()
+                            AtlantiquePicker("Dimension", selection: Binding(get: { layer.catalogFormatID ?? "" }, set: { id in
+                                select(dimensions.first { $0.id == id })
+                            })) {
+                                ForEach(dimensions) { Text("\(layoutCM($0.width)) × \(layoutCM($0.length))").tag($0.id) }
+                            }
+                        } else {
                         Picker("Largeur de plaque",selection:Binding(get:{layer.sheetWidth},set:{ width in
                             select(dimensions.first { $0.width == width && $0.length == layer.sheetLength } ?? dimensions.first { $0.width == width })
                         })) { ForEach(Array(Set(dimensions.map(\.width))).sorted(),id:\.self) { Text(layoutCM($0)).tag($0) } }
                         Picker("Longueur de plaque",selection:Binding(get:{layer.sheetLength},set:{ length in
                             select(dimensions.first { $0.width == layer.sheetWidth && $0.length == length })
                         })) { ForEach(dimensions.filter { $0.width == layer.sheetWidth }) { Text(layoutCM($0.length)).tag($0.length) } }
+                        }
                     } else {
                         LabeledContent("Format enregistré",value:"\(layoutCM(layer.sheetWidth)) × \(layoutCM(layer.sheetLength))")
                     }
                     if catalogue.layoutFormats.isEmpty { Text("Catalogue indisponible : le parement enregistré est conservé.").font(.footnote).foregroundStyle(.secondary) }
                     if let compatibilityMessage { Label(compatibilityMessage,systemImage:"exclamationmark.triangle.fill").foregroundStyle(.orange) }
                 }
-                if surface.kind == .wall { AtlantiqueSection("Pose") {
+                if surface.kind == .wall && (!atlantique || Atlantique.Book.showsAdvancedFormControls) { AtlantiqueSection("Pose") {
                     Toggle("Pose en quinconce",isOn:Binding(get:{layer.staggered == true},set:{ value in
                         layer.staggered=value; layer.staggerOffset=nil
                         if value { layer=LayoutPlanning.alignBoards(to:layer,support:surface.kind) }
@@ -443,10 +459,16 @@ struct LayoutSettingsForm: View {
             .onChange(of:layer.sheetLength) { _,_ in reconcileSpacing() }
             .onChange(of:layer.sheetWidth) { _,_ in reconcileSpacing() }
             .onChange(of:layer.orientation) { _,_ in reconcileSpacing() }
-            .navigationTitle("Plaques et pose").atlantiqueFormPage("Plaques et pose").navigationBarTitleDisplayMode(.inline)
+            .navigationTitle("Plaques et pose").atlantiqueFormPage(atlantique ? "Parements" : "Plaques et pose").navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button("Annuler") { dismiss() } }
-                ToolbarItem(placement: .confirmationAction) { Button("Appliquer") { onSave(layer); dismiss() }.disabled(layer.sheetWidth < 1 || layer.sheetLength < 1 || layer.sheetWidth > 100_000 || layer.sheetLength > 100_000 || (layer.furring != nil && LayoutPlanning.compatibleSpacings(layer).isEmpty)) }
+                ToolbarItem(placement: .cancellationAction) { Button("Annuler") { dismiss() }.atlantiqueToolbarAction() }.atlantiqueToolbarBackground(atlantique)
+                ToolbarItem(placement: .confirmationAction) { Button(atlantique ? "Enregistrer" : "Appliquer") { onSave(layer); dismiss() }.atlantiqueToolbarAction(primary: true).disabled(!canApply) }.atlantiqueToolbarBackground(atlantique)
+            }
+            .safeAreaInset(edge: .bottom) {
+                if atlantique {
+                    Button("Appliquer") { onSave(layer); dismiss() }.atlantiqueActionStyle().disabled(!canApply)
+                        .padding(20).background(Atlantique.Palette.blue)
+                }
             }
         }
     }

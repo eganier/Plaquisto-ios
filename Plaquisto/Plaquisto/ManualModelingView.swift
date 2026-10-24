@@ -57,7 +57,7 @@ struct ManualModelingView: View {
     }
     var body: some View {
         NavigationStack {
-            AtlantiqueForm {
+            AtlantiqueForm(bookLayout: true) {
                 Section {
                     Text("Étape \(step+1) sur 3 · \(["Dessiner le sol", "Définir les hauteurs", "Enregistrer le modèle"][step])")
                         .font(.subheadline).foregroundStyle(.secondary)
@@ -138,12 +138,14 @@ struct ManualModelingView: View {
     }
     @ViewBuilder private var heightSection: some View {
         Section {
-            if !differentHeights { HStack {
+            if !differentHeights { if atlantique {
+                ToolNumberField(title: "Hauteur commune", unit: "cm", value: $commonHeightCM)
+            } else { HStack {
                 Text("Hauteur commune")
                 Spacer()
                 TextField("250", value: $commonHeightCM, format: .number).keyboardType(.decimalPad).multilineTextAlignment(.trailing).frame(width: 90)
                 Text("cm").foregroundStyle(.secondary)
-            } }
+            } } }
             Toggle("Hauteurs différentes", isOn: $differentHeights)
                 .onChange(of: differentHeights) { _, _ in error = nil }
         }

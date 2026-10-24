@@ -1,5 +1,32 @@
 import SwiftUI
 
+#if targetEnvironment(simulator)
+/// Read-only entry points into the normal views, backed by the Lab QA fixture.
+struct AtlantiqueAuditDestination: View {
+    @EnvironmentObject private var store: ProjectStore
+    let name: String
+    var body: some View {
+        Group {
+            if name == "settings" { AtlantiqueSettingsView() }
+            else if name == "catalogue" { AtlantiqueCatalogueSettings() }
+            else if name == "about" { AtlantiqueAboutView() }
+            else if let project = store.projects.first(where: { !$0.visibleWorks.isEmpty }) {
+                switch name {
+                case "project": LabProjectView(projectID: project.id)
+                case "quantity": CombinedQuantityView(works: project.visibleWorks, title: "Quantitatif")
+                case "survey":
+                    if let survey = store.surveys(projectID: project.id).first { ProjectSurveyDetailView(surveyID: survey.id) }
+                case "work":
+                    if let work = project.visibleWorks.first { LabWorkView(projectID: project.id, workID: work.id) }
+                default:
+                    if let work = project.visibleWorks.first { LabWorkConfigurationView(projectID: project.id, workID: work.id) }
+                }
+            }
+        }
+    }
+}
+#endif
+
 private enum LabRoute: Hashable {
     case project(UUID)
     case survey(UUID)
@@ -620,7 +647,7 @@ private struct LabWorkConfigurationView: View {
     var body: some View {
         Group {
             if let work {
-                List {
+                AtlantiqueForm(bookLayout: true) {
                     Section {
                         Text(work.name).font(Atlantique.Typography.button)
                         Text(work.type.title).font(Atlantique.Typography.font(15, relativeTo: .subheadline)).foregroundStyle(.secondary)

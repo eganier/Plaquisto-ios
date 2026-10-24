@@ -69,6 +69,9 @@ struct LayoutFurringForm: View {
         })
     }
     private var compatible: Bool { LayoutPlanning.compatibleSpacings(layer).contains(layer.furring?.spacing ?? 0) }
+    private var canApply: Bool {
+        compatible && (!simplifiedCeiling || (200...1200).contains(layer.furring?.ceilingSuspensionSpacing ?? 1200))
+    }
     private var formats: [LayoutCatalogFormat] {
         catalogue.layoutFormats.filter { f in
             var copy = layer; copy.sheetWidth = f.width; copy.sheetLength = f.length
@@ -77,8 +80,8 @@ struct LayoutFurringForm: View {
     }
     var body: some View {
         NavigationStack {
-            AtlantiqueForm {
-                if !simplifiedCeiling {
+            AtlantiqueForm(bookLayout: true) {
+                if !simplifiedCeiling && (!atlantique || Atlantique.Book.showsAdvancedFormControls) {
                 Section { LayoutLivePreview(surface:surface,layer:layer).frame(height:220) }
                 if surface.kind == .ceiling { AtlantiqueSection("Orientation des fourrures") {
                     Picker("Sens des fourrures", selection: Binding(
@@ -112,12 +115,16 @@ struct LayoutFurringForm: View {
                     }
                 }
                 }
-                Section(surface.kind == .wall ? "Entraxe de l’ossature" : "Entraxe des fourrures") {
+                AtlantiqueSection(surface.kind == .wall ? "Entraxe de l’ossature" : "Entraxe des fourrures") {
+                    if atlantique {
+                        AtlantiqueSegmentedChoice(title: "Entraxe", options: (layer.furring?.spacing == 500 ? [400.0, 500, 600] : [400.0, 600]).map { ($0, "\(Int($0 / 10)) cm") }, selection: binding(\.spacing))
+                    } else {
                     Picker("Entraxe",selection:binding(\.spacing)) {
                         Text("40 cm").tag(400.0)
                         if !atlantique || layer.furring?.spacing == 500 { Text("50 cm").tag(500.0) }
                         Text("60 cm").tag(600.0)
                     }.pickerStyle(.segmented)
+                    }
                     if let notice { Label(notice,systemImage:"exclamationmark.triangle.fill").foregroundStyle(.orange) }
                     if !compatible {
                         Label("Format de plaque incompatible avec cet entraxe. Choisissez un format compatible ci-dessous.",systemImage:"exclamationmark.triangle.fill").foregroundStyle(.orange)
@@ -129,6 +136,19 @@ struct LayoutFurringForm: View {
                 }
                 if simplifiedCeiling {
                     AtlantiqueSection("Périphérie") {
+                        if atlantique {
+                            ForEach([true, false], id: \.self) { option in
+                                Button { layer.furring?.setCeilingPerimeterSupport(option) } label: {
+                                    HStack(spacing: 12) {
+                                        Image(systemName: (layer.furring?.resolvedCeilingPerimeterSupport ?? true) == option ? "checkmark.circle.fill" : "circle").foregroundStyle(Atlantique.Palette.actionInk)
+                                        Text(option ? "Cornière périphérique" : "2 fourrures à 10 cm des bords").foregroundStyle(Atlantique.Palette.ink)
+                                        Spacer(minLength: 0)
+                                    }.font(Atlantique.Typography.button).frame(minHeight: 48).contentShape(Rectangle())
+                                }.buttonStyle(.plain)
+                                    .accessibilityAddTraits((layer.furring?.resolvedCeilingPerimeterSupport ?? true) == option ? .isSelected : [])
+                                if option { Divider() }
+                            }
+                        } else {
                         Picker("Appui en périphérie",selection:Binding(
                             get:{layer.furring?.resolvedCeilingPerimeterSupport ?? true},
                             set:{layer.furring?.setCeilingPerimeterSupport($0)}
@@ -137,6 +157,7 @@ struct LayoutFurringForm: View {
                             Text("2 fourrures à 10 cm des bords").tag(false)
                         }.pickerStyle(.inline).labelsHidden()
                             .accessibilityIdentifier("layout.furring.periphery")
+                        }
                     }
                     AtlantiqueSection("Suspentes") {
                         LayoutDimensionField(title: "Entraxe des suspentes", millimetres: Binding(
@@ -145,7 +166,7 @@ struct LayoutFurringForm: View {
                         )).accessibilityLabel("Entraxe des suspentes")
                             .accessibilityIdentifier("layout.furring.suspensionSpacing")
                     }
-                } else {
+                } else if !atlantique || Atlantique.Book.showsAdvancedFormControls {
                 AtlantiqueSection("Calage sur les plaques") {
                     Button("Caler les fourrures sur le calepinage des plaques") { layer = LayoutPlanning.alignFurring(to:layer) }
                     Text(LayoutPlanning.aligned(layer) ? "Trames alignées." : "Trames décalées : les fourrures ne tombent pas toutes sur les joints attendus.").font(.footnote)
@@ -172,8 +193,14 @@ struct LayoutFurringForm: View {
                 }
             }
             .toolbar {
-                ToolbarItem(placement:.cancellationAction) { Button("Annuler") { dismiss() } }
-                ToolbarItem(placement:.confirmationAction) { Button("Appliquer") { onSave(layer); dismiss() }.disabled(!compatible || (simplifiedCeiling && !(200...1200).contains(layer.furring?.ceilingSuspensionSpacing ?? 1200))) }
+                ToolbarItem(placement:.cancellationAction) { Button("Annuler") { dismiss() }.atlantiqueToolbarAction() }.atlantiqueToolbarBackground(atlantique)
+                ToolbarItem(placement:.confirmationAction) { Button(atlantique ? "Enregistrer" : "Appliquer") { onSave(layer); dismiss() }.atlantiqueToolbarAction(primary: true).disabled(!canApply) }.atlantiqueToolbarBackground(atlantique)
+            }
+            .safeAreaInset(edge: .bottom) {
+                if atlantique {
+                    Button("Appliquer") { onSave(layer); dismiss() }.atlantiqueActionStyle().disabled(!canApply)
+                        .padding(20).background(Atlantique.Palette.blue)
+                }
             }
         }
     }

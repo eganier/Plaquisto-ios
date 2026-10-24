@@ -455,7 +455,7 @@ struct RailStudCeilingConfiguratorView: View {
     var body: some View {
         Group {
             if references.isLoading {
-                ProgressView("Chargement depuis Plaquisto Admin…")
+                AtlantiqueLoadingView("Chargement depuis Plaquisto Admin…")
             } else if let error = references.error {
                 ContentUnavailableView("Données indisponibles", systemImage: "icloud.slash", description: Text(error))
             } else {
@@ -474,8 +474,8 @@ struct RailStudCeilingConfiguratorView: View {
         .toolbar {
             if (isEditing || atlantique), let onSave {
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Enregistrer") { onSave(configurationSnapshot()) }.atlantiqueToolbarAction().disabled(!allStepsAreValid)
-                }
+                    Button("Enregistrer") { onSave(configurationSnapshot()) }.atlantiqueToolbarAction(primary: true).disabled(!allStepsAreValid)
+                }.atlantiqueToolbarBackground(atlantique)
             }
         }
         .alert("Dimensions non renseignées", isPresented: $showDimensionsAlert) {
@@ -499,7 +499,10 @@ struct RailStudCeilingConfiguratorView: View {
         }
     }
 
-    private var header: some View {
+    @ViewBuilder private var header: some View {
+        if atlantique {
+            AtlantiqueWizardHeader(title: "Plafond sur rails et montants", step: visibleStepPosition + 1, total: visibleStepIndices.count)
+        } else {
         VStack(alignment: .leading, spacing: 10) {
             Text("OUVRAGE").font(.caption2.weight(.bold)).foregroundStyle(.secondary)
             Text(shape == .horizontal ? references.workTitle : "Plafond rampant sur ossature rails et montants").font(.title2.bold())
@@ -509,10 +512,11 @@ struct RailStudCeilingConfiguratorView: View {
         }.padding()
     }
 
+        }
     private var footer: some View {
         HStack {
             if step > 0 {
-                Button("Retour") { goBack() }.atlantiqueActionStyle(.secondary)
+                Button("Retour") { goBack() }.atlantiqueActionStyle(.secondary).frame(maxWidth: atlantique ? 112 : nil)
                     .formStepMenu(titles: steps, selection: $step, visibleSteps: visibleStepIndices, canShowResult: allStepsAreValid) {
                         if step == 1 { ensureFacings() }
                         if step == 2 { prepareFrameDefault() }
@@ -523,13 +527,13 @@ struct RailStudCeilingConfiguratorView: View {
             if step < steps.count - 1 {
                 Button("Continuer") { advance() }.atlantiqueActionStyle().disabled(!canContinue)
             } else if let onSave {
-                Button("Enregistrer") { onSave(configurationSnapshot()) }.atlantiqueToolbarAction().disabled(!allStepsAreValid).atlantiqueActionStyle()
+                Button("Enregistrer") { onSave(configurationSnapshot()) }.atlantiqueToolbarAction(primary: true).disabled(!allStepsAreValid).atlantiqueActionStyle()
             } else if showingResult {
                 Button("Recommencer") { reset() }.atlantiqueActionStyle()
             } else {
                 Button("Valider la configuration") { showingResult = true }.atlantiqueActionStyle()
             }
-        }.padding().background(.bar)
+        }.padding().background(atlantique ? Atlantique.Palette.blue : Color(.systemBackground))
     }
 
     @ViewBuilder private var stepContent: some View {
@@ -763,6 +767,10 @@ struct RailStudCeilingConfiguratorView: View {
         Group {
             Section { Label("Configuration compatible", systemImage: "checkmark.seal.fill").font(.headline).foregroundStyle(.green); Text("\(format(effectiveArea)) m² · \(shape.title.lowercased()) · \(stud.title) · \(assembly.title.lowercased())").foregroundStyle(.secondary) }
             AtlantiqueSection("Quantitatif") { ForEach(quantities) { LabeledContent($0.name, value: quantityTitle($0)) } }
+            if atlantique && !Atlantique.Book.showsAdvancedFormControls {
+                Section { AtlantiqueConfigurationEstimate(type: .ceilingOnRailsAndStuds, configuration: .railStudCeiling(configurationSnapshot())) }
+                    .listRowBackground(Color.clear).listRowInsets(EdgeInsets())
+            } else {
             Section {
                 DisclosureGroup("Configuration retenue", isExpanded: $configurationExpanded) {
                     editableConfigurationRow("Dimensions", value: "\(format(length)) × \(format(width)) m", targetStep: 0)
@@ -777,6 +785,7 @@ struct RailStudCeilingConfiguratorView: View {
                     }
                     editableConfigurationRow("Pare-vapeur", value: vaporBarrier ? "Oui" : "Non", targetStep: 1)
                 }
+            }
             }
         }
     }
@@ -993,8 +1002,8 @@ struct RailStudCeilingConfiguratorView: View {
         let total = values.reduce(0) { $0 + $1.area }; let difference = effectiveArea - total
         return Text(abs(difference) < 0.01 ? "Répartition complète : \(format(total)) m²." : difference > 0 ? "Il reste \(format(difference)) m² à répartir." : "La répartition dépasse de \(format(-difference)) m².").font(.footnote).foregroundStyle(abs(difference) < 0.01 ? .green : .orange).padding(.horizontal, 12)
     }
-    private func sectionTitle(_ value: String) -> some View { Text(value).font(.headline).foregroundStyle(.secondary).padding(.horizontal, 12) }
-    private func card<Content: View>(@ViewBuilder _ content: () -> Content) -> some View { VStack(alignment: .leading, spacing: 14, content: content).padding(16).frame(maxWidth: .infinity, alignment: .leading).background(.background, in: RoundedRectangle(cornerRadius: 22)) }
+    private func sectionTitle(_ value: String) -> some View { Text(value).font(atlantique ? Atlantique.Typography.button : .headline).foregroundStyle(atlantique ? Color.white : .secondary).padding(.horizontal, 12) }
+    private func card<Content: View>(@ViewBuilder _ content: () -> Content) -> some View { VStack(alignment: .leading, spacing: 14, content: content).padding(16).frame(maxWidth: .infinity, alignment: .leading).background(.background, in: RoundedRectangle(cornerRadius: atlantique ? Atlantique.Metrics.cardRadius : 22)) }
     private func updateArea() { if length > 0 && width > 0 { area = length * width } }
     private func reset() {
         step = 0; shape = .horizontal; area = 0; dimensionsSpecified = true; length = 0; width = 0; direction = "width"; support = .wood

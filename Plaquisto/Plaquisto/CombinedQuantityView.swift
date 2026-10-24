@@ -178,11 +178,16 @@ struct CombinedQuantityView: View {
                 ContentUnavailableView("Aucun ouvrage à quantifier", systemImage: "sum",
                     description: Text("Cette sélection ne contient aucun ouvrage. Le quantitatif est nul."))
             } else if store.isLoading {
-                ProgressView("Calcul du quantitatif…")
+                AtlantiqueLoadingView("Calcul du quantitatif…")
             } else if let error = store.error {
                 ContentUnavailableView("Référentiel indisponible", systemImage: "wifi.exclamationmark", description: Text(error))
             } else if let summary {
                 List {
+                    if atlantique {
+                        Text("\(currentWorks.count) ouvrage(s) · \(format(summary.totalArea)) m²")
+                            .font(Atlantique.Typography.caption).foregroundStyle(.white)
+                            .listRowBackground(Color.clear).listRowSeparator(.hidden)
+                    }
                     if let catalogue=store.catalogue {
                         SupplyCostSection(estimate:SupplyCostEstimator.estimate(pricedSupplies(summary),prices:prices.catalogue,catalogue:catalogue,day:SupplyCostEstimator.day()),loading:prices.isLoading,message:prices.message)
                     }
@@ -198,13 +203,14 @@ struct CombinedQuantityView: View {
                     }
                     ForEach(currentWorks.filter { $0.automaticLayout != nil }) { work in
                         if let automatic = work.automaticLayout,
-                           automatic.configurationFingerprint == LayoutQuantityCalculator.configurationFingerprint(work) {
+                           automatic.configurationFingerprint == LayoutQuantityCalculator.configurationFingerprint(work),
+                           !atlantique || Atlantique.Book.showsAdvancedFormControls || !automatic.warnings.isEmpty {
                             Section {
-                                if atlantique {
+                                if atlantique && Atlantique.Book.showsAdvancedFormControls {
                                     DisclosureGroup("Calepinage automatique · " + work.name) {
                                         Text("Les besoins du plan complètent l’estimation du formulaire uniquement à la hausse. Marge incluse, sans ajout d’une seconde marge.").font(.footnote)
                                     }
-                                } else {
+                                } else if !atlantique {
                                     Text("Calepinage automatique · " + work.name).font(.headline)
                                     Text("Les besoins du plan complètent l’estimation du formulaire uniquement à la hausse. Marge incluse, sans ajout d’une seconde marge.").font(.footnote)
                                 }
@@ -223,14 +229,14 @@ struct CombinedQuantityView: View {
                             }
                         } header: { sectionHeading("Quantités à contrôler") }
                     }
-                    Section {
+                    if !atlantique || Atlantique.Book.showsAdvancedFormControls { Section {
                         if isLab {
                             DisclosureGroup("\(currentWorks.count) ouvrage(s)") { includedWorks }
                         } else {
                             includedWorks
                         }
                         LabeledContent("Surface totale", value: format(summary.totalArea) + " m²").fontWeight(.semibold)
-                    } header: { sectionHeading("Ouvrages inclus") }
+                    } header: { sectionHeading("Ouvrages inclus") } }
                     supplySection(summary)
                 }
                 .scrollContentBackground(isLab ? .hidden : .visible)
@@ -298,9 +304,9 @@ struct CombinedQuantityView: View {
         Section {
             ForEach(currentWorks.filter { $0.layoutQuantityTakeoff != nil || ($0.hasSavedLayout && $0.automaticLayout == nil && ($0.type == .ceilingOnFurring || $0.type == .ceilingOnRailsAndStuds)) }) { work in
                 if LayoutQuantityCalculator.applicable(work) != nil {
-                    if isLab {
+                    if isLab && (!atlantique || Atlantique.Book.showsAdvancedFormControls) {
                         DisclosureGroup("Calcul affiné · \(work.name)") { takeoffExplanation(work) }.font(.subheadline)
-                    } else { takeoffExplanation(work) }
+                    } else if !isLab { takeoffExplanation(work) }
                 } else {
                     Label("\(work.name) : le calepinage n’est pas exploitable pour le calcul détaillé. L’estimation du formulaire est affichée.", systemImage: "exclamationmark.triangle")
                         .font(.caption).foregroundStyle(.orange)
